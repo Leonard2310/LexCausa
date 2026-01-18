@@ -14,7 +14,12 @@ dependencies = [
     "pydantic (>=2.12.3,<3.0.0)",
     "sqlalchemy (>=2.0.44,<3.0.0)",
     "neo4j (>=5.0.0,<6.0.0)",
-    "python-dotenv (>=1.0.0,<2.0.0)"
+    "python-dotenv (>=1.0.0,<2.0.0)",
+    "pandas (>=2.0.0,<3.0.0)",
+    "pyarrow (>=15.0.0,<16.0.0)",
+    "datasets (>=2.0.0,<3.0.0)",
+    "huggingface-hub (>=0.20.0,<1.0.0)",
+    "dask[dataframe] (>=2024.0.0)"
 ]
 
 
@@ -31,3 +36,9 @@ dev = [
     "pytest (>=8.4.2,<9.0.0)",
     "pre-commit (>=4.3.0,<5.0.0)"
 ]
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 88

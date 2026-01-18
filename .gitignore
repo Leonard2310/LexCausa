@@ -54,3 +54,8 @@ poetry.lock
 *.pid
 celerybeat-schedule
 celerybeat.pid
+
+# Dataset files
+src/data/
+*.parquet
+*.csv

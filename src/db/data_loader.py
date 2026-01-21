@@ -2,49 +2,114 @@
 Data loader for LexCausa - Downloads and processes legal datasets.
 
 Datasets:
-1. Codice Penale - Local CSV file (src/data/codice_penale.csv)
-2. Codice Civile - HuggingFace: AndreaSimeri/Italian_Civil_Code
+1. Codice Penale - Local CSV file (src/data/statuti/codice_penale_aggiornato.csv)
+2. Codice Civile - Local CSV file (src/data/statuti/codice_civile_aggiornato.csv)
 3. Precedenti (itacasehold) - HuggingFace: itacasehold/itacasehold
 4. Gazzetta Ufficiale - HuggingFace: mii-llm/gazzetta-ufficiale
+
+Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codice_civile
+per il raggruppamento degli articoli per libro di appartenenza.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 # Base paths
 DATA_DIR = Path(__file__).parent.parent / "data"
+STATUTI_DIR = DATA_DIR / "statuti"
+EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 DATA_DIR.mkdir(exist_ok=True)
 
 
 def load_codice_penale() -> pd.DataFrame:
-    """Load Codice Penale from local CSV file."""
-    csv_path = DATA_DIR / "codice_penale.csv"
+    """
+    Load Codice Penale from local CSV file.
+
+    Returns DataFrame with columns:
+    - articolo, titolo, testo, reference, external_reference
+    - libro_codice_penale: libro di appartenenza (Libro I, II, III)
+    - source: 'codice_penale'
+    """
+    csv_path = STATUTI_DIR / "codice_penale_aggiornato.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Penale CSV not found at {csv_path}")
 
     df = pd.read_csv(csv_path)
     df["source"] = "codice_penale"
+
+    # Normalizza nome colonna libro
+    if "libro_codice_penale" in df.columns:
+        df["libro"] = df["libro_codice_penale"]
+
     print(f"✅ Loaded Codice Penale: {len(df)} articles")
+    print(
+        f"   Libri: {df['libro'].unique().tolist() if 'libro' in df.columns else 'N/A'}"
+    )
     return df
 
 
 def load_codice_civile() -> pd.DataFrame:
-    """Load Codice Civile from HuggingFace."""
-    print("📥 Downloading Codice Civile from HuggingFace...")
-    url = (
-        "hf://datasets/AndreaSimeri/Italian_Civil_Code/"
-        "italian_civil_code_dataset_with_references.csv"
-    )
-    df = pd.read_csv(url)
+    """
+    Load Codice Civile from local CSV file.
+
+    Returns DataFrame with columns:
+    - article_id, article_title, article_text, article_references
+    - libro_codice_civile: libro di appartenenza (Libro Primo, Secondo, etc.)
+    - source: 'codice_civile'
+    """
+    csv_path = STATUTI_DIR / "codice_civile_aggiornato.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Codice Civile CSV not found at {csv_path}")
+
+    df = pd.read_csv(csv_path)
     df["source"] = "codice_civile"
 
-    # Save locally for caching
-    cache_path = DATA_DIR / "codice_civile.csv"
-    df.to_csv(cache_path, index=False)
-    print(f"✅ Loaded Codice Civile: {len(df)} articles (cached at {cache_path})")
+    # Normalizza nome colonna libro
+    if "libro_codice_civile" in df.columns:
+        df["libro"] = df["libro_codice_civile"]
+
+    print(f"✅ Loaded Codice Civile: {len(df)} articles")
+    print(
+        f"   Libri: {df['libro'].unique().tolist() if 'libro' in df.columns else 'N/A'}"
+    )
     return df
+
+
+def load_embeddings(source: str) -> Optional[np.ndarray]:
+    """
+    Load pre-computed embeddings from .npy file.
+
+    Args:
+        source: 'civile' or 'penale'
+
+    Returns:
+        numpy array of shape (n_articles, embedding_dim) or None if not found
+    """
+    embeddings_path = EMBEDDINGS_DIR / f"{source}_embeddings.npy"
+    if not embeddings_path.exists():
+        print(f"⚠️ Embeddings not found at {embeddings_path}")
+        return None
+
+    embeddings = np.load(embeddings_path)
+    print(f"✅ Loaded {source} embeddings: {embeddings.shape}")
+    return embeddings
+
+
+def load_codice_penale_with_embeddings() -> Tuple[pd.DataFrame, Optional[np.ndarray]]:
+    """Load Codice Penale with corresponding embeddings."""
+    df = load_codice_penale()
+    embeddings = load_embeddings("penale")
+    return df, embeddings
+
+
+def load_codice_civile_with_embeddings() -> Tuple[pd.DataFrame, Optional[np.ndarray]]:
+    """Load Codice Civile with corresponding embeddings."""
+    df = load_codice_civile()
+    embeddings = load_embeddings("civile")
+    return df, embeddings
 
 
 def load_statutes() -> pd.DataFrame:

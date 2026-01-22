@@ -10,9 +10,12 @@ Esegue in ordine tutte le operazioni necessarie per inizializzare il database:
 5. Caricamento precedenti (itacasehold) con embeddings
 
 Uso:
-    python db_orchestrator.py           # Setup completo
-    python db_orchestrator.py --clean   # Pulisce e reinizializza tutto
-    python db_orchestrator.py --check   # Solo verifica stato DB
+    python db_orchestrator.py                    # Setup completo
+    python db_orchestrator.py --clean            # Pulisce e reinizializza tutto
+    python db_orchestrator.py --check            # Solo verifica stato DB
+    python db_orchestrator.py --statutes         # Ricarica solo statuti
+    python db_orchestrator.py --precedents       # Ricarica solo precedenti
+    python db_orchestrator.py --clean --statutes # Pulisce e carica solo statuti
 """
 
 import argparse
@@ -191,7 +194,6 @@ class DatabaseOrchestrator:
 
             constraints = [
                 ("statute_unique_id", "Statute", "statute_id"),
-                ("libro_unique_name", "Libro", "name"),
                 ("codice_unique_name", "Codice", "name"),
                 ("precedent_unique_id", "Precedent", "chunk_id"),
             ]
@@ -208,6 +210,19 @@ class DatabaseOrchestrator:
                     print(f"      ✅ {name}")
                 except Exception as e:
                     print(f"      ⚠️ {name}: {e}")
+
+            # Constraint composto per Libro (name + codice)
+            try:
+                session.run(
+                    """
+                    CREATE CONSTRAINT libro_unique_name_codice IF NOT EXISTS
+                    FOR (n:Libro)
+                    REQUIRE (n.name, n.codice) IS UNIQUE
+                """
+                )
+                print("      ✅ libro_unique_name_codice")
+            except Exception as e:
+                print(f"      ⚠️ libro_unique_name_codice: {e}")
 
             # -----------------------------------------------------------------
             # VECTOR INDEXES
@@ -270,11 +285,11 @@ class DatabaseOrchestrator:
             """
             )
 
-            # Libri Codice Penale
+            # Libri Codice Penale (prefisso CP per distinguerli)
             libri_penale = [
-                ("Libro I", "Dei reati in generale"),
-                ("Libro II", "Dei delitti in particolare"),
-                ("Libro III", "Delle contravvenzioni in particolare"),
+                ("CP Libro I", "Dei reati in generale"),
+                ("CP Libro II", "Dei delitti in particolare"),
+                ("CP Libro III", "Delle contravvenzioni in particolare"),
             ]
             for libro_name, libro_desc in libri_penale:
                 session.run(
@@ -289,15 +304,15 @@ class DatabaseOrchestrator:
                     description=libro_desc,
                 )
 
-            # Libri Codice Civile
+            # Libri Codice Civile (prefisso CC per distinguerli)
             libri_civile = [
-                ("Libro Primo", "Delle persone e della famiglia"),
-                ("Libro Secondo", "Delle successioni"),
-                ("Libro Terzo", "Della proprietà"),
-                ("Libro Quarto", "Delle obbligazioni"),
-                ("Libro Quinto", "Del lavoro"),
-                ("Libro Sesto", "Della tutela dei diritti"),
-                ("Fuori range", "Articoli fuori dalla numerazione standard"),
+                ("CC Libro I", "Delle persone e della famiglia"),
+                ("CC Libro II", "Delle successioni"),
+                ("CC Libro III", "Della proprietà"),
+                ("CC Libro IV", "Delle obbligazioni"),
+                ("CC Libro V", "Del lavoro"),
+                ("CC Libro VI", "Della tutela dei diritti"),
+                ("CC Fuori range", "Articoli fuori dalla numerazione standard"),
             ]
             for libro_name, libro_desc in libri_civile:
                 session.run(
@@ -523,8 +538,19 @@ class DatabaseOrchestrator:
     # ORCHESTRAZIONE PRINCIPALE
     # =========================================================================
 
-    def run_full_setup(self, clean: bool = False):
-        """Esegue il setup completo del database."""
+    def run_full_setup(
+        self,
+        clean: bool = False,
+        load_statutes: bool = True,
+        load_precedents: bool = True,
+    ):
+        """Esegue il setup completo del database.
+
+        Args:
+            clean: Se True, pulisce il database prima di inizializzare
+            load_statutes: Se True, carica gli statuti (Codice Penale + Civile)
+            load_precedents: Se True, carica i precedenti (itacasehold)
+        """
         print("\n" + "=" * 60)
         print("🚀 LexCausa Database Orchestrator")
         print("=" * 60)
@@ -539,14 +565,20 @@ class DatabaseOrchestrator:
         print("\n📊 Stato iniziale:")
         self.print_status()
 
-        # Step 2: Schema
+        # Step 2: Schema (sempre necessario)
         self.create_schema()
 
-        # Step 3: Statuti
-        self.load_statutes()
+        # Step 3: Statuti (opzionale)
+        if load_statutes:
+            self.load_statutes()
+        else:
+            print("\n📖 Caricamento statuti: SKIP")
 
-        # Step 4: Precedenti
-        self.load_precedents()
+        # Step 4: Precedenti (opzionale)
+        if load_precedents:
+            self.load_precedents()
+        else:
+            print("\n⚖️ Caricamento precedenti: SKIP")
 
         # Step 5: Attendi indici
         self.wait_for_indexes()
@@ -562,7 +594,19 @@ class DatabaseOrchestrator:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LexCausa Database Orchestrator")
+    parser = argparse.ArgumentParser(
+        description="LexCausa Database Orchestrator",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Esempi:
+  python db_orchestrator.py                    # Setup completo
+  python db_orchestrator.py --clean            # Pulisce e reinizializza tutto
+  python db_orchestrator.py --check            # Solo verifica stato DB
+  python db_orchestrator.py --statutes         # Ricarica solo statuti
+  python db_orchestrator.py --precedents       # Ricarica solo precedenti
+  python db_orchestrator.py --clean --statutes # Pulisce e carica solo statuti
+        """,
+    )
     parser.add_argument(
         "--clean",
         action="store_true",
@@ -573,6 +617,16 @@ def main():
         action="store_true",
         help="Solo verifica stato database",
     )
+    parser.add_argument(
+        "--statutes",
+        action="store_true",
+        help="Carica solo statuti (Codice Penale + Civile)",
+    )
+    parser.add_argument(
+        "--precedents",
+        action="store_true",
+        help="Carica solo precedenti (itacasehold)",
+    )
     args = parser.parse_args()
 
     orchestrator = DatabaseOrchestrator()
@@ -581,7 +635,20 @@ def main():
         if args.check:
             orchestrator.print_status()
         else:
-            orchestrator.run_full_setup(clean=args.clean)
+            # Se nessun flag specifico, carica tutto
+            # Se almeno uno è specificato, carica solo quello
+            if not args.statutes and not args.precedents:
+                load_statutes = True
+                load_precedents = True
+            else:
+                load_statutes = args.statutes
+                load_precedents = args.precedents
+
+            orchestrator.run_full_setup(
+                clean=args.clean,
+                load_statutes=load_statutes,
+                load_precedents=load_precedents,
+            )
     finally:
         orchestrator.close()
 

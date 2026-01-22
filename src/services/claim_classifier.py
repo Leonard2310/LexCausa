@@ -15,19 +15,20 @@ from groq import Groq
 load_dotenv()
 
 # Taxonomy mapping to Neo4j libro names
+# I nomi dei libri includono il prefisso del codice (CC/CP) per univocità
 TAXONOMY_TO_LIBRO = {
     # Codice Civile
-    "CC_PRE": ("codice_civile", "Disposizioni Preliminari"),
-    "CC_L1": ("codice_civile", "Libro Primo"),
-    "CC_L2": ("codice_civile", "Libro Secondo"),
-    "CC_L3": ("codice_civile", "Libro Terzo"),
-    "CC_L4": ("codice_civile", "Libro Quarto"),
-    "CC_L5": ("codice_civile", "Libro Quinto"),
-    "CC_L6": ("codice_civile", "Libro Sesto"),
+    "CC_PRE": ("codice_civile", "CC Disposizioni Preliminari"),
+    "CC_L1": ("codice_civile", "CC Libro I"),
+    "CC_L2": ("codice_civile", "CC Libro II"),
+    "CC_L3": ("codice_civile", "CC Libro III"),
+    "CC_L4": ("codice_civile", "CC Libro IV"),
+    "CC_L5": ("codice_civile", "CC Libro V"),
+    "CC_L6": ("codice_civile", "CC Libro VI"),
     # Codice Penale
-    "CP_L1": ("codice_penale", "Libro I"),
-    "CP_L2": ("codice_penale", "Libro II"),
-    "CP_L3": ("codice_penale", "Libro III"),
+    "CP_L1": ("codice_penale", "CP Libro I"),
+    "CP_L2": ("codice_penale", "CP Libro II"),
+    "CP_L3": ("codice_penale", "CP Libro III"),
 }
 
 TAXONOMY_DESCRIPTIONS = {
@@ -45,19 +46,22 @@ TAXONOMY_DESCRIPTIONS = {
 
 SYSTEM_PROMPT = """You are a legal-domain routing classifier for Italian law.
 
-Your task is to assign a legal claim to the TOP 3 most relevant categories,
+Your task is to assign a legal claim to the most relevant category
 chosen ONLY from the provided taxonomy.
 
 Rules:
-- Output ONLY category IDs, one per line.
-- Output exactly 3 categories, ordered by relevance (most relevant first).
+- Output ONE category ID by default.
+- Output MORE THAN ONE category ONLY if multiple categories are clearly and independently relevant.
+- Output AT MOST 2 category IDs.
+- If only one category applies, output ONLY one.
 - Do NOT explain the decision.
 - Do NOT add any text, symbols, or formatting.
 - Do NOT cite articles or laws.
 - Do NOT invent new categories.
-- If uncertain, choose the most likely categories.
 
-You must follow these rules strictly."""
+You must follow these rules strictly.
+If uncertain, prefer fewer categories.
+"""
 
 TAXONOMY_PROMPT = """TAXONOMY
 

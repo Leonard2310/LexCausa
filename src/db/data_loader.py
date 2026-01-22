@@ -29,7 +29,7 @@ def load_codice_penale() -> pd.DataFrame:
 
     Returns DataFrame with columns:
     - articolo, titolo, testo, reference, external_reference
-    - libro_codice_penale: libro di appartenenza (Libro I, II, III)
+    - libro: libro di appartenenza con prefisso (CP Libro I, II, III)
     - source: 'codice_penale'
     """
     csv_path = STATUTI_DIR / "codice_penale_aggiornato.csv"
@@ -39,9 +39,9 @@ def load_codice_penale() -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df["source"] = "codice_penale"
 
-    # Normalizza nome colonna libro
+    # Normalizza nome colonna libro e aggiungi prefisso CP
     if "libro_codice_penale" in df.columns:
-        df["libro"] = df["libro_codice_penale"]
+        df["libro"] = "CP " + df["libro_codice_penale"].astype(str)
 
     print(f"✅ Loaded Codice Penale: {len(df)} articles")
     print(
@@ -56,7 +56,7 @@ def load_codice_civile() -> pd.DataFrame:
 
     Returns DataFrame with columns:
     - article_id, article_title, article_text, article_references
-    - libro_codice_civile: libro di appartenenza (Libro Primo, Secondo, etc.)
+    - libro: libro di appartenenza con prefisso (CC Libro I, II, etc.)
     - source: 'codice_civile'
     """
     csv_path = STATUTI_DIR / "codice_civile_aggiornato.csv"
@@ -66,9 +66,9 @@ def load_codice_civile() -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df["source"] = "codice_civile"
 
-    # Normalizza nome colonna libro
+    # Normalizza nome colonna libro e aggiungi prefisso CC
     if "libro_codice_civile" in df.columns:
-        df["libro"] = df["libro_codice_civile"]
+        df["libro"] = "CC " + df["libro_codice_civile"].astype(str)
 
     print(f"✅ Loaded Codice Civile: {len(df)} articles")
     print(

@@ -4,8 +4,7 @@ Data loader for LexCausa - Downloads and processes legal datasets.
 Datasets:
 1. Codice Penale - Local CSV file (src/data/statuti/codice_penale_aggiornato.csv)
 2. Codice Civile - Local CSV file (src/data/statuti/codice_civile_aggiornato.csv)
-3. Precedenti (itacasehold) - HuggingFace: itacasehold/itacasehold
-4. Gazzetta Ufficiale - HuggingFace: mii-llm/gazzetta-ufficiale
+3. Precedenti (itacasehold) - Chunk embeddings pre-calcolati
 
 Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codice_civile
 per il raggruppamento degli articoli per libro di appartenenza.
@@ -207,81 +206,10 @@ def load_precedents_all() -> pd.DataFrame:
     return all_precedents
 
 
-# Tipi di Gazzetta Ufficiale da includere
-GAZZETTA_TYPES_ALLOWED = [
-    "Serie Generale",  # Parte Prima - atti normativi e amministrativi
-]
-
-# Pattern per identificare Corte Costituzionale nell'intestazione
-CORTE_COSTITUZIONALE_PATTERN = "1ª Serie Speciale"
-
-
-def load_gazzetta_ufficiale(sample_size: Optional[int] = None) -> pd.DataFrame:
-    """
-    Load Gazzetta Ufficiale from HuggingFace using Dask (large dataset).
-
-    Filters to include only:
-    - Serie Generale (Parte Prima): atti normativi e amministrativi
-    - Corte Costituzionale (1ª Serie Speciale): sentenze e ordinanze
-
-    Args:
-        sample_size: If provided, only load this many records (for testing)
-    """
-    print(
-        "📥 Downloading Gazzetta Ufficiale from HuggingFace "
-        "(large dataset, may take time)..."
-    )
-
-    try:
-        import dask.dataframe as dd
-
-        ddf = dd.read_parquet(
-            "hf://datasets/mii-llm/gazzetta-ufficiale/data/train-*.parquet"
-        )
-
-        # Convert to pandas first (needed for proper filtering)
-        if sample_size:
-            # Take a larger sample to ensure we have enough after filtering
-            df = ddf.head(sample_size * 5, npartitions=-1)
-        else:
-            df = ddf.compute()
-
-        total_before = len(df)
-        print(f"📊 Total records before filtering: {total_before}")
-
-        # Filter: Serie Generale OR Corte Costituzionale
-        mask_serie_generale = df["type"].isin(GAZZETTA_TYPES_ALLOWED)
-        mask_corte_cost = df["intestazione"].str.contains(
-            CORTE_COSTITUZIONALE_PATTERN, case=False, na=False
-        )
-
-        df = df[mask_serie_generale | mask_corte_cost].copy()
-
-        if sample_size and len(df) > sample_size:
-            df = df.head(sample_size)
-
-        print(f"✅ Filtered Gazzetta Ufficiale: {len(df)} records")
-        print(f"   - Serie Generale: {mask_serie_generale.sum()}")
-        print(f"   - Corte Costituzionale: {mask_corte_cost.sum()}")
-
-        df["source"] = "gazzetta_ufficiale"
-
-        # Save locally for caching
-        cache_path = DATA_DIR / "gazzetta_ufficiale.parquet"
-        df.to_parquet(cache_path, index=False)
-        print(f"💾 Cached at {cache_path}")
-
-        return df
-
-    except Exception as e:
-        print(f"❌ Error loading Gazzetta Ufficiale: {e}")
-        raise
-
-
 def main():
-    """Download and cache all datasets."""
+    """Test del data loader."""
     print("=" * 60)
-    print("LexCausa Data Loader")
+    print("LexCausa Data Loader - Test")
     print("=" * 60)
 
     # Load statutes
@@ -289,18 +217,23 @@ def main():
     statutes = load_statutes()
     print(f"   Columns: {list(statutes.columns)}")
 
-    # Load precedenti
-    print("\n⚖️ Loading Precedenti...")
-    precedents = load_precedents_all()
-    print(f"   Columns: {list(precedents.columns)}")
+    # Load embeddings
+    print("\n📊 Loading Embeddings...")
+    _ = load_embeddings("penale")
+    _ = load_embeddings("civile")
+    _ = load_embeddings("itacasehold")
 
-    # Load Gazzetta (sample for testing)
-    print("\n📰 Loading Gazzetta Ufficiale (sample)...")
-    gazzetta = load_gazzetta_ufficiale(sample_size=1000)
-    print(f"   Columns: {list(gazzetta.columns)}")
+    # Load itacasehold con metadata
+    print("\n⚖️ Loading Itacasehold con metadata...")
+    try:
+        meta, emb = load_itacasehold_with_embeddings()
+        print(f"   Metadata: {len(meta)} chunks")
+        print(f"   Embeddings: {emb.shape}")
+    except FileNotFoundError as e:
+        print(f"   ⚠️ {e}")
 
     print("\n" + "=" * 60)
-    print("✅ All datasets loaded successfully!")
+    print("✅ Data loader test completato!")
     print("=" * 60)
 
 

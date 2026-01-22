@@ -4,12 +4,13 @@ Neo4j schema migrations - Vector Indexes for LexCausa.
 Creates vector indexes for:
 1. statutes_idx - Codice Penale + Codice Civile (articoli con embedding)
 2. precedents_idx - Precedenti giurisprudenziali (itacasehold)
-3. normativa_idx - Gazzetta Ufficiale
 
 Crea anche:
 - Nodi Libro per raggruppare gli articoli per libro di appartenenza
 - Nodi Codice per raggruppare i libri per codice (Penale/Civile)
 - Indice full-text per ricerca testuale
+
+NOTA: Questo file è deprecato. Usa db_orchestrator.py per il setup.
 """
 
 import os
@@ -38,13 +39,7 @@ VECTOR_INDEXES = [
         "name": "precedents_idx",
         "label": "Precedent",
         "property": "embedding",
-        "description": "Indice vettoriale per precedenti giurisprudenziali",
-    },
-    {
-        "name": "normativa_idx",
-        "label": "Normativa",
-        "property": "embedding",
-        "description": "Indice vettoriale per Gazzetta Ufficiale",
+        "description": "Indice vettoriale per precedenti (itacasehold)",
     },
 ]
 

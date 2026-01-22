@@ -1,12 +1,13 @@
 """
 Neo4j Ingestion - Loads data into Neo4j as nodes with embeddings.
 
+NOTA: Questo file è deprecato. Usa db_orchestrator.py per il setup.
+
 This script creates nodes for:
 1. Statute (Codice Penale + Codice Civile) -> statutes_idx
    - Includes libro di appartenenza and embeddings
    - Creates BELONGS_TO relationships with Libro nodes
 2. Precedent (itacasehold) -> precedents_idx
-3. Normativa -> normativa_idx
 
 Vector search capabilities:
 - Each Statute node contains an embedding property for vector similarity search
@@ -21,8 +22,7 @@ import pandas as pd
 from data_loader import (
     load_codice_civile_with_embeddings,
     load_codice_penale_with_embeddings,
-    load_gazzetta_ufficiale,
-    load_precedents,
+    load_itacasehold_with_embeddings,
 )
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
@@ -399,7 +399,7 @@ class Neo4jIngestion:
         """Get count of nodes for each label."""
         counts = {}
         with self.driver.session() as session:
-            for label in ["Statute", "Precedent", "Normativa", "Libro", "Codice"]:
+            for label in ["Statute", "Precedent", "Libro", "Codice"]:
                 result = session.run(f"MATCH (n:{label}) RETURN count(n) as count")
                 counts[label] = result.single()["count"]
         return counts
@@ -588,9 +588,14 @@ class Neo4jIngestion:
 
 
 def main():
-    """Main ingestion pipeline."""
+    """
+    Main ingestion pipeline.
+
+    DEPRECATO: Usa db_orchestrator.py invece di questo script.
+    """
     print("=" * 60)
     print("LexCausa - Neo4j Data Ingestion")
+    print("⚠️ DEPRECATO: Usa 'python db_orchestrator.py' invece")
     print("=" * 60)
 
     ingestion = Neo4jIngestion()
@@ -615,15 +620,14 @@ def main():
         codice_civile, civile_embeddings = load_codice_civile_with_embeddings()
         ingestion.ingest_statutes(codice_civile, "codice_civile", civile_embeddings)
 
-        # Ingest Precedents
-        print("\n⚖️ Processing Precedenti...")
-        precedents = load_precedents("train")  # Start with train split
-        ingestion.ingest_precedents(precedents)
-
-        # Ingest Normativa (Serie Generale + Corte Costituzionale)
-        print("\n📰 Processing Normativa " "(Serie Generale + Corte Costituzionale)...")
-        gazzetta = load_gazzetta_ufficiale()  # Full dataset
-        ingestion.ingest_normativa(gazzetta)
+        # Ingest Precedents (itacasehold con embeddings)
+        print("\n⚖️ Processing Precedenti (itacasehold)...")
+        try:
+            metadata, embeddings = load_itacasehold_with_embeddings()
+            ingestion.ingest_precedents_with_embeddings(metadata, embeddings)
+        except FileNotFoundError as e:
+            print(f"   ⚠️ {e}")
+            print("   Esegui prima il notebook per generare gli embeddings")
 
         # Summary
         print("\n" + "=" * 60)

@@ -83,7 +83,7 @@ def load_embeddings(source: str) -> Optional[np.ndarray]:
     Load pre-computed embeddings from .npy file.
 
     Args:
-        source: 'civile' or 'penale'
+        source: 'civile', 'penale', or 'itacasehold'
 
     Returns:
         numpy array of shape (n_articles, embedding_dim) or None if not found
@@ -96,6 +96,45 @@ def load_embeddings(source: str) -> Optional[np.ndarray]:
     embeddings = np.load(embeddings_path)
     print(f"✅ Loaded {source} embeddings: {embeddings.shape}")
     return embeddings
+
+
+def load_itacasehold_with_embeddings() -> Tuple[list, Optional[np.ndarray]]:
+    """
+    Load itacasehold precedenti with corresponding chunk embeddings.
+
+    Returns:
+        Tuple of (metadata_list, embeddings_array)
+        - metadata_list: List of dicts with doc_id, chunk_idx, title, summary,
+                         materia, url, chunk_text
+        - embeddings: numpy array of shape (n_chunks, 768)
+    """
+    import pickle
+
+    metadata_path = EMBEDDINGS_DIR / "itacasehold_metadata.pkl"
+    embeddings_path = EMBEDDINGS_DIR / "itacasehold_embeddings.npy"
+
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Itacasehold metadata not found at {metadata_path}")
+    if not embeddings_path.exists():
+        raise FileNotFoundError(
+            f"Itacasehold embeddings not found at {embeddings_path}"
+        )
+
+    with open(metadata_path, "rb") as f:
+        metadata = pickle.load(f)
+
+    embeddings = np.load(embeddings_path)
+
+    print(
+        f"✅ Loaded itacasehold: {len(metadata)} chunks, embeddings {embeddings.shape}"
+    )
+
+    if len(metadata) != embeddings.shape[0]:
+        print(
+            f"⚠️ Mismatch: {len(metadata)} metadata vs {embeddings.shape[0]} embeddings"
+        )
+
+    return metadata, embeddings
 
 
 def load_codice_penale_with_embeddings() -> Tuple[pd.DataFrame, Optional[np.ndarray]]:

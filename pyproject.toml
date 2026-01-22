@@ -19,7 +19,9 @@ dependencies = [
     "pyarrow (>=15.0.0,<16.0.0)",
     "datasets (>=2.0.0,<3.0.0)",
     "huggingface-hub (>=0.20.0,<1.0.0)",
-    "dask[dataframe] (>=2024.0.0)"
+    "dask[dataframe] (>=2024.0.0)",
+    "groq (>=1.0.0,<2.0.0)",
+    "numpy (>=1.24.0,<3.0.0)"
 ]
 
 
@@ -42,3 +44,19 @@ profile = "black"
 
 [tool.black]
 line-length = 88
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+explicit_package_bases = true
+mypy_path = "."
+exclude = [
+    "notebooks/",
+    "tests/",
+]
+
+[[tool.mypy.overrides]]
+module = ["src.services.*", "src.db.*"]
+ignore_errors = true

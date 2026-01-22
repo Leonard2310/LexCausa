@@ -10,10 +10,11 @@ Salva questo file come: src/api_server.py
 
 import os
 import sys
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from dotenv import load_dotenv
 import warnings
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 warnings.filterwarnings("ignore")
 
@@ -30,8 +31,8 @@ os.chdir(project_root)
 
 load_dotenv()
 
-from services.legal_search import LegalSearchPipeline
-from services.claim_classifier import ClaimClassifier
+from services.claim_classifier import ClaimClassifier  # noqa: E402
+from services.legal_search import LegalSearchPipeline  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -62,80 +63,71 @@ def get_classifier():
     return classifier
 
 
-@app.route('/health', methods=['GET'])
+@app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
-    return jsonify({
-        'status': 'ok',
-        'service': 'LexCausa API',
-        'version': '0.1.0'
-    })
+    return jsonify({"status": "ok", "service": "LexCausa API", "version": "0.1.0"})
 
 
-@app.route('/api/chat', methods=['POST'])
+@app.route("/api/chat", methods=["POST"])
 def chat():
     """
     Endpoint principale per il chatbot.
-    
+
     Request: {"message": "claim legale", "top_k": 5}
     Response: {"response": "testo formattato", ...}
     """
     try:
         pipe = get_pipeline()
-        
+
         data = request.get_json()
-        claim = data.get('message', '').strip()
-        top_k = data.get('top_k', 5)
-        
+        claim = data.get("message", "").strip()
+        top_k = data.get("top_k", 5)
+
         if not claim:
-            return jsonify({'error': 'Campo "message" obbligatorio'}), 400
-        
+            return jsonify({"error": 'Campo "message" obbligatorio'}), 400
+
         # Esegui ricerca
         result = pipe.search(claim, top_k=top_k)
-        
+
         # Formatta risposta
         response_text = format_search_result(result)
-        
-        return jsonify({
-            'response': response_text,
-            'classification': {
-                'categories': result.classification.categories,
-                'descriptions': result.classification.descriptions,
-                'libro_mappings': result.classification.libro_mappings
-            },
-            'articles': [
-                {
-                    'source': art.source,
-                    'articolo': art.articolo,
-                    'titolo': art.titolo,
-                    'testo': art.testo,
-                    'libro': art.libro,
-                    'score': art.score
-                }
-                for art in result.articles
-            ],
-            'precedents': [
-                {
-                    'materia': prec.materia,
-                    'estremi': prec.estremi,
-                    'massima': prec.massima,
-                    'score': prec.score
-                }
-                for prec in result.precedents
-            ]
-        })
-        
+
+        return jsonify(
+            {
+                "response": response_text,
+                "classification": {
+                    "categories": result.classification.categories,
+                    "descriptions": result.classification.descriptions,
+                    "libro_mappings": result.classification.libro_mappings,
+                },
+                "articles": [
+                    {
+                        "source": art.source,
+                        "articolo": art.articolo,
+                        "titolo": art.titolo,
+                        "testo": art.testo,
+                        "libro": art.libro,
+                        "score": art.score,
+                    }
+                    for art in result.articles
+                ],
+                "precedents": [],  # TODO: aggiungere ricerca precedenti
+            }
+        )
+
     except Exception as e:
         print(f"❌ Errore: {e}")
         import traceback
+
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 def format_search_result(result) -> str:
     """Formatta il risultato in markdown."""
     lines = []
-    
+
     # Classificazione
     lines.append("## 📋 Classificazione\n")
     for i, (cat, desc) in enumerate(
@@ -146,7 +138,7 @@ def format_search_result(result) -> str:
         lines.append(f"**{i}. {cat}**")
         lines.append(f"- {desc}")
         lines.append(f"- 📚 [{source_label}] {libro}\n")
-    
+
     # Articoli
     if result.articles:
         lines.append("\n---\n")
@@ -158,18 +150,11 @@ def format_search_result(result) -> str:
             lines.append(f"**Libro:** {art.libro}\n")
             preview = art.testo[:300] + "..." if len(art.testo) > 300 else art.testo
             lines.append(f"{preview}\n")
-    
-    # Precedenti
-    if result.precedents:
-        lines.append("\n---\n")
-        lines.append("## ⚖️ Precedenti Giurisprudenziali\n")
-        for i, prec in enumerate(result.precedents[:3], 1):
-            lines.append(f"### {i}. {prec.estremi}")
-            lines.append(f"**Rilevanza:** {prec.score:.1%}")
-            lines.append(f"**Materia:** {prec.materia}\n")
-            preview = prec.massima[:300] + "..." if len(prec.massima) > 300 else prec.massima
-            lines.append(f"{preview}\n")
-    
+
+    # Precedenti (TODO: da implementare nella pipeline)
+    # if hasattr(result, 'precedents') and result.precedents:
+    #     ...
+
     return "\n".join(lines)
 
 
@@ -187,7 +172,7 @@ if __name__ == "__main__":
     print()
     print("=" * 70)
     print()
-    
+
     # Usa porta 8000 per non confliggere con Neo4j su 7474
     port = int(os.getenv("API_PORT", 8000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=True)

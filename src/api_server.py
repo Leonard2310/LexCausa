@@ -12,7 +12,6 @@ import os
 import sys
 import warnings
 
-from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -29,8 +28,8 @@ else:
 sys.path.insert(0, src_path)
 os.chdir(project_root)
 
-load_dotenv()
-
+from agents import CounterReasoner, PolisherEvaluator, Reasoner  # noqa: E402
+from config import settings  # noqa: E402
 from services.claim_classifier import ClaimClassifier  # noqa: E402
 from services.legal_search import LegalSearchPipeline  # noqa: E402
 
@@ -38,9 +37,12 @@ from services.legal_search import LegalSearchPipeline  # noqa: E402
 app = Flask(__name__)
 CORS(app)
 
-# Pipeline globale (lazy initialization)
+# Pipeline e agenti globali (lazy initialization)
 pipeline = None
 classifier = None
+reasoner = None
+counter_reasoner = None
+polisher_evaluator = None
 
 
 def get_pipeline():
@@ -61,6 +63,36 @@ def get_classifier():
         classifier = ClaimClassifier()
         print("✅ Classificatore pronto!")
     return classifier
+
+
+def get_reasoner():
+    """Lazy load del Reasoner agent."""
+    global reasoner
+    if reasoner is None:
+        print("🔧 Inizializzazione Reasoner...")
+        reasoner = Reasoner()
+        print("✅ Reasoner pronto!")
+    return reasoner
+
+
+def get_counter_reasoner():
+    """Lazy load del Counter-Reasoner agent."""
+    global counter_reasoner
+    if counter_reasoner is None:
+        print("🔧 Inizializzazione Counter-Reasoner...")
+        counter_reasoner = CounterReasoner()
+        print("✅ Counter-Reasoner pronto!")
+    return counter_reasoner
+
+
+def get_polisher_evaluator():
+    """Lazy load del Polisher-Evaluator agent."""
+    global polisher_evaluator
+    if polisher_evaluator is None:
+        print("🔧 Inizializzazione Polisher-Evaluator...")
+        polisher_evaluator = PolisherEvaluator()
+        print("✅ Polisher-Evaluator pronto!")
+    return polisher_evaluator
 
 
 @app.route("/health", methods=["GET"])
@@ -124,6 +156,150 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/reason", methods=["POST"])
+def reason():
+    """
+    Endpoint per il ragionamento causale.
+
+    Request: {"claim": "claim legale", "include_precedents": true, "use_context": false}
+    Response: {"causality": {...}, "arguments": [...], "reasoning_chain": [...]}
+    """
+    try:
+        data = request.get_json()
+        claim = data.get("claim", data.get("message", "")).strip()
+        include_precedents = data.get("include_precedents", True)
+        use_context = data.get("use_context", False)
+
+        if not claim:
+            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+
+        reas = get_reasoner()
+
+        if use_context:
+            # Prima recupera contesto dalla pipeline, poi ragiona
+            pipe = get_pipeline()
+            search_result = pipe.search(claim, top_k=5)
+
+            # Converti articoli in formato dict
+            statutes = [
+                {
+                    "statute_id": art.statute_id,
+                    "articolo": art.articolo,
+                    "titolo": art.titolo,
+                    "testo": art.testo,
+                    "libro": art.libro,
+                    "source": art.source,
+                }
+                for art in search_result.articles
+            ]
+
+            result = reas.reason_with_context(
+                claim=claim,
+                pre_retrieved_statutes=statutes,
+                pre_retrieved_precedents=[],
+            )
+        else:
+            # Ragionamento con tool calling
+            result = reas.run(
+                claim=claim,
+                include_precedents=include_precedents,
+            )
+
+        return jsonify(
+            {
+                "claim": result.claim,
+                "causality": result.causality_classification,
+                "arguments": result.arguments,
+                "reasoning_chain": result.reasoning_chain,
+                "statutes": result.relevant_statutes,
+                "precedents": result.relevant_precedents,
+                "raw_response": result.raw_response,
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ Errore reasoning: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/counter-reason", methods=["POST"])
+def counter_reason():
+    """
+    Endpoint per il contro-ragionamento.
+
+    Request: {"claim": "...", "causality_type": "...", "arguments": [...]}
+    Response: {"counter_arguments": [...], "attack_graph": {...}}
+
+    TODO: Implementare quando Counter-Reasoner sarà completo.
+    """
+    try:
+        data = request.get_json()
+        claim = data.get("claim", "").strip()
+        causality_type = data.get("causality_type", "")
+        arguments = data.get("arguments", [])
+
+        if not claim or not causality_type:
+            return (
+                jsonify({"error": 'Campi "claim" e "causality_type" obbligatori'}),
+                400,
+            )
+
+        cr = get_counter_reasoner()
+        result = cr.run(
+            claim=claim,
+            causality_type=causality_type,
+            reasoner_arguments=arguments,
+        )
+
+        return jsonify(result.to_dict())
+
+    except Exception as e:
+        print(f"❌ Errore counter-reasoning: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/evaluate", methods=["POST"])
+def evaluate():
+    """
+    Endpoint per la valutazione finale.
+
+    Request: {"claim": "...", "reasoner_output": {...}, "counter_output": {...}}
+    Response: {"winning_side": "...", "summary": "...", "polished_response": "..."}
+
+    TODO: Implementare quando Polisher-Evaluator sarà completo.
+    """
+    try:
+        data = request.get_json()
+        claim = data.get("claim", "").strip()
+        reasoner_output = data.get("reasoner_output", {})
+        counter_output = data.get("counter_output", {})
+
+        if not claim:
+            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+
+        pe = get_polisher_evaluator()
+        result = pe.run(
+            claim=claim,
+            reasoner_output=reasoner_output,
+            counter_reasoner_output=counter_output,
+        )
+
+        return jsonify(result.to_dict())
+
+    except Exception as e:
+        print(f"❌ Errore evaluation: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 def format_search_result(result) -> str:
     """Formatta il risultato in markdown."""
     lines = []
@@ -164,15 +340,16 @@ if __name__ == "__main__":
     print("  🚀 LexCausa API Server")
     print("=" * 70)
     print()
-    print("  Server in ascolto su: http://localhost:8000")
+    print(f"  Server in ascolto su: http://{settings.api_host}:{settings.api_port}")
     print()
     print("  Endpoints:")
-    print("  • GET  /health       - Health check")
-    print("  • POST /api/chat     - Ricerca legale")
+    print("  • GET  /health            - Health check")
+    print("  • POST /api/chat          - Ricerca legale (statuti)")
+    print("  • POST /api/reason        - Ragionamento causale")
+    print("  • POST /api/counter-reason - Contro-ragionamento (stub)")
+    print("  • POST /api/evaluate      - Valutazione finale (stub)")
     print()
     print("=" * 70)
     print()
 
-    # Usa porta 8000 per non confliggere con Neo4j su 7474
-    port = int(os.getenv("API_PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host=settings.api_host, port=settings.api_port, debug=settings.debug)

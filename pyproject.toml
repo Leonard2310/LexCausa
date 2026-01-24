@@ -1,31 +1,47 @@
 [project]
 name = "lex-causa"
 version = "0.1.0"
-description = ""
+description = "Legal Reasoning System with Causal Chain Analysis for Italian Law"
 authors = [
-    {name = "Leonardo Catello",email = "leonardo.catello@hotmail.com"}
+    {name = "Leonardo Catello", email = "leonardo.catello@hotmail.com"},
+    {name = "Salvatore Maione", email = "salvatore22maione@gmail.com"}
 ]
-packages = [{ include = "src" }]
 readme = "README.md"
-requires-python = "^3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
-    "fastapi (>=0.120.4,<0.121.0)",
-    "uvicorn (>=0.38.0,<0.39.0)",
-    "pydantic (>=2.12.3,<3.0.0)",
-    "sqlalchemy (>=2.0.44,<3.0.0)",
+    "fastapi (>=0.115.0,<1.0.0)",
+    "uvicorn (>=0.30.0,<1.0.0)",
+    "pydantic (>=2.9.0,<3.0.0)",
+    "pydantic-settings (>=2.5.0,<3.0.0)",
+    "sqlalchemy (>=2.0.30,<3.0.0)",
     "neo4j (>=5.0.0,<6.0.0)",
     "python-dotenv (>=1.0.0,<2.0.0)",
     "pandas (>=2.0.0,<3.0.0)",
-    "pyarrow (>=15.0.0,<16.0.0)",
+    "pyarrow (>=15.0.0,<18.0.0)",
     "datasets (>=2.0.0,<3.0.0)",
     "huggingface-hub (>=0.20.0,<1.0.0)",
     "dask[dataframe] (>=2024.0.0)",
-    "groq (>=1.0.0,<2.0.0)",
-    "numpy (>=1.24.0,<3.0.0)",
-    "flask (>=3.1.2,<4.0.0)",
-    "flask-cors (>=6.0.2,<7.0.0)"
+    "numpy (>=1.24.0,<2.0.0)",
+    "flask (>=3.0.0,<4.0.0)",
+    "flask-cors (>=4.0.0,<7.0.0)",
+    "groq (>=0.4.0,<1.0.0)",
+    "langchain (>=0.2.0,<1.0.0)",
+    "langchain-groq (>=0.1.0,<1.0.0)",
+    "langgraph (>=0.2.0,<1.0.0)",
+    "transformers (>=4.40.0,<5.0.0)",
+    "torch (==2.2.2)",
 ]
 
+[tool.poetry]
+name = "lex-causa"
+version = "0.1.0"
+description = "Legal Reasoning System with Causal Chain Analysis for Italian Law"
+authors = [
+    "Leonardo Catello <leonardo.catello@hotmail.com>",
+    "Salvatore Maione <salvatore22maione@gmail.com>"
+]
+readme = "README.md"
+package-mode = false
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

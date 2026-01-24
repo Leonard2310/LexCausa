@@ -5,14 +5,16 @@ Classifies legal claims into the appropriate book (libro) of the
 Italian Civil Code (Codice Civile) or Penal Code (Codice Penale).
 """
 
-import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
 from groq import Groq
 
-load_dotenv()
+# Cross-platform path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import settings  # noqa: E402
 
 # Taxonomy mapping to Neo4j libro names
 # I nomi dei libri includono il prefisso del codice (CC/CP) per univocità
@@ -136,23 +138,23 @@ class ClaimClassifier:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+        model: Optional[str] = None,
     ):
         """
         Initialize the classifier.
 
         Args:
-            api_key: Groq API key. If None, reads from GROQ_API_KEY env var.
-            model: Model to use for classification.
+            api_key: Groq API key. If None, reads from settings.
+            model: Model to use for classification. If None, reads from settings.
         """
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.api_key = api_key or settings.groq_api_key
         if not self.api_key:
             raise ValueError(
                 "GROQ_API_KEY not found. Set it in .env or pass api_key parameter."
             )
 
         self.client = Groq(api_key=self.api_key)
-        self.model = model
+        self.model = model or settings.groq_model
 
     def _build_messages(self, claim: str) -> list[dict]:
         """Build the message chain with few-shot examples."""

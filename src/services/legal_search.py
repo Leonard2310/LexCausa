@@ -8,27 +8,20 @@ Complete pipeline that:
 4. Returns the most relevant articles from Italian law codes
 """
 
-import os
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import torch
-from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from transformers import AutoModel, AutoTokenizer
 
 from .claim_classifier import ClaimClassifier, ClassificationResult
 
-load_dotenv()
-
-# Neo4j configuration
-NEO4J_URI = os.getenv("NEO4J_URI")
-NEO4J_USER = os.getenv("NEO4J_USER")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
-
-# Embedding model configuration (same as used for indexing)
-MODEL_NAME = "nlpaueb/legal-bert-base-uncased"
-MAX_LENGTH = 512
+# Cross-platform path for config import
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import settings  # noqa: E402
 
 
 @dataclass
@@ -62,7 +55,7 @@ class SearchResult:
     claim: str
     classification: ClassificationResult
     articles: list[ArticleResult] = field(default_factory=list)
-    embedding_model: str = MODEL_NAME
+    embedding_model: str = field(default_factory=lambda: settings.embedding_model)
 
     def __str__(self) -> str:
         lines = [
@@ -112,7 +105,7 @@ class LegalSearchPipeline:
         Initialize the search pipeline.
 
         Args:
-            groq_api_key: API key for Groq Cloud. If None, reads from env.
+            groq_api_key: API key for Groq Cloud. If None, reads from settings.
             device: Device for embeddings ('cuda' or 'cpu'). Auto-detects if None.
         """
         # Initialize classifier
@@ -122,7 +115,7 @@ class LegalSearchPipeline:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         print(f"🔧 Loading embedding model on {self.device}...")
         self.tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_NAME, local_files_only=True
+            settings.embedding_model, local_files_only=True
         )
         # Use local cached model (pre-downloaded) with weights_only=False
         # to avoid network calls and torch.load security check
@@ -130,13 +123,15 @@ class LegalSearchPipeline:
 
         os.environ["TRUST_REMOTE_CODE"] = "1"
         self.model = AutoModel.from_pretrained(
-            MODEL_NAME, local_files_only=True, trust_remote_code=True
+            settings.embedding_model, local_files_only=True, trust_remote_code=True
         ).to(self.device)
         self.model.eval()
-        print(f"✅ Embedding model loaded: {MODEL_NAME}")
+        print(f"✅ Embedding model loaded: {settings.embedding_model}")
 
         # Initialize Neo4j connection
-        self.driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        self.driver = GraphDatabase.driver(
+            settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
+        )
         print("✅ Neo4j connection established")
 
     def close(self):
@@ -163,7 +158,7 @@ class LegalSearchPipeline:
             text,
             truncation=True,
             padding=True,
-            max_length=MAX_LENGTH,
+            max_length=settings.embedding_max_length,
             return_tensors="pt",
         ).to(self.device)
 

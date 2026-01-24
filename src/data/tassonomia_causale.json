@@ -9,11 +9,7 @@
       "norme_core": [
         {
           "riferimento": "Art. 40 c.p.",
-          "ambito": "Penale",
-          "commi": [
-            "comma 1",
-            "comma 2"
-          ]
+          "ambito": "Penale"
         }
       ],
       "norme_accessorie": [
@@ -37,7 +33,7 @@
             "nome": "Causa omissiva",
             "norme_core": [
               {
-                "riferimento": "Art. 40 comma 2 c.p.",
+                "riferimento": "Art. 40 c.p.",
                 "ambito": "Penale"
               }
             ],
@@ -117,10 +113,6 @@
         {
           "riferimento": "Art. 1227 c.c.",
           "ambito": "Civile",
-          "commi": [
-            "comma 1",
-            "comma 2"
-          ],
           "nota": "Concorso del fatto colposo del creditore e dovere di mitigazione: incide su risarcibilità/quantificazione."
         },
         {
@@ -143,11 +135,7 @@
       "norme_core": [
         {
           "riferimento": "Art. 41 c.p.",
-          "ambito": "Penale",
-          "commi": [
-            "comma 1",
-            "comma 2"
-          ]
+          "ambito": "Penale"
         }
       ],
       "norme_accessorie": [
@@ -159,10 +147,6 @@
         {
           "riferimento": "Art. 1227 c.c.",
           "ambito": "Civile",
-          "commi": [
-            "comma 1",
-            "comma 2"
-          ],
           "nota": "Concorso del fatto del danneggiato/creditore: riduzione o esclusione di poste di danno evitabili."
         },
         {

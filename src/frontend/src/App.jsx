@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText } from 'lucide-react';
-import './ChatBot.css';
+import './App.css';
 
 // Tab types
 const TABS = {
@@ -9,7 +9,10 @@ const TABS = {
   PIPELINE: 'pipeline'
 };
 
-export default function ChatbotInterface() {
+// API base URL - uses proxy in development
+const API_BASE = '/api';
+
+export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.SEARCH);
   const [messages, setMessages] = useState([
     { 
@@ -42,7 +45,7 @@ export default function ChatbotInterface() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/chat', {
+      const response = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMessage, top_k: 5 }),
@@ -82,7 +85,7 @@ export default function ChatbotInterface() {
     setReasoningResult(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/reason', {
+      const response = await fetch(`${API_BASE}/reason`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -114,7 +117,7 @@ export default function ChatbotInterface() {
 
     try {
       // Step 1: Legal Search
-      const searchResponse = await fetch('http://localhost:8000/api/chat', {
+      const searchResponse = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: claim, top_k: 5 }),
@@ -124,7 +127,7 @@ export default function ChatbotInterface() {
       const searchData = await searchResponse.json();
 
       // Step 2: Reasoning with context
-      const reasonResponse = await fetch('http://localhost:8000/api/reason', {
+      const reasonResponse = await fetch(`${API_BASE}/reason`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

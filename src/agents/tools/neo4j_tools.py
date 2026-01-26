@@ -87,21 +87,29 @@ def search_statutes_tool(
     """
 
     results = []
-    with driver.session() as session:
-        records = session.run(query_cypher, query=query, limit=limit)
-        for record in records:
-            results.append(
-                {
-                    "statute_id": record["id"],
-                    "articolo": record["articolo"],
-                    "titolo": record["titolo"],
-                    "testo": record["testo"][:500] if record["testo"] else "",
-                    "libro": record["libro"],
-                    "source": record["source"],
-                    "score": record["score"],
-                }
-            )
+    try:
+        with driver.session() as session:
+            records = session.run(query_cypher, parameters={"query": query, "limit": limit})
+            for record in records:
+                results.append(
+                    {
+                        "statute_id": record["id"] or "",
+                        "articolo": record["articolo"] or "",
+                        "titolo": record["titolo"] or "No title",
+                        "testo": record["testo"][:500] if record["testo"] else "No text available",
+                        "libro": record["libro"] or "",
+                        "source": record["source"] or "",
+                        "score": record["score"] if record["score"] is not None else 0.0,
+                    }
+                )
+    except Exception as e:
+        # Return error as a valid result
+        return [{"error": f"Search failed: {str(e)}", "query": query}]
 
+    # Always return at least one item
+    if not results:
+        return [{"message": f"No statutes found for query: '{query}'", "query": query}]
+    
     return results
 
 
@@ -135,20 +143,35 @@ def get_statute_by_article_tool(articolo: str, codice: str) -> dict:
         LIMIT 1
     """
 
-    with driver.session() as session:
-        result = session.run(query, articolo=articolo, codice=codice)
-        record = result.single()
+    try:
+        with driver.session() as session:
+            result = session.run(query, parameters={"articolo": articolo, "codice": codice})
+            record = result.single()
 
-        if record:
+            if record:
+                return {
+                    "statute_id": record["id"] or "",
+                    "articolo": record["articolo"] or articolo,
+                    "titolo": record["titolo"] or "No title",
+                    "testo": record["testo"] or "No text available",
+                    "libro": record["libro"] or "",
+                    "source": record["source"] or codice,
+                    "found": True
+                }
+            # Return a valid dict even when not found
             return {
-                "statute_id": record["id"],
-                "articolo": record["articolo"],
-                "titolo": record["titolo"],
-                "testo": record["testo"],
-                "libro": record["libro"],
-                "source": record["source"],
+                "error": f"Article {articolo} not found in {codice}",
+                "articolo": articolo,
+                "codice": codice,
+                "found": False
             }
-        return {"error": f"Article {articolo} not found in {codice}"}
+    except Exception as e:
+        return {
+            "error": f"Query failed: {str(e)}",
+            "articolo": articolo,
+            "codice": codice,
+            "found": False
+        }
 
 
 class SearchPrecedentsInput(BaseModel):
@@ -176,7 +199,6 @@ def search_precedents_tool(
     """
     driver = get_driver()
 
-    # Per ora usa la ricerca su title/summary se non c'è un fulltext index per precedenti
     where_clause = ""
     if materia:
         where_clause = f"WHERE p.materia = '{materia}'"
@@ -204,23 +226,31 @@ def search_precedents_tool(
     """
 
     results = []
-    with driver.session() as session:
-        records = session.run(query_cypher, query=query, limit=limit)
-        for record in records:
-            results.append(
-                {
-                    "precedent_id": record["id"],
-                    "title": record["title"],
-                    "summary": record["summary"][:300] if record["summary"] else "",
-                    "materia": record["materia"],
-                    "url": record["url"],
-                    "excerpt": (
-                        record["chunk_text"][:200] if record["chunk_text"] else ""
-                    ),
-                    "score": record["score"],
-                }
-            )
+    try:
+        with driver.session() as session:
+            records = session.run(query_cypher, parameters={"query": query, "limit": limit})
+            for record in records:
+                results.append(
+                    {
+                        "precedent_id": record["id"] or "",
+                        "title": record["title"] or "Untitled precedent",
+                        "summary": record["summary"][:300] if record["summary"] else "No summary available",
+                        "materia": record["materia"] or "Unknown",
+                        "url": record["url"] or "",
+                        "excerpt": (
+                            record["chunk_text"][:200] if record["chunk_text"] else "No excerpt available"
+                        ),
+                        "score": record["score"] if record["score"] is not None else 0.0,
+                    }
+                )
+    except Exception as e:
+        # Return error as a valid result
+        return [{"error": f"Search failed: {str(e)}", "query": query}]
 
+    # Always return at least one item
+    if not results:
+        return [{"message": f"No precedents found for query: '{query}'", "query": query}]
+    
     return results
 
 

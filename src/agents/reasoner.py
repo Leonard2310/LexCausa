@@ -13,6 +13,8 @@ Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 
 from dataclasses import dataclass, field
 from typing import Optional
+import json
+from langchain_core.messages import ToolMessage
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
@@ -141,6 +143,8 @@ class Reasoner(BaseAgent):
         # Execute the ReAct agent using LangGraph
         messages = [HumanMessage(content=input_prompt)]
         result = self.react_agent.invoke({"messages": messages})
+        messages_out = result.get("messages", [])
+        causality = self._extract_causality_from_messages(messages_out)
 
         # Extract final response from messages
         raw_output = ""
@@ -152,9 +156,22 @@ class Reasoner(BaseAgent):
 
         # Parse the response
         output = self._parse_response(claim, {"output": raw_output})
+        output.causality_classification = causality
 
         self._log(f"Generated {len(output.arguments)} arguments", "success")
         return output
+
+    def _extract_causality_from_messages(self, messages) -> dict:
+        """
+        Extract the result of the classify_causality tool from LangGraph messages.
+        """
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name == "classify_causality":
+                try:
+                    return json.loads(msg.content)
+                except Exception:
+                    return {}
+        return {}
 
     def _build_reasoning_prompt(
         self,

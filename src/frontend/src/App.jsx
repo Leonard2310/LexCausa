@@ -116,33 +116,23 @@ export default function App() {
     setPipelineResult(null);
 
     try {
-      // Step 1: Legal Search
-      const searchResponse = await fetch(`${API_BASE}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: claim, top_k: 5 }),
-      });
-
-      if (!searchResponse.ok) throw new Error('Errore nella ricerca');
-      const searchData = await searchResponse.json();
-
-      // Step 2: Reasoning with context
-      const reasonResponse = await fetch(`${API_BASE}/reason`, {
+      // Tutto gestito dall'agent ReAct (classifica, cerca, ragiona)
+      const response = await fetch(`${API_BASE}/reason`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           claim, 
-          use_context: true 
+          include_precedents: true,
+          use_context: false  // Usa ReAct agent con tool calling
         }),
       });
 
-      if (!reasonResponse.ok) throw new Error('Errore nel reasoning');
-      const reasonData = await reasonResponse.json();
+      if (!response.ok) throw new Error('Errore nel reasoning');
+      const data = await response.json();
 
       setPipelineResult({
         claim,
-        search: searchData,
-        reasoning: reasonData,
+        reasoning: data,
       });
     } catch (error) {
       console.error('Errore pipeline:', error);
@@ -301,39 +291,37 @@ export default function App() {
               ) : (
                 <>
                   <div className="result-section">
-                    <h4>1. Classificazione</h4>
-                    {pipelineResult.search?.classification && (
-                      <ul>
-                        {pipelineResult.search.classification.categories.map((cat, idx) => (
+                    <h4>Claim Analizzato</h4>
+                    <p>{pipelineResult.claim}</p>
+                  </div>
+
+                  <div className="result-section">
+                    <h4>1. Classificazione Causalità</h4>
+                    {pipelineResult.reasoning?.causality && (
+                      <pre className="code-block">
+                        {JSON.stringify(pipelineResult.reasoning.causality, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+
+                  {pipelineResult.reasoning?.statutes && pipelineResult.reasoning.statutes.length > 0 && (
+                    <div className="result-section">
+                      <h4>2. Articoli Trovati ({pipelineResult.reasoning.statutes.length})</h4>
+                      <ul className="articles-list">
+                        {pipelineResult.reasoning.statutes.slice(0, 5).map((art, idx) => (
                           <li key={idx}>
-                            <strong>{cat}</strong>: {pipelineResult.search.classification.descriptions[idx]}
+                            <strong>Art. {art.articolo || art.statute_id}</strong> 
+                            {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                            {art.titolo && ` - ${art.titolo}`}
                           </li>
                         ))}
                       </ul>
-                    )}
-                  </div>
-
-                  <div className="result-section">
-                    <h4>2. Articoli Trovati ({pipelineResult.search?.articles?.length || 0})</h4>
-                    <ul className="articles-list">
-                      {pipelineResult.search?.articles?.slice(0, 3).map((art, idx) => (
-                        <li key={idx}>
-                          <strong>Art. {art.articolo}</strong> ({art.source === 'codice_civile' ? 'c.c.' : 'c.p.'}) - {art.titolo}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div className="result-section">
-                    <h4>3. Analisi Causale</h4>
-                    {pipelineResult.reasoning?.causality && (
-                      <p><strong>Tipo:</strong> {pipelineResult.reasoning.causality.causality_type || 'N/A'}</p>
-                    )}
-                  </div>
+                    </div>
+                  )}
 
                   {pipelineResult.reasoning?.reasoning_chain && pipelineResult.reasoning.reasoning_chain.length > 0 && (
                     <div className="result-section">
-                      <h4>4. Catena di Ragionamento</h4>
+                      <h4>3. Catena di Ragionamento</h4>
                       <ul className="reasoning-chain">
                         {pipelineResult.reasoning.reasoning_chain.map((step, idx) => (
                           <li key={idx}>{step}</li>
@@ -344,7 +332,7 @@ export default function App() {
 
                   {pipelineResult.reasoning?.raw_response && (
                     <div className="result-section">
-                      <h4>5. Risposta Completa</h4>
+                      <h4>4. Risposta Completa</h4>
                       <div className="raw-response">{pipelineResult.reasoning.raw_response}</div>
                     </div>
                   )}

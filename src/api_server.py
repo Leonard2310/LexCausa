@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """
-LexCausa - Flask API Server (per frontend)
+LexCausa - Flask API Server (FIXED VERSION)
 
-REST API server da aggiungere al progetto esistente.
-Espone gli endpoint necessari per il frontend React.
-
-Salva questo file come: src/api_server.py
+REST API server con logica corretta per la pipeline completa.
+Il backend gestisce l'intero flusso: Reasoner → CounterReasoner.
 """
 
 import os
 import sys
 import warnings
+import json
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 warnings.filterwarnings("ignore")
 
-# Setup paths (mantieni la stessa logica del main.py)
+# Setup paths
 src_path = os.path.dirname(os.path.abspath(__file__))
 if os.path.basename(src_path) == "src":
     project_root = os.path.dirname(src_path)
@@ -38,20 +37,36 @@ app = Flask(__name__)
 CORS(app)
 
 # Agenti globali (lazy initialization)
-# NOTE: pipeline viene gestita da get_legal_search_pipeline() in neo4j_tools.py
-# per garantire una SINGOLA istanza condivisa tra Tab Ricerca e Tab Ragionamento
 classifier = None
 reasoner = None
 counter_reasoner = None
 polisher_evaluator = None
 
+# Carica la tassonomia una volta all'avvio
+TAXONOMY = None
+
+
+def load_taxonomy():
+    """Carica la tassonomia di causalità dal file JSON."""
+    global TAXONOMY
+    if TAXONOMY is None:
+        taxonomy_path = os.path.join(project_root, "data", "tassonomia_causalita.json")
+        if not os.path.exists(taxonomy_path):
+            # Fallback: cerca in altre posizioni comuni
+            taxonomy_path = os.path.join(src_path, "data", "tassonomia_causalita.json")
+        
+        if os.path.exists(taxonomy_path):
+            with open(taxonomy_path, "r", encoding="utf-8") as f:
+                TAXONOMY = json.load(f)
+            print(f"✅ Tassonomia caricata da: {taxonomy_path}")
+        else:
+            print(f"⚠️ Tassonomia non trovata in: {taxonomy_path}")
+            TAXONOMY = {"tassonomia_causalita": []}
+    return TAXONOMY
+
 
 def get_pipeline():
-    """Get the shared LegalSearchPipeline singleton.
-
-    Uses the SAME instance as the Reasoner agent's tools.
-    This ensures Tab Ricerca and Tab Ragionamento use identical logic.
-    """
+    """Get the shared LegalSearchPipeline singleton."""
     return get_legal_search_pipeline()
 
 
@@ -95,19 +110,87 @@ def get_polisher_evaluator():
     return polisher_evaluator
 
 
+def get_warrant_causality(causality_type: str) -> dict:
+    """
+    Estrae il warrant dalla tassonomia per un dato tipo di causalità.
+    
+    Args:
+        causality_type: Il tipo di causalità (es. "Materiale", "Giuridica", "Concause / Sopravvenute")
+    
+    Returns:
+        Dict contenente:
+        - warrant: dict con denominazione e todo_nli
+        - attacking_causalities: lista delle causalità che possono attaccare questa
+    """
+    taxonomy = load_taxonomy()
+    
+    for entry in taxonomy.get("tassonomia_causalita", []):
+        if entry.get("tipo_causalita") == causality_type:
+            warrant = entry.get("warrant", {})
+            
+            # Il warrant contiene la "denominazione" che indica quale tipo di causalità può attaccare
+            # Esempio: "Causalità Necessaria" può essere attaccata da "Causalità Sufficiente"
+            attacking_causalities = []
+            
+            # Logica per determinare le causalità attaccanti basata sul warrant
+            warrant_denominazione = warrant.get("denominazione", "")
+            
+            if "Necessaria" in warrant_denominazione:
+                # La causalità necessaria può essere attaccata da cause sufficienti
+                attacking_causalities.append("Concause / Sopravvenute")
+            elif "Sufficiente Indipendente" in warrant_denominazione:
+                # La causalità sufficiente indipendente può essere attaccata da cause necessarie
+                attacking_causalities.append("Materiale")
+            elif "Sufficiente (non da sola)" in warrant_denominazione:
+                # Le concause possono essere attaccate da entrambe
+                attacking_causalities.extend(["Materiale", "Giuridica"])
+            
+            return {
+                "warrant": warrant,
+                "attacking_causalities": attacking_causalities
+            }
+    
+    return {"warrant": {}, "attacking_causalities": []}
+
+
+def get_causality_details(causality_type: str) -> dict:
+    """
+    Recupera tutti i dettagli di una causalità dalla tassonomia.
+    
+    Args:
+        causality_type: Il tipo di causalità
+    
+    Returns:
+        Dict con descrizione, norme core, norme accessorie, ecc.
+    """
+    taxonomy = load_taxonomy()
+    
+    for entry in taxonomy.get("tassonomia_causalita", []):
+        if entry.get("tipo_causalita") == causality_type:
+            return {
+                "tipo": entry.get("tipo_causalita"),
+                "warrant": entry.get("warrant", {}),
+                "descrizione": entry.get("descrizione_ruolo", ""),
+                "principio": entry.get("principio_test_applicato", ""),
+                "limiti": entry.get("limiti_criticita", ""),
+                "norme_core": entry.get("norme_core", []),
+                "norme_accessorie": entry.get("norme_accessorie", []),
+                "note": entry.get("note", {})
+            }
+    
+    return {}
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
-    return jsonify({"status": "ok", "service": "LexCausa API", "version": "0.1.0"})
+    return jsonify({"status": "ok", "service": "LexCausa API", "version": "0.2.0"})
 
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """
-    Endpoint principale per il chatbot.
-
-    Request: {"message": "claim legale", "top_k": 5}
-    Response: {"response": "testo formattato", ...}
+    Endpoint principale per il chatbot (Tab Ricerca).
     """
     try:
         pipe = get_pipeline()
@@ -119,10 +202,7 @@ def chat():
         if not claim:
             return jsonify({"error": 'Campo "message" obbligatorio'}), 400
 
-        # Esegui ricerca
         result = pipe.search(claim, top_k=top_k)
-
-        # Formatta risposta
         response_text = format_search_result(result)
 
         return jsonify(
@@ -144,14 +224,13 @@ def chat():
                     }
                     for art in result.articles
                 ],
-                "precedents": [],  # TODO: aggiungere ricerca precedenti
+                "precedents": [],
             }
         )
 
     except Exception as e:
         print(f"❌ Errore: {e}")
         import traceback
-
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
@@ -159,10 +238,7 @@ def chat():
 @app.route("/api/reason", methods=["POST"])
 def reason():
     """
-    Endpoint per il ragionamento causale.
-
-    Request: {"claim": "claim legale", "include_precedents": true, "use_context": false}
-    Response: {"causality": {...}, "arguments": [...], "reasoning_chain": [...]}
+    Endpoint per il ragionamento causale (Tab Ragionamento).
     """
     try:
         data = request.get_json()
@@ -176,11 +252,9 @@ def reason():
         reas = get_reasoner()
 
         if use_context:
-            # Prima recupera contesto dalla pipeline, poi ragiona
             pipe = get_pipeline()
             search_result = pipe.search(claim, top_k=5)
 
-            # Converti articoli in formato dict
             statutes = [
                 {
                     "statute_id": art.statute_id,
@@ -199,7 +273,6 @@ def reason():
                 pre_retrieved_precedents=[],
             )
         else:
-            # Ragionamento con tool calling
             result = reas.run(
                 claim=claim,
                 include_precedents=include_precedents,
@@ -220,38 +293,44 @@ def reason():
     except Exception as e:
         print(f"❌ Errore reasoning: {e}")
         import traceback
-
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/counter-reason", methods=["POST"])
+@app.route("/api/counter_reason", methods=["POST"])
 def counter_reason():
     """
     Endpoint per il contro-ragionamento.
-
-    Request: {"claim": "...", "causality_type": "...", "arguments": [...]}
-    Response: {"counter_arguments": [...], "attack_graph": {...}}
-
-    TODO: Implementare quando Counter-Reasoner sarà completo.
+    
+    Riceve:
+    - claim: il claim legale
+    - causality: la classificazione di causalità dal Reasoner
+    
+    Restituisce contro-argomenti basati sul warrant della causalità.
     """
     try:
         data = request.get_json()
         claim = data.get("claim", "").strip()
-        causality_type = data.get("causality_type", "")
-        arguments = data.get("arguments", [])
+        causality = data.get("causality", {})
+        include_precedents = data.get("include_precedents", True)
+        max_statutes = data.get("max_statutes", 5)
+        max_precedents = data.get("max_precedents", 3)
 
-        if not claim or not causality_type:
-            return (
-                jsonify({"error": 'Campi "claim" e "causality_type" obbligatori'}),
-                400,
-            )
+        if not claim:
+            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+        
+        if not causality:
+            return jsonify({"error": 'Campo "causality" obbligatorio'}), 400
 
         cr = get_counter_reasoner()
+        
+        # Esegui il counter-reasoning
         result = cr.run(
             claim=claim,
-            causality_type=causality_type,
-            reasoner_arguments=arguments,
+            causality=causality,
+            include_precedents=include_precedents,
+            max_statutes=max_statutes,
+            max_precedents=max_precedents,
         )
 
         return jsonify(result.to_dict())
@@ -259,7 +338,92 @@ def counter_reason():
     except Exception as e:
         print(f"❌ Errore counter-reasoning: {e}")
         import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
+
+@app.route("/api/pipeline", methods=["POST"])
+def pipeline():
+    """
+    Endpoint per la pipeline completa (Tab Pipeline Completa).
+    
+    Gestisce l'intero flusso nel backend:
+    1. Reasoner analizza il claim e produce causalità + argomenti
+    2. CounterReasoner usa la causalità del Reasoner per generare contro-argomenti
+    3. Restituisce entrambi i risultati al frontend
+    """
+    try:
+        data = request.get_json()
+        claim = data.get("claim", "").strip()
+        include_precedents = data.get("include_precedents", True)
+        max_statutes = data.get("max_statutes", 5)
+        max_precedents = data.get("max_precedents", 3)
+
+        if not claim:
+            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+
+        print(f"\n{'='*70}")
+        print(f"🚀 PIPELINE COMPLETA - INIZIO")
+        print(f"{'='*70}")
+        print(f"Claim: {claim[:100]}...")
+        
+        # STEP 1: Reasoner
+        print(f"\n{'─'*70}")
+        print("📊 STEP 1: Esecuzione Reasoner...")
+        print(f"{'─'*70}")
+        
+        reas = get_reasoner()
+        reasoner_result = reas.run(
+            claim=claim,
+            include_precedents=include_precedents,
+            max_statutes=max_statutes,
+            max_precedents=max_precedents,
+        )
+        
+        print(f"✅ Reasoner completato")
+        print(f"   - Causalità: {reasoner_result.causality_classification.get('causality_type', 'N/A')}")
+        print(f"   - Argomenti: {len(reasoner_result.arguments)}")
+        print(f"   - Statuti: {len(reasoner_result.relevant_statutes)}")
+        print(f"   - Precedenti: {len(reasoner_result.relevant_precedents)}")
+
+        # STEP 2: Counter-Reasoner
+        print(f"\n{'─'*70}")
+        print("⚔️  STEP 2: Esecuzione Counter-Reasoner...")
+        print(f"{'─'*70}")
+        
+        cr = get_counter_reasoner()
+        counter_result = cr.run(
+            claim=claim,
+            causality=reasoner_result.causality_classification,
+            include_precedents=include_precedents,
+            max_statutes=max_statutes,
+            max_precedents=max_precedents,
+        )
+        
+        print(f"✅ Counter-Reasoner completato")
+        print(f"   - Contro-argomenti: {len(counter_result.counter_arguments)}")
+        print(f"   - Statuti: {len(counter_result.relevant_statutes)}")
+        print(f"   - Precedenti: {len(counter_result.relevant_precedents)}")
+
+        print(f"\n{'='*70}")
+        print(f"✅ PIPELINE COMPLETA - FINE")
+        print(f"{'='*70}\n")
+
+        # Restituisci entrambi i risultati
+        return jsonify(
+            {
+                "claim": claim,
+                "reasoner": reasoner_result.to_dict(),
+                "counter_reasoner": counter_result.to_dict(),
+            }
+        )
+
+    except Exception as e:
+        print(f"\n{'='*70}")
+        print(f"❌ ERRORE PIPELINE")
+        print(f"{'='*70}")
+        print(f"Errore: {e}")
+        import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
@@ -268,10 +432,6 @@ def counter_reason():
 def evaluate():
     """
     Endpoint per la valutazione finale.
-
-    Request: {"claim": "...", "reasoner_output": {...}, "counter_output": {...}}
-    Response: {"winning_side": "...", "summary": "...", "polished_response": "..."}
-
     TODO: Implementare quando Polisher-Evaluator sarà completo.
     """
     try:
@@ -295,7 +455,6 @@ def evaluate():
     except Exception as e:
         print(f"❌ Errore evaluation: {e}")
         import traceback
-
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
@@ -304,7 +463,6 @@ def format_search_result(result) -> str:
     """Formatta il risultato in markdown."""
     lines = []
 
-    # Classificazione
     lines.append("## 📋 Classificazione\n")
     for i, (cat, desc) in enumerate(
         zip(result.classification.categories, result.classification.descriptions), 1
@@ -315,7 +473,6 @@ def format_search_result(result) -> str:
         lines.append(f"- {desc}")
         lines.append(f"- 📚 [{source_label}] {libro}\n")
 
-    # Articoli
     if result.articles:
         lines.append("\n---\n")
         lines.append("## 📖 Articoli Rilevanti\n")
@@ -327,27 +484,24 @@ def format_search_result(result) -> str:
             preview = art.testo[:300] + "..." if len(art.testo) > 300 else art.testo
             lines.append(f"{preview}\n")
 
-    # Precedenti (TODO: da implementare nella pipeline)
-    # if hasattr(result, 'precedents') and result.precedents:
-    #     ...
-
     return "\n".join(lines)
 
 
 if __name__ == "__main__":
     print()
     print("=" * 70)
-    print("  🚀 LexCausa API Server")
+    print("  🚀 LexCausa API Server (FIXED VERSION)")
     print("=" * 70)
     print()
     print(f"  Server in ascolto su: http://{settings.api_host}:{settings.api_port}")
     print()
     print("  Endpoints:")
-    print("  • GET  /health            - Health check")
-    print("  • POST /api/chat          - Ricerca legale (statuti)")
-    print("  • POST /api/reason        - Ragionamento causale")
-    print("  • POST /api/counter-reason - Contro-ragionamento (stub)")
-    print("  • POST /api/evaluate      - Valutazione finale (stub)")
+    print("  • GET  /health              - Health check")
+    print("  • POST /api/chat            - Ricerca legale (Tab Ricerca)")
+    print("  • POST /api/reason          - Ragionamento causale (Tab Ragionamento)")
+    print("  • POST /api/counter_reason  - Contro-ragionamento")
+    print("  • POST /api/pipeline        - Pipeline completa (NUOVO)")
+    print("  • POST /api/evaluate        - Valutazione finale (stub)")
     print()
     print("=" * 70)
     print()

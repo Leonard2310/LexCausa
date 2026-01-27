@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle } from 'lucide-react';
 import './App.css';
 
 // Tab types
 const TABS = {
   SEARCH: 'search',
   REASON: 'reason',
-  PIPELINE: 'pipeline'
+  PIPELINE: 'pipeline',
 };
 
 // API base URL - uses proxy in development
@@ -15,10 +15,11 @@ const API_BASE = '/api';
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.SEARCH);
   const [messages, setMessages] = useState([
-    { 
-      role: 'assistant', 
-      content: 'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile e Penale italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.' 
-    }
+    {
+      role: 'assistant',
+      content:
+        'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile e Penale italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.',
+    },
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -40,8 +41,8 @@ export default function App() {
 
     const userMessage = input.trim();
     setInput('');
-    
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+
+    setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
     try {
@@ -54,22 +55,28 @@ export default function App() {
       if (!response.ok) throw new Error('Errore nella risposta del server');
 
       const data = await response.json();
-      
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
-        content: data.response,
-        metadata: {
-          classification: data.classification,
-          articles: data.articles,
-          precedents: data.precedents
-        }
-      }]);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: data.response,
+          metadata: {
+            classification: data.classification,
+            articles: data.articles,
+            precedents: data.precedents,
+          },
+        },
+      ]);
     } catch (error) {
       console.error('Errore:', error);
-      setMessages(prev => [...prev, { 
-        role: 'assistant', 
-        content: 'Mi dispiace, si è verificato un errore. Riprova più tardi.' 
-      }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: 'Mi dispiace, si è verificato un errore. Riprova più tardi.',
+        },
+      ]);
     } finally {
       setIsLoading(false);
       inputRef.current?.focus();
@@ -88,10 +95,10 @@ export default function App() {
       const response = await fetch(`${API_BASE}/reason`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          claim, 
+        body: JSON.stringify({
+          claim,
           include_precedents: true,
-          use_context: false 
+          use_context: false,
         }),
       });
 
@@ -116,24 +123,23 @@ export default function App() {
     setPipelineResult(null);
 
     try {
-      // Tutto gestito dall'agent ReAct (classifica, cerca, ragiona)
-      const response = await fetch(`${API_BASE}/reason`, {
+      // Chiama l'endpoint /api/pipeline che gestisce tutto il flusso nel backend
+      const response = await fetch(`${API_BASE}/pipeline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          claim, 
+        body: JSON.stringify({
+          claim,
           include_precedents: true,
-          use_context: false  // Usa ReAct agent con tool calling
+          max_statutes: 5,
+          max_precedents: 3,
         }),
       });
 
-      if (!response.ok) throw new Error('Errore nel reasoning');
+      if (!response.ok) throw new Error('Errore nella pipeline');
       const data = await response.json();
 
-      setPipelineResult({
-        claim,
-        reasoning: data,
-      });
+      // Il backend restituisce: { claim, reasoner: {...}, counter_reasoner: {...} }
+      setPipelineResult(data);
     } catch (error) {
       console.error('Errore pipeline:', error);
       setPipelineResult({ error: error.message });
@@ -188,21 +194,21 @@ export default function App() {
 
       {/* Tabs */}
       <div className="tabs-container">
-        <button 
+        <button
           className={`tab-button ${activeTab === TABS.SEARCH ? 'tab-active' : ''}`}
           onClick={() => setActiveTab(TABS.SEARCH)}
         >
           <Search size={16} />
           <span>Ricerca</span>
         </button>
-        <button 
+        <button
           className={`tab-button ${activeTab === TABS.REASON ? 'tab-active' : ''}`}
           onClick={() => setActiveTab(TABS.REASON)}
         >
           <Brain size={16} />
           <span>Ragionamento</span>
         </button>
-        <button 
+        <button
           className={`tab-button ${activeTab === TABS.PIPELINE ? 'tab-active' : ''}`}
           onClick={() => setActiveTab(TABS.PIPELINE)}
         >
@@ -238,7 +244,7 @@ export default function App() {
                 <Brain size={20} />
                 Risultato Ragionamento
               </h3>
-              
+
               {reasoningResult.error ? (
                 <p className="error-text">Errore: {reasoningResult.error}</p>
               ) : (
@@ -285,7 +291,7 @@ export default function App() {
                 <FileText size={20} />
                 Risultato Pipeline Completa
               </h3>
-              
+
               {pipelineResult.error ? (
                 <p className="error-text">Errore: {pipelineResult.error}</p>
               ) : (
@@ -295,47 +301,140 @@ export default function App() {
                     <p>{pipelineResult.claim}</p>
                   </div>
 
-                  <div className="result-section">
-                    <h4>1. Classificazione Causalità</h4>
-                    {pipelineResult.reasoning?.causality && (
-                      <pre className="code-block">
-                        {JSON.stringify(pipelineResult.reasoning.causality, null, 2)}
-                      </pre>
+                  {/* SEZIONE REASONER */}
+                  <div className="result-section pipeline-section">
+                    <h3 className="section-header">
+                      <CheckCircle2 size={20} style={{ color: '#10b981' }} />
+                      1. REASONER - Argomenti a Favore
+                    </h3>
+
+                    {pipelineResult.reasoner?.causality && (
+                      <div className="subsection">
+                        <h4>Classificazione Causalità</h4>
+                        <pre className="code-block">
+                          {JSON.stringify(pipelineResult.reasoner.causality, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+
+                    {pipelineResult.reasoner?.statutes && pipelineResult.reasoner.statutes.length > 0 && (
+                      <div className="subsection">
+                        <h4>Articoli Trovati ({pipelineResult.reasoner.statutes.length})</h4>
+                        <ul className="articles-list">
+                          {pipelineResult.reasoner.statutes.slice(0, 5).map((art, idx) => (
+                            <li key={idx}>
+                              <strong>Art. {art.articolo || art.statute_id}</strong>
+                              {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                              {art.titolo && ` - ${art.titolo}`}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.reasoner?.precedents && pipelineResult.reasoner.precedents.length > 0 && (
+                      <div className="subsection">
+                        <h4>Precedenti Trovati ({pipelineResult.reasoner.precedents.length})</h4>
+                        <ul className="precedents-list">
+                          {pipelineResult.reasoner.precedents.map((prec, idx) => (
+                            <li key={idx}>
+                              <strong>{prec.title || `Precedente ${idx + 1}`}</strong>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.reasoner?.reasoning_chain && pipelineResult.reasoner.reasoning_chain.length > 0 && (
+                      <div className="subsection">
+                        <h4>Catena di Ragionamento</h4>
+                        <ul className="reasoning-chain">
+                          {pipelineResult.reasoner.reasoning_chain.map((step, idx) => (
+                            <li key={idx}>{step}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.reasoner?.raw_response && (
+                      <div className="subsection">
+                        <h4>Risposta Completa</h4>
+                        <div className="raw-response">{pipelineResult.reasoner.raw_response}</div>
+                      </div>
                     )}
                   </div>
 
-                  {pipelineResult.reasoning?.statutes && pipelineResult.reasoning.statutes.length > 0 && (
-                    <div className="result-section">
-                      <h4>2. Articoli Trovati ({pipelineResult.reasoning.statutes.length})</h4>
-                      <ul className="articles-list">
-                        {pipelineResult.reasoning.statutes.slice(0, 5).map((art, idx) => (
-                          <li key={idx}>
-                            <strong>Art. {art.articolo || art.statute_id}</strong> 
-                            {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
-                            {art.titolo && ` - ${art.titolo}`}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  {/* SEZIONE COUNTER-REASONER */}
+                  <div className="result-section pipeline-section">
+                    <h3 className="section-header">
+                      <XCircle size={20} style={{ color: '#ef4444' }} />
+                      2. COUNTER-REASONER - Argomenti Contrari
+                    </h3>
 
-                  {pipelineResult.reasoning?.reasoning_chain && pipelineResult.reasoning.reasoning_chain.length > 0 && (
-                    <div className="result-section">
-                      <h4>3. Catena di Ragionamento</h4>
-                      <ul className="reasoning-chain">
-                        {pipelineResult.reasoning.reasoning_chain.map((step, idx) => (
-                          <li key={idx}>{step}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                    {pipelineResult.counter_reasoner?.reasoner_causality && (
+                      <div className="subsection">
+                        <h4>Causalità del Reasoner (da Attaccare)</h4>
+                        <pre className="code-block">
+                          {JSON.stringify(pipelineResult.counter_reasoner.reasoner_causality, null, 2)}
+                        </pre>
+                      </div>
+                    )}
 
-                  {pipelineResult.reasoning?.raw_response && (
-                    <div className="result-section">
-                      <h4>4. Risposta Completa</h4>
-                      <div className="raw-response">{pipelineResult.reasoning.raw_response}</div>
-                    </div>
-                  )}
+                    {pipelineResult.counter_reasoner?.warrant_info && (
+                      <div className="subsection">
+                        <h4>Warrant e Causalità Attaccanti</h4>
+                        <pre className="code-block">
+                          {JSON.stringify(pipelineResult.counter_reasoner.warrant_info, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+
+                    {pipelineResult.counter_reasoner?.statutes && pipelineResult.counter_reasoner.statutes.length > 0 && (
+                      <div className="subsection">
+                        <h4>Articoli Trovati (Contro-Tesi) ({pipelineResult.counter_reasoner.statutes.length})</h4>
+                        <ul className="articles-list">
+                          {pipelineResult.counter_reasoner.statutes.slice(0, 5).map((art, idx) => (
+                            <li key={idx}>
+                              <strong>Art. {art.articolo || art.statute_id}</strong>
+                              {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                              {art.titolo && ` - ${art.titolo}`}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.counter_reasoner?.precedents && pipelineResult.counter_reasoner.precedents.length > 0 && (
+                      <div className="subsection">
+                        <h4>Precedenti Trovati (Contro-Tesi) ({pipelineResult.counter_reasoner.precedents.length})</h4>
+                        <ul className="precedents-list">
+                          {pipelineResult.counter_reasoner.precedents.map((prec, idx) => (
+                            <li key={idx}>
+                              <strong>{prec.title || `Precedente ${idx + 1}`}</strong>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.counter_reasoner?.reasoning_chain && pipelineResult.counter_reasoner.reasoning_chain.length > 0 && (
+                      <div className="subsection">
+                        <h4>Catena di Contro-Ragionamento</h4>
+                        <ul className="reasoning-chain">
+                          {pipelineResult.counter_reasoner.reasoning_chain.map((step, idx) => (
+                            <li key={idx}>{step}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.counter_reasoner?.raw_response && (
+                      <div className="subsection">
+                        <h4>Risposta Completa</h4>
+                        <div className="raw-response">{pipelineResult.counter_reasoner.raw_response}</div>
+                      </div>
+                    )}
+                  </div>
                 </>
               )}
             </div>
@@ -351,7 +450,7 @@ export default function App() {
           {activeTab === TABS.PIPELINE && !pipelineResult && !isLoading && (
             <div className="empty-state">
               <FileText size={48} className="empty-icon" />
-              <p>Inserisci un claim per eseguire la pipeline completa: classificazione → ricerca → ragionamento</p>
+              <p>Inserisci un claim per eseguire la pipeline completa: Reasoner → Counter-Reasoner</p>
             </div>
           )}
 
@@ -361,7 +460,11 @@ export default function App() {
                 <Loader2 size={20} className="loading-spinner" />
               </div>
               <div className="message-bubble bubble-assistant">
-                <p>Elaborazione in corso...</p>
+                <p>
+                  {activeTab === TABS.PIPELINE
+                    ? 'Esecuzione pipeline completa (Reasoner + Counter-Reasoner)...'
+                    : 'Elaborazione in corso...'}
+                </p>
               </div>
             </div>
           )}

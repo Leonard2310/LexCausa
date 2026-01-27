@@ -16,7 +16,7 @@ DIFFERENZE CON IL REASONER:
 """
 
 import json
-import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -30,6 +30,7 @@ from .tools.neo4j_tools import (
     search_precedents_tool,
 )
 from .tools.taxonomy_tools import get_causality_theory_tool
+from config import settings
 
 
 @dataclass
@@ -118,10 +119,11 @@ Il tuo compito è analizzare un claim legale e costruire CONTRO-ARGOMENTI per sf
 REGOLE CRITICHE:
 - SEMPRE cita il numero esatto dell'articolo e il codice (es. "Art. 41 c.p.", "Art. 1227 c.c.")
 - SEMPRE cita porzioni rilevanti del testo dell'articolo
-- SEMPRE cita i precedenti con le loro informazioni identificative
-- SEMPRE spiega come i precedenti CONTRADDICONO o INDEBOLISCONO il claim
-- I precedenti sono OBBLIGATORI nella catena di contro-ragionamento finale
+- Usa SOLO gli articoli restituiti dai tool; NON inventare o citare norme non recuperate
+- Se trovi precedenti, citali con le loro informazioni identificative e spiega come CONTRADDICONO o INDEBOLISCONO il claim
+- Se non trovi precedenti, dichiaralo esplicitamente e NON inventarne
 - Il tuo obiettivo è SMONTARE il claim, non supportarlo
+ - Se una conclusione supporta il claim, riscrivila in modo contrario o segnala che non puoi confutarlo
 
 Rispondi sempre in italiano e sii preciso con i riferimenti normativi."""
 
@@ -149,16 +151,15 @@ class CounterReasoner(BaseAgent):
     def _load_taxonomy(self) -> dict:
         """Carica la tassonomia di causalità."""
         if self._taxonomy is None:
-            # Prova a caricare la tassonomia da varie posizioni
-            possible_paths = [
-                "data/tassonomia_causalita.json",
-                "../data/tassonomia_causalita.json",
-                "../../data/tassonomia_causalita.json",
-                "tassonomia_causalita.json",
+            candidate_paths = [
+                settings.taxonomy_path,
+                settings.data_dir / "tassonomia_causalita.json",
+                Path("tassonomia_causale.json"),
+                Path("tassonomia_causalita.json"),
             ]
 
-            for path in possible_paths:
-                if os.path.exists(path):
+            for path in candidate_paths:
+                if path.exists():
                     with open(path, "r", encoding="utf-8") as f:
                         self._taxonomy = json.load(f)
                     self._log(f"Tassonomia caricata da: {path}", "success")
@@ -355,7 +356,7 @@ AZIONI RICHIESTE (in questo ordine esatto):
 1. Chiama: search_legal_sources(claim="{claim}", top_k={max_statutes})
 """
                 if include_precedents:
-                    retry_prompt += f"""2. Chiama: search_precedents(claim="{claim}", top_k={max_precedents})
+                    retry_prompt += f"""2. Chiama: search_precedents(query="{claim}", limit={max_precedents})
 
 """
                 retry_prompt += f"""Dopo aver chiamato TUTTI i tool, puoi generare la tua risposta.
@@ -408,6 +409,9 @@ Task originale: {input_prompt}"""
 
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.counter_arguments = self._extract_arguments(raw_output)
+        output.reasoning_chain = self._sanitize_reasoning_chain(
+            output.reasoning_chain, precedents
+        )
 
         self._log(
             f"Generati {len(output.counter_arguments)} contro-argomenti", "success"
@@ -460,8 +464,8 @@ Chiama questi tool nell'ordine:
         if include_precedents:
             prompt += f"""
 2. search_precedents
-   - Usa ESATTAMENTE questo parametro: claim="{claim}"
-   - Usa ESATTAMENTE questo parametro: top_k={max_precedents}
+   - Usa ESATTAMENTE questo parametro: query="{claim}"
+   - Usa ESATTAMENTE questo parametro: limit={max_precedents}
 """
 
         prompt += f"""
@@ -486,11 +490,14 @@ Ora puoi generare la tua contro-analisi. Costruisci contro-argomenti strutturati
 Per ogni contro-argomento:
 - **Premessa**: Il fatto che CONTRADDICE il claim
 - **Norma**: L'articolo di legge con CITAZIONE ESATTA (es. "Art. 41 c.p.")
-- **Precedente**: Una decisione che SUPPORTA la tesi contraria
+- **Precedente**: Una decisione che SUPPORTA la tesi contraria (SOLO se trovata)
 - **Nesso Causale**: Come la premessa INDEBOLISCE la tesi principale
 - **Conclusione**: L'implicazione legale CONTRARIA al claim
 
-Alla fine, fornisci una CATENA DI CONTRO-RAGIONAMENTO che citi esplicitamente articoli e precedenti.
+Alla fine, fornisci una CATENA DI CONTRO-RAGIONAMENTO che:
+- citi esplicitamente SOLO gli articoli restituiti dai tool
+- se presenti, citi i precedenti; se non presenti, dichiaralo esplicitamente
+- abbia una conclusione che CONTRADDICE il claim (se non possibile, dichiarare l'insufficienza dei dati)
 
 RICORDA: Chiama i tool PER PRIMO, genera il testo PER SECONDO.
 Il tuo obiettivo è SMONTARE il claim, non supportarlo!
@@ -598,3 +605,32 @@ Rispondi in italiano."""
             )
 
         return arguments
+
+    def _sanitize_reasoning_chain(
+        self, chain: List[str], precedents: List[dict]
+    ) -> List[str]:
+        if precedents:
+            return [self._clean_chain_step(step) for step in chain]
+
+        sanitized = []
+        for step in chain:
+            cleaned = self._clean_chain_step(step)
+            lower = cleaned.lower()
+            mentions_precedent = "precedent" in lower or "precedente" in lower
+            mentions_absence = "nessun" in lower or "nessuna" in lower
+            if mentions_precedent and not mentions_absence:
+                continue
+            sanitized.append(cleaned)
+
+        if not any(
+            "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
+        ):
+            sanitized.append("Precedenti: nessuno trovato.")
+
+        return sanitized
+
+    def _clean_chain_step(self, step: str) -> str:
+        cleaned = step.strip()
+        if "**" in cleaned:
+            cleaned = cleaned.replace("**", "")
+        return cleaned.strip()

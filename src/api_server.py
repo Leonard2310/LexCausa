@@ -50,17 +50,20 @@ def load_taxonomy():
     """Carica la tassonomia di causalità dal file JSON."""
     global TAXONOMY
     if TAXONOMY is None:
-        taxonomy_path = os.path.join(project_root, "data", "tassonomia_causalita.json")
-        if not os.path.exists(taxonomy_path):
-            # Fallback: cerca in altre posizioni comuni
-            taxonomy_path = os.path.join(src_path, "data", "tassonomia_causalita.json")
-        
-        if os.path.exists(taxonomy_path):
+        candidate_paths = [
+            settings.taxonomy_path,
+            settings.data_dir / "tassonomia_causalita.json",
+            settings.data_dir / "tassonomia_causale.json",
+        ]
+
+        taxonomy_path = next((p for p in candidate_paths if p.exists()), None)
+
+        if taxonomy_path:
             with open(taxonomy_path, "r", encoding="utf-8") as f:
                 TAXONOMY = json.load(f)
             print(f"✅ Tassonomia caricata da: {taxonomy_path}")
         else:
-            print(f"⚠️ Tassonomia non trovata in: {taxonomy_path}")
+            print("⚠️ Tassonomia non trovata in nessun percorso noto")
             TAXONOMY = {"tassonomia_causalita": []}
     return TAXONOMY
 

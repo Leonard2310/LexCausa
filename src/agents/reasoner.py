@@ -61,9 +61,9 @@ Your task is to analyze legal claims and build supporting arguments following th
 CRITICAL RULES:
 - ALWAYS cite the exact article number and code (e.g., "Art. 2043 c.c.", "Art. 40 c.p.")
 - ALWAYS quote relevant portions of the article text
-- ALWAYS cite precedents with their identifying information
-- ALWAYS explain how precedents support your reasoning
-- Precedents are MANDATORY in the final reasoning chain
+- Use ONLY the statutes returned by the tools; do NOT invent or cite articles not retrieved
+- If precedents are found, cite them with their identifying information and explain how they support your reasoning
+- If no precedents are found, explicitly state that none were found and do NOT invent any
 
 Always respond in Italian and be precise with normative references."""
 
@@ -195,6 +195,9 @@ class Reasoner(BaseAgent):
         output.causality_classification = causality
         output.relevant_statutes = statutes
         output.relevant_precedents = precedents
+        output.reasoning_chain = self._sanitize_reasoning_chain(
+            output.reasoning_chain, precedents
+        )
 
         self._log(f"Generated {len(output.arguments)} arguments", "success")
         return output
@@ -283,7 +286,8 @@ INSTRUCTIONS (follow this order STRICTLY):
 
         if include_precedents:
             prompt += f"""
-3. **SEARCH PRECEDENTS**: Call `search_precedents` with the claim text (max {max_precedents} results)
+3. **SEARCH PRECEDENTS**: Call `search_precedents` with the claim text.
+   Use: search_precedents(query="{claim}", limit={max_precedents})
 
 4. **GET CAUSAL THEORY**: Call `get_causality_theory` to retrieve the complete theory.
 
@@ -300,15 +304,15 @@ INSTRUCTIONS (follow this order STRICTLY):
 For each argument, you MUST specify:
 - **Premessa**: The starting fact or situation from the claim
 - **Norma**: The applicable law article with EXACT CITATION (e.g., "Art. 2043 c.c.") AND quote the relevant text
-- **Precedente**: A supporting court decision - cite it and explain how it applies
+- **Precedente**: A supporting court decision (ONLY if found) - cite it and explain how it applies
 - **Nesso Causale**: How the premise connects to the norm, supported by the precedent
 - **Conclusione**: The legal implication
 
 At the end, provide a CATENA DI RAGIONAMENTO that:
 1. Lists each logical step
 2. EXPLICITLY cites the articles used (with article number and code)
-3. EXPLICITLY cites the precedents used (with title/reference)
-4. Shows how precedents reinforce the legal reasoning
+3. If precedents are found, explicitly cite them (with title/reference) and show how they reinforce the reasoning
+4. If no precedents are found, include a step noting their absence and proceed without them
 
 EXAMPLE FORMAT for citations:
 - "Ai sensi dell'Art. 2043 c.c., che dispone: '[testo rilevante]'..."
@@ -387,6 +391,35 @@ Respond in structured format and in Italian."""
             arguments.append(current_arg)
 
         return arguments
+
+    def _sanitize_reasoning_chain(
+        self, chain: list[str], precedents: list[dict]
+    ) -> list[str]:
+        if precedents:
+            return [self._clean_chain_step(step) for step in chain]
+
+        sanitized = []
+        for step in chain:
+            cleaned = self._clean_chain_step(step)
+            lower = cleaned.lower()
+            mentions_precedent = "precedent" in lower or "precedente" in lower
+            mentions_absence = "nessun" in lower or "nessuna" in lower
+            if mentions_precedent and not mentions_absence:
+                continue
+            sanitized.append(cleaned)
+
+        if not any(
+            "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
+        ):
+            sanitized.append("Precedenti: nessuno trovato.")
+
+        return sanitized
+
+    def _clean_chain_step(self, step: str) -> str:
+        cleaned = step.strip()
+        if "**" in cleaned:
+            cleaned = cleaned.replace("**", "")
+        return cleaned.strip()
 
     def reason_with_context(
         self,

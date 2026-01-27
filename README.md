@@ -8,16 +8,18 @@
 
 - **Legal Claim Classification**: Routes claims to the appropriate book of Italian Civil/Penal Code using LLM
 - **Semantic Search**: Vector similarity search on 3900+ statute articles using Legal-BERT embeddings
+- **Unified Search Architecture**: All tabs (Ricerca, Ragionamento, Pipeline Completa) share the same `LegalSearchPipeline` singleton for consistent results
 - **Causal Chain Reasoning**: Classifies causality type (Material, Legal, Concurrent) and builds structured arguments
 - **Knowledge Graph**: Neo4j-based storage of statutes, precedents, and their relationships
-- **Multi-Agent Architecture**: Reasoner, Counter-Reasoner, and Polisher-Evaluator agents (WIP)
-- **React Frontend**: Interactive chat interface for legal queries
+- **Multi-Agent Architecture**: Reasoner, Counter-Reasoner, and Polisher-Evaluator agents
+- **React Frontend**: Interactive three-tab interface (Ricerca, Ragionamento, Pipeline Completa)
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend (React)                        │
+│                      Frontend (React + Vite)                    │
+│         Tab Ricerca │ Tab Ragionamento │ Tab Pipeline           │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -25,18 +27,20 @@
 │                    Flask API Server (8000)                       │
 ├─────────────────────────────────────────────────────────────────┤
 │  /api/chat      → Legal Search Pipeline                         │
-│  /api/reason    → Reasoner Agent                                │
-│  /api/counter   → Counter-Reasoner Agent (stub)                 │
-│  /api/evaluate  → Polisher-Evaluator Agent (stub)               │
+│  /api/reason    → Reasoner Agent (uses same Pipeline!)          │
+│  /api/counter   → Counter-Reasoner Agent                        │
+│  /api/evaluate  → Polisher-Evaluator Agent                      │
 └─────────────────────────────────────────────────────────────────┘
                                 │
-        ┌───────────────────────┼───────────────────────┐
-        ▼                       ▼                       ▼
-┌───────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Claim        │     │   Legal Search  │     │   Reasoner      │
-│  Classifier   │     │   Pipeline      │     │   Agent         │
-│  (Groq LLM)   │     │  (Legal-BERT)   │     │  (LangGraph)    │
-└───────────────┘     └─────────────────┘     └─────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              LegalSearchPipeline (Singleton)                     │
+│    Shared across all tabs for consistent search results          │
+├─────────────────────────────────────────────────────────────────┤
+│  ClaimClassifier (Groq LLM) → Libro routing                     │
+│  Legal-BERT Embeddings → 768-dim vectors                        │
+│  Vector Search → Filtered by classified libri                   │
+└─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -225,21 +229,30 @@ All configuration is managed through environment variables and the `src/config.p
 ### ✅ Completed
 - [x] Neo4j Knowledge Base with Civil/Penal Code
 - [x] Legal-BERT embeddings and vector search
-- [x] Claim classification (book routing)
-- [x] Legal Search Pipeline
-- [x] Reasoner Agent with LangGraph
-- [x] Causality classification via LLM
-- [x] React frontend with chat interface
-- [x] Centralized configuration
+- [x] Claim classification (book routing via LLM)
+- [x] Legal Search Pipeline with unified architecture
+- [x] Reasoner Agent with LangGraph ReAct pattern
+- [x] Unified `search_legal_sources_tool` - same search logic across all tabs
+- [x] Causality classification (Material, Legal, Concurrent causes)
+- [x] React frontend with three tabs (Ricerca, Ragionamento, Pipeline Completa)
+- [x] Centralized configuration via Pydantic Settings
+- [x] Thread-safe singleton pattern for LegalSearchPipeline
 
 ### 🚧 In Progress
-- [ ] Counter-Reasoner Agent
-- [ ] Polisher-Evaluator Agent
-- [ ] Precedent ingestion and search
-- [ ] Attack graph visualization
+- [ ] Counter-Reasoner Agent (argumentation, Legal NER & RAG)
+- [ ] Polisher-Evaluator Agent (grounding check, final synthesis)
+- [ ] Formatter/Unification (PRO/COUNTER arguments)
+- [ ] Precedent ingestion and search (ITA-CASEHOLD dataset)
+- [ ] Attack graph visualization (Dialectical Meta-Graph)
+- [ ] Final Logic Chain & Score (structured output)
+- [ ] Explainability (reasoning explanation)
+- [ ] Italian Official Gazette ingestion
 
 ### 📋 Planned
-- [ ] Full argumentation framework
+- [ ] Full argumentation framework (Dung-style)
+- [ ] Export reasoning chains to structured formats
+- [ ] PRO/COUNTER Arguments structured output
+- [ ] Multi-turn dialogue with context retention
 
 ## 📄 License
 

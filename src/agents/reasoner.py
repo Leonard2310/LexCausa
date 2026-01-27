@@ -11,17 +11,18 @@ The Reasoner is responsible for:
 Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
 from .tools.neo4j_tools import (
     get_statute_by_article_tool,
+    search_legal_sources_tool,
     search_precedents_tool,
-    search_statutes_tool,
 )
 from .tools.taxonomy_tools import classify_causality_tool, get_causality_theory_tool
 
@@ -43,12 +44,26 @@ Your task is to analyze legal claims and build supporting arguments following th
 
 4. **ARGUMENT CONSTRUCTION**: For each supporting argument:
    - Identify the factual premise
-   - Connect to the applicable norm
+   - Connect to the applicable norm with EXPLICIT CITATION (e.g., "Art. 2043 c.c.")
+   - Quote the relevant text from the article
    - Explain the causal link
    - Conclude with the legal implication
 
-5. **REASONING CHAIN**: Build a logical sequence that connects:
-   Facts → Causal Link → Norm → Legal Consequence
+5. **PRECEDENT INTEGRATION**: For each precedent found:
+   - Cite the precedent explicitly (court, date, case number if available)
+   - Quote the relevant holding or principle
+   - Explain how it supports your argument
+   - Integrate it into the reasoning chain
+
+6. **REASONING CHAIN**: Build a logical sequence that EXPLICITLY includes:
+   Facts → Applicable Norm (with citation) → Precedent Support → Causal Link → Legal Consequence
+
+CRITICAL RULES:
+- ALWAYS cite the exact article number and code (e.g., "Art. 2043 c.c.", "Art. 40 c.p.")
+- ALWAYS quote relevant portions of the article text
+- ALWAYS cite precedents with their identifying information
+- ALWAYS explain how precedents support your reasoning
+- Precedents are MANDATORY in the final reasoning chain
 
 Always respond in Italian and be precise with normative references."""
 
@@ -93,7 +108,9 @@ class Reasoner(BaseAgent):
     def tools(self) -> list:
         """Get the tools available to this agent."""
         return [
-            search_statutes_tool,
+            # PRIMARY: replicates Tab Ricerca exactly
+            search_legal_sources_tool,
+            # Secondary tools
             get_statute_by_article_tool,
             search_precedents_tool,
             classify_causality_tool,
@@ -141,6 +158,29 @@ class Reasoner(BaseAgent):
         # Execute the ReAct agent using LangGraph
         messages = [HumanMessage(content=input_prompt)]
         result = self.react_agent.invoke({"messages": messages})
+        messages_out = result.get("messages", [])
+
+        # Log tool calls for debugging
+        tool_calls = []
+        for msg in messages_out:
+            if isinstance(msg, ToolMessage):
+                tool_calls.append(msg.name)
+                self._log(f"🔧 Tool called: {msg.name}")
+
+        if tool_calls:
+            self._log(f"📊 Tools used: {', '.join(tool_calls)}")
+        else:
+            self._log("⚠️ No tools were called by the agent")
+
+        # Extract data from tool responses
+        causality = self._extract_causality_from_messages(messages_out)
+        statutes = self._extract_statutes_from_messages(messages_out)
+        precedents = self._extract_precedents_from_messages(messages_out)
+
+        if statutes:
+            self._log(f"📜 Found {len(statutes)} statutes")
+        if precedents:
+            self._log(f"⚖️ Found {len(precedents)} precedents")
 
         # Extract final response from messages
         raw_output = ""
@@ -152,9 +192,71 @@ class Reasoner(BaseAgent):
 
         # Parse the response
         output = self._parse_response(claim, {"output": raw_output})
+        output.causality_classification = causality
+        output.relevant_statutes = statutes
+        output.relevant_precedents = precedents
 
         self._log(f"Generated {len(output.arguments)} arguments", "success")
         return output
+
+    def _extract_causality_from_messages(self, messages) -> dict:
+        """
+        Extract the result of the classify_causality tool from LangGraph messages.
+        """
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name == "classify_causality":
+                try:
+                    return json.loads(msg.content)
+                except Exception:
+                    return {}
+        return {}
+
+    def _extract_statutes_from_messages(self, messages) -> list[dict]:
+        """
+        Extract statutes from search_legal_sources or search_statutes tool responses.
+        Filters out error/empty messages.
+        """
+        statutes = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                try:
+                    data = json.loads(msg.content)
+
+                    # Handle search_legal_sources (primary tool - new format)
+                    if msg.name == "search_legal_sources":
+                        if isinstance(data, dict) and "articles" in data:
+                            for item in data["articles"]:
+                                if isinstance(item, dict) and "statute_id" in item:
+                                    statutes.append(item)
+
+                    # Handle search_statutes (secondary tool - list format)
+                    elif msg.name == "search_statutes":
+                        if isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict) and "statute_id" in item:
+                                    statutes.append(item)
+                except Exception:
+                    pass
+        return statutes
+
+    def _extract_precedents_from_messages(self, messages) -> list[dict]:
+        """
+        Extract precedents retrieved by search_precedents tool.
+        Filters out error/empty messages.
+        """
+        precedents = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name == "search_precedents":
+                try:
+                    data = json.loads(msg.content)
+                    if isinstance(data, list):
+                        # Filter out error/empty messages
+                        for item in data:
+                            if isinstance(item, dict) and "precedent_id" in item:
+                                precedents.append(item)
+                except Exception:
+                    pass
+        return precedents
 
     def _build_reasoning_prompt(
         self,
@@ -169,29 +271,48 @@ class Reasoner(BaseAgent):
 CLAIM:
 "{claim}"
 
-INSTRUCTIONS:
-1. First, classify the type of causality using the `classify_causality` tool
-2. Search for relevant law articles using `search_statutes` (max {max_statutes} results)
+INSTRUCTIONS (follow this order STRICTLY):
+
+1. **SEARCH LEGAL SOURCES**: Call `search_legal_sources` with the COMPLETE claim text.
+   CRITICAL: Pass the EXACT original claim above - do NOT rephrase or summarize it!
+   This tool will automatically classify the claim and find relevant articles.
+   Use: search_legal_sources(claim="{claim}", top_k={max_statutes})
+
+2. **CLASSIFY CAUSALITY**: Call `classify_causality` to determine the type of causality.
 """
 
         if include_precedents:
-            prompt += f"""3. Search for relevant precedents using `search_precedents` (max {max_precedents} results)
-4. Retrieve the complete causal theory using `get_causality_theory`
-5. Build structured arguments to support the claim
+            prompt += f"""
+3. **SEARCH PRECEDENTS**: Call `search_precedents` with the claim text (max {max_precedents} results)
+
+4. **GET CAUSAL THEORY**: Call `get_causality_theory` to retrieve the complete theory.
+
+5. **BUILD ARGUMENTS**: Construct structured arguments based on the retrieved information.
 """
         else:
-            prompt += """3. Retrieve the complete causal theory using `get_causality_theory`
-4. Build structured arguments to support the claim
+            prompt += """
+3. **GET CAUSAL THEORY**: Call `get_causality_theory` to retrieve the complete theory.
+
+4. **BUILD ARGUMENTS**: Construct structured arguments based on the retrieved information.
 """
 
         prompt += """
-For each argument, specify:
-- **Premise**: The starting fact or situation
-- **Norm**: The applicable law article (with precise reference)
-- **Causal Link**: How the premise connects to the norm
-- **Conclusion**: The legal implication
+For each argument, you MUST specify:
+- **Premessa**: The starting fact or situation from the claim
+- **Norma**: The applicable law article with EXACT CITATION (e.g., "Art. 2043 c.c.") AND quote the relevant text
+- **Precedente**: A supporting court decision - cite it and explain how it applies
+- **Nesso Causale**: How the premise connects to the norm, supported by the precedent
+- **Conclusione**: The legal implication
 
-At the end, provide a REASONING CHAIN that synthesizes the logical path.
+At the end, provide a CATENA DI RAGIONAMENTO that:
+1. Lists each logical step
+2. EXPLICITLY cites the articles used (with article number and code)
+3. EXPLICITLY cites the precedents used (with title/reference)
+4. Shows how precedents reinforce the legal reasoning
+
+EXAMPLE FORMAT for citations:
+- "Ai sensi dell'Art. 2043 c.c., che dispone: '[testo rilevante]'..."
+- "Come stabilito dalla Corte di Cassazione in [riferimento]: '[massima]'..."
 
 Respond in structured format and in Italian."""
 

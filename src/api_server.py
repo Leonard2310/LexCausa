@@ -29,16 +29,17 @@ sys.path.insert(0, src_path)
 os.chdir(project_root)
 
 from agents import CounterReasoner, PolisherEvaluator, Reasoner  # noqa: E402
+from agents.tools.neo4j_tools import get_legal_search_pipeline  # noqa: E402
 from config import settings  # noqa: E402
 from services.claim_classifier import ClaimClassifier  # noqa: E402
-from services.legal_search import LegalSearchPipeline  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
-# Pipeline e agenti globali (lazy initialization)
-pipeline = None
+# Agenti globali (lazy initialization)
+# NOTE: pipeline viene gestita da get_legal_search_pipeline() in neo4j_tools.py
+# per garantire una SINGOLA istanza condivisa tra Tab Ricerca e Tab Ragionamento
 classifier = None
 reasoner = None
 counter_reasoner = None
@@ -46,13 +47,12 @@ polisher_evaluator = None
 
 
 def get_pipeline():
-    """Lazy load della pipeline."""
-    global pipeline
-    if pipeline is None:
-        print("🔧 Inizializzazione pipeline...")
-        pipeline = LegalSearchPipeline()
-        print("✅ Pipeline pronta!")
-    return pipeline
+    """Get the shared LegalSearchPipeline singleton.
+
+    Uses the SAME instance as the Reasoner agent's tools.
+    This ensures Tab Ricerca and Tab Ragionamento use identical logic.
+    """
+    return get_legal_search_pipeline()
 
 
 def get_classifier():

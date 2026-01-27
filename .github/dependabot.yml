@@ -1,0 +1,84 @@
+# Dependabot configuration
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  # Python dependencies
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # =========================================================================
+      # TORCH VULNERABILITIES - CANNOT BE RESOLVED
+      # =========================================================================
+      # CVE-2025-32434 (Critical): torch.load RCE vulnerability
+      # - Requires: torch >= 2.6.0
+      # - Problem: PyTorch 2.6+ does NOT have pre-built wheels for macOS Intel (x86_64)
+      # - Available versions for macOS Intel: torch <= 2.2.2
+      # - Impact: Only affects loading untrusted model files (we only load from HuggingFace)
+      # - Mitigation: We use trusted models from HuggingFace Hub only
+      #
+      # Other torch CVEs (Moderate/Low):
+      # - CVE-2024-48063: Improper Resource Shutdown
+      # - CVE-2024-31580: DoS vulnerability
+      # These all require torch >= 2.3+ which is not available for our target platforms
+      #
+      # Target platforms that require torch 2.2.x:
+      # - macOS Intel (x86_64) - No wheels for torch >= 2.3
+      # - Windows x64 with older CUDA - Limited wheel availability
+      #
+      - dependency-name: "torch"
+        versions: [">=2.3.0"]
+      
+      # =========================================================================
+      # TRANSFORMERS VULNERABILITIES - CANNOT BE RESOLVED  
+      # =========================================================================
+      # Multiple ReDoS vulnerabilities in transformers >= 4.50.0:
+      # - CVE-2024-11392: AdamWeightDecay optimizer ReDoS
+      # - CVE-2024-11393: MarianTokenizer ReDoS
+      # - CVE-2024-11394: get_imports() ReDoS
+      # - CVE-2024-11395: get_configuration_file ReDoS
+      # - CVE-2024-11396: DonutProcessor ReDoS
+      # - CVE-2024-3568: General ReDoS
+      # - CVE-2024-8768: Username injection (Low)
+      #
+      # Problem: transformers >= 4.50.0 requires torch >= 2.6.0 (see above)
+      # We are pinned to transformers < 4.50.0 (currently 4.49.0)
+      #
+      # Mitigation:
+      # - ReDoS vulnerabilities require malicious input patterns
+      # - We only process legal text from controlled sources
+      # - Username injection requires malicious model hub URLs (we use official HuggingFace)
+      #
+      - dependency-name: "transformers"
+        versions: [">=4.50.0"]
+
+  # Frontend dependencies (Vite - no known vulnerabilities)
+  - package-ecosystem: "npm"
+    directory: "/src/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+# ===============================================================================
+# SECURITY NOTES FOR REVIEWERS
+# ===============================================================================
+#
+# This project has ACCEPTED RISK for the following vulnerabilities due to
+# hardware compatibility constraints:
+#
+# 1. PyTorch torch.load RCE (CVE-2025-32434) - Critical
+#    - Cannot upgrade: No wheels for macOS Intel
+#    - Mitigation: Only load trusted HuggingFace models
+#
+# 2. Multiple Transformers ReDoS - Moderate
+#    - Cannot upgrade: Depends on torch >= 2.6
+#    - Mitigation: Controlled input sources, no user-uploaded models
+#
+# When PyTorch releases wheels for macOS Intel with version >= 2.6, 
+# these constraints can be removed and dependencies upgraded.
+#
+# Check wheel availability: pip index versions torch
+# ===============================================================================

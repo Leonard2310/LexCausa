@@ -174,7 +174,8 @@ class Reasoner(BaseAgent):
 
         # Extract data from tool responses
         causality = self._extract_causality_from_messages(messages_out)
-        statutes = self._extract_statutes_from_messages(messages_out)
+        statutes_pre = self._extract_statutes_from_messages(messages_out)
+        statutes = self._filter_irrelevant_statutes(claim, statutes_pre)
         precedents = self._extract_precedents_from_messages(messages_out)
 
         if statutes:
@@ -213,6 +214,80 @@ class Reasoner(BaseAgent):
                 except Exception:
                     return {}
         return {}
+    
+    def _filter_irrelevant_statutes(self, claim: str, statutes: list[dict]) -> list[dict]:
+        """
+        Filter statutes using LLM one by one (in English) instead of the whole list at once.
+        Logs which articles are kept or discarded.
+        """
+        if not statutes:
+            self._log("No statutes to filter", "info")
+            return statutes
+
+        self._log(f"🔍 Filtering relevance: {len(statutes)} statutes initially")
+
+        relevant_statutes = []
+
+        for idx, statute in enumerate(statutes, start=1):
+            article_number = statute.get("articolo", "N/A")
+            article_title = statute.get("titolo", "Untitled")
+            article_desc = statute.get("testo", "Untitled")
+
+
+            prompt = f"""Legal Claim:
+        "{claim}"
+
+        Article:
+        "{article_number} - {article_title} - {article_desc}"
+
+        Instruction:
+
+        Determine whether the main topic of the article is directly mentioned or implied in the claim.
+
+        Rules:
+        - Do NOT evaluate whether the article fully resolves the issue.
+        - Do NOT suggest any additional articles.
+        - Do NOT use external knowledge; only consider the claim and this article.
+        - Do NOT add explanations or comments.
+        
+        Classification :
+        - YES: The article is directly relevant and must be used in the legal reasoning.
+        - OPTIONAL: The article provides useful context or background but is not central to the argument. Keep it for reference.
+        - NO: The article is irrelevant and should be discarded.
+        
+        Example response format:
+        1. YES
+        2. OPTIONAL
+        3. NO
+        4. YES
+
+        Respond with a numbered list classifying each article as YES, OPTIONAL, or NO.
+        """
+
+            # Call the LLM
+            try:
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                answer = response.content.strip().upper()
+            except Exception as e:
+                self._log(f"⚠️ LLM call failed for article {article_number}: {e}", "warning")
+                answer = "NO"
+
+            # Check the response
+            if "YES" in answer.strip().upper():
+                relevant_statutes.append(statute)
+                self._log(f"✅ Keeping article [{idx}] {article_number} - {article_title}")
+            else:
+                self._log(f"❌ Discarding article [{idx}] {article_number} - {article_title} (LLM said: {answer})", "warning")
+
+        self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
+        return relevant_statutes
+
+
+    def _parse_relevant_indices(self, text: str) -> list[int]:
+        """Estrae numeri dalla risposta del modello."""
+        import re
+        numbers = re.findall(r'\d+', text)
+        return [int(n) for n in numbers]
 
     def _extract_statutes_from_messages(self, messages) -> list[dict]:
         """

@@ -119,11 +119,10 @@ Il tuo compito è analizzare un claim legale e costruire CONTRO-ARGOMENTI per sf
 REGOLE CRITICHE:
 - SEMPRE cita il numero esatto dell'articolo e il codice (es. "Art. 41 c.p.", "Art. 1227 c.c.")
 - SEMPRE cita porzioni rilevanti del testo dell'articolo
-- Usa SOLO gli articoli restituiti dai tool; NON inventare o citare norme non recuperate
-- Se trovi precedenti, citali con le loro informazioni identificative e spiega come CONTRADDICONO o INDEBOLISCONO il claim
+- Usa SOLO gli articoli e i precedenti restituiti dai tool; NON inventare o citare norme o precedenti non recuperati
+- Se trovi precedenti dai tool, citali con le loro informazioni identificative e spiega come CONTRADDICONO o INDEBOLISCONO il claim
 - Se non trovi precedenti, dichiaralo esplicitamente e NON inventarne
 - Il tuo obiettivo è SMONTARE il claim, non supportarlo
- - Se una conclusione supporta il claim, riscrivila in modo contrario o segnala che non puoi confutarlo
 
 Rispondi sempre in italiano e sii preciso con i riferimenti normativi."""
 
@@ -281,52 +280,21 @@ class CounterReasoner(BaseAgent):
     def run(
         self,
         claim: str,
-        causality: dict,
+        causality: dict,  # preso dal Reasoner
         include_precedents: bool = True,
         max_statutes: int = 5,
         max_precedents: int = 3,
     ) -> CounterReasonerOutput:
-        """
-        Esegui il processo di contro-ragionamento su un claim legale.
 
-        Args:
-            claim: Il claim legale da analizzare e contrastare.
-            causality: La classificazione di causalità prodotta dal Reasoner.
-            include_precedents: Se cercare precedenti.
-            max_statutes: Numero massimo di statuti da recuperare.
-            max_precedents: Numero massimo di precedenti da recuperare.
-
-        Returns:
-            CounterReasonerOutput con contro-argomenti e catena di ragionamento.
-        """
-        self._log(f"Contro-analisi del claim: {claim[:100]}...")
-
-        # Verifica che la causalità sia stata fornita
-        if not causality or "causality_type" not in causality:
-            raise ValueError(
-                "La causalità fornita è mancante o non contiene il campo 'causality_type'."
-            )
-
+        # 1️⃣ Recupera warrant e causalità attaccanti dal tipo di causalità del Reasoner
         causality_type = causality.get("causality_type", "Unknown")
-        self._log(f"Tipo di causalità dal Reasoner: {causality_type}")
-
-        # STEP 1: Recupera il warrant e le causalità attaccanti
         warrant_info = self._get_warrant_info(causality_type)
-        self._log(
-            f"Warrant recuperato: {warrant_info['warrant'].get('denominazione', 'N/A')}"
-        )
-        self._log(
-            f"Causalità attaccanti identificate: {warrant_info['attacking_causalities']}"
-        )
-
-        # STEP 2: Recupera le descrizioni complete delle causalità attaccanti
         attacking_descriptions = self._get_attacking_causality_descriptions(
-            warrant_info["attacking_causalities"]
+            warrant_info.get("attacking_causalities", [])
         )
-        self._log(f"Descrizioni attaccanti recuperate: {len(attacking_descriptions)}")
 
-        # STEP 3: Costruisci il prompt con le informazioni complete
-        input_prompt = self._build_counter_reasoning_prompt(
+        # 2️⃣ Costruisco il prompt per il Counter-Reasoner
+        prompt = self._build_counter_reasoning_prompt(
             claim=claim,
             causality_type=causality_type,
             warrant_info=warrant_info,
@@ -336,175 +304,123 @@ class CounterReasoner(BaseAgent):
             max_precedents=max_precedents,
         )
 
-        # STEP 4: Esegui l'agente ReAct
-        messages = [HumanMessage(content=input_prompt)]
-        
-        try:
-            result = self.react_agent.invoke({"messages": messages})
-            messages_out = result.get("messages", [])
-        except Exception as e:
-            error_msg = str(e)
-            if "tool_use_failed" in error_msg or "Failed to call a function" in error_msg:
-                self._log("⚠️ Tool usage failed, retrying with more explicit instructions...", "warning")
-                
-                # Retry con prompt ancora più esplicito
-                retry_prompt = f"""STOP. Devi chiamare i tool PER PRIMA COSA.
+        # 3️⃣ Invoco il ReAct agent con gli stessi tools del Reasoner
+        messages = [HumanMessage(content=prompt)]
+        result = self.react_agent.invoke({"messages": messages})
 
-NON scrivere ancora nessuna analisi o testo.
+        # 4️⃣ Estrazione dei tool messages
+        statutes = self._extract_statutes_from_messages(result.get("messages", []))
+        precedents = self._extract_precedents_from_messages(result.get("messages", []))
 
-AZIONI RICHIESTE (in questo ordine esatto):
-1. Chiama: search_legal_sources(claim="{claim}", top_k={max_statutes})
-"""
-                if include_precedents:
-                    retry_prompt += f"""2. Chiama: search_precedents(query="{claim}", limit={max_precedents})
-
-"""
-                retry_prompt += f"""Dopo aver chiamato TUTTI i tool, puoi generare la tua risposta.
-
-Task originale: {input_prompt}"""
-                
-                messages = [HumanMessage(content=retry_prompt)]
-                result = self.react_agent.invoke({"messages": messages})
-                messages_out = result.get("messages", [])
-
-        # Log tool calls
-        tool_calls = []
-        for msg in messages_out:
-            if isinstance(msg, ToolMessage):
-                tool_calls.append(msg.name)
-                self._log(f"🔧 Tool chiamato: {msg.name}")
-
-        if tool_calls:
-            self._log(f"📊 Tools usati: {', '.join(tool_calls)}")
-        else:
-            self._log("⚠️ Nessun tool chiamato dall'agente")
-
-        # Estrai dati dalle risposte dei tool
-        statutes = self._extract_statutes_from_messages(messages_out)
-        precedents = self._extract_precedents_from_messages(messages_out)
-
-        if statutes:
-            self._log(f"📜 Trovati {len(statutes)} statuti")
-        if precedents:
-            self._log(f"⚖️ Trovati {len(precedents)} precedenti")
-
-        # Estrai la risposta finale
+        # 5️⃣ Parsing del risultato in struttura coerente
         raw_output = ""
-        for msg in reversed(messages_out):
-            if hasattr(msg, "content") and msg.content:
-                raw_output = msg.content
-                break
+        if "messages" in result:
+            for msg in reversed(result["messages"]):
+                if hasattr(msg, "content") and msg.content:
+                    raw_output = msg.content
+                    break
 
-        # Analizza la risposta
         output = CounterReasonerOutput(
             claim=claim,
             reasoner_causality=causality,
             warrant_info=warrant_info,
-            attacking_causalities=warrant_info["attacking_causalities"],
+            attacking_causalities=warrant_info.get("attacking_causalities", []),
             counter_causality_details=attacking_descriptions,
             relevant_statutes=statutes,
             relevant_precedents=precedents,
             raw_response=raw_output,
         )
 
+        # 6️⃣ Estrazione catena e contro-argomenti dalla risposta
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.counter_arguments = self._extract_arguments(raw_output)
-        output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, precedents
-        )
 
-        self._log(
-            f"Generati {len(output.counter_arguments)} contro-argomenti", "success"
-        )
+        # 7️⃣ Pulizia della catena di ragionamento (es. gestione precedenti)
+        output.reasoning_chain = self._sanitize_reasoning_chain(output.reasoning_chain, precedents)
+
         return output
+
+
+
 
     def _build_counter_reasoning_prompt(
         self,
         claim: str,
         causality_type: str,
         warrant_info: dict,
-        attacking_descriptions: List[dict],
-        include_precedents: bool,
-        max_statutes: int,
-        max_precedents: int,
+        attacking_descriptions: list[str],
+        include_precedents: bool = True,
+        max_statutes: int = 5,
+        max_precedents: int = 3,
     ) -> str:
         """
-        Costruisce il prompt per il contro-ragionamento.
-        
-        SIMILE AL PROMPT DEL REASONER MA CON FOCUS OPPOSTO.
+        Costruisce il prompt per il CounterReasoner.
+
+        Obiettivo: generare una catena logica che smonta il claim legale,
+        usando solo il claim, causalità, statuti e precedenti. 
+        Non ha accesso alla catena del Reasoner.
+
+        Parametri:
+            - claim: testo completo del claim originale
+            - causality_type: tipo di causalità individuata dal reasoner
+            - warrant_info: informazioni sul warrant (articolo/statuto) collegato
+            - attacking_descriptions: descrizioni delle causalità da cui partire
+            - include_precedents: se includere precedenti nella catena argomentativa
+            - max_statutes: numero massimo di statuti da menzionare
+            - max_precedents: numero massimo di precedenti da menzionare
         """
-        # Formatta le descrizioni delle causalità attaccanti
-        attacking_info = ""
-        for desc in attacking_descriptions:
-            attacking_info += f"\n**{desc['tipo']}:**\n"
-            attacking_info += f"- Descrizione: {desc['descrizione']}\n"
-            attacking_info += f"- Principio: {desc['principio']}\n"
-            if desc.get("limiti"):
-                attacking_info += f"- Limiti/Criticità: {desc['limiti']}\n"
-            if desc.get("norme_core"):
-                norme = ", ".join(
-                    [n.get("riferimento", "") for n in desc["norme_core"]]
-                )
-                attacking_info += f"- Norme core: {norme}\n"
+        # Preparazione testo causality attack
+        if attacking_descriptions:
+            attacking_text = "\n- ".join(
+                f"{d.get('riferimento', d.get('tipo', 'N/A'))}: {d.get('nota', d.get('descrizione', ''))}"
+                if isinstance(d, dict) else str(d)
+                for d in attacking_descriptions
+            )
+        else:
+            attacking_text = "Nessuna"
 
-        prompt = f"""DEVI SEGUIRE QUESTI PASSAGGI IN QUESTO ORDINE ESATTO:
+        prompt = f"""
+    Sei un assistente legale esperto. Il tuo compito è costruire una catena logica
+    che smonti il seguente claim legale, basandoti esclusivamente su:
 
-═══════════════════════════════════════════════════════════════
-STEP 1: CHIAMARE I TOOL (OBBLIGATORIO - FALLO PER PRIMO)
-═══════════════════════════════════════════════════════════════
+    1. Il claim originale:
+    \"\"\"{claim}\"\"\"
 
-Chiama questi tool nell'ordine:
+    2. La causalità identificata dal Reasoner:
+    {causality_type}
 
-1. search_legal_sources
-   - Usa ESATTAMENTE questo parametro: claim="{claim}"
-   - Usa ESATTAMENTE questo parametro: top_k={max_statutes}
-   - NON modificare o riformulare il testo del claim
-"""
+    3. Il warrant collegato al claim:
+    - Statuto/Articolo: {warrant_info.get('warrant', {}).get('denominazione', 'N/A')}
+    - Riferimento: {warrant_info.get('warrant', {}).get('riferimento', '')}
+
+    4. Descrizioni delle causalità attaccanti da considerare:
+    - {attacking_text}
+
+    5. Statuti rilevanti (max {max_statutes}) e precedenti rilevanti (max {max_precedents}):
+    - Estrai dalle informazioni disponibili, assicurati di citare solo articoli o precedenti pertinenti
+    - Se non ci sono statuti/precedenti rilevanti, spiega logicamente perché il claim può essere contro-argomentato senza di essi
+
+    Istruzioni specifiche:
+    - Genera una catena argomentativa chiara e sequenziale.
+    - Ogni passaggio deve essere numerato.
+    - Alla fine, produci una sintesi conclusiva che smonta il claim.
+    - Se include precedenti, menziona nome, anno e breve sintesi del principio giuridico.
+    - Non fare supposizioni non supportate da statuti o precedenti disponibili.
+    - Mantieni il tono tecnico-legale, chiaro e conciso.
+
+    Output atteso:
+    1. Passaggi della catena logica numerati
+    2. Sintesi finale conclusiva che smonta il claim
+    """
 
         if include_precedents:
-            prompt += f"""
-2. search_precedents
-   - Usa ESATTAMENTE questo parametro: query="{claim}"
-   - Usa ESATTAMENTE questo parametro: limit={max_precedents}
-"""
+            prompt += "\nNota: includi i precedenti solo se supportano chiaramente la contro-argomentazione.\n"
 
-        prompt += f"""
-═══════════════════════════════════════════════════════════════
-STEP 2: SOLO DOPO CHE TUTTI I TOOL HANNO RESTITUITO RISULTATI
-═══════════════════════════════════════════════════════════════
-
-CONTESTO:
-
-CLAIM DA SFIDARE:
-"{claim}"
-
-CAUSALITÀ IDENTIFICATA DAL REASONER:
-Tipo: {causality_type}
-Warrant: {json.dumps(warrant_info['warrant'], ensure_ascii=False)}
-
-CAUSALITÀ CHE POSSONO ATTACCARE QUESTA TESI:
-{attacking_info}
-
-Ora puoi generare la tua contro-analisi. Costruisci contro-argomenti strutturati:
-
-Per ogni contro-argomento:
-- **Premessa**: Il fatto che CONTRADDICE il claim
-- **Norma**: L'articolo di legge con CITAZIONE ESATTA (es. "Art. 41 c.p.")
-- **Precedente**: Una decisione che SUPPORTA la tesi contraria (SOLO se trovata)
-- **Nesso Causale**: Come la premessa INDEBOLISCE la tesi principale
-- **Conclusione**: L'implicazione legale CONTRARIA al claim
-
-Alla fine, fornisci una CATENA DI CONTRO-RAGIONAMENTO che:
-- citi esplicitamente SOLO gli articoli restituiti dai tool
-- se presenti, citi i precedenti; se non presenti, dichiaralo esplicitamente
-- abbia una conclusione che CONTRADDICE il claim (se non possibile, dichiarare l'insufficienza dei dati)
-
-RICORDA: Chiama i tool PER PRIMO, genera il testo PER SECONDO.
-Il tuo obiettivo è SMONTARE il claim, non supportarlo!
-
-Rispondi in italiano."""
+        prompt += "\nGenera la catena logica ora:\n"
 
         return prompt
+
+
 
     def _extract_statutes_from_messages(self, messages) -> list[dict]:
         """Estrae statuti dalle risposte dei tool (STESSO DEL REASONER)."""

@@ -1,5 +1,5 @@
 """
-LexCausa Counter-Reasoner Agent (FIXED VERSION).
+LexCausa Counter-Reasoner Agent
 
 Il Counter-Reasoner è responsabile di:
 1. Ricevere il tipo di causalità dal Reasoner

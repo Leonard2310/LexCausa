@@ -60,7 +60,7 @@ class Neo4jIngestion:
         self, df: pd.DataFrame, source: str, embeddings: Optional[np.ndarray] = None
     ):
         """
-        Ingest statute articles into Neo4j with embeddings and libro relationships.
+        Ingest statute articles into Neo4j with embeddings and libro/sezione relationships.
 
         Args:
             df: DataFrame with columns articolo, titolo, testo, libro, source
@@ -70,6 +70,7 @@ class Neo4jIngestion:
         Creates:
             - Statute nodes with embedding property
             - BELONGS_TO relationship with Libro nodes
+            - BELONGS_TO relationship with Sezione nodes (if present)
         """
         print(f"📤 Ingesting {len(df)} {source} articles...")
 
@@ -114,6 +115,7 @@ class Neo4jIngestion:
                         or str(record.get("libro_codice_penale", ""))
                         or str(record.get("libro_codice_civile", ""))
                     )
+                    sezione = str(record.get("sezione", "") or "").strip()
 
                     # Use global index to ensure unique ID
                     # (handles duplicates like art1159)
@@ -123,6 +125,7 @@ class Neo4jIngestion:
                         "titolo": titolo,
                         "testo": testo,
                         "libro": libro,
+                        "sezione": sezione,
                         "source": source,
                         "full_text": f"Art. {articolo} - {titolo}: {testo}",
                     }
@@ -144,13 +147,24 @@ class Neo4jIngestion:
                             titolo: record.titolo,
                             testo: record.testo,
                             libro: record.libro,
+                            sezione: record.sezione,
                             source: record.source,
                             full_text: record.full_text,
                             embedding: record.embedding
                         })
                         WITH s, record
                         MATCH (l:Libro {name: record.libro, codice: record.source})
-                        MERGE (s)-[:BELONGS_TO]->(l)
+                        FOREACH (_ IN CASE
+                            WHEN record.sezione IS NOT NULL AND record.sezione <> ""
+                            THEN [1] ELSE [] END |
+                            MERGE (sec:Sezione {
+                                name: record.sezione,
+                                libro: record.libro,
+                                codice: record.source
+                            })
+                            MERGE (s)-[:BELONGS_TO]->(sec)
+                            MERGE (sec)-[:BELONGS_TO]->(l)
+                        )
                         """,
                         records=clean_records,
                     )
@@ -165,12 +179,23 @@ class Neo4jIngestion:
                             titolo: record.titolo,
                             testo: record.testo,
                             libro: record.libro,
+                            sezione: record.sezione,
                             source: record.source,
                             full_text: record.full_text
                         })
                         WITH s, record
                         MATCH (l:Libro {name: record.libro, codice: record.source})
-                        MERGE (s)-[:BELONGS_TO]->(l)
+                        FOREACH (_ IN CASE
+                            WHEN record.sezione IS NOT NULL AND record.sezione <> ""
+                            THEN [1] ELSE [] END |
+                            MERGE (sec:Sezione {
+                                name: record.sezione,
+                                libro: record.libro,
+                                codice: record.source
+                            })
+                            MERGE (s)-[:BELONGS_TO]->(sec)
+                            MERGE (sec)-[:BELONGS_TO]->(l)
+                        )
                         """,
                         records=clean_records,
                     )

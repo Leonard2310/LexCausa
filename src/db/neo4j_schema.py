@@ -7,6 +7,7 @@ Creates vector indexes for:
 
 Crea anche:
 - Nodi Libro per raggruppare gli articoli per libro di appartenenza
+- Nodi Sezione per raggruppare gli articoli per sezione (se presente)
 - Nodi Codice per raggruppare i libri per codice (Penale/Civile)
 - Indice full-text per ricerca testuale
 
@@ -62,6 +63,12 @@ CONSTRAINTS = [
         "description": "ID univoco per ogni articolo di statuto",
     },
     {
+        "name": "sezione_unique_name_libro_codice",
+        "label": "Sezione",
+        "property": ["name", "libro", "codice"],
+        "description": "Nome univoco per ogni sezione (name+libro+codice)",
+    },
+    {
         "name": "libro_unique_name",
         "label": "Libro",
         "property": "name",
@@ -107,10 +114,17 @@ def create_fulltext_index(session, index_config: dict) -> None:
 
 def create_constraint(session, constraint_config: dict) -> None:
     """Create a uniqueness constraint if it doesn't exist."""
+    prop = constraint_config["property"]
+    if isinstance(prop, (list, tuple)):
+        props = ", ".join([f"n.{p}" for p in prop])
+        requirement = f"({props})"
+    else:
+        requirement = f"n.{prop}"
+
     query = f"""
     CREATE CONSTRAINT {constraint_config['name']} IF NOT EXISTS
     FOR (n:{constraint_config['label']})
-    REQUIRE n.{constraint_config['property']} IS UNIQUE
+    REQUIRE {requirement} IS UNIQUE
     """
     session.run(query)
 

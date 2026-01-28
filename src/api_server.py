@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LexCausa - Flask API Server (FIXED VERSION)
+LexCausa - Flask API Server
 
 REST API server con logica corretta per la pipeline completa.
 Il backend gestisce l'intero flusso: Reasoner → CounterReasoner.
@@ -215,6 +215,8 @@ def chat():
                     "categories": result.classification.categories,
                     "descriptions": result.classification.descriptions,
                     "libro_mappings": result.classification.libro_mappings,
+                    "sections": result.classification.sections,
+                    "section_mappings": result.classification.section_mappings,
                 },
                 "articles": [
                     {
@@ -493,7 +495,7 @@ def format_search_result(result) -> str:
 if __name__ == "__main__":
     print()
     print("=" * 70)
-    print("  🚀 LexCausa API Server (FIXED VERSION)")
+    print("  🚀 LexCausa API Server")
     print("=" * 70)
     print()
     print(f"  Server in ascolto su: http://{settings.api_host}:{settings.api_port}")

@@ -76,6 +76,8 @@ class SearchResult:
             1,
         ):
             lines.append(f"   {i}. {cat} -> {desc}")
+            if i - 1 < len(self.classification.sections):
+                lines.append(f"      Sezione: {self.classification.sections[i - 1]}")
 
         lines.extend(["", f"📚 Found {len(self.articles)} relevant articles:", ""])
 
@@ -172,6 +174,7 @@ class LegalSearchPipeline:
         self,
         embedding: list[float],
         libri_filters: list[tuple[str, str]],
+        section_filters: Optional[list[tuple[str, str, str]]] = None,
         top_k: int = 10,
     ) -> list[ArticleResult]:
         """
@@ -180,22 +183,37 @@ class LegalSearchPipeline:
         Args:
             embedding: Query embedding vector.
             libri_filters: List of (source, libro) tuples to filter by.
+            section_filters: Optional list of (source, libro, section) filters.
             top_k: Number of results per libro.
 
         Returns:
             List of ArticleResult sorted by score.
         """
         all_results = []
+        section_by_book = {}
+        for source, libro, section in section_filters or []:
+            normalized = (section or "").strip()
+            if normalized.upper() == "N/A":
+                normalized = ""
+            section_by_book[(source, libro)] = normalized
 
         with self.driver.session() as session:
             for source, libro in libri_filters:
+                section = section_by_book.get((source, libro), "")
                 # Build query with filters
                 query = """
                 CALL db.index.vector.queryNodes(
                     'statutes_idx', $top_k_expanded, $embedding
                 )
                 YIELD node, score
-                WHERE node.source = $source AND node.libro = $libro
+                WHERE node.source = $source
+                  AND EXISTS {
+                    MATCH (node)-[:BELONGS_TO]->(sec:Sezione {
+                        libro: $libro,
+                        codice: $source
+                    })
+                    WHERE $section = '' OR sec.name = $section
+                  }
                 RETURN node.statute_id AS id,
                        node.articolo AS articolo,
                        node.titolo AS titolo,
@@ -212,8 +230,9 @@ class LegalSearchPipeline:
                     embedding=embedding,
                     source=source,
                     libro=libro,
+                    section=section,
                     top_k=top_k,
-                    top_k_expanded=top_k * 10,  # Expand for filtering
+                    top_k_expanded=top_k * 100,  # Expand for filtering
                 )
 
                 for record in result:
@@ -244,6 +263,7 @@ class LegalSearchPipeline:
         claim: str,
         top_k: int = 10,
         use_top_n_libri: int = 3,
+        use_top_n_sections: int = 3,
     ) -> SearchResult:
         """
         Complete search pipeline for a legal claim.
@@ -252,6 +272,7 @@ class LegalSearchPipeline:
             claim: The legal claim text.
             top_k: Number of articles to return.
             use_top_n_libri: Number of top classified libri to search in.
+            use_top_n_sections: Number of top classified sections to use.
 
         Returns:
             SearchResult with classification and relevant articles.
@@ -260,6 +281,11 @@ class LegalSearchPipeline:
         print("🔄 Classifying claim...")
         classification = self.classifier.classify(claim)
         print(f"   ✅ Classified into: {classification.categories}")
+        if classification.section_mappings:
+            sections_label = [
+                f"{libro}: {section}" for _, libro, section in classification.section_mappings
+            ]
+            print(f"   ✅ Sections: {sections_label}")
 
         # Step 2: Generate embedding
         print("🔄 Generating embedding...")
@@ -269,7 +295,10 @@ class LegalSearchPipeline:
         # Step 3: Vector search filtered by libri
         print("🔄 Searching in Neo4j...")
         libri_filters = classification.libro_mappings[:use_top_n_libri]
-        articles = self.vector_search(embedding, libri_filters, top_k)
+        section_filters = classification.section_mappings[:use_top_n_sections]
+        articles = self.vector_search(
+            embedding, libri_filters, section_filters=section_filters, top_k=top_k
+        )
         print(f"   ✅ Found {len(articles)} relevant articles")
 
         return SearchResult(

@@ -86,7 +86,7 @@ class DatabaseOrchestrator:
 
         with self.driver.session() as session:
             # Conta nodi per label
-            for label in ["Statute", "Precedent", "Libro", "Codice"]:
+            for label in ["Statute", "Precedent", "Libro", "Sezione", "Codice"]:
                 result = session.run(f"MATCH (n:{label}) RETURN count(n) as count")
                 status["nodes"][label] = result.single()["count"]
 
@@ -223,6 +223,19 @@ class DatabaseOrchestrator:
                 print("      ✅ libro_unique_name_codice")
             except Exception as e:
                 print(f"      ⚠️ libro_unique_name_codice: {e}")
+
+            # Constraint composto per Sezione (name + libro + codice)
+            try:
+                session.run(
+                    """
+                    CREATE CONSTRAINT sezione_unique_name_libro_codice IF NOT EXISTS
+                    FOR (n:Sezione)
+                    REQUIRE (n.name, n.libro, n.codice) IS UNIQUE
+                """
+                )
+                print("      ✅ sezione_unique_name_libro_codice")
+            except Exception as e:
+                print(f"      ⚠️ sezione_unique_name_libro_codice: {e}")
 
             # -----------------------------------------------------------------
             # VECTOR INDEXES
@@ -393,6 +406,7 @@ class DatabaseOrchestrator:
                         or str(row.get("libro_codice_penale", ""))
                         or str(row.get("libro_codice_civile", ""))
                     )
+                    sezione = str(row.get("sezione", "") or "").strip()
 
                     records.append(
                         {
@@ -401,6 +415,7 @@ class DatabaseOrchestrator:
                             "titolo": titolo,
                             "testo": testo,
                             "libro": libro,
+                            "sezione": sezione,
                             "source": source,
                             "full_text": f"Art. {articolo} - {titolo}: {testo}",
                             "embedding": batch_emb[idx].tolist(),
@@ -416,13 +431,24 @@ class DatabaseOrchestrator:
                         titolo: record.titolo,
                         testo: record.testo,
                         libro: record.libro,
+                        sezione: record.sezione,
                         source: record.source,
                         full_text: record.full_text,
                         embedding: record.embedding
                     })
                     WITH s, record
                     MATCH (l:Libro {name: record.libro, codice: record.source})
-                    MERGE (s)-[:BELONGS_TO]->(l)
+                    FOREACH (_ IN CASE
+                        WHEN record.sezione IS NOT NULL AND record.sezione <> ""
+                        THEN [1] ELSE [] END |
+                        MERGE (sec:Sezione {
+                            name: record.sezione,
+                            libro: record.libro,
+                            codice: record.source
+                        })
+                        MERGE (s)-[:BELONGS_TO]->(sec)
+                        MERGE (sec)-[:BELONGS_TO]->(l)
+                    )
                 """,
                     records=records,
                 )

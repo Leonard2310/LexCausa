@@ -129,6 +129,8 @@ def search_legal_sources_tool(
             "descriptions": result.classification.descriptions,
             "libri": [libro for _, libro in result.classification.libro_mappings],
             "sources": [source for source, _ in result.classification.libro_mappings],
+            "sections": result.classification.sections,
+            "section_mappings": result.classification.section_mappings,
         },
         "articles": articles,
         "total_found": len(articles),

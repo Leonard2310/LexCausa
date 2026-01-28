@@ -2,12 +2,12 @@
 Data loader for LexCausa - Downloads and processes legal datasets.
 
 Datasets:
-1. Codice Penale - Local CSV file (src/data/statuti/codice_penale_aggiornato.csv)
-2. Codice Civile - Local CSV file (src/data/statuti/codice_civile_aggiornato.csv)
+1. Codice Penale - Local CSV file (src/data/statuti/codice_penale.csv)
+2. Codice Civile - Local CSV file (src/data/statuti/codice_civile.csv)
 3. Precedenti (itacasehold) - Chunk embeddings pre-calcolati
 
-Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codice_civile
-per il raggruppamento degli articoli per libro di appartenenza.
+Note: I CSV degli statuti includono le colonne libro_codice_penale/libro_codice_civile
+e sezione per il raggruppamento degli articoli per libro e sezione.
 """
 
 from pathlib import Path
@@ -29,10 +29,11 @@ def load_codice_penale() -> pd.DataFrame:
 
     Returns DataFrame with columns:
     - articolo, titolo, testo, reference, external_reference
-    - libro: libro di appartenenza con prefisso (CP Libro I, II, III)
+    - libro: libro di appartenenza con prefisso (CP Libro I, II, etc.)
+    - sezione: sezione di appartenenza
     - source: 'codice_penale'
     """
-    csv_path = STATUTI_DIR / "codice_penale_aggiornato.csv"
+    csv_path = STATUTI_DIR / "codice_penale.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Penale CSV not found at {csv_path}")
 
@@ -42,6 +43,8 @@ def load_codice_penale() -> pd.DataFrame:
     # Normalizza nome colonna libro e aggiungi prefisso CP
     if "libro_codice_penale" in df.columns:
         df["libro"] = "CP " + df["libro_codice_penale"].astype(str)
+    if "sezione" in df.columns:
+        df["sezione"] = df["sezione"].fillna("").astype(str).str.strip()
 
     print(f"✅ Loaded Codice Penale: {len(df)} articles")
     print(
@@ -57,9 +60,10 @@ def load_codice_civile() -> pd.DataFrame:
     Returns DataFrame with columns:
     - article_id, article_title, article_text, article_references
     - libro: libro di appartenenza con prefisso (CC Libro I, II, etc.)
+    - sezione: sezione di appartenenza (se presente nel CSV)
     - source: 'codice_civile'
     """
-    csv_path = STATUTI_DIR / "codice_civile_aggiornato.csv"
+    csv_path = STATUTI_DIR / "codice_civile.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Civile CSV not found at {csv_path}")
 
@@ -69,6 +73,8 @@ def load_codice_civile() -> pd.DataFrame:
     # Normalizza nome colonna libro e aggiungi prefisso CC
     if "libro_codice_civile" in df.columns:
         df["libro"] = "CC " + df["libro_codice_civile"].astype(str)
+    if "sezione" in df.columns:
+        df["sezione"] = df["sezione"].fillna("").astype(str).str.strip()
 
     print(f"✅ Loaded Codice Civile: {len(df)} articles")
     print(

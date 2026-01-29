@@ -79,7 +79,7 @@ class SearchLegalSourcesInput(BaseModel):
 @tool("search_legal_sources", args_schema=SearchLegalSourcesInput)
 def search_legal_sources_tool(
     claim: str,
-    top_k: int = 5,
+    top_k: int = 10,
     use_top_n_libri: int = 3,
 ) -> dict:
     """

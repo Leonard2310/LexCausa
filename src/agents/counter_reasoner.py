@@ -1,5 +1,5 @@
 """
-LexCausa Counter-Reasoner Agent (FIXED VERSION).
+LexCausa Counter-Reasoner Agent.
 
 Il Counter-Reasoner è responsabile di:
 1. Ricevere il tipo di causalità dal Reasoner
@@ -20,7 +20,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
@@ -82,49 +82,61 @@ class CounterReasonerOutput:
 
 
 # System prompt for the Counter-Reasoner
-COUNTER_REASONER_SYSTEM_PROMPT = """Sei un esperto agente di contro-ragionamento legale specializzato in diritto italiano.
+COUNTER_REASONER_SYSTEM_PROMPT = """You are an expert legal counter-reasoning agent specializing in Italian law.
 
-CRITICO: Devi OBBLIGATORIAMENTE usare i tool forniti per raccogliere informazioni PRIMA di generare qualsiasi analisi o argomento.
-NON generare testo senza prima chiamare i tool richiesti.
+CRITICAL: You MUST use the provided tools to gather information BEFORE generating any analysis or arguments.
+Do NOT produce text before calling the required tools.
 
-Il tuo compito è analizzare un claim legale e costruire CONTRO-ARGOMENTI per sfidare la tesi principale, seguendo questi passi:
+Your task is to analyze a legal claim and build COUNTER-ARGUMENTS to challenge the main thesis, following these steps:
 
-1. **ANALISI DEL WARRANT**: Comprendi il tipo di causalità identificato dal Reasoner e il suo warrant.
+1. **WARRANT ANALYSIS**: Understand the causality type identified by the Reasoner and its warrant.
 
-2. **IDENTIFICAZIONE DELLE DEBOLEZZE**: Usa le causalità "attaccanti" per identificare punti deboli nella catena causale:
-   - Se la causalità del Reasoner è "Materiale/Necessaria" → cerca cause sufficienti alternative (concause/sopravvenute)
-   - Se la causalità del Reasoner è "Giuridica/Sufficiente Indipendente" → cerca condizioni necessarie non soddisfatte
-   - Se la causalità del Reasoner è "Concause/Sufficiente (non da sola)" → cerca interruzioni della catena causale
+2. **WEAKNESS IDENTIFICATION**: Use the attacking causalities to identify weak points in the causal chain:
+   - If the Reasoner causality is "Material/Necessary" → look for alternative sufficient causes (concurring/supervening)
+   - If the Reasoner causality is "Legal/Sufficient Independent" → look for unmet necessary conditions
+   - If the Reasoner causality is "Concurring/Sufficient (not alone)" → look for interruptions in the causal chain
 
-3. **RICERCA NORMATIVA ALTERNATIVA**: Usa gli strumenti disponibili per trovare:
-   - Articoli di legge che supportano interpretazioni alternative o contrarie
-   - Precedenti giurisprudenziali che supportano la posizione contraria
+3. **ALTERNATIVE NORMATIVE RESEARCH**: Use available tools to find:
+   - Law articles that support alternative or contrary interpretations
+   - Jurisprudential precedents that support the contrary position
 
-4. **COSTRUZIONE CONTRO-ARGOMENTI**: Per ogni contro-argomento:
-   - Identifica la premessa alternativa che CONTRADDICE il claim
-   - Connettiti alla norma applicabile con CITAZIONE ESPLICITA (es. "Art. 41 c.p.")
-   - Cita il testo rilevante dell'articolo
-   - Spiega come questa interpretazione SFIDA e INDEBOLISCE la tesi principale
-   - Concludi con l'implicazione legale contraria
+4. **COUNTER-ARGUMENT CONSTRUCTION**: For each counter-argument:
+   - Identify the alternative premise that CONTRADICTS the claim
+   - Connect to the applicable norm with EXPLICIT CITATION (e.g., "Art. 41 c.p.")
+   - Quote the relevant text of the article
+   - Explain how this interpretation CHALLENGES and WEAKENS the main thesis
+   - Conclude with the contrary legal implication
 
-5. **INTEGRAZIONE PRECEDENTI CONTRARI**: Per ogni precedente trovato:
-   - Cita esplicitamente il precedente (corte, data, numero di causa se disponibile)
-   - Cita la ratio decidendi o il principio rilevante che CONTRADDICE il claim
-   - Spiega come SFIDA il ragionamento del Reasoner
-   - Integra nella catena di contro-ragionamento
+5. **INTEGRATION OF CONTRARY PRECEDENTS**: For each precedent found:
+   - Explicitly cite the precedent (court, date, case number if available)
+   - Cite the ratio decidendi or relevant principle that CONTRADICTS the claim
+   - Explain how it CHALLENGES the Reasoner's reasoning
+   - Integrate it into the counter-reasoning chain
 
-6. **CATENA DI CONTRO-RAGIONAMENTO**: Costruisci una sequenza logica che ESPLICITAMENTE include:
-   Premessa Alternativa → Norma Applicabile (con citazione) → Supporto Precedenti Contrari → Sfida al Nesso Causale → Conseguenza Legale CONTRARIA
+6. **COUNTER-REASONING CHAIN**: Build a logical sequence that EXPLICITLY includes:
+   Alternative Premise → Applicable Norm (with citation) → Contrary Precedent Support → Challenge to Causal Link → CONTRARY Legal Consequence
 
-REGOLE CRITICHE:
-- SEMPRE cita il numero esatto dell'articolo e il codice (es. "Art. 41 c.p.", "Art. 1227 c.c.")
-- SEMPRE cita porzioni rilevanti del testo dell'articolo
-- Usa SOLO gli articoli e i precedenti restituiti dai tool; NON inventare o citare norme o precedenti non recuperati
-- Se trovi precedenti dai tool, citali con le loro informazioni identificative e spiega come CONTRADDICONO o INDEBOLISCONO il claim
-- Se non trovi precedenti, dichiaralo esplicitamente e NON inventarne
-- Il tuo obiettivo è SMONTARE il claim, non supportarlo
+CRITICAL RULES:
+- ALWAYS cite the exact article number and code (e.g., "Art. 41 c.p.", "Art. 1227 c.c.")
+- ALWAYS quote relevant portions of the article text
+- Use ONLY the articles and precedents returned by the tools; do NOT invent or cite norms/precedents not retrieved
+- If you find precedents, cite them with identifying information and explain how they CONTRADICT or WEAKEN the claim
+- If no precedents are found, state it explicitly and do NOT invent any
+- Your goal is to DISMANTLE the claim, not support it
 
-Rispondi sempre in italiano e sii preciso con i riferimenti normativi."""
+The response language must be Italian."""
+
+COUNTER_REASONER_CONTEXT_SYSTEM_PROMPT = """You are an expert legal counter-reasoning agent specializing in Italian law.
+
+You will use ONLY the provided context (articles and precedents already retrieved) to build counter-arguments.
+Do NOT call tools and do NOT invent norms or precedents.
+
+Rules:
+- Use ONLY the provided articles.
+- If no precedents exist, state it explicitly without inventing any.
+- The conclusion must contradict the claim; if not possible, state insufficient data.
+
+The response language must be Italian."""
 
 
 class CounterReasoner(BaseAgent):
@@ -341,6 +353,98 @@ class CounterReasoner(BaseAgent):
         return output
 
 
+    def run_with_context(
+        self,
+        claim: str,
+        causality: dict,
+        pre_retrieved_statutes: List[dict],
+        pre_retrieved_precedents: List[dict],
+    ) -> CounterReasonerOutput:
+        """
+        Esegue il contro-ragionamento usando contesto pre-recuperato.
+        Non chiama tool esterni.
+        """
+        self._log("Contro-analisi con contesto pre-retrieved...")
+
+        if not causality or "causality_type" not in causality:
+            raise ValueError(
+                "La causalità fornita è mancante o non contiene il campo 'causality_type'."
+            )
+
+        causality_type = causality.get("causality_type", "Unknown")
+        self._log(f"Tipo di causalità dal Reasoner: {causality_type}")
+
+        warrant_info = self._get_warrant_info(causality_type)
+        self._log(
+            f"Warrant recuperato: {warrant_info['warrant'].get('denominazione', 'N/A')}"
+        )
+        self._log(
+            f"Causalità attaccanti identificate: {warrant_info['attacking_causalities']}"
+        )
+
+        attacking_descriptions = self._get_attacking_causality_descriptions(
+            warrant_info["attacking_causalities"]
+        )
+        self._log(f"Descrizioni attaccanti recuperate: {len(attacking_descriptions)}")
+
+        context = self._format_context(
+            pre_retrieved_statutes, pre_retrieved_precedents
+        )
+
+        prompt = f"""Analyze the claim using the provided context and build counter-arguments.
+
+CLAIM:
+"{claim}"
+
+CAUSALITY IDENTIFIED BY THE REASONER:
+Type: {causality_type}
+Warrant: {json.dumps(warrant_info['warrant'], ensure_ascii=False)}
+
+ATTACKING CAUSALITIES FOR THIS THESIS:
+{self._format_attacking_info(attacking_descriptions)}
+
+NORMATIVE CONTEXT:
+{context}
+
+INSTRUCTIONS:
+- Use ONLY the articles in the context.
+- If there are no precedents, state it explicitly.
+- Conclude in a way that CONTRADICTS the claim; if not possible, state insufficient data.
+
+Provide structured counter-arguments and a final counter-reasoning chain.
+The response language must be Italian."""
+
+        messages = [
+            SystemMessage(content=COUNTER_REASONER_CONTEXT_SYSTEM_PROMPT),
+            HumanMessage(content=prompt),
+        ]
+
+        response = self.llm.invoke(messages)
+        raw_output = str(response.content) if response.content else ""
+
+        output = CounterReasonerOutput(
+            claim=claim,
+            reasoner_causality=causality,
+            warrant_info=warrant_info,
+            attacking_causalities=warrant_info["attacking_causalities"],
+            counter_causality_details=attacking_descriptions,
+            relevant_statutes=pre_retrieved_statutes,
+            relevant_precedents=pre_retrieved_precedents,
+            raw_response=raw_output,
+        )
+
+        output.reasoning_chain = self._extract_reasoning_chain(raw_output)
+        output.counter_arguments = self._extract_arguments(raw_output)
+        output.reasoning_chain = self._sanitize_reasoning_chain(
+            output.reasoning_chain, pre_retrieved_precedents
+        )
+
+        self._log(
+            f"Generati {len(output.counter_arguments)} contro-argomenti", "success"
+        )
+        return output
+
+
 
 
     def _build_counter_reasoning_prompt(
@@ -354,20 +458,20 @@ class CounterReasoner(BaseAgent):
         max_precedents: int = 3,
     ) -> str:
         """
-        Costruisce il prompt per il CounterReasoner.
+        Build the prompt for the CounterReasoner.
 
-        Obiettivo: generare una catena logica che smonta il claim legale,
-        usando solo il claim, causalità, statuti e precedenti. 
-        Non ha accesso alla catena del Reasoner.
+        Goal: generate a logical chain that dismantles the legal claim,
+        using only the claim, causality, statutes, and precedents.
+        It does not have access to the Reasoner chain.
 
-        Parametri:
-            - claim: testo completo del claim originale
-            - causality_type: tipo di causalità individuata dal reasoner
-            - warrant_info: informazioni sul warrant (articolo/statuto) collegato
-            - attacking_descriptions: descrizioni delle causalità da cui partire
-            - include_precedents: se includere precedenti nella catena argomentativa
-            - max_statutes: numero massimo di statuti da menzionare
-            - max_precedents: numero massimo di precedenti da menzionare
+        Args:
+            - claim: full claim text
+            - causality_type: causality type from the reasoner
+            - warrant_info: warrant information linked to the claim
+            - attacking_descriptions: attacking causality descriptions
+            - include_precedents: whether to include precedents
+            - max_statutes: max number of statutes to mention
+            - max_precedents: max number of precedents to mention
         """
         # Preparazione testo causality attack
         if attacking_descriptions:
@@ -380,45 +484,88 @@ class CounterReasoner(BaseAgent):
             attacking_text = "Nessuna"
 
         prompt = f"""
-    Sei un assistente legale esperto. Il tuo compito è costruire una catena logica
-    che smonti il seguente claim legale, basandoti esclusivamente su:
+    You are an expert legal assistant. Your task is to build a logical chain
+    that dismantles the following legal claim, based exclusively on:
 
-    1. Il claim originale:
+    1. The original claim:
     \"\"\"{claim}\"\"\"
 
-    2. La causalità identificata dal Reasoner:
+    2. The causality identified by the Reasoner:
     {causality_type}
 
-    3. Il warrant collegato al claim:
-    - Statuto/Articolo: {warrant_info.get('warrant', {}).get('denominazione', 'N/A')}
-    - Riferimento: {warrant_info.get('warrant', {}).get('riferimento', '')}
+    3. The warrant linked to the claim:
+    - Statute/Article: {warrant_info.get('warrant', {}).get('denominazione', 'N/A')}
+    - Reference: {warrant_info.get('warrant', {}).get('riferimento', '')}
 
-    4. Descrizioni delle causalità attaccanti da considerare:
+    4. Attacking causality descriptions to consider:
     - {attacking_text}
 
-    5. Statuti rilevanti (max {max_statutes}) e precedenti rilevanti (max {max_precedents}):
-    - Estrai dalle informazioni disponibili, assicurati di citare solo articoli o precedenti pertinenti
-    - Se non ci sono statuti/precedenti rilevanti, spiega logicamente perché il claim può essere contro-argomentato senza di essi
+    5. Relevant statutes (max {max_statutes}) and relevant precedents (max {max_precedents}):
+    - Extract from the available information; cite only pertinent articles or precedents
+    - If there are no relevant statutes/precedents, explain logically why the claim can be counter-argued without them
 
-    Istruzioni specifiche:
-    - Genera una catena argomentativa chiara e sequenziale.
-    - Ogni passaggio deve essere numerato.
-    - Alla fine, produci una sintesi conclusiva che smonta il claim.
-    - Se include precedenti, menziona nome, anno e breve sintesi del principio giuridico.
-    - Non fare supposizioni non supportate da statuti o precedenti disponibili.
-    - Mantieni il tono tecnico-legale, chiaro e conciso.
+    Specific instructions:
+    - Generate a clear and sequential argumentative chain.
+    - Each step must be numbered.
+    - At the end, produce a concluding summary that dismantles the claim.
+    - If you include precedents, mention name, year, and a brief legal principle.
+    - Do not make assumptions unsupported by available statutes or precedents.
+    - Keep the tone technical-legal, clear, and concise.
+    - The response language must be Italian.
 
-    Output atteso:
-    1. Passaggi della catena logica numerati
-    2. Sintesi finale conclusiva che smonta il claim
+    Expected output:
+    1. Numbered logical chain steps
+    2. Final concluding summary that dismantles the claim
     """
 
         if include_precedents:
-            prompt += "\nNota: includi i precedenti solo se supportano chiaramente la contro-argomentazione.\n"
+            prompt += "\nNote: include precedents only if they clearly support the counter-argument.\n"
 
-        prompt += "\nGenera la catena logica ora:\n"
+        prompt += "\nGenerate the logical chain now:\n"
 
         return prompt
+
+    def _format_attacking_info(self, attacking_descriptions: List[dict]) -> str:
+        attacking_info = ""
+        for desc in attacking_descriptions:
+            attacking_info += f"\n**{desc['tipo']}:**\n"
+            attacking_info += f"- Descrizione: {desc['descrizione']}\n"
+            attacking_info += f"- Principio: {desc['principio']}\n"
+            if desc.get("limiti"):
+                attacking_info += f"- Limiti/Criticità: {desc['limiti']}\n"
+            if desc.get("norme_core"):
+                norme = ", ".join(
+                    [n.get("riferimento", "") for n in desc["norme_core"]]
+                )
+                attacking_info += f"- Norme core: {norme}\n"
+        return attacking_info or "N/A"
+
+    def _format_context(
+        self, statutes: List[dict], precedents: List[dict]
+    ) -> str:
+        parts = []
+
+        if statutes:
+            parts.append("ARTICOLI:")
+            for s in statutes:
+                source = "c.c." if s.get("source") == "codice_civile" else "c.p."
+                parts.append(f"- Art. {s.get('articolo')} {source}: {s.get('titolo')}")
+                testo = s.get("testo")
+                if testo:
+                    parts.append(f"  {testo[:300]}...")
+            parts.append("")
+
+        if precedents:
+            parts.append("PRECEDENTI:")
+            for p in precedents:
+                title = p.get("title", "Untitled")
+                parts.append(f"- {title}")
+                summary = p.get("summary")
+                if summary:
+                    parts.append(f"  {summary[:200]}...")
+            parts.append("")
+
+        return "\n".join(parts)
 
 
 

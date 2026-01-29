@@ -65,7 +65,8 @@ CRITICAL RULES:
 - If precedents are found, cite them with their identifying information and explain how they support your reasoning
 - If no precedents are found, explicitly state that none were found and do NOT invent any
 
-Always respond in Italian and be precise with normative references."""
+Be precise with normative references.
+The response language must be Italian."""
 
 
 @dataclass
@@ -218,7 +219,7 @@ class Reasoner(BaseAgent):
     def _filter_irrelevant_statutes(self, claim: str, statutes: list[dict]) -> list[dict]:
         """
         Filter statutes using LLM one by one (in English) instead of the whole list at once.
-        Logs which articles are kept or discarded.
+        Only discard when clearly unrelated; default to keeping on ambiguity.
         """
         if not statutes:
             self._log("No statutes to filter", "info")
@@ -249,19 +250,11 @@ class Reasoner(BaseAgent):
         - Do NOT suggest any additional articles.
         - Do NOT use external knowledge; only consider the claim and this article.
         - Do NOT add explanations or comments.
-        
-        Classification :
-        - YES: The article is directly relevant and must be used in the legal reasoning.
-        - OPTIONAL: The article provides useful context or background but is not central to the argument. Keep it for reference.
-        - NO: The article is irrelevant and should be discarded.
-        
-        Example response format:
-        1. YES
-        2. OPTIONAL
-        3. NO
-        4. YES
+        - Answer YES unless the article is clearly unrelated to the claim.
+        - Use NO only when there is no meaningful connection at all.
 
-        Respond with a numbered list classifying each article as YES, OPTIONAL, or NO.
+        Respond with EXACTLY one token: YES or NO.
+        No punctuation. No new lines. No extra spaces.
         """
 
             # Call the LLM
@@ -269,11 +262,25 @@ class Reasoner(BaseAgent):
                 response = self.llm.invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
-                self._log(f"⚠️ LLM call failed for article {article_number}: {e}", "warning")
-                answer = "NO"
+                self._log(
+                    f"⚠️ LLM call failed for article {article_number}: {e}",
+                    "warning",
+                )
+                answer = "YES"
 
-            # Check the response
-            if "YES" in answer.strip().upper():
+            token = answer.split()[0] if answer else ""
+            if token == "NO":
+                keep = False
+            elif token == "YES":
+                keep = True
+            elif "YES" in answer:
+                keep = True
+            elif "NO" in answer:
+                keep = False
+            else:
+                keep = True
+
+            if keep:
                 relevant_statutes.append(statute)
                 self._log(f"✅ Keeping article [{idx}] {article_number} - {article_title}")
             else:
@@ -393,7 +400,8 @@ EXAMPLE FORMAT for citations:
 - "Ai sensi dell'Art. 2043 c.c., che dispone: '[testo rilevante]'..."
 - "Come stabilito dalla Corte di Cassazione in [riferimento]: '[massima]'..."
 
-Respond in structured format and in Italian."""
+Respond in structured format.
+The response language must be Italian."""
 
         return prompt
 
@@ -539,7 +547,8 @@ INSTRUCTIONS:
 3. For each argument specify: Premise, Norm, Causal Link, Conclusion
 4. Provide a final reasoning chain
 
-Respond in Italian with precise normative references."""
+Respond with precise normative references.
+The response language must be Italian."""
             ),
         ]
 

@@ -63,6 +63,7 @@ Rules:
 
 You must follow these rules strictly.
 If uncertain, prefer fewer categories.
+The response language must be Italian.
 """
 
 TAXONOMY_PROMPT = """TAXONOMY
@@ -82,7 +83,9 @@ CP_L3   -> Codice Penale, Libro III: Contravvenzioni
 CLAIM
 <<<
 {claim}
->>>"""
+>>>
+
+Respond in Italian."""
 
 # Few-shot examples for better classification
 FEW_SHOT_EXAMPLES = [

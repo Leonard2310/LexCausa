@@ -403,7 +403,7 @@ def run_automatic_tests():
             print(f"📋 Tipo atteso: {test['expected_type']}")
 
             try:
-                result = pipeline.search(test["claim"], top_k=3)
+                result = pipeline.search(test["claim"], top_k=10)
 
                 # Check classification
                 categories = result.classification.categories

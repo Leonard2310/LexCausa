@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LexCausa - Flask API Server (FIXED VERSION)
+LexCausa - Flask API Server 
 
 REST API server con logica corretta per la pipeline completa.
 Il backend gestisce l'intero flusso: Reasoner → CounterReasoner.
@@ -28,7 +28,10 @@ sys.path.insert(0, src_path)
 os.chdir(project_root)
 
 from agents import CounterReasoner, PolisherEvaluator, Reasoner  # noqa: E402
-from agents.tools.neo4j_tools import get_legal_search_pipeline  # noqa: E402
+from agents.tools.neo4j_tools import (  # noqa: E402
+    get_legal_search_pipeline,
+    search_precedents_tool,
+)
 from config import settings  # noqa: E402
 from services.claim_classifier import ClaimClassifier  # noqa: E402
 
@@ -71,6 +74,45 @@ def load_taxonomy():
 def get_pipeline():
     """Get the shared LegalSearchPipeline singleton."""
     return get_legal_search_pipeline()
+
+
+def prepare_claim_context(
+    claim: str,
+    include_precedents: bool,
+    max_statutes: int,
+    max_precedents: int,
+) -> tuple[list[dict], list[dict]]:
+    """Pre-retrieve statutes and precedents before reasoning."""
+    pipe = get_pipeline()
+    search_result = pipe.search(claim, top_k=max_statutes)
+
+    statutes = [
+        {
+            "statute_id": art.statute_id,
+            "articolo": art.articolo,
+            "titolo": art.titolo,
+            "testo": art.testo,
+            "libro": art.libro,
+            "source": art.source,
+        }
+        for art in search_result.articles
+    ]
+
+    reas = get_reasoner()
+    statutes = reas._filter_irrelevant_statutes(claim, statutes)
+
+    precedents: list[dict] = []
+    if include_precedents:
+        try:
+            result = search_precedents_tool.invoke(
+                {"query": claim, "limit": max_precedents}
+            )
+            if isinstance(result, list):
+                precedents = result
+        except Exception as e:
+            print(f"⚠️ Errore recupero precedenti: {e}")
+
+    return statutes, precedents
 
 
 def get_classifier():
@@ -247,39 +289,24 @@ def reason():
         data = request.get_json()
         claim = data.get("claim", data.get("message", "")).strip()
         include_precedents = data.get("include_precedents", True)
-        use_context = data.get("use_context", False)
-
+        max_statutes = data.get("max_statutes", 5)
+        max_precedents = data.get("max_precedents", 3)
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
         reas = get_reasoner()
+        statutes, precedents = prepare_claim_context(
+            claim=claim,
+            include_precedents=include_precedents,
+            max_statutes=max_statutes,
+            max_precedents=max_precedents,
+        )
 
-        if use_context:
-            pipe = get_pipeline()
-            search_result = pipe.search(claim, top_k=5)
-
-            statutes = [
-                {
-                    "statute_id": art.statute_id,
-                    "articolo": art.articolo,
-                    "titolo": art.titolo,
-                    "testo": art.testo,
-                    "libro": art.libro,
-                    "source": art.source,
-                }
-                for art in search_result.articles
-            ]
-
-            result = reas.reason_with_context(
-                claim=claim,
-                pre_retrieved_statutes=statutes,
-                pre_retrieved_precedents=[],
-            )
-        else:
-            result = reas.run(
-                claim=claim,
-                include_precedents=include_precedents,
-            )
+        result = reas.reason_with_context(
+            claim=claim,
+            pre_retrieved_statutes=statutes,
+            pre_retrieved_precedents=precedents,
+        )
 
         return jsonify(
             {
@@ -325,15 +352,21 @@ def counter_reason():
         if not causality:
             return jsonify({"error": 'Campo "causality" obbligatorio'}), 400
 
-        cr = get_counter_reasoner()
-        
-        # Esegui il counter-reasoning
-        result = cr.run(
+        statutes, precedents = prepare_claim_context(
             claim=claim,
-            causality=causality,
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
+        )
+
+        cr = get_counter_reasoner()
+
+        # Esegui il counter-reasoning con contesto pre-retrieved
+        result = cr.run_with_context(
+            claim=claim,
+            causality=causality,
+            pre_retrieved_statutes=statutes,
+            pre_retrieved_precedents=precedents,
         )
 
         return jsonify(result.to_dict())
@@ -370,17 +403,24 @@ def pipeline():
         print(f"{'='*70}")
         print(f"Claim: {claim[:100]}...")
         
-        # STEP 1: Reasoner
-        print(f"\n{'─'*70}")
-        print("📊 STEP 1: Esecuzione Reasoner...")
-        print(f"{'─'*70}")
-        
-        reas = get_reasoner()
-        reasoner_result = reas.run(
+        # Preload context once for both Reasoner and Counter-Reasoner
+        statutes, precedents = prepare_claim_context(
             claim=claim,
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
+        )
+
+        # STEP 1: Reasoner
+        print(f"\n{'─'*70}")
+        print("📊 STEP 1: Esecuzione Reasoner...")
+        print(f"{'─'*70}")
+
+        reas = get_reasoner()
+        reasoner_result = reas.reason_with_context(
+            claim=claim,
+            pre_retrieved_statutes=statutes,
+            pre_retrieved_precedents=precedents,
         )
         
         print(f"✅ Reasoner completato")
@@ -395,12 +435,11 @@ def pipeline():
         print(f"{'─'*70}")
         
         cr = get_counter_reasoner()
-        counter_result = cr.run(
+        counter_result = cr.run_with_context(
             claim=claim,
             causality=reasoner_result.causality_classification,
-            include_precedents=include_precedents,
-            max_statutes=max_statutes,
-            max_precedents=max_precedents,
+            pre_retrieved_statutes=statutes,
+            pre_retrieved_precedents=precedents,
         )
         
         print(f"✅ Counter-Reasoner completato")
@@ -493,7 +532,7 @@ def format_search_result(result) -> str:
 if __name__ == "__main__":
     print()
     print("=" * 70)
-    print("  🚀 LexCausa API Server (FIXED VERSION)")
+    print("  🚀 LexCausa API Server")
     print("=" * 70)
     print()
     print(f"  Server in ascolto su: http://{settings.api_host}:{settings.api_port}")
@@ -503,7 +542,7 @@ if __name__ == "__main__":
     print("  • POST /api/chat            - Ricerca legale (Tab Ricerca)")
     print("  • POST /api/reason          - Ragionamento causale (Tab Ragionamento)")
     print("  • POST /api/counter_reason  - Contro-ragionamento")
-    print("  • POST /api/pipeline        - Pipeline completa (NUOVO)")
+    print("  • POST /api/pipeline        - Pipeline completa")
     print("  • POST /api/evaluate        - Valutazione finale (stub)")
     print()
     print("=" * 70)

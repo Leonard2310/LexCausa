@@ -2,8 +2,8 @@
 Data loader for LexCausa - Downloads and processes legal datasets.
 
 Datasets:
-1. Codice Penale - Local CSV file (src/data/statuti/codice_penale_aggiornato.csv)
-2. Codice Civile - Local CSV file (src/data/statuti/codice_civile_aggiornato.csv)
+1. Codice Penale - Local CSV file (src/data/statuti/codice_penale.csv)
+2. Codice Civile - Local CSV file (src/data/statuti/codice_civile.csv)
 3. Precedenti (itacasehold) - Chunk embeddings pre-calcolati
 
 Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codice_civile
@@ -32,7 +32,7 @@ def load_codice_penale() -> pd.DataFrame:
     - libro: libro di appartenenza con prefisso (CP Libro I, II, III)
     - source: 'codice_penale'
     """
-    csv_path = STATUTI_DIR / "codice_penale_aggiornato.csv"
+    csv_path = STATUTI_DIR / "codice_penale.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Penale CSV not found at {csv_path}")
 
@@ -59,7 +59,7 @@ def load_codice_civile() -> pd.DataFrame:
     - libro: libro di appartenenza con prefisso (CC Libro I, II, etc.)
     - source: 'codice_civile'
     """
-    csv_path = STATUTI_DIR / "codice_civile_aggiornato.csv"
+    csv_path = STATUTI_DIR / "codice_civile.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Civile CSV not found at {csv_path}")
 

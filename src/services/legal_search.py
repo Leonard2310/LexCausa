@@ -172,7 +172,7 @@ class LegalSearchPipeline:
         self,
         embedding: list[float],
         libri_filters: list[tuple[str, str]],
-        top_k: int = 10,
+        top_k: int = 20,
     ) -> list[ArticleResult]:
         """
         Perform vector search filtered by libri.
@@ -242,7 +242,7 @@ class LegalSearchPipeline:
     def search(
         self,
         claim: str,
-        top_k: int = 10,
+        top_k: int = 20,
         use_top_n_libri: int = 3,
     ) -> SearchResult:
         """
@@ -311,7 +311,7 @@ def main():
         print()
 
         try:
-            result = pipeline.search(claim, top_k=5)
+            result = pipeline.search(claim, top_k=20)
             print()
             print(result)
         except Exception as e:

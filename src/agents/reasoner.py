@@ -17,7 +17,7 @@ Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 from dataclasses import dataclass, field
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
@@ -80,6 +80,7 @@ class ReasonerOutput:
             "precedents": self.relevant_precedents,
             "arguments": self.arguments,
             "reasoning_chain": self.reasoning_chain,
+            "raw_response": self.raw_response,
         }
 
 
@@ -166,8 +167,19 @@ class Reasoner(BaseAgent):
             pre_retrieved_precedents
         )
 
-        # Build the input prompt with pre-retrieved context
-        input_prompt = self._build_reasoning_prompt_with_context(claim, knowledge_base)
+        allowed_statutes = [
+            f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+            for s in pre_retrieved_statutes
+        ]
+        allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
+
+        # Build the input prompt with pre-retrieved context and explicit allow-list
+        input_prompt = self._build_reasoning_prompt_with_context(
+            claim,
+            knowledge_base,
+            allowed_statutes,
+            allowed_precedents,
+        )
 
         # Execute the ReAct agent using LangGraph
         messages = [HumanMessage(content=input_prompt)]
@@ -190,8 +202,12 @@ class Reasoner(BaseAgent):
         # Get the final response from the agent
         raw_output = ""
         for msg in reversed(messages_out):
-            if hasattr(msg, "content") and msg.content and not hasattr(msg, "name"):
-                raw_output = str(msg.content)
+            # Skip tool responses; keep the final LLM message
+            if isinstance(msg, ToolMessage):
+                continue
+            msg_content = getattr(msg, "content", None)
+            if msg_content:
+                raw_output = str(msg_content)
                 break
 
         # Build output
@@ -277,8 +293,16 @@ No punctuation. No new lines. No extra spaces.
         return relevant_statutes
 
 
-    def _build_reasoning_prompt_with_context(self, claim: str, knowledge_base: str) -> str:
+    def _build_reasoning_prompt_with_context(
+        self,
+        claim: str,
+        knowledge_base: str,
+        allowed_statutes: list[str],
+        allowed_precedents: list[str],
+    ) -> str:
         """Build the prompt for the reasoning task with pre-retrieved context."""
+        statutes_list = "\n".join(f"- {a}" for a in allowed_statutes) or "- Nessun articolo disponibile"
+        precedents_list = "\n".join(f"- {p}" for p in allowed_precedents) or "- Nessun precedente disponibile"
         return f"""Analyze the following legal claim and build supporting arguments.
 
 CLAIM:
@@ -287,6 +311,12 @@ CLAIM:
 === KNOWLEDGE BASE (USE ONLY THESE SOURCES) ===
 {knowledge_base}
 === END OF KNOWLEDGE BASE ===
+
+ALLOWED STATUTE REFERENCES (do not cite others):
+{statutes_list}
+
+ALLOWED PRECEDENT REFERENCES (do not cite others):
+{precedents_list}
 
 INSTRUCTIONS:
 
@@ -297,8 +327,8 @@ INSTRUCTIONS:
 3. **BUILD ARGUMENTS**: Using ONLY the articles and precedents from the KNOWLEDGE BASE above:
    - For each argument, specify:
      - **Premessa**: The starting fact from the claim
-     - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE
-     - **Precedente**: Supporting precedent (ONLY if present, otherwise "non disponibile")
+     - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES)
+     - **Precedente**: Supporting precedent (ONLY if present in ALLOWED PRECEDENTS, otherwise "non disponibile")
      - **Nesso Causale**: How the premise connects to the norm
      - **Conclusione**: The legal implication
 
@@ -307,7 +337,9 @@ INSTRUCTIONS:
    - Explicit article citations (e.g., "Art. 2043 c.c.")
    - Precedent references if available
 
-CRITICAL: Use ONLY the articles listed in the KNOWLEDGE BASE above. Do NOT cite articles not present.
+CRITICAL:
+- Cite ONLY the statutes listed in ALLOWED STATUTE REFERENCES. If a needed article is missing, write "articolo non disponibile nel knowledge base".
+- Cite ONLY the precedents in ALLOWED PRECEDENTS; otherwise mark as "non disponibile".
 
 The response language must be Italian."""
 

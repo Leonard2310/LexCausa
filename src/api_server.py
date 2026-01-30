@@ -85,6 +85,7 @@ def prepare_claim_context(
     max_precedents: int,
 ) -> tuple[list[dict], list[dict]]:
     """Pre-retrieve statutes and precedents before reasoning."""
+    print(f"🔎 Pre-retrieval config: top_k_statutes={max_statutes}, max_precedents={max_precedents}")
     pipe = get_pipeline()
     search_result = pipe.search(claim, top_k=max_statutes)
 
@@ -283,7 +284,7 @@ def chat():
 
         data = request.get_json()
         claim = data.get("message", "").strip()
-        top_k = data.get("top_k", 5)
+        top_k = data.get("top_k", settings.search_top_k_default)
 
         if not claim:
             return jsonify({"error": 'Campo "message" obbligatorio'}), 400
@@ -330,8 +331,8 @@ def reason():
         data = request.get_json()
         claim = data.get("claim", data.get("message", "")).strip()
         include_precedents = data.get("include_precedents", True)
-        max_statutes = data.get("max_statutes", 5)
-        max_precedents = data.get("max_precedents", 3)
+        max_statutes = data.get("max_statutes", settings.search_top_k_default)
+        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
@@ -384,8 +385,8 @@ def counter_reason():
         claim = data.get("claim", "").strip()
         causality = data.get("causality", {})
         include_precedents = data.get("include_precedents", True)
-        max_statutes = data.get("max_statutes", 5)
-        max_precedents = data.get("max_precedents", 3)
+        max_statutes = data.get("max_statutes", settings.search_top_k_default)
+        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
@@ -433,8 +434,8 @@ def pipeline():
         data = request.get_json()
         claim = data.get("claim", "").strip()
         include_precedents = data.get("include_precedents", True)
-        max_statutes = data.get("max_statutes", 5)
-        max_precedents = data.get("max_precedents", 3)
+        max_statutes = data.get("max_statutes", settings.search_top_k_default)
+        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400

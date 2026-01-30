@@ -69,17 +69,21 @@ class SearchLegalSourcesInput(BaseModel):
     claim: str = Field(
         description="The COMPLETE original legal claim text. Do NOT rephrase or summarize - use the exact claim!"
     )
-    top_k: int = Field(default=5, description="Maximum number of articles to return")
+    top_k: int = Field(
+        default=settings.search_top_k_default,
+        description="Maximum number of articles to return (defaults to config SEARCH_TOP_K_DEFAULT)",
+    )
     use_top_n_libri: int = Field(
-        default=3, description="Number of top classified libri (books) to search in"
+        default=settings.search_use_top_n_libri,
+        description="Number of top classified libri (books) to search in (defaults to config SEARCH_USE_TOP_N_LIBRI)",
     )
 
 
 @tool("search_legal_sources", args_schema=SearchLegalSourcesInput)
 def search_legal_sources_tool(
     claim: str,
-    top_k: int = 10,
-    use_top_n_libri: int = 3,
+    top_k: int = settings.search_top_k_default,
+    use_top_n_libri: int = settings.search_use_top_n_libri,
 ) -> dict:
     """
     Search for relevant legal articles using the COMPLETE claim text.
@@ -154,7 +158,10 @@ class SearchStatutesInput(BaseModel):
         default=None,
         description="Specific book to search (e.g., 'CC Libro V', 'CP Libro II'). If None, searches all.",
     )
-    limit: int = Field(default=5, description="Maximum number of results")
+    limit: int = Field(
+        default=settings.search_top_k_default,
+        description="Maximum number of results (defaults to config SEARCH_TOP_K_DEFAULT)",
+    )
 
 
 @tool("search_statutes", args_schema=SearchStatutesInput)
@@ -162,7 +169,7 @@ def search_statutes_tool(
     query: str,
     codice: str = "both",
     libro: Optional[str] = None,
-    limit: int = 5,
+    limit: int = settings.search_top_k_default,
 ) -> list[dict]:
     """
     Search for legal articles in the Italian Civil Code and/or Penal Code using semantic vector search.
@@ -444,14 +451,17 @@ class SearchPrecedentsInput(BaseModel):
         default=None,
         description="Specific subject (e.g., 'civile', 'penale'). If None, searches all.",
     )
-    limit: int = Field(default=5, description="Maximum number of results")
+    limit: int = Field(
+        default=settings.precedents_limit_default,
+        description="Maximum number of results (defaults to config PRECEDENTS_LIMIT_DEFAULT)",
+    )
 
 
 @tool("search_precedents", args_schema=SearchPrecedentsInput)
 def search_precedents_tool(
     query: str,
     materia: Optional[str] = None,
-    limit: int = 5,
+    limit: int = settings.precedents_limit_default,
 ) -> list[dict]:
     """
     Search for legal precedents in the Knowledge Base using semantic vector search.

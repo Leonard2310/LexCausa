@@ -19,7 +19,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
@@ -87,6 +87,7 @@ CRITICAL RULES:
 - Use ONLY the precedents provided - do NOT invent precedents
 - If no precedents are provided, explicitly state this and proceed without them
 - Your goal is to DISMANTLE the claim, not support it
+- Even if the causality theory lists core/accessory norms, DO NOT cite them unless the article appears in the KNOWLEDGE BASE above
 - ALWAYS cite exact article numbers and codes (e.g., "Art. 41 c.p.", "Art. 1227 c.c.")
 
 Your task follows these steps:
@@ -297,6 +298,12 @@ class CounterReasoner(BaseAgent):
             pre_retrieved_precedents
         )
 
+        allowed_statutes = [
+            f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+            for s in pre_retrieved_statutes
+        ]
+        allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
+
         # Build prompt with context
         input_prompt = self._build_counter_reasoning_prompt_with_context(
             claim=claim,
@@ -304,12 +311,31 @@ class CounterReasoner(BaseAgent):
             warrant_info=warrant_info,
             attacking_descriptions=attacking_descriptions,
             knowledge_base=knowledge_base,
+            allowed_statutes=allowed_statutes,
+            allowed_precedents=allowed_precedents,
         )
 
         # Execute the ReAct agent
         messages = [HumanMessage(content=input_prompt)]
-        result = self.react_agent.invoke({"messages": messages})
-        messages_out = result.get("messages", [])
+        try:
+            result = self.react_agent.invoke({"messages": messages})
+            messages_out = result.get("messages", [])
+        except Exception as e:
+            # Graceful fallback to avoid breaking the pipeline when tool calls fail
+            error_msg = f"Errore durante l'esecuzione del Counter-Reasoner: {e}"
+            self._log(error_msg, "error")
+            return CounterReasonerOutput(
+                claim=claim,
+                reasoner_causality=causality,
+                warrant_info=warrant_info,
+                attacking_causalities=warrant_info["attacking_causalities"],
+                counter_causality_details=attacking_descriptions,
+                relevant_statutes=pre_retrieved_statutes,
+                relevant_precedents=pre_retrieved_precedents,
+                counter_arguments=[],
+                reasoning_chain=[error_msg],
+                raw_response=error_msg,
+            )
 
         # Log tool calls
         tool_names = []
@@ -324,8 +350,12 @@ class CounterReasoner(BaseAgent):
         # Get the final response
         raw_output = ""
         for msg in reversed(messages_out):
-            if hasattr(msg, "content") and msg.content and not hasattr(msg, "name"):
-                raw_output = str(msg.content)
+            # Skip tool responses; keep the final LLM message
+            if isinstance(msg, ToolMessage):
+                continue
+            msg_content = getattr(msg, "content", None)
+            if msg_content:
+                raw_output = str(msg_content)
                 break
 
         # Build output
@@ -358,11 +388,15 @@ class CounterReasoner(BaseAgent):
         warrant_info: dict,
         attacking_descriptions: List[dict],
         knowledge_base: str,
+        allowed_statutes: List[str],
+        allowed_precedents: List[str],
     ) -> str:
         """
         Build the prompt for CounterReasoner with pre-retrieved context.
         """
         attacking_text = self._format_attacking_info(attacking_descriptions)
+        statutes_list = "\n".join(f"- {a}" for a in allowed_statutes) or "- Nessun articolo disponibile"
+        precedents_list = "\n".join(f"- {p}" for p in allowed_precedents) or "- Nessun precedente disponibile"
 
         return f"""Analyze the following legal claim and build COUNTER-ARGUMENTS to dismantle it.
 
@@ -380,18 +414,24 @@ ATTACKING CAUSALITIES TO EXPLOIT:
 {knowledge_base}
 === END KNOWLEDGE BASE ===
 
+ALLOWED STATUTE REFERENCES (do not cite others):
+{statutes_list}
+
+ALLOWED PRECEDENT REFERENCES (do not cite others):
+{precedents_list}
+
 INSTRUCTIONS:
 1. Use `get_causality_theory` to understand the attacking causalities theories.
 2. Build counter-arguments that CHALLENGE and DISMANTLE the claim.
 3. Each counter-argument must have:
    - Premessa Alternativa: An alternative premise that contradicts the claim
-   - Norma: Article citation with quoted text FROM THE KNOWLEDGE BASE
+   - Norma: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES)
    - Nesso Causale Alternativo: How this challenges the causal link
    - Conclusione Contraria: The contrary legal implication
 4. End with a REASONING CHAIN that shows how your counter-arguments dismantle the claim.
 
 CRITICAL: Use ONLY the articles and precedents in the KNOWLEDGE BASE above.
-Do NOT invent or cite articles not provided.
+Do NOT invent or cite articles not provided. If a needed article/precedent is absent from the allowed lists, state that it is not available.
 
 Generate your counter-analysis now (in Italian):"""
 
@@ -403,11 +443,7 @@ Generate your counter-analysis now (in Italian):"""
             attacking_info += f"- Principio: {desc['principio']}\n"
             if desc.get("limiti"):
                 attacking_info += f"- Limiti/Criticità: {desc['limiti']}\n"
-            if desc.get("norme_core"):
-                norme = ", ".join(
-                    [n.get("riferimento", "") for n in desc["norme_core"]]
-                )
-                attacking_info += f"- Norme core: {norme}\n"
+            # Norme core/accessorie non riportate per evitare citazioni fuori dal knowledge base
         return attacking_info or "N/A"
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:

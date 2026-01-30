@@ -172,7 +172,7 @@ class LegalSearchPipeline:
         self,
         embedding: list[float],
         libri_filters: list[tuple[str, str]],
-        top_k: int = 20,
+        top_k: int = settings.search_top_k_default,
     ) -> list[ArticleResult]:
         """
         Perform vector search filtered by libri.
@@ -242,8 +242,8 @@ class LegalSearchPipeline:
     def search(
         self,
         claim: str,
-        top_k: int = 20,
-        use_top_n_libri: int = 3,
+        top_k: int = settings.search_top_k_default,
+        use_top_n_libri: int = settings.search_use_top_n_libri,
     ) -> SearchResult:
         """
         Complete search pipeline for a legal claim.
@@ -257,7 +257,7 @@ class LegalSearchPipeline:
             SearchResult with classification and relevant articles.
         """
         # Step 1: Classify the claim
-        print("🔄 Classifying claim...")
+        print(f"🔄 Classifying claim... (top_k={top_k}, libri_top_n={use_top_n_libri})")
         classification = self.classifier.classify(claim)
         print(f"   ✅ Classified into: {classification.categories}")
 
@@ -311,7 +311,11 @@ def main():
         print()
 
         try:
-            result = pipeline.search(claim, top_k=20)
+            result = pipeline.search(
+                claim,
+                top_k=settings.search_top_k_default,
+                use_top_n_libri=settings.search_use_top_n_libri,
+            )
             print()
             print(result)
         except Exception as e:

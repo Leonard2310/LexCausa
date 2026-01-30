@@ -155,10 +155,8 @@ class StanceClassifier:
                 opposing.append(statute)
                 print(f"  ❌ Art. {article}: CONTRO")
             else:
-                # Neutral: add to both or neither? Add to both for now
-                supporting.append(statute)
-                opposing.append(statute)
-                print(f"  ⚖️ Art. {article}: NEUTRALE (added to both)")
+                # Neutral: do not assign to either side
+                print(f"  ⚖️ Art. {article}: NEUTRALE (scartato)")
         
         print(f"📊 [StanceClassifier] Result: {len(supporting)} support, {len(opposing)} against")
         return supporting, opposing
@@ -194,10 +192,8 @@ class StanceClassifier:
                 opposing.append(precedent)
                 print(f"  ❌ '{title}...': CONTRO")
             else:
-                # Neutral: add to both
-                supporting.append(precedent)
-                opposing.append(precedent)
-                print(f"  ⚖️ '{title}...': NEUTRALE (added to both)")
+                # Neutral: do not assign to either side
+                print(f"  ⚖️ '{title}...': NEUTRALE (scartato)")
         
         print(f"📊 [StanceClassifier] Result: {len(supporting)} support, {len(opposing)} against")
         return supporting, opposing
@@ -220,9 +216,10 @@ ARTICLE (Art. {article_num} {source} - {title}):
 "{text}"
 
 CLASSIFICATION RULES:
-- SUPPORT: The article provides legal basis that REINFORCES or VALIDATES the claim
-- AGAINST: The article provides grounds to CHALLENGE, LIMIT, or CONTRADICT the claim
-- NEUTRAL: The article is equally applicable to both positions or irrelevant
+- SUPPORT: The article provides legal basis that REINFORCES or VALIDATES the claim, or sets formal requirements whose violation strengthens the claim.
+- AGAINST: The article provides grounds to CHALLENGE, LIMIT, or CONTRADICT the claim.
+- NEUTRAL: The article is equally applicable to both positions or irrelevant.
+- DEFAULT TO SUPPORT unless the article clearly limits/contradicts the claim.
 
 Consider:
 - Does the article establish rights that support the claimant?

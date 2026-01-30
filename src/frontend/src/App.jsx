@@ -130,8 +130,6 @@ export default function App() {
         body: JSON.stringify({
           claim,
           include_precedents: true,
-          max_statutes: 5,
-          max_precedents: 3,
         }),
       });
 

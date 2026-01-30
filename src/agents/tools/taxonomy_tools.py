@@ -81,6 +81,7 @@ Rules:
 - Do NOT explain the decision
 - Do NOT add any text, symbols, or formatting
 - Base your decision on the legal context and nature of the claim
+The response language must be Italian.
 """
 
 CAUSALITY_CLAIM_PROMPT = """CLAIM

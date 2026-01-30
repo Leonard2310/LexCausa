@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 # Add parent to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
-from services.claim_classifier import ClaimClassifier  # noqa: E402
 from services.legal_search import LegalSearchPipeline  # noqa: E402
 
 # Singleton driver for tools (only used for direct Neo4j queries like get_statute_by_article)
@@ -70,17 +69,21 @@ class SearchLegalSourcesInput(BaseModel):
     claim: str = Field(
         description="The COMPLETE original legal claim text. Do NOT rephrase or summarize - use the exact claim!"
     )
-    top_k: int = Field(default=5, description="Maximum number of articles to return")
+    top_k: int = Field(
+        default=settings.search_top_k_default,
+        description="Maximum number of articles to return (defaults to config SEARCH_TOP_K_DEFAULT)",
+    )
     use_top_n_libri: int = Field(
-        default=3, description="Number of top classified libri (books) to search in"
+        default=settings.search_use_top_n_libri,
+        description="Number of top classified libri (books) to search in (defaults to config SEARCH_USE_TOP_N_LIBRI)",
     )
 
 
 @tool("search_legal_sources", args_schema=SearchLegalSourcesInput)
 def search_legal_sources_tool(
     claim: str,
-    top_k: int = 5,
-    use_top_n_libri: int = 3,
+    top_k: int = settings.search_top_k_default,
+    use_top_n_libri: int = settings.search_use_top_n_libri,
 ) -> dict:
     """
     Search for relevant legal articles using the COMPLETE claim text.
@@ -155,7 +158,10 @@ class SearchStatutesInput(BaseModel):
         default=None,
         description="Specific book to search (e.g., 'CC Libro V', 'CP Libro II'). If None, searches all.",
     )
-    limit: int = Field(default=5, description="Maximum number of results")
+    limit: int = Field(
+        default=settings.search_top_k_default,
+        description="Maximum number of results (defaults to config SEARCH_TOP_K_DEFAULT)",
+    )
 
 
 @tool("search_statutes", args_schema=SearchStatutesInput)
@@ -163,7 +169,7 @@ def search_statutes_tool(
     query: str,
     codice: str = "both",
     libro: Optional[str] = None,
-    limit: int = 5,
+    limit: int = settings.search_top_k_default,
 ) -> list[dict]:
     """
     Search for legal articles in the Italian Civil Code and/or Penal Code using semantic vector search.
@@ -445,14 +451,17 @@ class SearchPrecedentsInput(BaseModel):
         default=None,
         description="Specific subject (e.g., 'civile', 'penale'). If None, searches all.",
     )
-    limit: int = Field(default=5, description="Maximum number of results")
+    limit: int = Field(
+        default=settings.precedents_limit_default,
+        description="Maximum number of results (defaults to config PRECEDENTS_LIMIT_DEFAULT)",
+    )
 
 
 @tool("search_precedents", args_schema=SearchPrecedentsInput)
 def search_precedents_tool(
     query: str,
     materia: Optional[str] = None,
-    limit: int = 5,
+    limit: int = settings.precedents_limit_default,
 ) -> list[dict]:
     """
     Search for legal precedents in the Knowledge Base using semantic vector search.
@@ -631,64 +640,3 @@ def close_driver():
     if _driver:
         _driver.close()
         _driver = None
-
-
-# Singleton classifier for claim classification
-_claim_classifier: Optional[ClaimClassifier] = None
-
-
-def get_claim_classifier() -> ClaimClassifier:
-    """Get or create claim classifier (singleton)."""
-    global _claim_classifier
-    if _claim_classifier is None:
-        print("🔧 [neo4j_tools] Initializing ClaimClassifier...")
-        _claim_classifier = ClaimClassifier()
-        print("✅ [neo4j_tools] ClaimClassifier ready!")
-    return _claim_classifier
-
-
-class ClassifyClaimInput(BaseModel):
-    """Input schema for claim classification."""
-
-    claim: str = Field(description="The legal claim text to classify")
-
-
-@tool("classify_claim", args_schema=ClassifyClaimInput)
-def classify_claim_tool(claim: str) -> dict:
-    """
-    Classify a legal claim to identify the relevant books (libri) of the Italian Civil or Penal Code.
-
-    This tool MUST be called FIRST before searching for statutes, as it identifies which
-    books of the code contain relevant articles for the claim.
-
-    Returns:
-        - categories: List of category IDs (e.g., CC_L5, CP_L2)
-        - descriptions: Human-readable descriptions
-        - libri: List of libro names to use as filter in search_statutes
-        - sources: List of codice sources (codice_civile or codice_penale)
-    """
-    print("📋 [classify_claim] Classifying claim...")
-
-    classifier = get_claim_classifier()
-    result = classifier.classify(claim)
-
-    # Extract libri and sources for easier use by the agent
-    libri = [libro for _, libro in result.libro_mappings]
-    sources = [source for source, _ in result.libro_mappings]
-
-    output = {
-        "categories": result.categories,
-        "descriptions": result.descriptions,
-        "libri": libri,
-        "sources": sources,
-        "libro_mappings": [
-            {"source": source, "libro": libro}
-            for source, libro in result.libro_mappings
-        ],
-    }
-
-    print(f"  ✅ Classified into: {result.categories}")
-    for cat, desc, libro in zip(result.categories, result.descriptions, libri):
-        print(f"    - {cat}: {desc} -> {libro}")
-
-    return output

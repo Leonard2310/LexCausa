@@ -34,6 +34,7 @@ os.chdir(project_root)
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
+from config import settings  # noqa: E402
 
 
 def print_header():
@@ -319,8 +320,9 @@ def full_search():
             if claim.lower() in ("back", "b", ""):
                 break
 
-            top_k = input("📊 Quanti risultati? [default: 5]: ").strip()
-            top_k = int(top_k) if top_k.isdigit() else 5
+            default_k = settings.search_top_k_default
+            top_k = input(f"📊 Quanti risultati? [default: {default_k}]: ").strip()
+            top_k = int(top_k) if top_k.isdigit() else default_k
 
             print("\n" + "=" * 60)
             result = pipeline.search(claim, top_k=top_k)
@@ -403,7 +405,7 @@ def run_automatic_tests():
             print(f"📋 Tipo atteso: {test['expected_type']}")
 
             try:
-                result = pipeline.search(test["claim"], top_k=3)
+                result = pipeline.search(test["claim"], top_k=10)
 
                 # Check classification
                 categories = result.classification.categories

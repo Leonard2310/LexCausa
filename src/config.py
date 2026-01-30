@@ -81,6 +81,25 @@ class Settings(BaseSettings):
     debug: bool = Field(default=True, alias="DEBUG")
 
     # =========================================================================
+    # Search & Retrieval Defaults
+    # =========================================================================
+    search_top_k_default: int = Field(
+        default=20,
+        alias="SEARCH_TOP_K_DEFAULT",
+        description="Default number of statute results to return when not specified.",
+    )
+    search_use_top_n_libri: int = Field(
+        default=3,
+        alias="SEARCH_USE_TOP_N_LIBRI",
+        description="How many top classified libri to query during statute search.",
+    )
+    precedents_limit_default: int = Field(
+        default=10,
+        alias="PRECEDENTS_LIMIT_DEFAULT",
+        description="Default number of precedents to retrieve when not specified.",
+    )
+
+    # =========================================================================
     # Paths
     # =========================================================================
     @property

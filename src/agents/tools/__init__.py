@@ -9,7 +9,6 @@ Contains tools for:
 """
 
 from .neo4j_tools import (
-    classify_claim_tool,
     get_statute_by_article_tool,
     search_legal_sources_tool,
     search_precedents_tool,
@@ -27,5 +26,4 @@ __all__ = [
     # Classification tools
     "classify_causality_tool",
     "get_causality_theory_tool",
-    "classify_claim_tool",
 ]

@@ -149,8 +149,10 @@ class CounterReasoner(BaseAgent):
 
             if self._taxonomy is None:
                 self._log("⚠️ Tassonomia non trovata, uso struttura vuota", "warning")
-                self._taxonomy = {"tassonomia_causalita": []}
+                self._taxonomy = {"tassonomia_causalita": []}  # type: ignore[assignment]
 
+        # Guarantee non-None for type checkers
+        assert self._taxonomy is not None
         return self._taxonomy
 
     def _get_warrant_info(self, causality_type: str) -> dict:
@@ -499,7 +501,7 @@ Generate your counter-analysis now (in Italian):"""
         """Estrae contro-argomenti strutturati dalla risposta."""
         arguments = []
         sections = response.split("**")
-        current_arg = {}
+        current_arg: dict[str, str] = {}
 
         for section in sections:
             section = section.strip()

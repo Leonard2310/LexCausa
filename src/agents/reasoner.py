@@ -17,7 +17,7 @@ Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 from dataclasses import dataclass, field
 from typing import Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent

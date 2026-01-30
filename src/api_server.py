@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-LexCausa - Flask API Server 
+LexCausa - Flask API Server
 
 REST API server con logica corretta per la pipeline completa.
-Il backend gestisce l'intero flusso: Reasoner → CounterReasoner.
+Il backend gestisce l'intero flusso: Reasoner  CounterReasoner.
 """
 
 import json
@@ -202,11 +202,11 @@ def classify_stance_for_agents(
     support_precedents = support_precedents + neutral_precedents
     against_precedents = against_precedents + neutral_precedents
 
-    print(f"\n📊 Risultato stance classification:")
-    print(f"   - Articoli a SUPPORTO: {len(support_statutes)}")
-    print(f"   - Articoli CONTRO: {len(against_statutes)}")
-    print(f"   - Precedenti a SUPPORTO: {len(support_precedents)}")
-    print(f"   - Precedenti CONTRO: {len(against_precedents)}")
+    print("\n📊 Risultato stance classification:")
+    print("   - Articoli a SUPPORTO: " + str(len(support_statutes)))
+    print("   - Articoli CONTRO: " + str(len(against_statutes)))
+    print("   - Precedenti a SUPPORTO: " + str(len(support_precedents)))
+    print("   - Precedenti CONTRO: " + str(len(against_precedents)))
 
     return support_statutes, against_statutes, support_precedents, against_precedents
 
@@ -455,7 +455,7 @@ def pipeline():
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
         print(f"\n{'='*70}")
-        print(f"🚀 PIPELINE COMPLETA - INIZIO")
+        print("🚀 PIPELINE COMPLETA - INIZIO")
         print(f"{'='*70}")
         print(f"Claim: {claim[:100]}...")
 
@@ -487,7 +487,7 @@ def pipeline():
             pre_retrieved_precedents=support_precedents,
         )
 
-        print(f"✅ Reasoner completato")
+        print("✅ Reasoner completato")
         print(
             f"   - Causalità: {reasoner_result.causality_classification.get('causality_type', 'N/A')}"
         )
@@ -512,14 +512,14 @@ def pipeline():
             pre_retrieved_precedents=against_precedents,
         )
 
-        print(f"✅ Counter-Reasoner completato")
+        print("✅ Counter-Reasoner completato")
         print(f"   - Contro-argomenti: {len(counter_result.counter_arguments)}")
         print(
             f"   - Catena di contro-ragionamento: {len(counter_result.reasoning_chain)} steps"
         )
 
         print(f"\n{'='*70}")
-        print(f"✅ PIPELINE COMPLETA - FINE")
+        print("✅ PIPELINE COMPLETA - FINE")
         print(f"{'='*70}\n")
 
         # Restituisci entrambi i risultati
@@ -533,7 +533,7 @@ def pipeline():
 
     except Exception as e:
         print(f"\n{'='*70}")
-        print(f"❌ ERRORE PIPELINE")
+        print("❌ ERRORE PIPELINE")
         print(f"{'='*70}")
         print(f"Errore: {e}")
         import traceback

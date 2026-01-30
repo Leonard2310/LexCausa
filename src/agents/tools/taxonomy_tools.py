@@ -9,7 +9,7 @@ Provides tools for:
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from groq import Groq
 from langchain_core.tools import tool

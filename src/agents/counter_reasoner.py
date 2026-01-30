@@ -292,15 +292,55 @@ class CounterReasoner(BaseAgent):
             warrant_info["attacking_causalities"]
         )
 
+        # Enrich with relevant taxonomy norms for attacking causalities
+        taxonomy_statutes: list[dict] = []
+
+        for att_type in warrant_info.get("attacking_causalities", []):
+            theory = get_causality_theory_tool.invoke(
+                {"causality_type": att_type, "claim": claim}
+            )
+            core_rel = theory.get("norme_core_rilevanti", [])
+            acc_rel = theory.get("norme_accessorie_rilevanti", [])
+            core_full = theory.get("norme_core", [])
+            acc_full = theory.get("norme_accessorie", [])
+            norms = core_rel + acc_rel
+
+            kept_refs = [n.get("riferimento") for n in norms if n.get("riferimento")]
+            kept_set = {r for r in kept_refs if r}
+            discarded_refs = [
+                n.get("riferimento")
+                for n in (core_full + acc_full)
+                if n.get("riferimento") and n.get("riferimento") not in kept_set
+            ]
+            self._log(
+                f"🔎 [taxonomy] Causalità {att_type}: core {len(core_rel)}/{len(core_full)}, accessorie {len(acc_rel)}/{len(acc_full)}"
+            )
+            if kept_refs:
+                self._log(f"   ✔️ Tenute: {', '.join(kept_refs)}")
+            if discarded_refs:
+                self._log(f"   ❌ Scartate: {', '.join(discarded_refs)}")
+
+            taxonomy_statutes.extend([self._norm_to_statute_dict(n) for n in norms])
+
+        all_statutes = pre_retrieved_statutes + taxonomy_statutes
+        # Deduplicate
+        seen_keys = set()
+        deduped_statutes = []
+        for s in all_statutes:
+            key = (s.get("articolo"), s.get("source"))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped_statutes.append(s)
+
         # Format knowledge base for prompt
         knowledge_base = self._format_context_for_prompt(
-            pre_retrieved_statutes, 
+            deduped_statutes, 
             pre_retrieved_precedents
         )
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
-            for s in pre_retrieved_statutes
+            for s in deduped_statutes
         ]
         allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
 
@@ -365,7 +405,7 @@ class CounterReasoner(BaseAgent):
             warrant_info=warrant_info,
             attacking_causalities=warrant_info["attacking_causalities"],
             counter_causality_details=attacking_descriptions,
-            relevant_statutes=pre_retrieved_statutes,
+            relevant_statutes=deduped_statutes,
             relevant_precedents=pre_retrieved_precedents,
             raw_response=raw_output,
         )

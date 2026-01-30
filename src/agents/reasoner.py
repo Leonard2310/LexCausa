@@ -161,17 +161,62 @@ class Reasoner(BaseAgent):
                 raw_response="Analisi non completata: nessuna fonte normativa o giurisprudenziale disponibile."
             )
 
-        # Format the knowledge base for the prompt
-        knowledge_base = self._format_context_for_prompt(
-            pre_retrieved_statutes, 
-            pre_retrieved_precedents
-        )
+        # Enrich with relevant norms from taxonomy filtered by claim (pre-classification)
+        taxonomy_statutes: list[dict] = []
+        try:
+            prelim_causality = classify_causality_tool.invoke({"claim": claim})
+            prelim_type = prelim_causality.get("causality_type") or prelim_causality.get("tipo_causalita")
+        except Exception:
+            prelim_type = None
+
+        if prelim_type:
+            theory = get_causality_theory_tool.invoke(
+                {"causality_type": prelim_type, "claim": claim}
+            )
+            core_rel = theory.get("norme_core_rilevanti", [])
+            acc_rel = theory.get("norme_accessorie_rilevanti", [])
+            core_full = theory.get("norme_core", [])
+            acc_full = theory.get("norme_accessorie", [])
+            taxonomy_norms = core_rel + acc_rel
+
+            kept_refs = [n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")]
+            kept_set = {r for r in kept_refs if r}
+            discarded_refs = [
+                n.get("riferimento")
+                for n in (core_full + acc_full)
+                if n.get("riferimento") and n.get("riferimento") not in kept_set
+            ]
+            self._log(
+                f"🔎 [taxonomy] Causalità {prelim_type}: core {len(core_rel)}/{len(core_full)}, accessorie {len(acc_rel)}/{len(acc_full)}"
+            )
+            if kept_refs:
+                self._log(f"   ✔️ Tenute: {', '.join(kept_refs)}")
+            if discarded_refs:
+                self._log(f"   ❌ Scartate: {', '.join(discarded_refs)}")
+
+            taxonomy_statutes = [self._norm_to_statute_dict(n) for n in taxonomy_norms]
+
+        # Merge KB statutes with taxonomy-derived relevant norms
+        all_statutes = pre_retrieved_statutes + taxonomy_statutes
+        seen_keys = set()
+        deduped_statutes = []
+        for s in all_statutes:
+            key = (s.get("articolo"), s.get("source"))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped_statutes.append(s)
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
-            for s in pre_retrieved_statutes
+            for s in deduped_statutes
         ]
         allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
+
+        # Format the knowledge base for the prompt
+        knowledge_base = self._format_context_for_prompt(
+            deduped_statutes, 
+            pre_retrieved_precedents
+        )
 
         # Build the input prompt with pre-retrieved context and explicit allow-list
         input_prompt = self._build_reasoning_prompt_with_context(
@@ -214,7 +259,7 @@ class Reasoner(BaseAgent):
         output = ReasonerOutput(
             claim=claim,
             causality_classification=causality,
-            relevant_statutes=pre_retrieved_statutes,
+            relevant_statutes=deduped_statutes,
             relevant_precedents=pre_retrieved_precedents,
             raw_response=raw_output,
         )

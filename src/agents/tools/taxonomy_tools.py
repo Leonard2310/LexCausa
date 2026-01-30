@@ -9,7 +9,7 @@ Provides tools for:
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from groq import Groq
 from langchain_core.tools import tool
@@ -21,6 +21,7 @@ from config import settings  # noqa: E402
 
 _taxonomy_cache: Optional[dict] = None
 _groq_client: Optional[Groq] = None
+_theory_cache: dict = {}
 
 
 def get_taxonomy() -> dict:
@@ -236,10 +237,17 @@ class GetCausalityTheoryInput(BaseModel):
     causality_type: str = Field(
         description="Type of causality: 'Materiale', 'Giuridica', or 'Concause / Sopravvenute'"
     )
+    claim: Optional[str] = Field(
+        default=None,
+        description="Legal claim text to softly filter taxonomy norms for relevance.",
+    )
 
 
 @tool("get_causality_theory", args_schema=GetCausalityTheoryInput)
-def get_causality_theory_tool(causality_type: str) -> dict:
+def get_causality_theory_tool(
+    causality_type: str,
+    claim: Optional[str] = None,
+) -> dict:
     """
     Retrieve the complete theory associated with a causality type.
 
@@ -254,27 +262,45 @@ def get_causality_theory_tool(causality_type: str) -> dict:
     """
     taxonomy = get_taxonomy()
 
-    # Normalize input
+    # Normalize input and build cache key
     normalized_type = causality_type.strip()
+    cache_key = (normalized_type.lower(), (claim or "").strip())
+    if cache_key in _theory_cache:
+        return _theory_cache[cache_key]
 
     # Find matching entry
     for entry in taxonomy.get("tassonomia_causalita", []):
         if entry.get("tipo_causalita", "").lower() == normalized_type.lower():
+            core_full = entry.get("norme_core", [])
+            access_full = entry.get("norme_accessorie", [])
+
             result = {
                 "tipo_causalita": entry.get("tipo_causalita"),
                 "warrant": entry.get("warrant", {}),
                 "principio_test": entry.get("principio_test_applicato", ""),
                 "descrizione": entry.get("descrizione_ruolo", ""),
-                "norme_core": entry.get("norme_core", []),
-                "norme_accessorie": entry.get("norme_accessorie", []),
+                "norme_core": core_full,
+                "norme_accessorie": access_full,
                 "limiti_criticita": entry.get("limiti_criticita", ""),
             }
+
+            # If no claim, return without logging/filtering
+            if not claim:
+                _theory_cache[cache_key] = result
+                return result
+
+            # Relevance filtering against the claim (soft keep-by-default)
+            core_rel = _filter_norms_for_claim(core_full, claim)
+            access_rel = _filter_norms_for_claim(access_full, claim)
+            result["norme_core_rilevanti"] = core_rel
+            result["norme_accessorie_rilevanti"] = access_rel
 
             # Include subtypes if present
             notes = entry.get("note")
             if notes and "sottotipi_inclusi" in notes:
                 result["sottotipi"] = notes["sottotipi_inclusi"]
 
+            _theory_cache[cache_key] = result
             return result
 
     return {
@@ -298,3 +324,46 @@ def get_all_causality_types() -> list[dict]:
         )
 
     return types
+
+
+def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:
+    """Soft-filter taxonomy norms for claim relevance (default keep)."""
+    if not norms:
+        return norms
+
+    client = get_groq_client()
+    relevant: list[dict] = []
+
+    for norm in norms:
+        ref = norm.get("riferimento", "N/A")
+        nota = norm.get("nota", "")
+
+        prompt = f"""Legal Claim:
+"{claim}"
+
+Norma dalla tassonomia:
+"{ref}" - "{nota}"
+
+Istruzione:
+Valuta se questa norma è rilevante per il claim. Rispondi YES a meno che la norma sia chiaramente fuori dominio rispetto ai fatti e agli istituti del claim. Se incerto, YES.
+
+Rispondi con un solo token: YES o NO."""
+
+        try:
+            resp = client.chat.completions.create(
+                model=settings.groq_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=10,
+            )
+            answer = (resp.choices[0].message.content or "").strip().upper()
+        except Exception:
+            answer = "YES"
+
+        token = answer.split()[0] if answer else ""
+        keep = token != "NO" and (token == "YES" or "YES" in answer or "NO" not in answer)
+
+        if keep:
+            relevant.append(norm)
+
+    return relevant

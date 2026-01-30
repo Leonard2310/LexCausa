@@ -318,3 +318,26 @@ class BaseAgent(ABC):
             parts.append("")
 
         return "\n".join(parts) if parts else "Nessun contesto normativo disponibile."
+
+    def _norm_to_statute_dict(self, norm: dict) -> dict:
+        """
+        Convert a taxonomy norm entry into a statute-like dict for prompts.
+        """
+        riferimento = norm.get("riferimento", "Art. N/D")
+        articolo_match = None
+        try:
+            import re
+            articolo_match = re.search(r"(\d+)", riferimento)
+        except Exception:
+            pass
+        articolo = articolo_match.group(1) if articolo_match else riferimento
+
+        source = "codice_civile" if "c.c" in riferimento.lower() else "codice_penale"
+        return {
+            "statute_id": riferimento,
+            "articolo": articolo,
+            "titolo": norm.get("nota", riferimento),
+            "testo": norm.get("nota", ""),
+            "libro": "",
+            "source": source,
+        }

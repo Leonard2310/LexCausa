@@ -128,7 +128,7 @@ class StanceClassifier:
         self, 
         claim: str, 
         statutes: list[dict]
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], list[dict]]:
         """
         Classify multiple statutes and separate into support vs against.
         
@@ -141,6 +141,7 @@ class StanceClassifier:
         """
         supporting = []
         opposing = []
+        neutral = []
         
         print(f"🔍 [StanceClassifier] Classifying {len(statutes)} statutes...")
         
@@ -155,17 +156,17 @@ class StanceClassifier:
                 opposing.append(statute)
                 print(f"  ❌ Art. {article}: CONTRO")
             else:
-                # Neutral: do not assign to either side
-                print(f"  ⚖️ Art. {article}: NEUTRALE (scartato)")
+                neutral.append(statute)
+                print(f"  ⚖️ Art. {article}: NEUTRALE")
         
-        print(f"📊 [StanceClassifier] Result: {len(supporting)} support, {len(opposing)} against")
-        return supporting, opposing
+        print(f"📊 [StanceClassifier] Result: {len(supporting)} support, {len(opposing)} against, {len(neutral)} neutral")
+        return supporting, opposing, neutral
 
     def classify_precedents_batch(
         self, 
         claim: str, 
         precedents: list[dict]
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], list[dict]]:
         """
         Classify multiple precedents and separate into support vs against.
         
@@ -178,6 +179,7 @@ class StanceClassifier:
         """
         supporting = []
         opposing = []
+        neutral = []
         
         print(f"🔍 [StanceClassifier] Classifying {len(precedents)} precedents...")
         
@@ -192,11 +194,11 @@ class StanceClassifier:
                 opposing.append(precedent)
                 print(f"  ❌ '{title}...': CONTRO")
             else:
-                # Neutral: do not assign to either side
-                print(f"  ⚖️ '{title}...': NEUTRALE (scartato)")
+                neutral.append(precedent)
+                print(f"  ⚖️ '{title}...': NEUTRALE")
         
-        print(f"📊 [StanceClassifier] Result: {len(supporting)} support, {len(opposing)} against")
-        return supporting, opposing
+        print(f"📊 [StanceClassifier] Result: {len(supporting)} support, {len(opposing)} against, {len(neutral)} neutral")
+        return supporting, opposing, neutral
 
     def _build_statute_prompt(
         self, 

@@ -425,13 +425,13 @@ INSTRUCTIONS:
 2. Build counter-arguments that CHALLENGE and DISMANTLE the claim.
 3. Each counter-argument must have:
    - Premessa Alternativa: An alternative premise that contradicts the claim
-   - Norma: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES)
+   - Norma: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES; if none apply, omit the norma field)
    - Nesso Causale Alternativo: How this challenges the causal link
    - Conclusione Contraria: The contrary legal implication
 4. End with a REASONING CHAIN that shows how your counter-arguments dismantle the claim.
 
 CRITICAL: Use ONLY the articles and precedents in the KNOWLEDGE BASE above.
-Do NOT invent or cite articles not provided. If a needed article/precedent is absent from the allowed lists, state that it is not available.
+Do NOT invent or cite articles not provided. If a needed article/precedent is absent from the allowed lists, omit it instead of stating it is unavailable.
 
 Generate your counter-analysis now (in Italian):"""
 

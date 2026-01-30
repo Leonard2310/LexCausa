@@ -266,8 +266,9 @@ Rules:
 - Do NOT suggest any additional articles.
 - Do NOT use external knowledge; only consider the claim and this article.
 - Do NOT add explanations or comments.
-- Answer YES unless the article is clearly unrelated to the claim.
-- Use NO only when there is no meaningful connection at all.
+- Answer YES in all cases with even indirect connection.
+- Use NO only when the article is clearly about a different domain.
+- If uncertain, answer YES.
 
 Respond with EXACTLY one token: YES or NO.
 No punctuation. No new lines. No extra spaces.
@@ -291,6 +292,60 @@ No punctuation. No new lines. No extra spaces.
 
         self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
         return relevant_statutes
+
+
+    def filter_irrelevant_precedents(self, claim: str, precedents: list[dict]) -> list[dict]:
+        """
+        Soft-filter precedents: keep by default, discard only when clearly unrelated.
+        """
+        if not precedents:
+            self._log("No precedents to filter", "info")
+            return precedents
+
+        self._log(f"🔍 Filtering relevance: {len(precedents)} precedents initially")
+
+        relevant_precedents = []
+
+        for idx, precedent in enumerate(precedents, start=1):
+            title = precedent.get("title", "Untitled")
+            summary = precedent.get("summary", "")
+
+            prompt = f"""Legal Claim:
+"{claim}"
+
+Precedent:
+"{title}" - "{summary}"
+
+Instruction:
+Decide if this precedent has a meaningful connection to the claim (employment/licenziamento, retribuzione, TFR, rapporto di lavoro).
+
+Rules:
+- Answer YES unless the precedent is clearly about a different domain (es. societario puro, titoli di credito, marchi, appalti pubblici) with no employment link.
+- If there is any plausible link to employment/termination/worker rights, answer YES.
+- If uncertain, answer YES.
+
+Respond with EXACTLY one token: YES or NO.
+No punctuation. No new lines. No extra spaces.
+"""
+
+            try:
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                answer = response.content.strip().upper()
+            except Exception as e:
+                self._log(f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}", "warning")
+                answer = "YES"
+
+            token = answer.split()[0] if answer else ""
+            keep = token != "NO" and (token == "YES" or "YES" in answer or "NO" not in answer)
+
+            if keep:
+                relevant_precedents.append(precedent)
+                self._log(f"✅ Keeping precedent [{idx}] {title}")
+            else:
+                self._log(f"❌ Discarding precedent [{idx}] {title}", "warning")
+
+        self._log(f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept")
+        return relevant_precedents
 
 
     def _build_reasoning_prompt_with_context(
@@ -328,9 +383,9 @@ INSTRUCTIONS:
    - For each argument, specify:
      - **Premessa**: The starting fact from the claim
      - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES)
-     - **Precedente**: Supporting precedent (ONLY if present in ALLOWED PRECEDENTS, otherwise "non disponibile")
-     - **Nesso Causale**: How the premise connects to the norm
-     - **Conclusione**: The legal implication
+     - **Precedente**: Supporting precedent (ONLY if present in ALLOWED PRECEDENTS; if none, OMIT this field)
+      - **Nesso Causale**: How the premise connects to the norm
+      - **Conclusione**: The legal implication
 
 4. **REASONING CHAIN**: Provide a final CATENA DI RAGIONAMENTO with:
    - Numbered logical steps
@@ -339,7 +394,7 @@ INSTRUCTIONS:
 
 CRITICAL:
 - Cite ONLY the statutes listed in ALLOWED STATUTE REFERENCES. If a needed article is missing, write "articolo non disponibile nel knowledge base".
-- Cite ONLY the precedents in ALLOWED PRECEDENTS; otherwise mark as "non disponibile".
+- Cite ONLY the precedents in ALLOWED PRECEDENTS; if none apply, omit the precedents field rather than stating it is unavailable.
 
 The response language must be Italian."""
 

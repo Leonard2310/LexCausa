@@ -115,6 +115,8 @@ def prepare_claim_context(
         except Exception as e:
             print(f"⚠️ Errore recupero precedenti: {e}")
 
+    precedents = reas.filter_irrelevant_precedents(claim, precedents)
+
     return statutes, precedents
 
 
@@ -185,8 +187,14 @@ def classify_stance_for_agents(
     print("🎯 STANCE CLASSIFICATION (NLI)...")
     print(f"{'─'*70}")
     
-    support_statutes, against_statutes = sc.classify_statutes_batch(claim, statutes)
-    support_precedents, against_precedents = sc.classify_precedents_batch(claim, precedents)
+    support_statutes, against_statutes, neutral_statutes = sc.classify_statutes_batch(claim, statutes)
+    support_precedents, against_precedents, neutral_precedents = sc.classify_precedents_batch(claim, precedents)
+
+    # Re-introduce neutrals to both agents to avoid starving them of context
+    support_statutes = support_statutes + neutral_statutes
+    against_statutes = against_statutes + neutral_statutes
+    support_precedents = support_precedents + neutral_precedents
+    against_precedents = against_precedents + neutral_precedents
     
     print(f"\n📊 Risultato stance classification:")
     print(f"   - Articoli a SUPPORTO: {len(support_statutes)}")

@@ -4,52 +4,69 @@
 
 **LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (Groq Cloud), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.
 
+
+
 ## 🎯 Features
 
-- **Legal Claim Classification**: Routes claims to the appropriate book of Italian Civil/Penal Code using LLM
-- **Semantic Search**: Vector similarity search on 3900+ statute articles using Legal-BERT embeddings
-- **Unified Search Architecture**: All tabs (Ricerca, Ragionamento, Pipeline Completa) share the same `LegalSearchPipeline` singleton for consistent results
-- **Causal Chain Reasoning**: Classifies causality type (Material, Legal, Concurrent) and builds structured arguments
-- **Knowledge Graph**: Neo4j-based storage of statutes, precedents, and their relationships
-- **Multi-Agent Architecture**: Reasoner, Counter-Reasoner, and Polisher-Evaluator agents
-- **React Frontend**: Interactive three-tab interface (Ricerca, Ragionamento, Pipeline Completa)
+- **Legal Claim Classification**: Automatic claim classification and routing to the correct book of the Civil/Penal Code via LLM
+- **Semantic Search**: Vector search on 3900+ articles using Legal-BERT, with unified and configurable pipeline
+- **Unified Pipeline**: All functionalities (Search, Reasoning, Full Pipeline) share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
+- **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification and precise citations
+- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, identifying attacking causalities and building attack reasoning chains
+- **Polisher-Evaluator Agent**: (In development) Evaluates the dialectical exchange Reasoner/Counter-Reasoner, determines the prevailing side and polishes the final response
+- **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
+- **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
+- **Centralized Configuration**: All parameters (models, allow-list, top_k, etc.) managed by `src/config.py` and environment variables
+- **React Frontend**: Modern three-tab interface (Search, Reasoning, Full Pipeline) on Vite + React 18
 
-## 🏗️ Architecture
+
+
+## 🏗️ Agent and Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Frontend (React + Vite)                    │
-│         Tab Ricerca │ Tab Ragionamento │ Tab Pipeline           │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        Frontend (React + Vite)                              │
+│         Search Tab │ Reasoning Tab │ Full Pipeline Tab                      │
+└──────────────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Flask API Server (8000)                       │
-├─────────────────────────────────────────────────────────────────┤
-│  /api/chat      → Legal Search Pipeline                         │
-│  /api/reason    → Reasoner Agent (uses same Pipeline!)          │
-│  /api/counter   → Counter-Reasoner Agent                        │
-│  /api/evaluate  → Polisher-Evaluator Agent                      │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    Flask API Server (8000)                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  /api/chat      → LegalSearchPipeline (unified retrieval)                   │
+│  /api/reason    → Reasoner Agent (structured reasoning)                     │
+│  /api/counter   → Counter-Reasoner Agent (counter-argumentation)            │
+│  /api/evaluate  → Polisher-Evaluator Agent (dialectical evaluation, WIP)    │
+└──────────────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              LegalSearchPipeline (Singleton)                     │
-│    Shared across all tabs for consistent search results          │
-├─────────────────────────────────────────────────────────────────┤
-│  ClaimClassifier (Groq LLM) → Libro routing                     │
-│  Legal-BERT Embeddings → 768-dim vectors                        │
-│  Vector Search → Filtered by classified libri                   │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│              LegalSearchPipeline (Singleton, thread-safe)                   │
+│    Vector retrieval, allow-list, stance classification, soft-filtering      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  ClaimClassifier (Groq LLM) → book routing                                  │
+│  Legal-BERT Embeddings → 768-dim vectors                                    │
+│  Vector Search → Filtered by books and allow-list                           │
+└──────────────────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Neo4j Knowledge Base                          │
-├─────────────────────────────────────────────────────────────────┤
-│  📚 3964 Statute Articles (Civil Code + Penal Code)             │
-│  📊 768-dim Vector Index (Legal-BERT embeddings)                │
-│  🔗 Causality Taxonomy (Material, Legal, Concurrent)            │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    Reasoner / Counter-Reasoner / Polisher-Evaluator         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  Reasoner: structured argumentative chain, only on provided knowledge base   │
+│  Counter-Reasoner: dialectical attack via causality taxonomy                │
+│  Polisher-Evaluator: evaluation and final synthesis (in development)        │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    Neo4j Knowledge Base + Taxonomy                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  📚 3964 articles (Civil + Penal Code)                                      │
+│  📊 768-dim Vector Index (Legal-BERT)                                       │
+│  🔗 Causality taxonomy (Material, Legal, Concurrent)                        │
+│  ⚖️  Precedents and causal relationships                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 📋 Prerequisites
@@ -224,34 +241,34 @@ All configuration is managed through environment variables and the `src/config.p
 | `EMBEDDING_MODEL` | `nlpaueb/legal-bert-base-uncased` | Embedding model |
 | `API_PORT` | `8000` | API server port |
 
-## 🧪 Development Status
+
+
+## 🧪 Agent & Pipeline Development Status
 
 ### ✅ Completed
 - [x] Neo4j Knowledge Base with Civil/Penal Code
 - [x] Legal-BERT embeddings and vector search
-- [x] Claim classification (book routing via LLM)
-- [x] Legal Search Pipeline with unified architecture
-- [x] Reasoner Agent with LangGraph ReAct pattern
-- [x] Unified `search_legal_sources_tool` - same search logic across all tabs
-- [x] Causality classification (Material, Legal, Concurrent causes)
-- [x] React frontend with three tabs (Ricerca, Ragionamento, Pipeline Completa)
+- [x] Claim classification and book routing via LLM
+- [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering, stance)
+- [x] Reasoner Agent: structured argumentative chain, serialized output, only on provided knowledge base
+- [x] Counter-Reasoner Agent: dialectical attack via causality taxonomy, structured counter-arguments
+- [x] Prescriptive prompts and structured output for all agents
 - [x] Centralized configuration via Pydantic Settings
-- [x] Thread-safe singleton pattern for LegalSearchPipeline
+- [x] React frontend (Vite) with three tabs
 
 ### 🚧 In Progress
-- [ ] Counter-Reasoner Agent (argumentation, Legal NER & RAG)
-- [ ] Polisher-Evaluator Agent (grounding check, final synthesis)
-- [ ] Formatter/Unification (PRO/COUNTER arguments)
-- [ ] Precedent ingestion and search (ITA-CASEHOLD dataset)
-- [ ] Attack graph visualization (Dialectical Meta-Graph)
-- [ ] Final Logic Chain & Score (structured output)
-- [ ] Explainability (reasoning explanation)
-- [ ] Italian Official Gazette ingestion
+- [ ] Polisher-Evaluator Agent: dialectical evaluation, scoring, final synthesis
+- [ ] Formatter/Unification of PRO/COUNTER output
+- [ ] Precedent ingestion and search (ITA-CASEHOLD)
+- [ ] Attack graph visualization (dialectical meta-graph)
+- [ ] Final logic chain & structured scoring
+- [ ] Explainability of reasoning
+- [ ] Official Gazette ingestion
 
 ### 📋 Planned
 - [ ] Full argumentation framework (Dung-style)
 - [ ] Export reasoning chains to structured formats
-- [ ] PRO/COUNTER Arguments structured output
+- [ ] Structured PRO/COUNTER output
 - [ ] Multi-turn dialogue with context retention
 
 ## 📄 License

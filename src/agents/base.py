@@ -5,14 +5,17 @@ Provides common functionality for all agents including:
 - LLM initialization (Groq)
 - Neo4j connection
 - Logging and error handling
+- Common extraction methods for tool messages
 """
 
+import json
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from langchain_core.messages import ToolMessage
 from langchain_groq import ChatGroq
 from neo4j import GraphDatabase
 
@@ -133,3 +136,185 @@ class BaseAgent(ABC):
             level, "•"
         )
         print(f"{emoji} [{self.__class__.__name__}] {message}")
+
+    # =========================================================================
+    # COMMON EXTRACTION METHODS (shared by Reasoner and CounterReasoner)
+    # =========================================================================
+
+    def _extract_statutes_from_messages(self, messages: list) -> list[dict]:
+        """
+        Extract statutes from search_legal_sources or search_statutes tool responses.
+        Filters out error/empty messages.
+        """
+        statutes = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                try:
+                    data = json.loads(msg.content)
+
+                    # Handle search_legal_sources (primary tool - new format)
+                    if msg.name == "search_legal_sources":
+                        if isinstance(data, dict) and "articles" in data:
+                            for item in data["articles"]:
+                                if isinstance(item, dict) and "statute_id" in item:
+                                    statutes.append(item)
+
+                    # Handle search_statutes (secondary tool - list format)
+                    elif msg.name == "search_statutes":
+                        if isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict) and "statute_id" in item:
+                                    statutes.append(item)
+                except Exception:
+                    pass
+        return statutes
+
+    def _extract_precedents_from_messages(self, messages: list) -> list[dict]:
+        """
+        Extract precedents retrieved by search_precedents tool.
+        Filters out error/empty messages.
+        """
+        precedents = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name == "search_precedents":
+                try:
+                    data = json.loads(msg.content)
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict) and "precedent_id" in item:
+                                precedents.append(item)
+                except Exception:
+                    pass
+        return precedents
+
+    def _extract_causality_from_messages(self, messages: list) -> dict:
+        """
+        Extract the result of the classify_causality tool from LangGraph messages.
+        """
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and msg.name == "classify_causality":
+                try:
+                    return json.loads(msg.content)
+                except Exception:
+                    return {}
+        return {}
+
+    def _extract_reasoning_chain(self, response: str) -> list[str]:
+        """Extract reasoning chain from response with improved pattern matching."""
+        chain = []
+        lines = response.split("\n")
+
+        # Patterns that indicate start of reasoning chain section
+        chain_markers = [
+            "catena", "ragionamento", "chain", "reasoning",
+            "conclusione", "sintesi", "riepilogo", "summary",
+            "passaggi", "steps", "argomentazione"
+        ]
+        
+        in_chain = False
+        for line in lines:
+            line = line.strip()
+            lower_line = line.lower()
+            
+            # Check if this line starts a chain section
+            if any(marker in lower_line for marker in chain_markers):
+                in_chain = True
+                # If the marker line itself has content after ":", extract it
+                if ":" in line:
+                    content = line.split(":", 1)[1].strip()
+                    if content and len(content) > 10:
+                        chain.append(content)
+                continue
+            
+            if in_chain and line:
+                # Numbered items (1., 2., etc.)
+                if line[0].isdigit() and len(line) > 2:
+                    chain.append(line.lstrip("0123456789.) "))
+                # Bullet points
+                elif line.startswith(("-", "•", "*", "—", "→")):
+                    chain.append(line.lstrip("-•*—→ "))
+                # Arrow notation
+                elif "→" in line or "->" in line:
+                    chain.append(line)
+                # Lines starting with ** (markdown bold)
+                elif line.startswith("**") and line.endswith("**"):
+                    chain.append(line.strip("*"))
+        
+        # Fallback: if no chain found, look for structured content
+        if not chain:
+            for line in lines:
+                line = line.strip()
+                # Look for lines with legal references
+                if line and ("Art." in line or "art." in line or "c.c." in line or "c.p." in line):
+                    if len(line) > 30:  # Meaningful content
+                        chain.append(line.lstrip("-•*→ 0123456789.)"))
+        
+        # Final fallback: return first substantive paragraphs
+        if not chain:
+            paragraphs = [p.strip() for p in response.split("\n\n") if p.strip()]
+            for p in paragraphs[:3]:
+                if len(p) > 50:
+                    chain.append(p[:500])
+        
+        return chain if chain else ["Catena di ragionamento non disponibile."]
+
+    def _sanitize_reasoning_chain(
+        self, chain: list[str], precedents: list[dict]
+    ) -> list[str]:
+        """Clean and sanitize reasoning chain, handling precedent mentions."""
+        if precedents:
+            return [self._clean_chain_step(step) for step in chain]
+
+        sanitized = []
+        for step in chain:
+            cleaned = self._clean_chain_step(step)
+            lower = cleaned.lower()
+            mentions_precedent = "precedent" in lower or "precedente" in lower
+            mentions_absence = "nessun" in lower or "nessuna" in lower
+            if mentions_precedent and not mentions_absence:
+                continue
+            sanitized.append(cleaned)
+
+        if not any(
+            "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
+        ):
+            sanitized.append("Precedenti: nessuno trovato.")
+
+        return sanitized
+
+    def _clean_chain_step(self, step: str) -> str:
+        """Clean a single chain step."""
+        cleaned = step.strip()
+        if "**" in cleaned:
+            cleaned = cleaned.replace("**", "")
+        return cleaned.strip()
+
+    def _format_context_for_prompt(
+        self,
+        statutes: list[dict],
+        precedents: list[dict],
+    ) -> str:
+        """Format retrieved context for inclusion in prompts."""
+        parts = []
+
+        if statutes:
+            parts.append("ARTICOLI DI LEGGE:")
+            for s in statutes:
+                source = "c.c." if s.get("source") == "codice_civile" else "c.p."
+                parts.append(f"- Art. {s.get('articolo')} {source}: {s.get('titolo')}")
+                testo = s.get("testo")
+                if testo:
+                    parts.append(f"  {testo[:500]}...")
+            parts.append("")
+
+        if precedents:
+            parts.append("PRECEDENTI GIURISPRUDENZIALI:")
+            for p in precedents:
+                title = p.get("title", "Untitled")
+                parts.append(f"- {title}")
+                summary = p.get("summary")
+                if summary:
+                    parts.append(f"  {summary[:300]}...")
+            parts.append("")
+
+        return "\n".join(parts) if parts else "Nessun contesto normativo disponibile."

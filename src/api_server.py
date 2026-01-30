@@ -34,6 +34,7 @@ from agents.tools.neo4j_tools import (  # noqa: E402
 )
 from config import settings  # noqa: E402
 from services.claim_classifier import ClaimClassifier  # noqa: E402
+from services.stance_classifier import StanceClassifier  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -44,6 +45,7 @@ classifier = None
 reasoner = None
 counter_reasoner = None
 polisher_evaluator = None
+stance_classifier = None
 
 # Carica la tassonomia una volta all'avvio
 TAXONOMY = None
@@ -99,7 +101,7 @@ def prepare_claim_context(
     ]
 
     reas = get_reasoner()
-    statutes = reas._filter_irrelevant_statutes(claim, statutes)
+    statutes = reas.filter_irrelevant_statutes(claim, statutes)
 
     precedents: list[dict] = []
     if include_precedents:
@@ -153,6 +155,45 @@ def get_polisher_evaluator():
         polisher_evaluator = PolisherEvaluator()
         print("✅ Polisher-Evaluator pronto!")
     return polisher_evaluator
+
+
+def get_stance_classifier():
+    """Lazy load dello Stance Classifier NLI."""
+    global stance_classifier
+    if stance_classifier is None:
+        print("🔧 Inizializzazione Stance Classifier (NLI)...")
+        stance_classifier = StanceClassifier()
+        print("✅ Stance Classifier pronto!")
+    return stance_classifier
+
+
+def classify_stance_for_agents(
+    claim: str,
+    statutes: list[dict],
+    precedents: list[dict],
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """
+    Classify statutes and precedents as supporting or opposing the claim.
+    
+    Returns:
+        Tuple of (support_statutes, against_statutes, support_precedents, against_precedents)
+    """
+    sc = get_stance_classifier()
+    
+    print(f"\n{'─'*70}")
+    print("🎯 STANCE CLASSIFICATION (NLI)...")
+    print(f"{'─'*70}")
+    
+    support_statutes, against_statutes = sc.classify_statutes_batch(claim, statutes)
+    support_precedents, against_precedents = sc.classify_precedents_batch(claim, precedents)
+    
+    print(f"\n📊 Risultato stance classification:")
+    print(f"   - Articoli a SUPPORTO: {len(support_statutes)}")
+    print(f"   - Articoli CONTRO: {len(against_statutes)}")
+    print(f"   - Precedenti a SUPPORTO: {len(support_precedents)}")
+    print(f"   - Precedenti CONTRO: {len(against_precedents)}")
+    
+    return support_statutes, against_statutes, support_precedents, against_precedents
 
 
 def get_warrant_causality(causality_type: str) -> dict:
@@ -302,7 +343,7 @@ def reason():
             max_precedents=max_precedents,
         )
 
-        result = reas.reason_with_context(
+        result = reas.run(
             claim=claim,
             pre_retrieved_statutes=statutes,
             pre_retrieved_precedents=precedents,
@@ -362,7 +403,7 @@ def counter_reason():
         cr = get_counter_reasoner()
 
         # Esegui il counter-reasoning con contesto pre-retrieved
-        result = cr.run_with_context(
+        result = cr.run(
             claim=claim,
             causality=causality,
             pre_retrieved_statutes=statutes,
@@ -411,41 +452,45 @@ def pipeline():
             max_precedents=max_precedents,
         )
 
-        # STEP 1: Reasoner
+        # Classify stance using NLI to separate support vs against
+        support_statutes, against_statutes, support_precedents, against_precedents = \
+            classify_stance_for_agents(claim, statutes, precedents)
+
+        # STEP 1: Reasoner (receives SUPPORT articles/precedents)
         print(f"\n{'─'*70}")
-        print("📊 STEP 1: Esecuzione Reasoner...")
+        print("📊 STEP 1: Esecuzione Reasoner (con articoli a SUPPORTO)...")
         print(f"{'─'*70}")
+        print(f"   📚 Knowledge base: {len(support_statutes)} statuti, {len(support_precedents)} precedenti")
 
         reas = get_reasoner()
-        reasoner_result = reas.reason_with_context(
+        reasoner_result = reas.run(
             claim=claim,
-            pre_retrieved_statutes=statutes,
-            pre_retrieved_precedents=precedents,
+            pre_retrieved_statutes=support_statutes,
+            pre_retrieved_precedents=support_precedents,
         )
         
         print(f"✅ Reasoner completato")
         print(f"   - Causalità: {reasoner_result.causality_classification.get('causality_type', 'N/A')}")
         print(f"   - Argomenti: {len(reasoner_result.arguments)}")
-        print(f"   - Statuti: {len(reasoner_result.relevant_statutes)}")
-        print(f"   - Precedenti: {len(reasoner_result.relevant_precedents)}")
+        print(f"   - Catena di ragionamento: {len(reasoner_result.reasoning_chain)} steps")
 
-        # STEP 2: Counter-Reasoner
+        # STEP 2: Counter-Reasoner (receives AGAINST articles/precedents)
         print(f"\n{'─'*70}")
-        print("⚔️  STEP 2: Esecuzione Counter-Reasoner...")
+        print("⚔️  STEP 2: Esecuzione Counter-Reasoner (con articoli CONTRO)...")
         print(f"{'─'*70}")
+        print(f"   📚 Knowledge base: {len(against_statutes)} statuti, {len(against_precedents)} precedenti")
         
         cr = get_counter_reasoner()
-        counter_result = cr.run_with_context(
+        counter_result = cr.run(
             claim=claim,
             causality=reasoner_result.causality_classification,
-            pre_retrieved_statutes=statutes,
-            pre_retrieved_precedents=precedents,
+            pre_retrieved_statutes=against_statutes,
+            pre_retrieved_precedents=against_precedents,
         )
         
         print(f"✅ Counter-Reasoner completato")
         print(f"   - Contro-argomenti: {len(counter_result.counter_arguments)}")
-        print(f"   - Statuti: {len(counter_result.relevant_statutes)}")
-        print(f"   - Precedenti: {len(counter_result.relevant_precedents)}")
+        print(f"   - Catena di contro-ragionamento: {len(counter_result.reasoning_chain)} steps")
 
         print(f"\n{'='*70}")
         print(f"✅ PIPELINE COMPLETA - FINE")

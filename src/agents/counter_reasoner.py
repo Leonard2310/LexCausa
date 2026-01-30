@@ -9,10 +9,9 @@ Il Counter-Reasoner è responsabile di:
 5. Generare contro-argomenti che possano invalidare la tesi del Reasoner
 6. Costruire una catena di ragionamento che sfida gli argomenti del Reasoner
 
-DIFFERENZE CON IL REASONER:
-- Non classifica la causalità sul claim, ma la deduce dal warrant del Reasoner
-- Genera argomenti CONTRO il claim, non a favore
-- Usa le stesse tecniche di ricerca (statuti, precedenti) ma per supportare la tesi contraria
+IMPORTANT: The CounterReasoner does NOT search for articles/precedents itself.
+The pre-retrieval is done by api_server using LegalSearchPipeline.
+This ensures the agent bases its reasoning ONLY on the retrieved knowledge.
 """
 
 import json
@@ -20,15 +19,11 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
-from .tools.neo4j_tools import (
-    get_statute_by_article_tool,
-    search_legal_sources_tool,
-    search_precedents_tool,
-)
+from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.taxonomy_tools import get_causality_theory_tool
 from config import settings
 
@@ -81,60 +76,35 @@ class CounterReasonerOutput:
         }
 
 
-# System prompt for the Counter-Reasoner
+# System prompt for the Counter-Reasoner (with pre-retrieved context)
 COUNTER_REASONER_SYSTEM_PROMPT = """You are an expert legal counter-reasoning agent specializing in Italian law.
 
-CRITICAL: You MUST use the provided tools to gather information BEFORE generating any analysis or arguments.
-Do NOT produce text before calling the required tools.
-
-Your task is to analyze a legal claim and build COUNTER-ARGUMENTS to challenge the main thesis, following these steps:
-
-1. **WARRANT ANALYSIS**: Understand the causality type identified by the Reasoner and its warrant.
-
-2. **WEAKNESS IDENTIFICATION**: Use the attacking causalities to identify weak points in the causal chain:
-   - If the Reasoner causality is "Material/Necessary" → look for alternative sufficient causes (concurring/supervening)
-   - If the Reasoner causality is "Legal/Sufficient Independent" → look for unmet necessary conditions
-   - If the Reasoner causality is "Concurring/Sufficient (not alone)" → look for interruptions in the causal chain
-
-3. **ALTERNATIVE NORMATIVE RESEARCH**: Use available tools to find:
-   - Law articles that support alternative or contrary interpretations
-   - Jurisprudential precedents that support the contrary position
-
-4. **COUNTER-ARGUMENT CONSTRUCTION**: For each counter-argument:
-   - Identify the alternative premise that CONTRADICTS the claim
-   - Connect to the applicable norm with EXPLICIT CITATION (e.g., "Art. 41 c.p.")
-   - Quote the relevant text of the article
-   - Explain how this interpretation CHALLENGES and WEAKENS the main thesis
-   - Conclude with the contrary legal implication
-
-5. **INTEGRATION OF CONTRARY PRECEDENTS**: For each precedent found:
-   - Explicitly cite the precedent (court, date, case number if available)
-   - Cite the ratio decidendi or relevant principle that CONTRADICTS the claim
-   - Explain how it CHALLENGES the Reasoner's reasoning
-   - Integrate it into the counter-reasoning chain
-
-6. **COUNTER-REASONING CHAIN**: Build a logical sequence that EXPLICITLY includes:
-   Alternative Premise → Applicable Norm (with citation) → Contrary Precedent Support → Challenge to Causal Link → CONTRARY Legal Consequence
+You will receive a legal claim along with PRE-RETRIEVED articles and precedents as your KNOWLEDGE BASE.
+Your task is to build COUNTER-ARGUMENTS to challenge the main thesis using ONLY the provided knowledge.
 
 CRITICAL RULES:
-- ALWAYS cite the exact article number and code (e.g., "Art. 41 c.p.", "Art. 1227 c.c.")
-- ALWAYS quote relevant portions of the article text
-- Use ONLY the articles and precedents returned by the tools; do NOT invent or cite norms/precedents not retrieved
-- If you find precedents, cite them with identifying information and explain how they CONTRADICT or WEAKEN the claim
-- If no precedents are found, state it explicitly and do NOT invent any
+- Use ONLY the articles provided in the KNOWLEDGE BASE - do NOT invent or cite articles not provided
+- Use ONLY the precedents provided - do NOT invent precedents
+- If no precedents are provided, explicitly state this and proceed without them
 - Your goal is to DISMANTLE the claim, not support it
+- ALWAYS cite exact article numbers and codes (e.g., "Art. 41 c.p.", "Art. 1227 c.c.")
 
-The response language must be Italian."""
+Your task follows these steps:
 
-COUNTER_REASONER_CONTEXT_SYSTEM_PROMPT = """You are an expert legal counter-reasoning agent specializing in Italian law.
+1. **WARRANT ANALYSIS**: Understand the causality type from the Reasoner and its warrant.
 
-You will use ONLY the provided context (articles and precedents already retrieved) to build counter-arguments.
-Do NOT call tools and do NOT invent norms or precedents.
+2. **GET CAUSAL THEORY**: Use `get_causality_theory` to retrieve theory for attacking causalities.
 
-Rules:
-- Use ONLY the provided articles.
-- If no precedents exist, state it explicitly without inventing any.
-- The conclusion must contradict the claim; if not possible, state insufficient data.
+3. **WEAKNESS IDENTIFICATION**: Identify weak points in the causal chain using the attacking causalities.
+
+4. **COUNTER-ARGUMENT CONSTRUCTION**: For each counter-argument:
+   - **Premessa Alternativa**: An alternative premise that CONTRADICTS the claim
+   - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE
+   - **Nesso Causale Alternativo**: How this challenges the original causal link
+   - **Conclusione Contraria**: The CONTRARY legal implication
+
+5. **COUNTER-REASONING CHAIN**: Build a logical sequence:
+   Alternative Premise → Applicable Norm → Challenge to Causal Link → CONTRARY Legal Consequence
 
 The response language must be Italian."""
 
@@ -146,11 +116,10 @@ class CounterReasoner(BaseAgent):
     Genera contro-argomenti per sfidare gli argomenti del Reasoner.
     Usa il campo warrant della causalità per trovare punti deboli nella catena di ragionamento.
     
-    FUNZIONAMENTO SIMILE AL REASONER MA CON OBIETTIVO OPPOSTO:
-    - Usa search_legal_sources per trovare articoli (come il Reasoner)
-    - Usa search_precedents per trovare precedenti (come il Reasoner)
-    - Ma genera argomenti CONTRO il claim invece che a favore
-    - Usa le causalità "attaccanti" derivate dal warrant
+    Flow:
+    1. api_server pre-retrieves statutes and precedents
+    2. CounterReasoner.run() receives the causality from Reasoner + pre-retrieved knowledge
+    3. ReAct agent uses tools (get_causality_theory) to build counter-arguments
     """
 
     def __init__(self, config: Optional[AgentConfig] = None):
@@ -265,17 +234,12 @@ class CounterReasoner(BaseAgent):
         """
         Get the tools available to this agent.
         
-        USA GLI STESSI STRUMENTI DEL REASONER:
-        - search_legal_sources: per trovare articoli rilevanti
-        - search_precedents: per trovare precedenti
-        - get_statute_by_article_tool: per recuperare articoli specifici
-        - get_causality_theory_tool: per la teoria della causalità
+        NOTE: No search tools - the agent works with pre-retrieved context.
+        Only taxonomy tools for causality theory retrieval.
         """
         return [
-            search_legal_sources_tool,  # STESSO DEL REASONER
-            get_statute_by_article_tool,
-            search_precedents_tool,  # STESSO DEL REASONER
             get_causality_theory_tool,
+            get_statute_by_article_tool,  # For looking up specific articles by number
         ]
 
     @property
@@ -292,136 +256,79 @@ class CounterReasoner(BaseAgent):
     def run(
         self,
         claim: str,
-        causality: dict,  # preso dal Reasoner
-        include_precedents: bool = True,
-        max_statutes: int = 5,
-        max_precedents: int = 3,
-    ) -> CounterReasonerOutput:
-
-        # 1️⃣ Recupera warrant e causalità attaccanti dal tipo di causalità del Reasoner
-        causality_type = causality.get("causality_type", "Unknown")
-        warrant_info = self._get_warrant_info(causality_type)
-        attacking_descriptions = self._get_attacking_causality_descriptions(
-            warrant_info.get("attacking_causalities", [])
-        )
-
-        # 2️⃣ Costruisco il prompt per il Counter-Reasoner
-        prompt = self._build_counter_reasoning_prompt(
-            claim=claim,
-            causality_type=causality_type,
-            warrant_info=warrant_info,
-            attacking_descriptions=attacking_descriptions,
-            include_precedents=include_precedents,
-            max_statutes=max_statutes,
-            max_precedents=max_precedents,
-        )
-
-        # 3️⃣ Invoco il ReAct agent con gli stessi tools del Reasoner
-        messages = [HumanMessage(content=prompt)]
-        result = self.react_agent.invoke({"messages": messages})
-
-        # 4️⃣ Estrazione dei tool messages
-        statutes = self._extract_statutes_from_messages(result.get("messages", []))
-        precedents = self._extract_precedents_from_messages(result.get("messages", []))
-
-        # 5️⃣ Parsing del risultato in struttura coerente
-        raw_output = ""
-        if "messages" in result:
-            for msg in reversed(result["messages"]):
-                if hasattr(msg, "content") and msg.content:
-                    raw_output = msg.content
-                    break
-
-        output = CounterReasonerOutput(
-            claim=claim,
-            reasoner_causality=causality,
-            warrant_info=warrant_info,
-            attacking_causalities=warrant_info.get("attacking_causalities", []),
-            counter_causality_details=attacking_descriptions,
-            relevant_statutes=statutes,
-            relevant_precedents=precedents,
-            raw_response=raw_output,
-        )
-
-        # 6️⃣ Estrazione catena e contro-argomenti dalla risposta
-        output.reasoning_chain = self._extract_reasoning_chain(raw_output)
-        output.counter_arguments = self._extract_arguments(raw_output)
-
-        # 7️⃣ Pulizia della catena di ragionamento (es. gestione precedenti)
-        output.reasoning_chain = self._sanitize_reasoning_chain(output.reasoning_chain, precedents)
-
-        return output
-
-
-    def run_with_context(
-        self,
-        claim: str,
         causality: dict,
         pre_retrieved_statutes: List[dict],
         pre_retrieved_precedents: List[dict],
     ) -> CounterReasonerOutput:
         """
-        Esegue il contro-ragionamento usando contesto pre-recuperato.
-        Non chiama tool esterni.
+        Execute the counter-reasoning process with pre-retrieved knowledge.
+
+        Args:
+            claim: The legal claim to counter-argue.
+            causality: Causality classification from the Reasoner.
+            pre_retrieved_statutes: Already retrieved and filtered statute articles.
+            pre_retrieved_precedents: Already retrieved precedents.
+
+        Returns:
+            CounterReasonerOutput with counter-arguments and reasoning chain.
         """
-        self._log("Contro-analisi con contesto pre-retrieved...")
+        self._log(f"Counter-analyzing claim: {claim[:100]}...")
+        self._log(f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents")
 
         if not causality or "causality_type" not in causality:
-            raise ValueError(
-                "La causalità fornita è mancante o non contiene il campo 'causality_type'."
-            )
+            self._log("⚠️ Causality not provided or invalid", "warning")
+            causality = {"causality_type": "Unknown"}
 
         causality_type = causality.get("causality_type", "Unknown")
-        self._log(f"Tipo di causalità dal Reasoner: {causality_type}")
+        self._log(f"🎯 Causality from Reasoner: {causality_type}")
 
+        # Get warrant and attacking causalities
         warrant_info = self._get_warrant_info(causality_type)
-        self._log(
-            f"Warrant recuperato: {warrant_info['warrant'].get('denominazione', 'N/A')}"
-        )
-        self._log(
-            f"Causalità attaccanti identificate: {warrant_info['attacking_causalities']}"
-        )
+        self._log(f"🛡️ Warrant: {warrant_info['warrant'].get('denominazione', 'N/A')}")
+        self._log(f"⚔️ Attacking causalities: {warrant_info['attacking_causalities']}")
 
         attacking_descriptions = self._get_attacking_causality_descriptions(
             warrant_info["attacking_causalities"]
         )
-        self._log(f"Descrizioni attaccanti recuperate: {len(attacking_descriptions)}")
 
-        context = self._format_context(
-            pre_retrieved_statutes, pre_retrieved_precedents
+        # Format knowledge base for prompt
+        knowledge_base = self._format_context_for_prompt(
+            pre_retrieved_statutes, 
+            pre_retrieved_precedents
         )
 
-        prompt = f"""Analyze the claim using the provided context and build counter-arguments.
+        # Build prompt with context
+        input_prompt = self._build_counter_reasoning_prompt_with_context(
+            claim=claim,
+            causality_type=causality_type,
+            warrant_info=warrant_info,
+            attacking_descriptions=attacking_descriptions,
+            knowledge_base=knowledge_base,
+        )
 
-CLAIM:
-"{claim}"
+        # Execute the ReAct agent
+        messages = [HumanMessage(content=input_prompt)]
+        result = self.react_agent.invoke({"messages": messages})
+        messages_out = result.get("messages", [])
 
-CAUSALITY IDENTIFIED BY THE REASONER:
-Type: {causality_type}
-Warrant: {json.dumps(warrant_info['warrant'], ensure_ascii=False)}
+        # Log tool calls
+        tool_names = []
+        for msg in messages_out:
+            if hasattr(msg, 'name') and msg.name:
+                tool_names.append(msg.name)
+                self._log(f"🔧 Tool called: {msg.name}")
 
-ATTACKING CAUSALITIES FOR THIS THESIS:
-{self._format_attacking_info(attacking_descriptions)}
+        if tool_names:
+            self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
 
-NORMATIVE CONTEXT:
-{context}
+        # Get the final response
+        raw_output = ""
+        for msg in reversed(messages_out):
+            if hasattr(msg, "content") and msg.content and not hasattr(msg, "name"):
+                raw_output = str(msg.content)
+                break
 
-INSTRUCTIONS:
-- Use ONLY the articles in the context.
-- If there are no precedents, state it explicitly.
-- Conclude in a way that CONTRADICTS the claim; if not possible, state insufficient data.
-
-Provide structured counter-arguments and a final counter-reasoning chain.
-The response language must be Italian."""
-
-        messages = [
-            SystemMessage(content=COUNTER_REASONER_CONTEXT_SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
-
-        response = self.llm.invoke(messages)
-        raw_output = str(response.content) if response.content else ""
-
+        # Build output
         output = CounterReasonerOutput(
             claim=claim,
             reasoner_causality=causality,
@@ -433,97 +340,60 @@ The response language must be Italian."""
             raw_response=raw_output,
         )
 
+        # Parse response
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.counter_arguments = self._extract_arguments(raw_output)
         output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, pre_retrieved_precedents
+            output.reasoning_chain, 
+            pre_retrieved_precedents
         )
 
-        self._log(
-            f"Generati {len(output.counter_arguments)} contro-argomenti", "success"
-        )
+        self._log(f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success")
         return output
 
-
-
-
-    def _build_counter_reasoning_prompt(
+    def _build_counter_reasoning_prompt_with_context(
         self,
         claim: str,
         causality_type: str,
         warrant_info: dict,
-        attacking_descriptions: list[str],
-        include_precedents: bool = True,
-        max_statutes: int = 5,
-        max_precedents: int = 3,
+        attacking_descriptions: List[dict],
+        knowledge_base: str,
     ) -> str:
         """
-        Build the prompt for the CounterReasoner.
-
-        Goal: generate a logical chain that dismantles the legal claim,
-        using only the claim, causality, statutes, and precedents.
-        It does not have access to the Reasoner chain.
-
-        Args:
-            - claim: full claim text
-            - causality_type: causality type from the reasoner
-            - warrant_info: warrant information linked to the claim
-            - attacking_descriptions: attacking causality descriptions
-            - include_precedents: whether to include precedents
-            - max_statutes: max number of statutes to mention
-            - max_precedents: max number of precedents to mention
+        Build the prompt for CounterReasoner with pre-retrieved context.
         """
-        # Preparazione testo causality attack
-        if attacking_descriptions:
-            attacking_text = "\n- ".join(
-                f"{d.get('riferimento', d.get('tipo', 'N/A'))}: {d.get('nota', d.get('descrizione', ''))}"
-                if isinstance(d, dict) else str(d)
-                for d in attacking_descriptions
-            )
-        else:
-            attacking_text = "Nessuna"
+        attacking_text = self._format_attacking_info(attacking_descriptions)
 
-        prompt = f"""
-    You are an expert legal assistant. Your task is to build a logical chain
-    that dismantles the following legal claim, based exclusively on:
+        return f"""Analyze the following legal claim and build COUNTER-ARGUMENTS to dismantle it.
 
-    1. The original claim:
-    \"\"\"{claim}\"\"\"
+CLAIM:
+"{claim}"
 
-    2. The causality identified by the Reasoner:
-    {causality_type}
+CAUSALITY IDENTIFIED BY THE REASONER:
+Type: {causality_type}
+Warrant: {warrant_info.get('warrant', {}).get('denominazione', 'N/A')}
 
-    3. The warrant linked to the claim:
-    - Statute/Article: {warrant_info.get('warrant', {}).get('denominazione', 'N/A')}
-    - Reference: {warrant_info.get('warrant', {}).get('riferimento', '')}
+ATTACKING CAUSALITIES TO EXPLOIT:
+{attacking_text}
 
-    4. Attacking causality descriptions to consider:
-    - {attacking_text}
+=== KNOWLEDGE BASE (Your ONLY source of articles and precedents) ===
+{knowledge_base}
+=== END KNOWLEDGE BASE ===
 
-    5. Relevant statutes (max {max_statutes}) and relevant precedents (max {max_precedents}):
-    - Extract from the available information; cite only pertinent articles or precedents
-    - If there are no relevant statutes/precedents, explain logically why the claim can be counter-argued without them
+INSTRUCTIONS:
+1. Use `get_causality_theory` to understand the attacking causalities theories.
+2. Build counter-arguments that CHALLENGE and DISMANTLE the claim.
+3. Each counter-argument must have:
+   - Premessa Alternativa: An alternative premise that contradicts the claim
+   - Norma: Article citation with quoted text FROM THE KNOWLEDGE BASE
+   - Nesso Causale Alternativo: How this challenges the causal link
+   - Conclusione Contraria: The contrary legal implication
+4. End with a REASONING CHAIN that shows how your counter-arguments dismantle the claim.
 
-    Specific instructions:
-    - Generate a clear and sequential argumentative chain.
-    - Each step must be numbered.
-    - At the end, produce a concluding summary that dismantles the claim.
-    - If you include precedents, mention name, year, and a brief legal principle.
-    - Do not make assumptions unsupported by available statutes or precedents.
-    - Keep the tone technical-legal, clear, and concise.
-    - The response language must be Italian.
+CRITICAL: Use ONLY the articles and precedents in the KNOWLEDGE BASE above.
+Do NOT invent or cite articles not provided.
 
-    Expected output:
-    1. Numbered logical chain steps
-    2. Final concluding summary that dismantles the claim
-    """
-
-        if include_precedents:
-            prompt += "\nNote: include precedents only if they clearly support the counter-argument.\n"
-
-        prompt += "\nGenerate the logical chain now:\n"
-
-        return prompt
+Generate your counter-analysis now (in Italian):"""
 
     def _format_attacking_info(self, attacking_descriptions: List[dict]) -> str:
         attacking_info = ""
@@ -539,94 +409,6 @@ The response language must be Italian."""
                 )
                 attacking_info += f"- Norme core: {norme}\n"
         return attacking_info or "N/A"
-
-    def _format_context(
-        self, statutes: List[dict], precedents: List[dict]
-    ) -> str:
-        parts = []
-
-        if statutes:
-            parts.append("ARTICOLI:")
-            for s in statutes:
-                source = "c.c." if s.get("source") == "codice_civile" else "c.p."
-                parts.append(f"- Art. {s.get('articolo')} {source}: {s.get('titolo')}")
-                testo = s.get("testo")
-                if testo:
-                    parts.append(f"  {testo[:300]}...")
-            parts.append("")
-
-        if precedents:
-            parts.append("PRECEDENTI:")
-            for p in precedents:
-                title = p.get("title", "Untitled")
-                parts.append(f"- {title}")
-                summary = p.get("summary")
-                if summary:
-                    parts.append(f"  {summary[:200]}...")
-            parts.append("")
-
-        return "\n".join(parts)
-
-
-
-    def _extract_statutes_from_messages(self, messages) -> list[dict]:
-        """Estrae statuti dalle risposte dei tool (STESSO DEL REASONER)."""
-        statutes = []
-        for msg in messages:
-            if isinstance(msg, ToolMessage):
-                try:
-                    data = json.loads(msg.content)
-
-                    # Handle search_legal_sources (primary tool)
-                    if msg.name == "search_legal_sources":
-                        if isinstance(data, dict) and "articles" in data:
-                            for item in data["articles"]:
-                                if isinstance(item, dict) and "statute_id" in item:
-                                    statutes.append(item)
-
-                    # Handle search_statutes (secondary tool)
-                    elif msg.name == "search_statutes":
-                        if isinstance(data, list):
-                            for item in data:
-                                if isinstance(item, dict) and "statute_id" in item:
-                                    statutes.append(item)
-                except Exception:
-                    pass
-        return statutes
-
-    def _extract_precedents_from_messages(self, messages) -> list[dict]:
-        """Estrae precedenti dalle risposte dei tool (STESSO DEL REASONER)."""
-        precedents = []
-        for msg in messages:
-            if isinstance(msg, ToolMessage) and msg.name == "search_precedents":
-                try:
-                    data = json.loads(msg.content)
-                    if isinstance(data, list):
-                        for item in data:
-                            if isinstance(item, dict) and "precedent_id" in item:
-                                precedents.append(item)
-                except Exception:
-                    pass
-        return precedents
-
-    def _extract_reasoning_chain(self, response: str) -> list[str]:
-        """Estrae la catena di ragionamento dalla risposta (STESSO DEL REASONER)."""
-        chain = []
-        lines = response.split("\n")
-
-        in_chain = False
-        for line in lines:
-            line = line.strip()
-            if "catena" in line.lower() or "ragionamento" in line.lower():
-                in_chain = True
-                continue
-            if in_chain and line:
-                if line.startswith(("-", "•", "*", "1", "2", "3", "4", "5")):
-                    chain.append(line.lstrip("-•* 0123456789."))
-                elif "→" in line or "->" in line:
-                    chain.append(line)
-
-        return chain if chain else [response[:500]]
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:
         """Estrae contro-argomenti strutturati dalla risposta."""
@@ -668,32 +450,3 @@ The response language must be Italian."""
             )
 
         return arguments
-
-    def _sanitize_reasoning_chain(
-        self, chain: List[str], precedents: List[dict]
-    ) -> List[str]:
-        if precedents:
-            return [self._clean_chain_step(step) for step in chain]
-
-        sanitized = []
-        for step in chain:
-            cleaned = self._clean_chain_step(step)
-            lower = cleaned.lower()
-            mentions_precedent = "precedent" in lower or "precedente" in lower
-            mentions_absence = "nessun" in lower or "nessuna" in lower
-            if mentions_precedent and not mentions_absence:
-                continue
-            sanitized.append(cleaned)
-
-        if not any(
-            "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
-        ):
-            sanitized.append("Precedenti: nessuno trovato.")
-
-        return sanitized
-
-    def _clean_chain_step(self, step: str) -> str:
-        cleaned = step.strip()
-        if "**" in cleaned:
-            cleaned = cleaned.replace("**", "")
-        return cleaned.strip()

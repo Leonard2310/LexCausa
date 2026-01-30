@@ -15,17 +15,18 @@ This ensures the agent bases its reasoning ONLY on the retrieved knowledge.
 """
 
 import json
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
+from config import settings
+
 from .base import AgentConfig, BaseAgent
 from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.taxonomy_tools import get_causality_theory_tool
-from config import settings
 
 
 @dataclass
@@ -116,7 +117,7 @@ class CounterReasoner(BaseAgent):
 
     Genera contro-argomenti per sfidare gli argomenti del Reasoner.
     Usa il campo warrant della causalità per trovare punti deboli nella catena di ragionamento.
-    
+
     Flow:
     1. api_server pre-retrieves statutes and precedents
     2. CounterReasoner.run() receives the causality from Reasoner + pre-retrieved knowledge
@@ -147,9 +148,7 @@ class CounterReasoner(BaseAgent):
                     break
 
             if self._taxonomy is None:
-                self._log(
-                    "⚠️ Tassonomia non trovata, uso struttura vuota", "warning"
-                )
+                self._log("⚠️ Tassonomia non trovata, uso struttura vuota", "warning")
                 self._taxonomy = {"tassonomia_causalita": []}
 
         return self._taxonomy
@@ -234,7 +233,7 @@ class CounterReasoner(BaseAgent):
     def tools(self) -> list:
         """
         Get the tools available to this agent.
-        
+
         NOTE: No search tools - the agent works with pre-retrieved context.
         Only taxonomy tools for causality theory retrieval.
         """
@@ -274,7 +273,9 @@ class CounterReasoner(BaseAgent):
             CounterReasonerOutput with counter-arguments and reasoning chain.
         """
         self._log(f"Counter-analyzing claim: {claim[:100]}...")
-        self._log(f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents")
+        self._log(
+            f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents"
+        )
 
         if not causality or "causality_type" not in causality:
             self._log("⚠️ Causality not provided or invalid", "warning")
@@ -334,15 +335,16 @@ class CounterReasoner(BaseAgent):
 
         # Format knowledge base for prompt
         knowledge_base = self._format_context_for_prompt(
-            deduped_statutes, 
-            pre_retrieved_precedents
+            deduped_statutes, pre_retrieved_precedents
         )
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
             for s in deduped_statutes
         ]
-        allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
+        allowed_precedents = [
+            p.get("title", "Untitled") for p in pre_retrieved_precedents
+        ]
 
         # Build prompt with context
         input_prompt = self._build_counter_reasoning_prompt_with_context(
@@ -380,7 +382,7 @@ class CounterReasoner(BaseAgent):
         # Log tool calls
         tool_names = []
         for msg in messages_out:
-            if hasattr(msg, 'name') and msg.name:
+            if hasattr(msg, "name") and msg.name:
                 tool_names.append(msg.name)
                 self._log(f"🔧 Tool called: {msg.name}")
 
@@ -414,11 +416,12 @@ class CounterReasoner(BaseAgent):
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.counter_arguments = self._extract_arguments(raw_output)
         output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, 
-            pre_retrieved_precedents
+            output.reasoning_chain, pre_retrieved_precedents
         )
 
-        self._log(f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success")
+        self._log(
+            f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success"
+        )
         return output
 
     def _build_counter_reasoning_prompt_with_context(
@@ -435,8 +438,14 @@ class CounterReasoner(BaseAgent):
         Build the prompt for CounterReasoner with pre-retrieved context.
         """
         attacking_text = self._format_attacking_info(attacking_descriptions)
-        statutes_list = "\n".join(f"- {a}" for a in allowed_statutes) or "- Nessun articolo disponibile"
-        precedents_list = "\n".join(f"- {p}" for p in allowed_precedents) or "- Nessun precedente disponibile"
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes)
+            or "- Nessun articolo disponibile"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- Nessun precedente disponibile"
+        )
 
         return f"""Analyze the following legal claim and build COUNTER-ARGUMENTS to dismantle it.
 

@@ -206,16 +206,24 @@ class BaseAgent(ABC):
 
         # Patterns that indicate start of reasoning chain section
         chain_markers = [
-            "catena", "ragionamento", "chain", "reasoning",
-            "conclusione", "sintesi", "riepilogo", "summary",
-            "passaggi", "steps", "argomentazione"
+            "catena",
+            "ragionamento",
+            "chain",
+            "reasoning",
+            "conclusione",
+            "sintesi",
+            "riepilogo",
+            "summary",
+            "passaggi",
+            "steps",
+            "argomentazione",
         ]
-        
+
         in_chain = False
         for line in lines:
             line = line.strip()
             lower_line = line.lower()
-            
+
             # Check if this line starts a chain section
             if any(marker in lower_line for marker in chain_markers):
                 in_chain = True
@@ -225,7 +233,7 @@ class BaseAgent(ABC):
                     if content and len(content) > 10:
                         chain.append(content)
                 continue
-            
+
             if in_chain and line:
                 # Numbered items (1., 2., etc.)
                 if line[0].isdigit() and len(line) > 2:
@@ -239,23 +247,25 @@ class BaseAgent(ABC):
                 # Lines starting with ** (markdown bold)
                 elif line.startswith("**") and line.endswith("**"):
                     chain.append(line.strip("*"))
-        
+
         # Fallback: if no chain found, look for structured content
         if not chain:
             for line in lines:
                 line = line.strip()
                 # Look for lines with legal references
-                if line and ("Art." in line or "art." in line or "c.c." in line or "c.p." in line):
+                if line and (
+                    "Art." in line or "art." in line or "c.c." in line or "c.p." in line
+                ):
                     if len(line) > 30:  # Meaningful content
                         chain.append(line.lstrip("-•*→ 0123456789.)"))
-        
+
         # Final fallback: return first substantive paragraphs
         if not chain:
             paragraphs = [p.strip() for p in response.split("\n\n") if p.strip()]
             for p in paragraphs[:3]:
                 if len(p) > 50:
                     chain.append(p[:500])
-        
+
         return chain if chain else ["Catena di ragionamento non disponibile."]
 
     def _sanitize_reasoning_chain(
@@ -327,6 +337,7 @@ class BaseAgent(ABC):
         articolo_match = None
         try:
             import re
+
             articolo_match = re.search(r"(\d+)", riferimento)
         except Exception:
             pass

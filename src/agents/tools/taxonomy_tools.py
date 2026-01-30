@@ -9,7 +9,7 @@ Provides tools for:
 import json
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 from groq import Groq
 from langchain_core.tools import tool
@@ -361,7 +361,9 @@ Rispondi con un solo token: YES o NO."""
             answer = "YES"
 
         token = answer.split()[0] if answer else ""
-        keep = token != "NO" and (token == "YES" or "YES" in answer or "NO" not in answer)
+        keep = token != "NO" and (
+            token == "YES" or "YES" in answer or "NO" not in answer
+        )
 
         if keep:
             relevant.append(norm)

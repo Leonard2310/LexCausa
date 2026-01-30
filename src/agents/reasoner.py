@@ -24,7 +24,6 @@ from .base import AgentConfig, BaseAgent
 from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.taxonomy_tools import classify_causality_tool, get_causality_theory_tool
 
-
 # System prompt for the Reasoner (with pre-retrieved context)
 REASONER_SYSTEM_PROMPT = """You are an expert legal reasoning agent specializing in Italian law.
 
@@ -90,12 +89,12 @@ class Reasoner(BaseAgent):
 
     Analyzes legal claims using pre-retrieved knowledge (statutes/precedents),
     classifies causality type, and generates supporting arguments.
-    
+
     Flow:
     1. api_server pre-retrieves statutes and precedents
     2. api_server filters statutes using filter_irrelevant_statutes()
     3. Reasoner.run() receives the filtered knowledge base
-    4. ReAct agent uses tools (classify_causality, get_causality_theory) 
+    4. ReAct agent uses tools (classify_causality, get_causality_theory)
        to build arguments based on the provided knowledge
     """
 
@@ -108,7 +107,7 @@ class Reasoner(BaseAgent):
     def tools(self) -> list:
         """
         Get the tools available to this agent.
-        
+
         NOTE: No search tools - the agent works with pre-retrieved context.
         Only taxonomy/causality tools for classification and theory retrieval.
         """
@@ -147,7 +146,9 @@ class Reasoner(BaseAgent):
             ReasonerOutput with causality classification, sources, and arguments.
         """
         self._log(f"Analyzing claim: {claim[:100]}...")
-        self._log(f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents")
+        self._log(
+            f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents"
+        )
 
         if not pre_retrieved_statutes and not pre_retrieved_precedents:
             self._log("⚠️ No knowledge base provided", "warning")
@@ -158,14 +159,16 @@ class Reasoner(BaseAgent):
                 relevant_precedents=[],
                 arguments=[],
                 reasoning_chain=["Nessun articolo o precedente fornito per l'analisi."],
-                raw_response="Analisi non completata: nessuna fonte normativa o giurisprudenziale disponibile."
+                raw_response="Analisi non completata: nessuna fonte normativa o giurisprudenziale disponibile.",
             )
 
         # Enrich with relevant norms from taxonomy filtered by claim (pre-classification)
         taxonomy_statutes: list[dict] = []
         try:
             prelim_causality = classify_causality_tool.invoke({"claim": claim})
-            prelim_type = prelim_causality.get("causality_type") or prelim_causality.get("tipo_causalita")
+            prelim_type = prelim_causality.get(
+                "causality_type"
+            ) or prelim_causality.get("tipo_causalita")
         except Exception:
             prelim_type = None
 
@@ -179,7 +182,9 @@ class Reasoner(BaseAgent):
             acc_full = theory.get("norme_accessorie", [])
             taxonomy_norms = core_rel + acc_rel
 
-            kept_refs = [n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")]
+            kept_refs = [
+                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
+            ]
             kept_set = {r for r in kept_refs if r}
             discarded_refs = [
                 n.get("riferimento")
@@ -210,12 +215,13 @@ class Reasoner(BaseAgent):
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
             for s in deduped_statutes
         ]
-        allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
+        allowed_precedents = [
+            p.get("title", "Untitled") for p in pre_retrieved_precedents
+        ]
 
         # Format the knowledge base for the prompt
         knowledge_base = self._format_context_for_prompt(
-            deduped_statutes, 
-            pre_retrieved_precedents
+            deduped_statutes, pre_retrieved_precedents
         )
 
         # Build the input prompt with pre-retrieved context and explicit allow-list
@@ -234,7 +240,7 @@ class Reasoner(BaseAgent):
         # Log tool calls for debugging
         tool_names = []
         for msg in messages_out:
-            if hasattr(msg, 'name') and msg.name:
+            if hasattr(msg, "name") and msg.name:
                 tool_names.append(msg.name)
                 self._log(f"🔧 Tool called: {msg.name}")
 
@@ -267,21 +273,22 @@ class Reasoner(BaseAgent):
         # Parse the response for structured data
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.arguments = self._extract_arguments(raw_output)
-        
+
         # Sanitize reasoning chain based on precedents
         output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, 
-            pre_retrieved_precedents
+            output.reasoning_chain, pre_retrieved_precedents
         )
 
         self._log(f"✅ Generated {len(output.arguments)} arguments", "success")
         return output
-    
-    def filter_irrelevant_statutes(self, claim: str, statutes: list[dict]) -> list[dict]:
+
+    def filter_irrelevant_statutes(
+        self, claim: str, statutes: list[dict]
+    ) -> list[dict]:
         """
         Filter statutes using LLM one by one.
         Only discard when clearly unrelated; default to keeping on ambiguity.
-        
+
         This is a PUBLIC method that can be called from api_server for pre-filtering.
         """
         if not statutes:
@@ -323,23 +330,33 @@ No punctuation. No new lines. No extra spaces.
                 response = self.llm.invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
-                self._log(f"⚠️ LLM call failed for article {article_number}: {e}", "warning")
+                self._log(
+                    f"⚠️ LLM call failed for article {article_number}: {e}", "warning"
+                )
                 answer = "YES"
 
             token = answer.split()[0] if answer else ""
-            keep = token != "NO" and (token == "YES" or "YES" in answer or "NO" not in answer)
+            keep = token != "NO" and (
+                token == "YES" or "YES" in answer or "NO" not in answer
+            )
 
             if keep:
                 relevant_statutes.append(statute)
-                self._log(f"✅ Keeping article [{idx}] {article_number} - {article_title}")
+                self._log(
+                    f"✅ Keeping article [{idx}] {article_number} - {article_title}"
+                )
             else:
-                self._log(f"❌ Discarding article [{idx}] {article_number} - {article_title}", "warning")
+                self._log(
+                    f"❌ Discarding article [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
 
         self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
         return relevant_statutes
 
-
-    def filter_irrelevant_precedents(self, claim: str, precedents: list[dict]) -> list[dict]:
+    def filter_irrelevant_precedents(
+        self, claim: str, precedents: list[dict]
+    ) -> list[dict]:
         """
         Soft-filter precedents: keep by default, discard only when clearly unrelated.
         """
@@ -377,11 +394,15 @@ No punctuation. No new lines. No extra spaces.
                 response = self.llm.invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
-                self._log(f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}", "warning")
+                self._log(
+                    f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}", "warning"
+                )
                 answer = "YES"
 
             token = answer.split()[0] if answer else ""
-            keep = token != "NO" and (token == "YES" or "YES" in answer or "NO" not in answer)
+            keep = token != "NO" and (
+                token == "YES" or "YES" in answer or "NO" not in answer
+            )
 
             if keep:
                 relevant_precedents.append(precedent)
@@ -389,9 +410,10 @@ No punctuation. No new lines. No extra spaces.
             else:
                 self._log(f"❌ Discarding precedent [{idx}] {title}", "warning")
 
-        self._log(f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept")
+        self._log(
+            f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept"
+        )
         return relevant_precedents
-
 
     def _build_reasoning_prompt_with_context(
         self,
@@ -401,8 +423,14 @@ No punctuation. No new lines. No extra spaces.
         allowed_precedents: list[str],
     ) -> str:
         """Build the prompt for the reasoning task with pre-retrieved context."""
-        statutes_list = "\n".join(f"- {a}" for a in allowed_statutes) or "- Nessun articolo disponibile"
-        precedents_list = "\n".join(f"- {p}" for p in allowed_precedents) or "- Nessun precedente disponibile"
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes)
+            or "- Nessun articolo disponibile"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- Nessun precedente disponibile"
+        )
         return f"""Analyze the following legal claim and build supporting arguments.
 
 CLAIM:

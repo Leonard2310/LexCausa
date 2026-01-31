@@ -248,24 +248,6 @@ class BaseAgent(ABC):
                 elif line.startswith("**") and line.endswith("**"):
                     chain.append(line.strip("*"))
 
-        # Fallback: if no chain found, look for structured content
-        if not chain:
-            for line in lines:
-                line = line.strip()
-                # Look for lines with legal references
-                if line and (
-                    "Art." in line or "art." in line or "c.c." in line or "c.p." in line
-                ):
-                    if len(line) > 30:  # Meaningful content
-                        chain.append(line.lstrip("-•*→ 0123456789.)"))
-
-        # Final fallback: return first substantive paragraphs
-        if not chain:
-            paragraphs = [p.strip() for p in response.split("\n\n") if p.strip()]
-            for p in paragraphs[:3]:
-                if len(p) > 50:
-                    chain.append(p[:500])
-
         return chain if chain else ["Catena di ragionamento non disponibile."]
 
     def _sanitize_reasoning_chain(

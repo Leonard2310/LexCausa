@@ -144,7 +144,6 @@ class CounterReasoner(BaseAgent):
                 if path.exists():
                     with open(path, "r", encoding="utf-8") as f:
                         self._taxonomy = json.load(f)
-                    self._log(f"Tassonomia caricata da: {path}", "success")
                     break
 
             if self._taxonomy is None:
@@ -382,11 +381,7 @@ class CounterReasoner(BaseAgent):
             )
 
         # Log tool calls
-        tool_names = []
-        for msg in messages_out:
-            if hasattr(msg, "name") and msg.name:
-                tool_names.append(msg.name)
-                self._log(f"🔧 Tool called: {msg.name}")
+        tool_names: list[str] = []
 
         if tool_names:
             self._log(f"📊 Tools used: {', '.join(set(tool_names))}")

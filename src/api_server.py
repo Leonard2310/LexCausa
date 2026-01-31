@@ -66,7 +66,6 @@ def load_taxonomy():
         if taxonomy_path:
             with open(taxonomy_path, "r", encoding="utf-8") as f:
                 TAXONOMY = json.load(f)
-            print(f"✅ Tassonomia caricata da: {taxonomy_path}")
         else:
             print("⚠️ Tassonomia non trovata in nessun percorso noto")
             TAXONOMY = {"tassonomia_causalita": []}

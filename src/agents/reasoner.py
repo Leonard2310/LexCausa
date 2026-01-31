@@ -238,11 +238,7 @@ class Reasoner(BaseAgent):
         messages_out = result.get("messages", [])
 
         # Log tool calls for debugging
-        tool_names = []
-        for msg in messages_out:
-            if hasattr(msg, "name") and msg.name:
-                tool_names.append(msg.name)
-                self._log(f"🔧 Tool called: {msg.name}")
+        tool_names: list[str] = []
 
         if tool_names:
             self._log(f"📊 Tools used: {', '.join(set(tool_names))}")

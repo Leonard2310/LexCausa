@@ -14,6 +14,7 @@ This ensures the agent bases its reasoning ONLY on the retrieved knowledge.
 Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 """
 
+import json
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -22,7 +23,9 @@ from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
 from .router import RoutingDecision
+from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
+from .tools.taxonomy_tools import get_causality_theory_tool
 
 # System prompt for the Reasoner (with pre-retrieved context)
 REASONER_SYSTEM_PROMPT = """You are the Reasoner. The router already set causal_type_id and theory_id.
@@ -37,7 +40,7 @@ Critical rules:
 - Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
 - If a needed statute is missing, state “article not available in the knowledge base”.
 - Keep reasoning independent: do not reference the Counter-Reasoner.
-- Respond in English."""
+- Respond in Italian."""
 
 
 @dataclass
@@ -48,6 +51,8 @@ class ReasonerOutput:
     causality_classification: dict
     causal_type_id: str = ""
     theory_id: str = ""
+    causal_type_ids_for_counter: list[str] = field(default_factory=list)
+    mismatch_status: str = ""
     anchor_norms: dict = field(default_factory=dict)
     principle_tests: list[dict] = field(default_factory=list)
     relevant_statutes: list[dict] = field(default_factory=list)
@@ -62,6 +67,8 @@ class ReasonerOutput:
             "causality": self.causality_classification,
             "causal_type_id": self.causal_type_id,
             "theory_id": self.theory_id,
+            "causal_type_ids_for_counter": self.causal_type_ids_for_counter,
+            "mismatch_status": self.mismatch_status,
             "anchor_norms": self.anchor_norms,
             "principle_tests": self.principle_tests,
             "statutes": self.relevant_statutes,
@@ -123,16 +130,10 @@ class Reasoner(BaseAgent):
         pre_retrieved_precedents: list[dict],
     ) -> ReasonerOutput:
         """
-        Execute the reasoning process on a legal claim with pre-retrieved knowledge.
-
-        Args:
-            claim: The legal claim to analyze and support.
-            routing_decision: Output of the Router containing causal_type_id/theory_id.
-            pre_retrieved_statutes: Already retrieved and filtered statute articles.
-            pre_retrieved_precedents: Already retrieved precedents.
-
-        Returns:
-            ReasonerOutput with causality classification, sources, and arguments.
+        Two-phase reasoning:
+        1) Generate initial reasoning from claim + supportive/neutral sources.
+        2) Classify causality on that reasoning (not on the claim), validate vs router claim-class.
+           If validated, inject anchor norms/principle tests and refine reasoning (with cross-ref expansion).
         """
         self._log(f"Analyzing claim: {claim[:100]}...")
         self._log(
@@ -150,6 +151,8 @@ class Reasoner(BaseAgent):
                     "causal_type_id": routing_decision.causal_type_id,
                     "theory_id": routing_decision.theory_id,
                     "source": "router",
+                    "validated": False,
+                    "reason": "empty_kb",
                 },
                 causal_type_id=routing_decision.causal_type_id,
                 theory_id=routing_decision.theory_id,
@@ -164,17 +167,106 @@ class Reasoner(BaseAgent):
                 raw_response="Analysis not completed: no statutory or case sources available.",
             )
 
-        anchor_statutes = self._anchor_norms_to_statutes(routing_decision.anchor_norms)
-        if anchor_statutes:
-            added_refs = [
-                str(s.get("articolo")) for s in anchor_statutes if s.get("articolo")
-            ]
+        # Phase 1: initial reasoning (no anchor injection)
+        base_statutes = self._expand_with_cross_references(pre_retrieved_statutes)
+        kb1 = self._format_context_for_prompt(base_statutes, pre_retrieved_precedents)
+        allowed_statutes1 = [
+            f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+            for s in base_statutes
+        ]
+        allowed_precedents1 = [
+            p.get("title", "Untitled") for p in pre_retrieved_precedents
+        ]
+
+        input_prompt1 = self._build_reasoning_prompt_with_context(
+            claim,
+            routing_decision,
+            anchor_text="-",
+            principle_text="-",
+            knowledge_base=kb1,
+            allowed_statutes=allowed_statutes1,
+            allowed_precedents=allowed_precedents1,
+        )
+
+        raw_output1, _ = self._invoke_reasoner(input_prompt1)
+        reasoning_chain1 = self._extract_reasoning_chain(raw_output1)
+
+        # Phase 2: classify causality on reasoning chain and validate vs router
+        chain_class = self._classify_causality_from_reasoning(
+            claim, reasoning_chain1, raw_output1
+        )
+
+        validated = chain_class.get(
+            "causal_type_id"
+        ) == routing_decision.causal_type_id and (
+            (chain_class.get("theory_id") or routing_decision.theory_id)
+            == routing_decision.theory_id
+        )
+        final_causal_id = (
+            chain_class.get("causal_type_id") or routing_decision.causal_type_id
+        )
+        final_theory_id = (
+            chain_class.get("theory_id") or routing_decision.theory_id or ""
+        )
+
+        mismatch_status = "aligned"
+        causal_types_for_counter: list[str] = []
+
+        if not validated:
             self._log(
-                f"🧭 Anchor norms added to KB: {len(anchor_statutes)} "
-                f"({', '.join(added_refs)})"
+                f"⚠️ Causality mismatch: chain={chain_class.get('causal_type_id')} vs router={routing_decision.causal_type_id}",
+                "warning",
+            )
+            chain_class["validated"] = False
+            chain_class["fallback_to_router"] = False
+        else:
+            chain_class["validated"] = True
+            chain_class["fallback_to_router"] = False
+
+        if not validated and chain_class.get("theory_id") == routing_decision.theory_id:
+            # Causal-only mismatch with same theory: use both causal types and filtered norms for both
+            mismatch_status = "causal_mismatch_same_theory"
+            causal_types_for_counter = list(
+                dict.fromkeys(
+                    [
+                        routing_decision.causal_type_id,
+                        chain_class.get("causal_type_id")
+                        or routing_decision.causal_type_id,
+                    ]
+                )
+            )
+            final_causal_id, final_theory_id = config_loader.validate_ids(
+                chain_class.get("causal_type_id") or routing_decision.causal_type_id,
+                routing_decision.theory_id,
+            )
+            anchor_norms, anchor_statutes, principle_tests = (
+                self._filtered_anchor_norms_for_types(causal_types_for_counter, claim)
+            )
+        elif not validated:
+            # Total mismatch: prefer chain ids, but do NOT inject anchor norms
+            mismatch_status = "total_mismatch"
+            causal_types_for_counter = [
+                chain_class.get("causal_type_id") or routing_decision.causal_type_id
+            ]
+            final_causal_id, final_theory_id = config_loader.validate_ids(
+                chain_class.get("causal_type_id") or routing_decision.causal_type_id,
+                chain_class.get("theory_id") or routing_decision.theory_id,
+            )
+            anchor_norms = {}
+            principle_tests = []
+            anchor_statutes = []
+        else:
+            # Aligned: use single causal type, filtered norms
+            mismatch_status = "aligned"
+            causal_types_for_counter = [final_causal_id]
+            final_causal_id, final_theory_id = config_loader.validate_ids(
+                final_causal_id, final_theory_id
+            )
+            anchor_norms, anchor_statutes, principle_tests = (
+                self._filtered_anchor_norms_for_types([final_causal_id], claim)
             )
 
-        # Merge and deduplicate statutes coming from retrieval (already supportive/neutral)
+        # Phase 3: refine reasoning with anchor norms + cross-ref expansion
         all_statutes = pre_retrieved_statutes + anchor_statutes
         seen_keys = set()
         deduped_statutes = []
@@ -183,7 +275,6 @@ class Reasoner(BaseAgent):
             if key not in seen_keys:
                 seen_keys.add(key)
                 deduped_statutes.append(s)
-
         before_expand = len(deduped_statutes)
         deduped_statutes = self._expand_with_cross_references(deduped_statutes)
         if len(deduped_statutes) > before_expand:
@@ -199,16 +290,12 @@ class Reasoner(BaseAgent):
         allowed_precedents = [
             p.get("title", "Untitled") for p in pre_retrieved_precedents
         ]
-
-        # Format the knowledge base for the prompt
         knowledge_base = self._format_context_for_prompt(
             deduped_statutes, pre_retrieved_precedents
         )
+        anchor_text = self._format_anchor_norms(anchor_norms)
+        principle_text = self._format_principle_tests(principle_tests)
 
-        anchor_text = self._format_anchor_norms(routing_decision.anchor_norms)
-        principle_text = self._format_principle_tests(routing_decision.principle_tests)
-
-        # Build the input prompt with pre-retrieved context and explicit allow-list
         input_prompt = self._build_reasoning_prompt_with_context(
             claim,
             routing_decision,
@@ -219,62 +306,180 @@ class Reasoner(BaseAgent):
             allowed_precedents,
         )
 
-        # Execute the ReAct agent using LangGraph
-        messages = [HumanMessage(content=input_prompt)]
-        result = self.react_agent.invoke({"messages": messages})
-        messages_out = result.get("messages", [])
+        raw_output, _ = self._invoke_reasoner(input_prompt)
 
-        # Log tool calls for debugging
-        tool_names: list[str] = []
-        for msg in messages_out:
-            if hasattr(msg, "name") and msg.name:
-                tool_names.append(msg.name)
+        final_theory_id_str = final_theory_id or ""
 
-        if tool_names:
-            self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
-
-        # Extract causality from tool responses
-        causality = {
-            "causal_type_id": routing_decision.causal_type_id,
-            "theory_id": routing_decision.theory_id,
-            "source": "router",
-        }
-
-        # Get the final response from the agent
-        raw_output = ""
-        for msg in reversed(messages_out):
-            # Skip tool responses; keep the final LLM message
-            if isinstance(msg, ToolMessage):
-                continue
-            msg_content = getattr(msg, "content", None)
-            if msg_content:
-                raw_output = str(msg_content)
-                break
-
-        # Build output
         output = ReasonerOutput(
             claim=claim,
-            causality_classification=causality,
-            causal_type_id=routing_decision.causal_type_id,
-            theory_id=routing_decision.theory_id,
-            anchor_norms=routing_decision.anchor_norms,
-            principle_tests=routing_decision.principle_tests,
+            causality_classification={
+                **chain_class,
+                "final_causal_type_id": final_causal_id,
+                "final_theory_id": final_theory_id_str,
+                "source": "reasoning_chain",
+                "mismatch_status": mismatch_status,
+            },
+            causal_type_id=final_causal_id,
+            theory_id=final_theory_id_str,
+            causal_type_ids_for_counter=causal_types_for_counter,
+            mismatch_status=mismatch_status,
+            anchor_norms=anchor_norms,
+            principle_tests=principle_tests,
             relevant_statutes=deduped_statutes,
             relevant_precedents=pre_retrieved_precedents,
             raw_response=raw_output,
         )
 
-        # Parse the response for structured data
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.arguments = self._extract_arguments(raw_output)
-
-        # Sanitize reasoning chain based on precedents
         output.reasoning_chain = self._sanitize_reasoning_chain(
             output.reasoning_chain, pre_retrieved_precedents
         )
 
         self._log(f"✅ Generated {len(output.arguments)} arguments", "success")
         return output
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _invoke_reasoner(self, prompt: str) -> tuple[str, list]:
+        """Invoke the ReAct agent and return (raw_output, messages)."""
+        messages = [HumanMessage(content=prompt)]
+        result = self.react_agent.invoke({"messages": messages})
+        messages_out = result.get("messages", [])
+
+        tool_names: list[str] = []
+        for msg in messages_out:
+            if hasattr(msg, "name") and msg.name:
+                tool_names.append(msg.name)
+        if tool_names:
+            self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
+
+        raw_output = ""
+        for msg in reversed(messages_out):
+            if isinstance(msg, ToolMessage):
+                continue
+            msg_content = getattr(msg, "content", None)
+            if msg_content:
+                raw_output = str(msg_content)
+                break
+        return raw_output, messages_out
+
+    def _classify_causality_from_reasoning(
+        self, claim: str, reasoning_chain: list[str], raw_response: str
+    ) -> dict:
+        """Classify causality based on the generated reasoning chain."""
+        config = config_loader.load_config()
+        ct_index = config_loader.causal_types_by_id(config)
+        allowed_ids = list(ct_index.keys())
+
+        chain_text = "\n".join(reasoning_chain) or raw_response or ""
+        prompt = f"""You are a classifier. Based on the reasoning steps below, choose the most appropriate causal_type_id and theory_id.
+
+Allowed causal_type_id values: {', '.join(allowed_ids)}
+
+If uncertain, choose the closest and leave theory_id empty.
+Respond with compact JSON only: {{"causal_type_id": "...", "theory_id": "..."}}.
+
+CLAIM:
+{claim}
+
+REASONING CHAIN:
+{chain_text}
+"""
+        try:
+            resp = self.llm.invoke([HumanMessage(content=prompt)])
+            content = (resp.content or "").strip()
+            parsed = self._parse_json_like(content)
+            if parsed:
+                return parsed
+        except Exception as e:
+            self._log(f"⚠️ Causality classification on reasoning failed: {e}", "warning")
+
+        return {}
+
+    def _parse_json_like(self, text: str) -> dict:
+        """Parse LLM JSON-ish content."""
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:]
+            cleaned = cleaned.strip()
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, dict):
+                return {
+                    "causal_type_id": str(data.get("causal_type_id", "")).strip(),
+                    "theory_id": str(data.get("theory_id", "")).strip(),
+                }
+        except Exception:
+            pass
+        return {}
+
+    def _filtered_anchor_norms_for_types(
+        self, causal_types: list[str], claim: str
+    ) -> tuple[dict, list[dict], list[dict]]:
+        """
+        Retrieve and filter anchor norms (core/accessory) by claim for the given causal types.
+        Returns (merged_anchor_norms, statutes_from_norms, merged_principle_tests).
+        """
+        unique_cts = list(dict.fromkeys(ct for ct in causal_types if ct))
+        merged_core: list[dict] = []
+        merged_accessory: list[dict] = []
+        principle_tests: list[dict] = []
+        statutes: list[dict] = []
+
+        for ct in unique_cts:
+            try:
+                theory = get_causality_theory_tool.invoke(
+                    {"causality_type": ct, "claim": claim}
+                )
+            except Exception as e:
+                self._log(f"⚠️ Failed to load theory for {ct}: {e}", "warning")
+                continue
+
+            core_rel = theory.get("norme_core_rilevanti", []) or []
+            acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
+            core_full = theory.get("norme_core", []) or []
+            acc_full = theory.get("norme_accessorie", []) or []
+            taxonomy_norms = core_rel + acc_rel
+
+            kept_refs = [
+                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
+            ]
+            kept_set = {r for r in kept_refs if r}
+            discarded_refs = [
+                n.get("riferimento")
+                for n in (core_full + acc_full)
+                if n.get("riferimento") and n.get("riferimento") not in kept_set
+            ]
+            self._log(
+                f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
+            )
+            if kept_refs:
+                self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
+            if discarded_refs:
+                self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
+
+            merged_core.extend(core_rel)
+            merged_accessory.extend(acc_rel)
+            statutes.extend(
+                [
+                    self._norm_to_statute_dict(n)
+                    for n in taxonomy_norms
+                    if n.get("riferimento")
+                ]
+            )
+            pt = theory.get("principio_test") or theory.get("principle_tests") or []
+            if isinstance(pt, list):
+                principle_tests.extend(pt)
+
+        anchor_norms = {
+            "core_norms": merged_core,
+            "accessory_norms": merged_accessory,
+        }
+        return anchor_norms, statutes, principle_tests
 
     def filter_irrelevant_statutes(
         self, claim: str, statutes: list[dict]
@@ -463,7 +668,7 @@ INSTRUCTIONS:
    - Conclusion
 4) End with a numbered reasoning chain that respects anchor norms and principle tests.
 
-Critical: do not introduce external sources. Respond in English."""
+Critical: do not introduce external sources. Respond in Italian."""
 
     def _format_anchor_norms(self, anchor_norms: dict) -> str:
         """Format anchor norms for prompt readability."""

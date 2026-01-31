@@ -1,9 +1,9 @@
 """
-LangChain Tools for Causality Taxonomy.
+LangChain Tools for Causality Taxonomy (config_taxonomy.json schema).
 
 Provides tools for:
-- Classifying causality type using LLM (Material, Legal, Concurrent Causes)
-- Retrieving causality theory and associated norms
+- Classifying causality type using LLM over config-defined causal_types
+- Retrieving causality theory and associated norms (anchor + principle tests)
 """
 
 import json
@@ -25,10 +25,10 @@ _theory_cache: dict = {}
 
 
 def get_taxonomy() -> dict:
-    """Load and cache the causality taxonomy."""
+    """Load and cache the causality taxonomy (config schema)."""
     global _taxonomy_cache
     if _taxonomy_cache is None:
-        taxonomy_path = settings.data_dir / "tassonomia_causale.json"
+        taxonomy_path = Path(__file__).parent / "config_taxonomy.json"
         with open(taxonomy_path, "r", encoding="utf-8") as f:
             _taxonomy_cache = json.load(f)
     return _taxonomy_cache
@@ -42,48 +42,32 @@ def get_groq_client() -> Groq:
     return _groq_client
 
 
-# Mapping from causality type ID to taxonomy entry name
-CAUSALITY_TYPES = {
-    "MATERIALE": "Materiale",
-    "GIURIDICA": "Giuridica",
-    "CONCAUSE": "Concause / Sopravvenute",
-}
+def _causal_type_index(cfg: dict) -> dict:
+    return {ct["id"]: ct for ct in cfg.get("causal_types", []) if ct.get("id")}
 
-# System prompt for causality classification
-CAUSALITY_SYSTEM_PROMPT = """You are an expert legal classifier specializing in Italian causality theory.
 
-Your task is to classify a legal claim into the most appropriate type of causality.
+def _theory_index(cfg: dict) -> dict:
+    return {th["id"]: th for th in cfg.get("theories", []) if th.get("id")}
 
-Types of Causality:
 
-1. MATERIALE (Material Causality)
-   - Concerns the factual/natural connection between conduct and event
-   - Domain: Criminal Law (Diritto Penale)
-   - Key concept: "conditio sine qua non" - the conduct must be a necessary condition for the event
-   - Core norms: Art. 40-41 c.p. (Criminal Code)
-   - Examples: Did the defendant's action cause the victim's death? Was the omission a cause of the harm?
+def _build_classification_prompt(claim: str, cfg: dict) -> str:
+    types = cfg.get("causal_types", [])
+    lines = []
+    for ct in types:
+        lines.append(f"- {ct.get('id')}: {ct.get('name','')} [{ct.get('domain','')}]")
+    options_text = "\n".join(lines)
+    return f"""You are an expert legal classifier. Choose the best causal_type_id from the list.
 
-2. GIURIDICA (Legal Causality)
-   - Concerns the connection between wrongful event and compensable damage
-   - Domain: Civil Law (Diritto Civile)
-   - Key concept: Immediate and direct consequences, foreseeability
-   - Core norms: Art. 1223, 2043, 2056 c.c. (Civil Code)
-   - Examples: What damages can be claimed? Is the loss a direct consequence of the breach?
-
-3. CONCAUSE (Concurrent/Supervening Causes)
-   - Concerns interaction between multiple causal factors
-   - Domain: Both Criminal and Civil Law
-   - Key concept: Contribution of multiple causes, interruption of causal chain
-   - Core norms: Art. 41 c.p., Art. 1227, 2055 c.c.
-   - Examples: Multiple tortfeasors, victim's contributory negligence, supervening events
+Allowed causal_type_id values:
+{options_text}
 
 Rules:
-- Output ONLY ONE category ID: MATERIALE, GIURIDICA, or CONCAUSE
-- Do NOT explain the decision
-- Do NOT add any text, symbols, or formatting
-- Base your decision on the legal context and nature of the claim
-The response language must be Italian.
-"""
+- Respond ONLY with the id.
+- No explanations, no extra text.
+
+CLAIM:
+{claim}"""
+
 
 CAUSALITY_CLAIM_PROMPT = """CLAIM
 <<<
@@ -94,30 +78,6 @@ CONTEXT (if available)
 <<<
 {context}
 >>>"""
-
-# Few-shot examples
-CAUSALITY_FEW_SHOT = [
-    {
-        "claim": "L'imputato ha somministrato una dose di veleno che ha causato la morte della vittima.",
-        "context": "",
-        "response": "MATERIALE",
-    },
-    {
-        "claim": "Il debitore non ha adempiuto e chiedo il risarcimento dei danni subiti incluso il lucro cessante.",
-        "context": "",
-        "response": "GIURIDICA",
-    },
-    {
-        "claim": "L'incidente è stato causato sia dalla negligenza del conducente che dal comportamento imprudente del pedone.",
-        "context": "",
-        "response": "CONCAUSE",
-    },
-    {
-        "claim": "Il medico ha omesso di diagnosticare la malattia e il paziente è deceduto.",
-        "context": "Art. 40 c.p., Art. 589 c.p.",
-        "response": "MATERIALE",
-    },
-]
 
 
 class ClassifyCausalityInput(BaseModel):
@@ -136,31 +96,9 @@ def _build_classification_messages(
     claim: str, context: Optional[str] = None
 ) -> list[dict]:
     """Build the message chain with few-shot examples for causality classification."""
-    messages = [{"role": "system", "content": CAUSALITY_SYSTEM_PROMPT}]
-
-    # Add few-shot examples
-    for example in CAUSALITY_FEW_SHOT:
-        messages.append(
-            {
-                "role": "user",
-                "content": CAUSALITY_CLAIM_PROMPT.format(
-                    claim=example["claim"], context=example["context"] or "N/A"
-                ),
-            }
-        )
-        messages.append({"role": "assistant", "content": example["response"]})
-
-    # Add the actual claim
-    messages.append(
-        {
-            "role": "user",
-            "content": CAUSALITY_CLAIM_PROMPT.format(
-                claim=claim, context=context or "N/A"
-            ),
-        }
-    )
-
-    return messages
+    cfg = get_taxonomy()
+    prompt = _build_classification_prompt(claim, cfg)
+    return [{"role": "user", "content": prompt}]
 
 
 @tool("classify_causality", args_schema=ClassifyCausalityInput)
@@ -182,61 +120,39 @@ def classify_causality_tool(claim: str, context: Optional[str] = None) -> dict:
     response = client.chat.completions.create(
         model=settings.groq_model,
         messages=messages,  # type: ignore[arg-type]
-        temperature=0.2,  # Low temperature for consistent classification
+        temperature=0.2,
         max_tokens=20,
     )
 
     # Parse response
     content = response.choices[0].message.content
-    raw_response = (content or "").strip().upper()
+    raw_response = (content or "").strip()
 
     # Extract causality type ID
+    taxonomy = get_taxonomy()
+    ct_index = _causal_type_index(taxonomy)
     causality_id = None
-    for type_id in CAUSALITY_TYPES.keys():
+    for type_id in ct_index.keys():
         if type_id in raw_response:
             causality_id = type_id
             break
 
-    # Default to MATERIALE if parsing fails
     if causality_id is None:
-        causality_id = "MATERIALE"
+        causality_id = next(iter(ct_index.keys()), "")
 
-    type_name = CAUSALITY_TYPES[causality_id]
-
-    # Get taxonomy entry
-    taxonomy = get_taxonomy()
-    taxonomy_entry = None
-    for entry in taxonomy.get("tassonomia_causalita", []):
-        if entry.get("tipo_causalita") == type_name:
-            taxonomy_entry = entry
-            break
-
-    if not taxonomy_entry:
-        return {
-            "causality_type": type_name,
-            "causality_id": causality_id,
-            "error": "Taxonomy entry not found",
-        }
-
-    # Extract relevant information
+    ct_entry = ct_index.get(causality_id, {})
     return {
-        "causality_type": type_name,
-        "causality_id": causality_id,
-        "warrant": taxonomy_entry.get("warrant", {}),
-        "principle": taxonomy_entry.get("principio_test_applicato", ""),
-        "description": taxonomy_entry.get("descrizione_ruolo", ""),
-        "core_norms": taxonomy_entry.get("norme_core", []),
-        "accessory_norms": taxonomy_entry.get("norme_accessorie", []),
-        "limits": taxonomy_entry.get("limiti_criticita", ""),
+        "causality_type": ct_entry.get("id", ""),
+        "causality_id": ct_entry.get("id", ""),
+        "anchor_norms": ct_entry.get("anchor_norms", {}),
+        "principle_tests": ct_entry.get("principle_tests", []),
     }
 
 
 class GetCausalityTheoryInput(BaseModel):
     """Input schema for getting causality theory."""
 
-    causality_type: str = Field(
-        description="Type of causality: 'Materiale', 'Giuridica', or 'Concause / Sopravvenute'"
-    )
+    causality_type: str = Field(description="causal_type_id from config_taxonomy.json")
     claim: Optional[str] = Field(
         default=None,
         description="Legal claim text to softly filter taxonomy norms for relevance.",
@@ -252,78 +168,77 @@ def get_causality_theory_tool(
     Retrieve the complete theory associated with a causality type.
 
     Given a causality classification, returns:
-    - Warrant (name and description)
-    - Applied principle/test
-    - Core and accessory norms
-    - Subtypes (if present)
-    - Limits and criticalities
+    - Anchor norms (core/accessory)
+    - Principle tests
+    - Theory info (default_counter_attacks if applicable)
 
     Use this function to build counter-arguments based on causal theory.
     """
     taxonomy = get_taxonomy()
 
-    # Normalize input and build cache key
     normalized_type = causality_type.strip()
     cache_key = (normalized_type.lower(), (claim or "").strip())
     if cache_key in _theory_cache:
         return _theory_cache[cache_key]
 
-    # Find matching entry
-    for entry in taxonomy.get("tassonomia_causalita", []):
-        if entry.get("tipo_causalita", "").lower() == normalized_type.lower():
-            core_full = entry.get("norme_core", [])
-            access_full = entry.get("norme_accessorie", [])
+    ct_index = _causal_type_index(taxonomy)
+    th_index = _theory_index(taxonomy)
 
-            result = {
-                "tipo_causalita": entry.get("tipo_causalita"),
-                "warrant": entry.get("warrant", {}),
-                "principio_test": entry.get("principio_test_applicato", ""),
-                "descrizione": entry.get("descrizione_ruolo", ""),
-                "norme_core": core_full,
-                "norme_accessorie": access_full,
-                "limiti_criticita": entry.get("limiti_criticita", ""),
-            }
+    ct_entry = ct_index.get(normalized_type) or ct_index.get(normalized_type.upper())
+    if not ct_entry:
+        return {
+            "error": f"causal_type_id '{causality_type}' not found in taxonomy",
+            "available_types": list(ct_index.keys()),
+        }
 
-            # If no claim, return without logging/filtering
-            if not claim:
-                _theory_cache[cache_key] = result
-                return result
+    # collect principle_tests and anchor_norms
+    core_full = (ct_entry.get("anchor_norms") or {}).get("core_norms", [])
+    access_full = (ct_entry.get("anchor_norms") or {}).get("accessory_norms", [])
+    principle_tests = ct_entry.get("principle_tests", [])
 
-            # Relevance filtering against the claim (soft keep-by-default)
-            core_rel = _filter_norms_for_claim(core_full, claim)
-            access_rel = _filter_norms_for_claim(access_full, claim)
-            result["norme_core_rilevanti"] = core_rel
-            result["norme_accessorie_rilevanti"] = access_rel
-
-            # Include subtypes if present
-            notes = entry.get("note")
-            if notes and "sottotipi_inclusi" in notes:
-                result["sottotipi"] = notes["sottotipi_inclusi"]
-
-            _theory_cache[cache_key] = result
-            return result
-
-    return {
-        "error": f"Tipo di causalità '{causality_type}' non trovato nella tassonomia",
-        "available_types": ["Materiale", "Giuridica", "Concause / Sopravvenute"],
+    result = {
+        "causal_type_id": ct_entry.get("id"),
+        "name": ct_entry.get("name", ""),
+        "anchor_norms": ct_entry.get("anchor_norms", {}),
+        "principle_tests": principle_tests,
+        "norme_core": core_full,
+        "norme_accessorie": access_full,
     }
+
+    # attach applicable theories default attacks
+    applicable_theories = [
+        th
+        for th in th_index.values()
+        if ct_entry.get("id") in th.get("applicable_causal_types", [])
+    ]
+    if applicable_theories:
+        result["applicable_theories"] = [
+            {
+                "id": th.get("id"),
+                "name": th.get("name"),
+                "default_counter_attacks": th.get("default_counter_attacks", []),
+            }
+            for th in applicable_theories
+        ]
+
+    if not claim:
+        _theory_cache[cache_key] = result
+        return result
+
+    # Relevance filtering against the claim (soft keep-by-default)
+    core_rel = _filter_norms_for_claim(core_full, claim)
+    access_rel = _filter_norms_for_claim(access_full, claim)
+    result["norme_core_rilevanti"] = core_rel
+    result["norme_accessorie_rilevanti"] = access_rel
+
+    _theory_cache[cache_key] = result
+    return result
 
 
 def get_all_causality_types() -> list[dict]:
     """Get summary of all causality types for reference."""
     taxonomy = get_taxonomy()
-    types = []
-
-    for entry in taxonomy.get("tassonomia_causalita", []):
-        types.append(
-            {
-                "tipo": entry.get("tipo_causalita"),
-                "warrant": entry.get("warrant", {}).get("denominazione", ""),
-                "principio": entry.get("principio_test_applicato", ""),
-            }
-        )
-
-    return types
+    return taxonomy.get("causal_types", [])
 
 
 def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:

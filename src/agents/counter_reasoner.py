@@ -18,6 +18,7 @@ from .base import AgentConfig, BaseAgent
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
+from .tools.taxonomy_tools import get_causality_theory_tool
 
 
 @dataclass
@@ -87,7 +88,7 @@ Expected structure:
 - Alternative Causal Link
 - Contrary Conclusion
 - Numbered counter-reasoning chain.
-Respond in English."""
+Respond in Italian."""
 
 
 ATTACK_DESCRIPTIONS: Dict[str, str] = {
@@ -259,6 +260,55 @@ Select the most useful attack among the following ids and return ONLY the chosen
             deduped.append(st)
         return deduped
 
+    def _filtered_anchor_statutes_for_types(
+        self, causal_types: List[str], claim: str
+    ) -> List[dict]:
+        """Get taxonomy anchor norms filtered by claim for the given causal types."""
+        statutes: List[dict] = []
+        seen_refs = set()
+        unique_cts = list(dict.fromkeys(ct for ct in causal_types if ct))
+
+        for ct in unique_cts:
+            try:
+                theory = get_causality_theory_tool.invoke(
+                    {"causality_type": ct, "claim": claim}
+                )
+            except Exception as e:
+                self._log(f"⚠️ Failed to load theory for {ct}: {e}", "warning")
+                continue
+
+            core_rel = theory.get("norme_core_rilevanti", []) or []
+            acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
+            core_full = theory.get("norme_core", []) or []
+            acc_full = theory.get("norme_accessorie", []) or []
+            taxonomy_norms = core_rel + acc_rel
+
+            kept_refs = [
+                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
+            ]
+            kept_set = {r for r in kept_refs if r}
+            discarded_refs = [
+                n.get("riferimento")
+                for n in (core_full + acc_full)
+                if n.get("riferimento") and n.get("riferimento") not in kept_set
+            ]
+            self._log(
+                f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
+            )
+            if kept_refs:
+                self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
+            if discarded_refs:
+                self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
+
+            for n in taxonomy_norms:
+                ref = n.get("riferimento")
+                if not ref or ref in seen_refs:
+                    continue
+                seen_refs.add(ref)
+                statutes.append(self._norm_to_statute_dict(n))
+
+        return statutes
+
     @property
     def tools(self) -> list:
         """
@@ -319,6 +369,18 @@ Select the most useful attack among the following ids and return ONLY the chosen
         )
 
         all_statutes = pre_retrieved_statutes
+        # Add filtered anchor norms for provided causal types (router + additional)
+        anchor_statutes = self._filtered_anchor_statutes_for_types(
+            [routing_decision.causal_type_id]
+            + (routing_decision.additional_causal_types or []),
+            claim,
+        )
+        if anchor_statutes:
+            self._log(
+                f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
+                "info",
+            )
+        all_statutes = all_statutes + anchor_statutes
         # Deduplicate
         seen_keys = set()
         deduped_statutes = []
@@ -490,7 +552,7 @@ INSTRUCTIONS:
    - Contrary Conclusion
 3) End with a numbered counter-reasoning chain, without mentioning the Reasoner.
 
-Critical: do not invent sources, do not mention the Reasoner. Respond in English."""
+Critical: do not invent sources, do not mention the Reasoner. Respond in Italian."""
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:
         """Estrae contro-argomenti strutturati dalla risposta."""

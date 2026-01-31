@@ -60,8 +60,6 @@ def load_taxonomy():
     if TAXONOMY is None:
         candidate_paths = [
             settings.taxonomy_path,
-            settings.data_dir / "tassonomia_causalita.json",
-            settings.data_dir / "tassonomia_causale.json",
         ]
 
         taxonomy_path = next((p for p in candidate_paths if p.exists()), None)
@@ -210,6 +208,7 @@ def resolve_routing_decision(
             theory_id=th_valid or "",
             anchor_norms=config_loader.anchor_norms_for(ct_valid),
             principle_tests=config_loader.principle_tests_for(ct_valid),
+            additional_causal_types=[],
         )
 
     return router.route(claim)
@@ -503,7 +502,7 @@ def pipeline():
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
         print(f"\n{'='*70}")
-        print("🚀 PIPELINE COMPLETA - INIZIO")
+        print("🚀 FULL PIPELINE - START")
         print(f"{'='*70}")
         print(f"Claim: {claim[:100]}...")
 
@@ -524,10 +523,10 @@ def pipeline():
 
         # STEP 1: Reasoner (receives SUPPORT articles/precedents)
         print(f"\n{'─'*70}")
-        print("📊 STEP 1: Esecuzione Reasoner (con articoli a SUPPORTO)...")
+        print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
         print(f"{'─'*70}")
         print(
-            f"   📚 Knowledge base: {len(support_statutes)} statuti, {len(support_precedents)} precedenti"
+            f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
         )
 
         reas = get_reasoner()
@@ -537,40 +536,46 @@ def pipeline():
             pre_retrieved_statutes=support_statutes,
             pre_retrieved_precedents=support_precedents,
         )
+        final_routing_decision = RoutingDecision(
+            claim=claim,
+            causal_type_id=reasoner_result.causal_type_id,
+            theory_id=reasoner_result.theory_id,
+            anchor_norms=reasoner_result.anchor_norms,
+            principle_tests=reasoner_result.principle_tests,
+            additional_causal_types=reasoner_result.causal_type_ids_for_counter,
+        )
 
-        print("✅ Reasoner completato")
+        print("✅ Reasoner completed")
         print(
-            f"   - Causalità: {routing_decision.causal_type_id} / {routing_decision.theory_id}"
+            f"   - Causality: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
         )
-        print(f"   - Argomenti: {len(reasoner_result.arguments)}")
-        print(
-            f"   - Catena di ragionamento: {len(reasoner_result.reasoning_chain)} steps"
-        )
+        print(f"   - Arguments: {len(reasoner_result.arguments)}")
+        print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
 
         # STEP 2: Counter-Reasoner (receives AGAINST articles/precedents)
         print(f"\n{'─'*70}")
-        print("⚔️  STEP 2: Esecuzione Counter-Reasoner (con articoli CONTRO)...")
+        print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
         print(f"{'─'*70}")
         print(
-            f"   📚 Knowledge base: {len(against_statutes)} statuti, {len(against_precedents)} precedenti"
+            f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
         )
 
         cr = get_counter_reasoner()
         counter_result = cr.run(
             claim=claim,
-            routing_decision=routing_decision,
+            routing_decision=final_routing_decision,
             pre_retrieved_statutes=against_statutes,
             pre_retrieved_precedents=against_precedents,
         )
 
-        print("✅ Counter-Reasoner completato")
-        print(f"   - Contro-argomenti: {len(counter_result.counter_arguments)}")
+        print("✅ Counter-Reasoner completed")
+        print(f"   - Counter-arguments: {len(counter_result.counter_arguments)}")
         print(
-            f"   - Catena di contro-ragionamento: {len(counter_result.reasoning_chain)} steps"
+            f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
         )
 
         print(f"\n{'='*70}")
-        print("✅ PIPELINE COMPLETA - FINE")
+        print("✅ FULL PIPELINE - END")
         print(f"{'='*70}\n")
 
         # Restituisci entrambi i risultati
@@ -578,6 +583,7 @@ def pipeline():
             {
                 "claim": claim,
                 "routing": routing_decision.to_dict(),
+                "final_routing": final_routing_decision.to_dict(),
                 "reasoner": reasoner_result.to_dict(),
                 "counter_reasoner": counter_result.to_dict(),
             }
@@ -585,9 +591,9 @@ def pipeline():
 
     except Exception as e:
         print(f"\n{'='*70}")
-        print("❌ ERRORE PIPELINE")
+        print("❌ PIPELINE ERROR")
         print(f"{'='*70}")
-        print(f"Errore: {e}")
+        print(f"Error: {e}")
         import traceback
 
         traceback.print_exc()

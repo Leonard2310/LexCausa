@@ -38,6 +38,7 @@ class RoutingDecision:
     theory_id: str
     anchor_norms: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)
     principle_tests: List[Dict[str, str]] = field(default_factory=list)
+    additional_causal_types: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -46,6 +47,7 @@ class RoutingDecision:
             "theory_id": self.theory_id,
             "anchor_norms": self.anchor_norms,
             "principle_tests": self.principle_tests,
+            "additional_causal_types": self.additional_causal_types,
         }
 
 

@@ -3,13 +3,15 @@ LexCausa Reasoner Agent.
 
 The Reasoner is responsible for:
 1. Receiving a legal claim with pre-retrieved statutes and precedents
-2. Using ReAct logic with tools to classify causality and get theory
-3. Generating supporting arguments based on the provided knowledge base
-4. Building a reasoning chain that connects the claim to legal norms
+2. Generating supporting arguments based on the provided knowledge base
+3. Building a reasoning chain that connects the claim to legal norms
+
+NOTE: The Reasoner does NOT classify causality. Causality classification
+is performed AFTER the reasoning chain is generated, using the chain itself
+as input (not the claim). This classification is then used by the CounterReasoner.
 
 IMPORTANT: The Reasoner does NOT search for articles/precedents itself.
 The pre-retrieval is done by api_server using LegalSearchPipeline.
-This ensures the agent bases its reasoning ONLY on the retrieved knowledge.
 
 Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 """
@@ -22,9 +24,8 @@ from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.taxonomy_tools import classify_causality_tool, get_causality_theory_tool
 
-# System prompt for the Reasoner (with pre-retrieved context)
+# System prompt for the Reasoner (NO causality classification)
 REASONER_SYSTEM_PROMPT = """You are an expert legal reasoning agent specializing in Italian law.
 
 You will receive a legal claim along with PRE-RETRIEVED articles and precedents as your KNOWLEDGE BASE.
@@ -39,21 +40,14 @@ CRITICAL RULES:
 
 Your task follows these steps:
 
-1. **CAUSALITY CLASSIFICATION**: Use the `classify_causality` tool to determine the type:
-   - Material Causality: factual link between conduct and event (Art. 40 c.p.)
-   - Legal Causality: connection between event and damage (Art. 1223 c.c.)
-   - Concurrent Causes: interaction between multiple factors (Art. 41 c.p.)
-
-2. **GET CAUSAL THEORY**: Use `get_causality_theory` to retrieve the complete theory.
-
-3. **ARGUMENT CONSTRUCTION**: For each supporting argument:
+1. **ARGUMENT CONSTRUCTION**: For each supporting argument:
    - **Premessa**: The starting fact from the claim
    - **Norma**: The applicable law WITH EXACT CITATION and quoted text from knowledge base
    - **Precedente**: A supporting court decision (ONLY if provided in knowledge base)
    - **Nesso Causale**: How the premise connects to the norm
    - **Conclusione**: The legal implication
 
-4. **REASONING CHAIN**: Build a logical sequence:
+2. **REASONING CHAIN**: Build a logical sequence:
    Facts → Applicable Norm (with citation) → Precedent Support → Causal Link → Legal Consequence
 
 The response language must be Italian."""
@@ -108,12 +102,11 @@ class Reasoner(BaseAgent):
         """
         Get the tools available to this agent.
 
-        NOTE: No search tools - the agent works with pre-retrieved context.
-        Only taxonomy/causality tools for classification and theory retrieval.
+        NOTE: No search tools and no causality tools.
+        The agent works with pre-retrieved context and generates reasoning without causality classification.
+        Causality is classified AFTER on the generated reasoning chain.
         """
         return [
-            classify_causality_tool,
-            get_causality_theory_tool,
             get_statute_by_article_tool,  # For looking up specific articles by number
         ]
 
@@ -154,7 +147,7 @@ class Reasoner(BaseAgent):
             self._log("⚠️ No knowledge base provided", "warning")
             return ReasonerOutput(
                 claim=claim,
-                causality_classification={},
+                causality_classification={},  # Will be set by api_server after
                 relevant_statutes=[],
                 relevant_precedents=[],
                 arguments=[],
@@ -162,55 +155,8 @@ class Reasoner(BaseAgent):
                 raw_response="Analisi non completata: nessuna fonte normativa o giurisprudenziale disponibile.",
             )
 
-        # Enrich with relevant norms from taxonomy filtered by claim (pre-classification)
-        taxonomy_statutes: list[dict] = []
-        try:
-            prelim_causality = classify_causality_tool.invoke({"claim": claim})
-            prelim_type = prelim_causality.get(
-                "causality_type"
-            ) or prelim_causality.get("tipo_causalita")
-        except Exception:
-            prelim_type = None
-
-        if prelim_type:
-            theory = get_causality_theory_tool.invoke(
-                {"causality_type": prelim_type, "claim": claim}
-            )
-            core_rel = theory.get("norme_core_rilevanti", [])
-            acc_rel = theory.get("norme_accessorie_rilevanti", [])
-            core_full = theory.get("norme_core", [])
-            acc_full = theory.get("norme_accessorie", [])
-            taxonomy_norms = core_rel + acc_rel
-
-            kept_refs = [
-                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
-            ]
-            kept_set = {r for r in kept_refs if r}
-            discarded_refs = [
-                n.get("riferimento")
-                for n in (core_full + acc_full)
-                if n.get("riferimento") and n.get("riferimento") not in kept_set
-            ]
-            self._log(
-                f"🔎 [taxonomy] Causalità {prelim_type}: core {len(core_rel)}/{len(core_full)}, accessorie {len(acc_rel)}/{len(acc_full)}"
-            )
-            if kept_refs:
-                self._log(f"   ✔️ Tenute: {', '.join(kept_refs)}")
-            if discarded_refs:
-                self._log(f"   ❌ Scartate: {', '.join(discarded_refs)}")
-
-            taxonomy_statutes = [self._norm_to_statute_dict(n) for n in taxonomy_norms]
-
-        # Merge KB statutes with taxonomy-derived relevant norms
-        all_statutes = pre_retrieved_statutes + taxonomy_statutes
-        seen_keys = set()
-        deduped_statutes = []
-        for s in all_statutes:
-            key = (s.get("articolo"), s.get("source"))
-            if key not in seen_keys:
-                seen_keys.add(key)
-                deduped_statutes.append(s)
-
+        # Prepare statutes for the prompt (no taxonomy enrichment)
+        deduped_statutes = pre_retrieved_statutes
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
             for s in deduped_statutes
@@ -239,12 +185,16 @@ class Reasoner(BaseAgent):
 
         # Log tool calls for debugging
         tool_names: list[str] = []
+        for msg in messages_out:
+            if hasattr(msg, 'name') and msg.name:
+                tool_names.append(msg.name)
+                self._log(f"🔧 Tool called: {msg.name}")
 
         if tool_names:
             self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
 
-        # Extract causality from tool responses
-        causality = self._extract_causality_from_messages(messages_out)
+        # NOTE: Causality is NOT extracted here - it will be classified by api_server
+        # using the reasoning chain as input (not the claim)
 
         # Get the final response from the agent
         raw_output = ""
@@ -257,10 +207,10 @@ class Reasoner(BaseAgent):
                 raw_output = str(msg_content)
                 break
 
-        # Build output
+        # Build output (causality_classification is empty - set by api_server after)
         output = ReasonerOutput(
             claim=claim,
-            causality_classification=causality,
+            causality_classification={},  # Will be populated by api_server
             relevant_statutes=deduped_statutes,
             relevant_precedents=pre_retrieved_precedents,
             raw_response=raw_output,
@@ -444,11 +394,7 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 
 INSTRUCTIONS:
 
-1. **CLASSIFY CAUSALITY**: Call `classify_causality` with the claim to determine the causality type.
-
-2. **GET CAUSAL THEORY**: Call `get_causality_theory` with the identified causality type.
-
-3. **BUILD ARGUMENTS**: Using ONLY the articles and precedents from the KNOWLEDGE BASE above:
+1. **BUILD ARGUMENTS**: Using ONLY the articles and precedents from the KNOWLEDGE BASE above:
    - For each argument, specify:
      - **Premessa**: The starting fact from the claim
      - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES)
@@ -456,7 +402,7 @@ INSTRUCTIONS:
       - **Nesso Causale**: How the premise connects to the norm
       - **Conclusione**: The legal implication
 
-4. **REASONING CHAIN**: Provide a final CATENA DI RAGIONAMENTO with:
+2. **REASONING CHAIN**: Provide a final CATENA DI RAGIONAMENTO with:
    - Numbered logical steps
    - Explicit article citations (e.g., "Art. 2043 c.c.")
    - Precedent references if available

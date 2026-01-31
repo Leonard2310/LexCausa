@@ -270,7 +270,7 @@ class BaseAgent(ABC):
         if not any(
             "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
         ):
-            sanitized.append("Precedenti: nessuno trovato.")
+            sanitized.append("Precedents: none found.")
 
         return sanitized
 
@@ -309,7 +309,7 @@ class BaseAgent(ABC):
                     parts.append(f"  {summary[:300]}...")
             parts.append("")
 
-        return "\n".join(parts) if parts else "Nessun contesto normativo disponibile."
+        return "\n".join(parts) if parts else "No legal context available."
 
     def _norm_to_statute_dict(self, norm: dict) -> dict:
         """

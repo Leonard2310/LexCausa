@@ -319,7 +319,7 @@ export default function App() {
                       <div className="subsection">
                         <h4>Articoli Trovati ({pipelineResult.reasoner.statutes.length})</h4>
                         <ul className="articles-list">
-                          {pipelineResult.reasoner.statutes.slice(0, 5).map((art, idx) => (
+                          {pipelineResult.reasoner.statutes.map((art, idx) => (
                             <li key={idx}>
                               <strong>Art. {art.articolo || art.statute_id}</strong>
                               {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
@@ -391,7 +391,7 @@ export default function App() {
                       <div className="subsection">
                         <h4>Articoli Trovati (Contro-Tesi) ({pipelineResult.counter_reasoner.statutes.length})</h4>
                         <ul className="articles-list">
-                          {pipelineResult.counter_reasoner.statutes.slice(0, 5).map((art, idx) => (
+                          {pipelineResult.counter_reasoner.statutes.map((art, idx) => (
                             <li key={idx}>
                               <strong>Art. {art.articolo || art.statute_id}</strong>
                               {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}

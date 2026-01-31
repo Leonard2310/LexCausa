@@ -21,42 +21,23 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
+from .router import RoutingDecision
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.taxonomy_tools import classify_causality_tool, get_causality_theory_tool
 
 # System prompt for the Reasoner (with pre-retrieved context)
-REASONER_SYSTEM_PROMPT = """You are an expert legal reasoning agent specializing in Italian law.
+REASONER_SYSTEM_PROMPT = """You are the Reasoner. The router already set causal_type_id and theory_id.
+Do NOT re-classify. Use these as structural constraints:
+- anchor_norms (core + accessory) from config
+- principle_tests for the causal type
 
-You will receive a legal claim along with PRE-RETRIEVED articles and precedents as your KNOWLEDGE BASE.
-Your task is to analyze the claim and build supporting arguments using ONLY the provided knowledge.
+You receive a pre-retrieved KNOWLEDGE BASE (statutes/precedents) filtered as supportive/neutral.
+Build ONLY supporting arguments for the claim using the provided sources.
 
-CRITICAL RULES:
-- Use ONLY the articles provided in the KNOWLEDGE BASE - do NOT invent or cite articles not provided
-- Use ONLY the precedents provided - do NOT invent precedents
-- If no precedents are provided, explicitly state this and proceed without them
-- ALWAYS cite the exact article number and code (e.g., "Art. 2043 c.c.", "Art. 40 c.p.")
-- ALWAYS quote relevant portions of the article text from the provided context
-
-Your task follows these steps:
-
-1. **CAUSALITY CLASSIFICATION**: Use the `classify_causality` tool to determine the type:
-   - Material Causality: factual link between conduct and event (Art. 40 c.p.)
-   - Legal Causality: connection between event and damage (Art. 1223 c.c.)
-   - Concurrent Causes: interaction between multiple factors (Art. 41 c.p.)
-
-2. **GET CAUSAL THEORY**: Use `get_causality_theory` to retrieve the complete theory.
-
-3. **ARGUMENT CONSTRUCTION**: For each supporting argument:
-   - **Premessa**: The starting fact from the claim
-   - **Norma**: The applicable law WITH EXACT CITATION and quoted text from knowledge base
-   - **Precedente**: A supporting court decision (ONLY if provided in knowledge base)
-   - **Nesso Causale**: How the premise connects to the norm
-   - **Conclusione**: The legal implication
-
-4. **REASONING CHAIN**: Build a logical sequence:
-   Facts → Applicable Norm (with citation) → Precedent Support → Causal Link → Legal Consequence
-
-The response language must be Italian."""
+Critical rules:
+- Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
+- If a needed statute is missing, state “article not available in the knowledge base”.
+- Keep reasoning independent: do not reference the Counter-Reasoner.
+- Respond in English."""
 
 
 @dataclass
@@ -65,6 +46,10 @@ class ReasonerOutput:
 
     claim: str
     causality_classification: dict
+    causal_type_id: str = ""
+    theory_id: str = ""
+    anchor_norms: dict = field(default_factory=dict)
+    principle_tests: list[dict] = field(default_factory=list)
     relevant_statutes: list[dict] = field(default_factory=list)
     relevant_precedents: list[dict] = field(default_factory=list)
     arguments: list[dict] = field(default_factory=list)
@@ -75,6 +60,10 @@ class ReasonerOutput:
         return {
             "claim": self.claim,
             "causality": self.causality_classification,
+            "causal_type_id": self.causal_type_id,
+            "theory_id": self.theory_id,
+            "anchor_norms": self.anchor_norms,
+            "principle_tests": self.principle_tests,
             "statutes": self.relevant_statutes,
             "precedents": self.relevant_precedents,
             "arguments": self.arguments,
@@ -109,11 +98,9 @@ class Reasoner(BaseAgent):
         Get the tools available to this agent.
 
         NOTE: No search tools - the agent works with pre-retrieved context.
-        Only taxonomy/causality tools for classification and theory retrieval.
+        Tools are limited to statute lookup to keep the chain deterministic.
         """
         return [
-            classify_causality_tool,
-            get_causality_theory_tool,
             get_statute_by_article_tool,  # For looking up specific articles by number
         ]
 
@@ -131,6 +118,7 @@ class Reasoner(BaseAgent):
     def run(
         self,
         claim: str,
+        routing_decision: RoutingDecision,
         pre_retrieved_statutes: list[dict],
         pre_retrieved_precedents: list[dict],
     ) -> ReasonerOutput:
@@ -139,6 +127,7 @@ class Reasoner(BaseAgent):
 
         Args:
             claim: The legal claim to analyze and support.
+            routing_decision: Output of the Router containing causal_type_id/theory_id.
             pre_retrieved_statutes: Already retrieved and filtered statute articles.
             pre_retrieved_precedents: Already retrieved precedents.
 
@@ -150,59 +139,43 @@ class Reasoner(BaseAgent):
             f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents"
         )
 
+        if not routing_decision or not routing_decision.causal_type_id:
+            raise ValueError("routing_decision with a valid causal_type_id is required")
+
         if not pre_retrieved_statutes and not pre_retrieved_precedents:
             self._log("⚠️ No knowledge base provided", "warning")
             return ReasonerOutput(
                 claim=claim,
-                causality_classification={},
+                causality_classification={
+                    "causal_type_id": routing_decision.causal_type_id,
+                    "theory_id": routing_decision.theory_id,
+                    "source": "router",
+                },
+                causal_type_id=routing_decision.causal_type_id,
+                theory_id=routing_decision.theory_id,
+                anchor_norms=routing_decision.anchor_norms,
+                principle_tests=routing_decision.principle_tests,
                 relevant_statutes=[],
                 relevant_precedents=[],
                 arguments=[],
-                reasoning_chain=["Nessun articolo o precedente fornito per l'analisi."],
-                raw_response="Analisi non completata: nessuna fonte normativa o giurisprudenziale disponibile.",
+                reasoning_chain=[
+                    "No statutes or precedents were provided for analysis."
+                ],
+                raw_response="Analysis not completed: no statutory or case sources available.",
             )
 
-        # Enrich with relevant norms from taxonomy filtered by claim (pre-classification)
-        taxonomy_statutes: list[dict] = []
-        try:
-            prelim_causality = classify_causality_tool.invoke({"claim": claim})
-            prelim_type = prelim_causality.get(
-                "causality_type"
-            ) or prelim_causality.get("tipo_causalita")
-        except Exception:
-            prelim_type = None
-
-        if prelim_type:
-            theory = get_causality_theory_tool.invoke(
-                {"causality_type": prelim_type, "claim": claim}
-            )
-            core_rel = theory.get("norme_core_rilevanti", [])
-            acc_rel = theory.get("norme_accessorie_rilevanti", [])
-            core_full = theory.get("norme_core", [])
-            acc_full = theory.get("norme_accessorie", [])
-            taxonomy_norms = core_rel + acc_rel
-
-            kept_refs = [
-                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
-            ]
-            kept_set = {r for r in kept_refs if r}
-            discarded_refs = [
-                n.get("riferimento")
-                for n in (core_full + acc_full)
-                if n.get("riferimento") and n.get("riferimento") not in kept_set
+        anchor_statutes = self._anchor_norms_to_statutes(routing_decision.anchor_norms)
+        if anchor_statutes:
+            added_refs = [
+                str(s.get("articolo")) for s in anchor_statutes if s.get("articolo")
             ]
             self._log(
-                f"🔎 [taxonomy] Causalità {prelim_type}: core {len(core_rel)}/{len(core_full)}, accessorie {len(acc_rel)}/{len(acc_full)}"
+                f"🧭 Anchor norms added to KB: {len(anchor_statutes)} "
+                f"({', '.join(added_refs)})"
             )
-            if kept_refs:
-                self._log(f"   ✔️ Tenute: {', '.join(kept_refs)}")
-            if discarded_refs:
-                self._log(f"   ❌ Scartate: {', '.join(discarded_refs)}")
 
-            taxonomy_statutes = [self._norm_to_statute_dict(n) for n in taxonomy_norms]
-
-        # Merge KB statutes with taxonomy-derived relevant norms
-        all_statutes = pre_retrieved_statutes + taxonomy_statutes
+        # Merge and deduplicate statutes coming from retrieval (already supportive/neutral)
+        all_statutes = pre_retrieved_statutes + anchor_statutes
         seen_keys = set()
         deduped_statutes = []
         for s in all_statutes:
@@ -210,6 +183,14 @@ class Reasoner(BaseAgent):
             if key not in seen_keys:
                 seen_keys.add(key)
                 deduped_statutes.append(s)
+
+        before_expand = len(deduped_statutes)
+        deduped_statutes = self._expand_with_cross_references(deduped_statutes)
+        if len(deduped_statutes) > before_expand:
+            self._log(
+                f"➕ Added {len(deduped_statutes) - before_expand} statutes via cross-ref",
+                "info",
+            )
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
@@ -224,9 +205,15 @@ class Reasoner(BaseAgent):
             deduped_statutes, pre_retrieved_precedents
         )
 
+        anchor_text = self._format_anchor_norms(routing_decision.anchor_norms)
+        principle_text = self._format_principle_tests(routing_decision.principle_tests)
+
         # Build the input prompt with pre-retrieved context and explicit allow-list
         input_prompt = self._build_reasoning_prompt_with_context(
             claim,
+            routing_decision,
+            anchor_text,
+            principle_text,
             knowledge_base,
             allowed_statutes,
             allowed_precedents,
@@ -239,12 +226,19 @@ class Reasoner(BaseAgent):
 
         # Log tool calls for debugging
         tool_names: list[str] = []
+        for msg in messages_out:
+            if hasattr(msg, "name") and msg.name:
+                tool_names.append(msg.name)
 
         if tool_names:
             self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
 
         # Extract causality from tool responses
-        causality = self._extract_causality_from_messages(messages_out)
+        causality = {
+            "causal_type_id": routing_decision.causal_type_id,
+            "theory_id": routing_decision.theory_id,
+            "source": "router",
+        }
 
         # Get the final response from the agent
         raw_output = ""
@@ -261,6 +255,10 @@ class Reasoner(BaseAgent):
         output = ReasonerOutput(
             claim=claim,
             causality_classification=causality,
+            causal_type_id=routing_decision.causal_type_id,
+            theory_id=routing_decision.theory_id,
+            anchor_norms=routing_decision.anchor_norms,
+            principle_tests=routing_decision.principle_tests,
             relevant_statutes=deduped_statutes,
             relevant_precedents=pre_retrieved_precedents,
             raw_response=raw_output,
@@ -414,27 +412,39 @@ No punctuation. No new lines. No extra spaces.
     def _build_reasoning_prompt_with_context(
         self,
         claim: str,
+        routing_decision: RoutingDecision,
+        anchor_text: str,
+        principle_text: str,
         knowledge_base: str,
         allowed_statutes: list[str],
         allowed_precedents: list[str],
     ) -> str:
         """Build the prompt for the reasoning task with pre-retrieved context."""
         statutes_list = (
-            "\n".join(f"- {a}" for a in allowed_statutes)
-            or "- Nessun articolo disponibile"
+            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
         )
         precedents_list = (
             "\n".join(f"- {p}" for p in allowed_precedents)
-            or "- Nessun precedente disponibile"
+            or "- No precedents available"
         )
-        return f"""Analyze the following legal claim and build supporting arguments.
+        return f"""Analyze the following claim and build SUPPORTING arguments following the router decision.
 
 CLAIM:
 "{claim}"
 
+ROUTING DECISION (binding):
+- causal_type_id: {routing_decision.causal_type_id}
+- theory_id: {routing_decision.theory_id}
+
+ANCHOR NORMS (structural constraints):
+{anchor_text}
+
+PRINCIPLE TESTS (evaluation criteria):
+{principle_text}
+
 === KNOWLEDGE BASE (USE ONLY THESE SOURCES) ===
 {knowledge_base}
-=== END OF KNOWLEDGE BASE ===
+=== END KNOWLEDGE BASE ===
 
 ALLOWED STATUTE REFERENCES (do not cite others):
 {statutes_list}
@@ -443,29 +453,108 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 {precedents_list}
 
 INSTRUCTIONS:
+1) Honor the given causal_type_id and theory_id. Do not re-classify.
+2) Use anchor norms and principle tests as constraints: if the knowledge base lacks the statute text, still cite the article but do NOT invent quotes.
+3) Build arguments using ONLY knowledge base sources:
+   - Premise
+   - Statute (with precise citation) from ALLOWED STATUTES; if absent, write “article not available in the knowledge base”
+   - Precedent (only if present in ALLOWED PRECEDENTS)
+   - Causal Link
+   - Conclusion
+4) End with a numbered reasoning chain that respects anchor norms and principle tests.
 
-1. **CLASSIFY CAUSALITY**: Call `classify_causality` with the claim to determine the causality type.
+Critical: do not introduce external sources. Respond in English."""
 
-2. **GET CAUSAL THEORY**: Call `get_causality_theory` with the identified causality type.
+    def _format_anchor_norms(self, anchor_norms: dict) -> str:
+        """Format anchor norms for prompt readability."""
+        core = anchor_norms.get("core_norms", []) if anchor_norms else []
+        accessory = anchor_norms.get("accessory_norms", []) if anchor_norms else []
+        lines = []
+        for n in core:
+            lines.append(f"- [core] {n.get('ref', 'N/D')}: {n.get('role', '')}")
+        for n in accessory:
+            lines.append(f"- [accessory] {n.get('ref', 'N/D')}: {n.get('role', '')}")
+        return "\n".join(lines) or "- No anchor norms defined"
 
-3. **BUILD ARGUMENTS**: Using ONLY the articles and precedents from the KNOWLEDGE BASE above:
-   - For each argument, specify:
-     - **Premessa**: The starting fact from the claim
-     - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES)
-     - **Precedente**: Supporting precedent (ONLY if present in ALLOWED PRECEDENTS; if none, OMIT this field)
-      - **Nesso Causale**: How the premise connects to the norm
-      - **Conclusione**: The legal implication
+    def _format_principle_tests(self, principle_tests: list[dict]) -> str:
+        """Format principle tests list."""
+        if not principle_tests:
+            return "- No principle tests defined"
+        lines = []
+        for t in principle_tests:
+            lines.append(
+                f"- {t.get('id', 'TEST')} | {t.get('name', '')}: {t.get('description', '')}"
+            )
+        return "\n".join(lines)
 
-4. **REASONING CHAIN**: Provide a final CATENA DI RAGIONAMENTO with:
-   - Numbered logical steps
-   - Explicit article citations (e.g., "Art. 2043 c.c.")
-   - Precedent references if available
+    def _anchor_norms_to_statutes(self, anchor_norms: dict) -> list[dict]:
+        """Convert anchor norms into statute-like dicts for prompt allow-list."""
+        if not anchor_norms:
+            return []
+        combined = anchor_norms.get("core_norms", []) + anchor_norms.get(
+            "accessory_norms", []
+        )
+        return [
+            self._norm_to_statute_dict(
+                {"riferimento": n.get("ref", ""), "nota": n.get("role", "")}
+            )
+            for n in combined
+        ]
 
-CRITICAL:
-- Cite ONLY the statutes listed in ALLOWED STATUTE REFERENCES. If a needed article is missing, write "articolo non disponibile nel knowledge base".
-- Cite ONLY the precedents in ALLOWED PRECEDENTS; if none apply, omit the precedents field rather than stating it is unavailable.
+    def _expand_with_cross_references(self, statutes: list[dict]) -> list[dict]:
+        """
+        Add statutes explicitly referenced inside the text of already provided articles.
+        Useful when an article (e.g., 2056 c.c.) rinvia ad altri (1223/1226/1227).
+        """
+        try:
+            import re
+        except Exception:
+            return statutes
 
-The response language must be Italian."""
+        seen = {(s.get("articolo"), s.get("source")) for s in statutes}
+        extra: list[dict] = []
+
+        pattern = re.compile(r"art\.?\s*(\d{2,4})", re.IGNORECASE)
+
+        for s in statutes:
+            text = s.get("testo") or ""
+            refs = set(pattern.findall(text))
+
+            # Also catch slash-separated numbers like "1223/1226/1227"
+            for token in re.findall(r"\b(\d{2,4})\b", text):
+                if "/" in token:
+                    continue
+                refs.add(token)
+
+            added_refs: list[str] = []
+            for ref in refs:
+                key = (ref, s.get("source"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                result = get_statute_by_article_tool.invoke(
+                    {"articolo": ref, "codice": s.get("source", "codice_civile")}
+                )
+                if result and not result.get("error") and result.get("articolo"):
+                    extra.append(result)
+                    added_refs.append(ref)
+
+            if added_refs:
+                self._log(
+                    f"🔗 Cross-ref from Art. {s.get('articolo')} -> {', '.join(sorted(set(added_refs)))}"
+                )
+
+        # Deduplicate and merge
+        merged = statutes + extra
+        deduped: list[dict] = []
+        seen_final = set()
+        for st in merged:
+            k = (st.get("articolo"), st.get("source"))
+            if k in seen_final:
+                continue
+            seen_final.add(k)
+            deduped.append(st)
+        return deduped
 
     def _extract_arguments(self, response: str) -> list[dict]:
         """Extract structured arguments from response."""

@@ -28,6 +28,8 @@ sys.path.insert(0, src_path)
 os.chdir(project_root)
 
 from agents import CounterReasoner, PolisherEvaluator, Reasoner  # noqa: E402
+from agents.router import Router, RoutingDecision  # noqa: E402
+from agents.tools import config_loader  # noqa: E402
 from agents.tools.neo4j_tools import (  # noqa: E402
     get_legal_search_pipeline,
     search_precedents_tool,
@@ -46,6 +48,7 @@ reasoner = None
 counter_reasoner = None
 polisher_evaluator = None
 stance_classifier = None
+router_agent = None
 
 # Carica la tassonomia una volta all'avvio
 TAXONOMY = None
@@ -151,6 +154,16 @@ def get_counter_reasoner():
     return counter_reasoner
 
 
+def get_router():
+    """Lazy load del Router preliminare."""
+    global router_agent
+    if router_agent is None:
+        print("🔧 Inizializzazione Router...")
+        router_agent = Router()
+        print("✅ Router pronto!")
+    return router_agent
+
+
 def get_polisher_evaluator():
     """Lazy load del Polisher-Evaluator agent."""
     global polisher_evaluator
@@ -169,6 +182,37 @@ def get_stance_classifier():
         stance_classifier = StanceClassifier()
         print("✅ Stance Classifier pronto!")
     return stance_classifier
+
+
+def resolve_routing_decision(
+    claim: str, payload: dict | None = None
+) -> RoutingDecision:
+    """
+    Determina il routing (causal_type_id/theory_id) usando eventuali hint del payload,
+    altrimenti invoca il Router.
+    """
+    router = get_router()
+    payload = payload or {}
+    routing_hint = payload.get("routing") or payload.get("causality") or payload
+
+    ct = (
+        routing_hint.get("causal_type_id")
+        or routing_hint.get("causality_type")
+        or routing_hint.get("causal_type")
+    )
+    th = routing_hint.get("theory_id")
+
+    if ct:
+        ct_valid, th_valid = config_loader.validate_ids(ct, th)
+        return RoutingDecision(
+            claim=claim,
+            causal_type_id=ct_valid,
+            theory_id=th_valid or "",
+            anchor_norms=config_loader.anchor_norms_for(ct_valid),
+            principle_tests=config_loader.principle_tests_for(ct_valid),
+        )
+
+    return router.route(claim)
 
 
 def classify_stance_for_agents(
@@ -347,6 +391,7 @@ def reason():
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
+        routing_decision = resolve_routing_decision(claim, data)
         reas = get_reasoner()
         statutes, precedents = prepare_claim_context(
             claim=claim,
@@ -357,6 +402,7 @@ def reason():
 
         result = reas.run(
             claim=claim,
+            routing_decision=routing_decision,
             pre_retrieved_statutes=statutes,
             pre_retrieved_precedents=precedents,
         )
@@ -365,6 +411,7 @@ def reason():
             {
                 "claim": result.claim,
                 "causality": result.causality_classification,
+                "routing": routing_decision.to_dict(),
                 "arguments": result.arguments,
                 "reasoning_chain": result.reasoning_chain,
                 "statutes": result.relevant_statutes,
@@ -388,14 +435,13 @@ def counter_reason():
 
     Riceve:
     - claim: il claim legale
-    - causality: la classificazione di causalità dal Reasoner
+    - (opzionale) causal_type_id/theory_id: se assenti, vengono scelti dal Router
 
-    Restituisce contro-argomenti basati sul warrant della causalità.
+    Restituisce contro-argomenti basati sulla config di causalità.
     """
     try:
         data = request.get_json()
         claim = data.get("claim", "").strip()
-        causality = data.get("causality", {})
         include_precedents = data.get("include_precedents", True)
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
@@ -403,9 +449,7 @@ def counter_reason():
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
-        if not causality:
-            return jsonify({"error": 'Campo "causality" obbligatorio'}), 400
-
+        routing_decision = resolve_routing_decision(claim, data)
         statutes, precedents = prepare_claim_context(
             claim=claim,
             include_precedents=include_precedents,
@@ -413,14 +457,19 @@ def counter_reason():
             max_precedents=max_precedents,
         )
 
+        # Classifica stance per fornire al counter norme contrarie/neutral
+        _, against_statutes, _, against_precedents = classify_stance_for_agents(
+            claim, statutes, precedents
+        )
+
         cr = get_counter_reasoner()
 
         # Esegui il counter-reasoning con contesto pre-retrieved
         result = cr.run(
             claim=claim,
-            causality=causality,
-            pre_retrieved_statutes=statutes,
-            pre_retrieved_precedents=precedents,
+            routing_decision=routing_decision,
+            pre_retrieved_statutes=against_statutes,
+            pre_retrieved_precedents=against_precedents,
         )
 
         return jsonify(result.to_dict())
@@ -458,6 +507,8 @@ def pipeline():
         print(f"{'='*70}")
         print(f"Claim: {claim[:100]}...")
 
+        routing_decision = resolve_routing_decision(claim, data)
+
         # Preload context once for both Reasoner and Counter-Reasoner
         statutes, precedents = prepare_claim_context(
             claim=claim,
@@ -482,13 +533,14 @@ def pipeline():
         reas = get_reasoner()
         reasoner_result = reas.run(
             claim=claim,
+            routing_decision=routing_decision,
             pre_retrieved_statutes=support_statutes,
             pre_retrieved_precedents=support_precedents,
         )
 
         print("✅ Reasoner completato")
         print(
-            f"   - Causalità: {reasoner_result.causality_classification.get('causality_type', 'N/A')}"
+            f"   - Causalità: {routing_decision.causal_type_id} / {routing_decision.theory_id}"
         )
         print(f"   - Argomenti: {len(reasoner_result.arguments)}")
         print(
@@ -506,7 +558,7 @@ def pipeline():
         cr = get_counter_reasoner()
         counter_result = cr.run(
             claim=claim,
-            causality=reasoner_result.causality_classification,
+            routing_decision=routing_decision,
             pre_retrieved_statutes=against_statutes,
             pre_retrieved_precedents=against_precedents,
         )
@@ -525,6 +577,7 @@ def pipeline():
         return jsonify(
             {
                 "claim": claim,
+                "routing": routing_decision.to_dict(),
                 "reasoner": reasoner_result.to_dict(),
                 "counter_reasoner": counter_result.to_dict(),
             }

@@ -154,43 +154,13 @@ This will:
 ### 6. Install Frontend Dependencies
 
 ```bash
-cd src/frontend
-npm install
-cd ../..
-```
 
-## 🎮 Usage
 
-### Start the Backend
+## 📚 References
 
-```bash
-poetry run python src/api_server.py
-```
+The ITA-CaseHold dataset, used for legal precedent extraction and summarization in this project, was introduced by Licari et al. at ICAIL 2023. Their work presents a method for extracting legal holdings from Italian case documents using Italian-LEGAL-BERT, and provides a valuable benchmark for research in Italian legal NLP. For more details, see their publication at the International Conference on Artificial Intelligence and Law: [https://doi.org/10.1145/3594536.3595177](https://doi.org/10.1145/3594536.3595177).
 
-The API will be available at http://localhost:8000
-
-### Start the Frontend
-
-```bash
-cd src/frontend
-npm start
-```
-
-Open http://localhost:3000 in your browser.
-
-### API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/chat` | POST | Legal search with classification |
-| `/api/reason` | POST | Causal chain reasoning |
-| `/api/counter-reason` | POST | Counter-arguments (WIP) |
-| `/api/evaluate` | POST | Final evaluation (WIP) |
-
-### Example Request
-
-```bash
+The Italian Civil Code dataset leveraged in LexCausa is based on the unsupervised law article mining approach described by Tagarelli and Simeri (2022). Their research applies deep pre-trained language models to the Italian civil code, enabling advanced legal text mining and representation. The full article is available in Artificial Intelligence and Law: [https://doi.org/10.1007/s10506-021-09301-8](https://doi.org/10.1007/s10506-021-09301-8).
 curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "Il venditore non ha consegnato la merce", "top_k": 5}'
@@ -271,49 +241,17 @@ All configuration is managed through environment variables and the `src/config.p
 - [ ] Structured PRO/COUNTER output
 - [ ] Multi-turn dialogue with context retention
 
+
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for details.
 
 
 ## 📚 References
 
+The ITA-CaseHold dataset, used for legal precedent extraction and summarization in this project, was introduced by Licari et al. at ICAIL 2023. Their work presents a method for extracting legal holdings from Italian case documents using Italian-LEGAL-BERT, and provides a valuable benchmark for research in Italian legal NLP. For more details, see their publication at the International Conference on Artificial Intelligence and Law: [https://doi.org/10.1145/3594536.3595177](https://doi.org/10.1145/3594536.3595177).
 
-### ITA-CaseHold Dataset
-
-```bibtex
-@inproceedings{10.1145/3594536.3595177,
-  author = {Licari, Daniele and Bushipaka, Praveen and Marino, Gabriele and Comand\'e, Giovanni and Cucinotta, Tommaso},
-  title = {Legal Holding Extraction from Italian Case Documents using Italian-LEGAL-BERT Text Summarization},
-  year = {2023},
-  isbn = {9798400701979},
-  publisher = {Association for Computing Machinery},
-  address = {New York, NY, USA},
-  url = {https://doi.org/10.1145/3594536.3595177},
-  doi = {10.1145/3594536.3595177},
-  abstract = {Legal holdings are used in Italy as a critical component of the legal system, serving to establish legal precedents, provide guidance for future legal decisions, and ensure consistency and predictability in the interpretation and application of the law. They are written by domain experts who describe in a clear and concise manner the principle of law applied in the judgments.We introduce a legal holding extraction method based on Italian-LEGAL-BERT to automatically extract legal holdings from Italian cases. In addition, we present ITA-CaseHold, a benchmark dataset for Italian legal summarization. We conducted several experiments using this dataset, as a valuable baseline for future research on this topic.},
-  booktitle = {Proceedings of the Nineteenth International Conference on Artificial Intelligence and Law},
-  pages = {148--156},
-  numpages = {9},
-  keywords = {Italian-LEGAL-BERT, Holding Extraction, Extractive Text Summarization, Benchmark Dataset},
-  location = {Braga, Portugal},
-  series = {ICAIL '23'}
-}
-```
-
-### Italian Civil Code Dataset
-
-```bibtex
-@article{Lamberta,
-  author    = {Andrea Tagarelli and Andrea Simeri},
-  title     = {{Unsupervised law article mining based on deep pre-trained language representation models with application to the Italian civil code}},
-  journal   = {Artif. Intell. Law},
-  volume    = {30(3)},
-  pages     = {417--473. Published: 15 September 2021},
-  year      = {2022},
-  doi       = {10.1007/s10506-021-09301-8}
-}
-```
+The Italian Civil Code dataset leveraged in LexCausa is based on the unsupervised law article mining approach described by Tagarelli and Simeri (2022). Their research applies deep pre-trained language models to the Italian civil code, enabling advanced legal text mining and representation. The full article is available in Artificial Intelligence and Law: [https://doi.org/10.1007/s10506-021-09301-8](https://doi.org/10.1007/s10506-021-09301-8).
 
 ## 👤 Authors
 

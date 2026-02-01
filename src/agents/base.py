@@ -314,8 +314,12 @@ class BaseAgent(ABC):
     def _norm_to_statute_dict(self, norm: dict) -> dict:
         """
         Convert a taxonomy norm entry into a statute-like dict for prompts.
+        Supports both old keys (riferimento/nota) and new keys (ref/role).
         """
-        riferimento = norm.get("riferimento", "Art. N/D")
+        # Support both old keys (riferimento) and new keys (ref)
+        riferimento = norm.get("ref") or norm.get("riferimento", "Art. N/D")
+        role = norm.get("role") or norm.get("nota", "")
+        
         articolo_match = None
         try:
             import re
@@ -329,8 +333,8 @@ class BaseAgent(ABC):
         return {
             "statute_id": riferimento,
             "articolo": articolo,
-            "titolo": norm.get("nota", riferimento),
-            "testo": norm.get("nota", ""),
+            "titolo": role or riferimento,
+            "testo": role,
             "libro": "",
             "source": source,
         }

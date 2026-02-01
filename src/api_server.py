@@ -549,6 +549,9 @@ def pipeline():
         print(
             f"   - Causality: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
         )
+        print(f"   - Mismatch status: {reasoner_result.mismatch_status}")
+        print(f"   - Anchor norms: core={len(reasoner_result.anchor_norms.get('core_norms', []))}, accessory={len(reasoner_result.anchor_norms.get('accessory_norms', []))}")
+        print(f"   - Statutes for reasoning: {len(reasoner_result.relevant_statutes)}")
         print(f"   - Arguments: {len(reasoner_result.arguments)}")
         print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
 

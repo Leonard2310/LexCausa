@@ -250,14 +250,15 @@ def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:
     relevant: list[dict] = []
 
     for norm in norms:
-        ref = norm.get("riferimento", "N/A")
-        nota = norm.get("nota", "")
+        # Support both old keys (riferimento/nota) and new keys (ref/role)
+        ref = norm.get("ref") or norm.get("riferimento", "N/A")
+        role = norm.get("role") or norm.get("nota", "")
 
         prompt = f"""Legal Claim:
 "{claim}"
 
 Norma dalla tassonomia:
-"{ref}" - "{nota}"
+"{ref}" - "{role}"
 
 Istruzione:
 Valuta se questa norma è rilevante per il claim. Rispondi YES a meno che la norma sia chiaramente fuori dominio rispetto ai fatti e agli istituti del claim. Se incerto, YES.

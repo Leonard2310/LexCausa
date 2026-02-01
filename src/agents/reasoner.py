@@ -196,6 +196,14 @@ class Reasoner(BaseAgent):
             claim, reasoning_chain1, raw_output1
         )
 
+        # DEBUG: log chain classification results
+        self._log(
+            f"🔬 Chain classification: causal_type_id={chain_class.get('causal_type_id')}, theory_id={chain_class.get('theory_id')}"
+        )
+        self._log(
+            f"🔬 Router decision: causal_type_id={routing_decision.causal_type_id}, theory_id={routing_decision.theory_id}"
+        )
+
         validated = chain_class.get(
             "causal_type_id"
         ) == routing_decision.causal_type_id and (
@@ -209,8 +217,13 @@ class Reasoner(BaseAgent):
             chain_class.get("theory_id") or routing_decision.theory_id or ""
         )
 
+        self._log(f"🔬 Validation result: validated={validated}")
+
         mismatch_status = "aligned"
         causal_types_for_counter: list[str] = []
+        anchor_norms: dict = {}
+        anchor_statutes: list[dict] = []
+        principle_tests: list[dict] = []
 
         if not validated:
             self._log(
@@ -235,6 +248,10 @@ class Reasoner(BaseAgent):
                     ]
                 )
             )
+            self._log(
+                f"⚠️ MISMATCH same_theory: causal types for counter = {causal_types_for_counter}",
+                "warning",
+            )
             final_causal_id, final_theory_id = config_loader.validate_ids(
                 chain_class.get("causal_type_id") or routing_decision.causal_type_id,
                 routing_decision.theory_id,
@@ -242,31 +259,49 @@ class Reasoner(BaseAgent):
             anchor_norms, anchor_statutes, principle_tests = (
                 self._filtered_anchor_norms_for_types(causal_types_for_counter, claim)
             )
+            self._log(
+                f"📋 Anchor norms retrieved: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+            )
+            self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
         elif not validated:
             # Total mismatch: prefer chain ids, but do NOT inject anchor norms
             mismatch_status = "total_mismatch"
             causal_types_for_counter = [
                 chain_class.get("causal_type_id") or routing_decision.causal_type_id
             ]
+            self._log(
+                f"⚠️ MISMATCH total: preferring chain causal_type={causal_types_for_counter[0]}",
+                "warning",
+            )
             final_causal_id, final_theory_id = config_loader.validate_ids(
                 chain_class.get("causal_type_id") or routing_decision.causal_type_id,
                 chain_class.get("theory_id") or routing_decision.theory_id,
             )
-            anchor_norms = {}
-            principle_tests = []
-            anchor_statutes = []
+            # Still try to get anchor norms for the chain causality
+            anchor_norms, anchor_statutes, principle_tests = (
+                self._filtered_anchor_norms_for_types(causal_types_for_counter, claim)
+            )
+            self._log(
+                f"📋 Anchor norms from chain causality: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+            )
         else:
             # Aligned: use single causal type, filtered norms
             mismatch_status = "aligned"
             causal_types_for_counter = [final_causal_id]
+            self._log(f"✅ ALIGNED: causal_type={final_causal_id}, theory={final_theory_id}")
             final_causal_id, final_theory_id = config_loader.validate_ids(
                 final_causal_id, final_theory_id
             )
             anchor_norms, anchor_statutes, principle_tests = (
                 self._filtered_anchor_norms_for_types([final_causal_id], claim)
             )
+            self._log(
+                f"📋 Anchor norms retrieved: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+            )
+            self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
 
         # Phase 3: refine reasoning with anchor norms + cross-ref expansion
+        self._log(f"📌 Phase 3: merging pre_retrieved ({len(pre_retrieved_statutes)}) + anchor ({len(anchor_statutes)}) statutes")
         all_statutes = pre_retrieved_statutes + anchor_statutes
         seen_keys = set()
         deduped_statutes = []
@@ -275,6 +310,7 @@ class Reasoner(BaseAgent):
             if key not in seen_keys:
                 seen_keys.add(key)
                 deduped_statutes.append(s)
+        self._log(f"📌 After dedup: {len(deduped_statutes)} statutes")
         before_expand = len(deduped_statutes)
         deduped_statutes = self._expand_with_cross_references(deduped_statutes)
         if len(deduped_statutes) > before_expand:
@@ -295,6 +331,10 @@ class Reasoner(BaseAgent):
         )
         anchor_text = self._format_anchor_norms(anchor_norms)
         principle_text = self._format_principle_tests(principle_tests)
+        
+        # DEBUG: log what's being injected
+        self._log(f"📝 Anchor text for prompt:\n{anchor_text[:500] if len(anchor_text) > 500 else anchor_text}")
+        self._log(f"📝 Principle tests for prompt:\n{principle_text[:500] if len(principle_text) > 500 else principle_text}")
 
         input_prompt = self._build_reasoning_prompt_with_context(
             claim,
@@ -443,16 +483,24 @@ REASONING CHAIN:
             acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
             core_full = theory.get("norme_core", []) or []
             acc_full = theory.get("norme_accessorie", []) or []
+            
+            # If no filtered norms available, use full norms (happens when no claim filter applied)
+            if not core_rel and core_full:
+                core_rel = core_full
+            if not acc_rel and acc_full:
+                acc_rel = acc_full
+                
             taxonomy_norms = core_rel + acc_rel
 
+            # Support both old keys (riferimento) and new keys (ref)
             kept_refs = [
-                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
+                n.get("ref") or n.get("riferimento") for n in taxonomy_norms if n.get("ref") or n.get("riferimento")
             ]
             kept_set = {r for r in kept_refs if r}
             discarded_refs = [
-                n.get("riferimento")
+                n.get("ref") or n.get("riferimento")
                 for n in (core_full + acc_full)
-                if n.get("riferimento") and n.get("riferimento") not in kept_set
+                if (n.get("ref") or n.get("riferimento")) and (n.get("ref") or n.get("riferimento")) not in kept_set
             ]
             self._log(
                 f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
@@ -468,7 +516,7 @@ REASONING CHAIN:
                 [
                     self._norm_to_statute_dict(n)
                     for n in taxonomy_norms
-                    if n.get("riferimento")
+                    if n.get("ref") or n.get("riferimento")
                 ]
             )
             pt = theory.get("principio_test") or theory.get("principle_tests") or []
@@ -676,9 +724,14 @@ Critical: do not introduce external sources. Respond in Italian."""
         accessory = anchor_norms.get("accessory_norms", []) if anchor_norms else []
         lines = []
         for n in core:
-            lines.append(f"- [core] {n.get('ref', 'N/D')}: {n.get('role', '')}")
+            # Support both old keys (riferimento/nota) and new keys (ref/role)
+            ref = n.get('ref') or n.get('riferimento', 'N/D')
+            role = n.get('role') or n.get('nota', '')
+            lines.append(f"- [core] {ref}: {role}")
         for n in accessory:
-            lines.append(f"- [accessory] {n.get('ref', 'N/D')}: {n.get('role', '')}")
+            ref = n.get('ref') or n.get('riferimento', 'N/D')
+            role = n.get('role') or n.get('nota', '')
+            lines.append(f"- [accessory] {ref}: {role}")
         return "\n".join(lines) or "- No anchor norms defined"
 
     def _format_principle_tests(self, principle_tests: list[dict]) -> str:
@@ -699,12 +752,14 @@ Critical: do not introduce external sources. Respond in Italian."""
         combined = anchor_norms.get("core_norms", []) + anchor_norms.get(
             "accessory_norms", []
         )
-        return [
-            self._norm_to_statute_dict(
-                {"riferimento": n.get("ref", ""), "nota": n.get("role", "")}
-            )
-            for n in combined
-        ]
+        result = []
+        for n in combined:
+            # Support both old keys (riferimento/nota) and new keys (ref/role)
+            ref = n.get("ref") or n.get("riferimento", "")
+            role = n.get("role") or n.get("nota", "")
+            if ref:
+                result.append(self._norm_to_statute_dict({"riferimento": ref, "nota": role}))
+        return result
 
     def _expand_with_cross_references(self, statutes: list[dict]) -> list[dict]:
         """

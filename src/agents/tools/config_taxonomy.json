@@ -1,0 +1,376 @@
+{
+    "version": "2.0.0",
+    "language": "it",
+    "independence_mode": true,
+    "handoff_policy": {
+        "to_counter_reasoner_only": [
+            "causal_type_id",
+            "theory_id"
+        ],
+        "counter_also_receives": [
+            "claim"
+        ],
+        "explicitly_not_shared": [
+            "reasoner_chain_of_thought",
+            "reasoner_argument_graph",
+            "reasoner_attack_surface",
+            "reasoner_selected_norms",
+            "reasoner_selected_precedents",
+            "reasoner_full_output"
+        ]
+    },
+    "routing": {
+        "enabled": true,
+        "strategy": "option_1_pre_routing",
+        "router_output": [
+            "causal_type_id",
+            "theory_id"
+        ],
+        "use_config_as_anchor_norms": true,
+        "anchor_norms_fields": [
+            "core_norms",
+            "accessory_norms"
+        ],
+        "notes": "Il router assegna causal_type_id/theory_id prima del ragionamento. Il reasoner riceve anche le anchor norms dal tipo di causalità e poi usa retrieval per norme di merito (supportive/neutral)."
+    },
+    "causal_types": [
+        {
+            "id": "PEN_FACTUAL",
+            "name": "Causalità fattuale penale",
+            "domain": "penale",
+            "anchor_norms": {
+                "core_norms": [
+                    {
+                        "ref": "Art. 40 c.p.",
+                        "role": "Fondamento del nesso condotta (azione/omissione) -> evento"
+                    }
+                ],
+                "accessory_norms": [
+                    {
+                        "ref": "Art. 43 c.p.",
+                        "role": "Elemento soggettivo (colpa/dolo). Rilevante per causalità colposa, non definisce il nesso in sé"
+                    }
+                ]
+            },
+            "principle_tests": [
+                {
+                    "id": "BUT_FOR",
+                    "name": "Conditio sine qua non (controfattuale)",
+                    "description": "Se eliminando mentalmente la condotta l’evento non si verifica, la condotta è condizione dell’evento"
+                },
+                {
+                    "id": "COVERING_LAW",
+                    "name": "Legge di copertura (scientifico-probabilistica quando necessario)",
+                    "description": "Quando il nesso non è deterministico, si usa una regola scientifica/empirica per supportare il controfattuale"
+                }
+            ],
+            "counter_attack_catalog": [
+                "but_for_fails",
+                "no_covering_law_or_low_support",
+                "alternative_causal_path",
+                "duty_to_act_missing_for_omission",
+                "abnormal_or_atypical_chain"
+            ]
+        },
+        {
+            "id": "PEN_INTERVENING",
+            "name": "Concause e cause sopravvenute (penale)",
+            "domain": "penale",
+            "anchor_norms": {
+                "core_norms": [
+                    {
+                        "ref": "Art. 41 c.p.",
+                        "role": "Concorso di cause e interruzione del nesso per causa sopravvenuta da sola sufficiente"
+                    }
+                ],
+                "accessory_norms": [
+                    {
+                        "ref": "Art. 40 c.p.",
+                        "role": "Base del nesso, letto sistematicamente con Art. 41 c.p."
+                    },
+                    {
+                        "ref": "Art. 45 c.p.",
+                        "role": "Caso fortuito/forza maggiore: filtro su imputazione/punibilità"
+                    }
+                ]
+            },
+            "principle_tests": [
+                {
+                    "id": "EQUIVALENCE",
+                    "name": "Equivalenza delle condizioni (41.1)",
+                    "description": "Le concause non escludono il nesso se la condotta resta condizione dell’evento"
+                },
+                {
+                    "id": "SOLE_SUFFICIENT_CAUSE",
+                    "name": "Causa sopravvenuta da sola sufficiente (41.2)",
+                    "description": "Una causa sopravvenuta rompe il nesso se è autonomamente sufficiente a produrre l’evento"
+                }
+            ],
+            "counter_attack_catalog": [
+                "sole_sufficient_cause",
+                "intervening_cause_breaks_chain",
+                "abnormal_or_atypical_chain",
+                "force_majeure_filter"
+            ]
+        },
+        {
+            "id": "CIV_REMOTENESS",
+            "name": "Causalità giuridica risarcitoria (selezione del danno)",
+            "domain": "civile",
+            "anchor_norms": {
+                "core_norms": [
+                    {
+                        "ref": "Art. 1223 c.c.",
+                        "role": "Conseguenza immediata e diretta (contrattuale)"
+                    },
+                    {
+                        "ref": "Art. 2056 c.c.",
+                        "role": "Extracontrattuale: rinvio a 1223/1226/1227"
+                    }
+                ],
+                "accessory_norms": [
+                    {
+                        "ref": "Art. 1225 c.c.",
+                        "role": "Prevedibilità del danno (se non c’è dolo)"
+                    },
+                    {
+                        "ref": "Art. 1226 c.c.",
+                        "role": "Liquidazione equitativa"
+                    },
+                    {
+                        "ref": "Art. 1227 c.c.",
+                        "role": "Concorso del creditore + mitigazione"
+                    }
+                ]
+            },
+            "principle_tests": [
+                {
+                    "id": "DIRECT_IMMEDIATE",
+                    "name": "Conseguenza immediata e diretta",
+                    "description": "Seleziona solo danni non mediati/atipici rispetto all’inadempimento/illecito"
+                },
+                {
+                    "id": "FORESEEABILITY",
+                    "name": "Prevedibilità ex ante",
+                    "description": "Esclude danni non prevedibili al momento dell’obbligazione (salvo dolo)"
+                },
+                {
+                    "id": "MITIGATION",
+                    "name": "Mitigazione/concorso del creditore",
+                    "description": "Riduce o esclude danni evitabili o concorrenti per condotta del creditore"
+                }
+            ],
+            "counter_attack_catalog": [
+                "damage_is_indirect",
+                "damage_not_foreseeable",
+                "creditor_contributed",
+                "creditor_failed_to_mitigate",
+                "quantification_uncertain"
+            ]
+        },
+        {
+            "id": "IMPUTATION_FILTER",
+            "name": "Filtro di imputazione: fortuito/forza maggiore",
+            "domain": "penale",
+            "anchor_norms": {
+                "core_norms": [
+                    {
+                        "ref": "Art. 45 c.p.",
+                        "role": "Caso fortuito/forza maggiore: esclude punibilità"
+                    }
+                ],
+                "accessory_norms": []
+            },
+            "principle_tests": [
+                {
+                    "id": "UNAVOIDABLE_UNFORESEEABLE",
+                    "name": "Imprevedibile e inevitabile",
+                    "description": "Evento esterno non dominabile che impedisce l’imputazione"
+                }
+            ],
+            "counter_attack_catalog": [
+                "event_was_avoidable",
+                "event_was_foreseeable",
+                "risk_was_assumed_or_controllable"
+            ]
+        }
+    ],
+    "theories": [
+        {
+            "id": "T_CONDIZIONALISTICA",
+            "name": "Teoria condizionalistica (but-for)",
+            "applicable_causal_types": [
+                "PEN_FACTUAL",
+                "PEN_INTERVENING"
+            ],
+            "default_counter_attacks": [
+                "but_for_fails",
+                "alternative_causal_path",
+                "abnormal_or_atypical_chain"
+            ]
+        },
+        {
+            "id": "T_SCI_PROB",
+            "name": "Modello scientifico-probabilistico",
+            "applicable_causal_types": [
+                "PEN_FACTUAL"
+            ],
+            "default_counter_attacks": [
+                "no_covering_law_or_low_support",
+                "alternative_causal_path"
+            ]
+        },
+        {
+            "id": "T_REGOLARITA",
+            "name": "Regolarità causale / adeguatezza (criterio selettivo)",
+            "applicable_causal_types": [
+                "PEN_FACTUAL",
+                "PEN_INTERVENING",
+                "CIV_REMOTENESS"
+            ],
+            "default_counter_attacks": [
+                "abnormal_or_atypical_chain",
+                "damage_is_indirect"
+            ]
+        },
+        {
+            "id": "T_INTERRUPTION_41_2",
+            "name": "Interruzione per causa sopravvenuta da sola sufficiente",
+            "applicable_causal_types": [
+                "PEN_INTERVENING"
+            ],
+            "default_counter_attacks": [
+                "sole_sufficient_cause",
+                "intervening_cause_breaks_chain"
+            ]
+        },
+        {
+            "id": "T_CIV_FILTERS",
+            "name": "Filtri civilistici del danno",
+            "applicable_causal_types": [
+                "CIV_REMOTENESS"
+            ],
+            "default_counter_attacks": [
+                "damage_is_indirect",
+                "damage_not_foreseeable",
+                "creditor_contributed",
+                "creditor_failed_to_mitigate",
+                "quantification_uncertain"
+            ]
+        },
+        {
+            "id": "T_FORTUITO",
+            "name": "Fortuito/forza maggiore (filtro di imputazione)",
+            "applicable_causal_types": [
+                "IMPUTATION_FILTER"
+            ],
+            "default_counter_attacks": [
+                "event_was_avoidable",
+                "event_was_foreseeable",
+                "risk_was_assumed_or_controllable"
+            ]
+        }
+    ],
+    "default_mapping": [
+        {
+            "causal_type": "PEN_FACTUAL",
+            "reasoner_primary_theory": "T_CONDIZIONALISTICA",
+            "reasoner_secondary_theory_if_probabilistic": "T_SCI_PROB",
+            "counter_attack_pool": [
+                "but_for_fails",
+                "no_covering_law_or_low_support",
+                "alternative_causal_path",
+                "duty_to_act_missing_for_omission",
+                "abnormal_or_atypical_chain"
+            ]
+        },
+        {
+            "causal_type": "PEN_INTERVENING",
+            "reasoner_primary_theory": "T_CONDIZIONALISTICA",
+            "counter_attack_pool": [
+                "sole_sufficient_cause",
+                "intervening_cause_breaks_chain",
+                "abnormal_or_atypical_chain",
+                "force_majeure_filter"
+            ]
+        },
+        {
+            "causal_type": "CIV_REMOTENESS",
+            "reasoner_primary_theory": "T_CIV_FILTERS",
+            "counter_attack_pool": [
+                "damage_is_indirect",
+                "damage_not_foreseeable",
+                "creditor_contributed",
+                "creditor_failed_to_mitigate",
+                "quantification_uncertain"
+            ]
+        },
+        {
+            "causal_type": "IMPUTATION_FILTER",
+            "reasoner_primary_theory": "T_FORTUITO",
+            "counter_attack_pool": [
+                "event_was_avoidable",
+                "event_was_foreseeable",
+                "risk_was_assumed_or_controllable"
+            ]
+        }
+    ],
+    "selection_rules": {
+        "counter_attack_selection": {
+            "step_1_pool": "Use default_mapping.counter_attack_pool for causal_type_id",
+            "step_2_optional_intersection": "If theory_id is provided, intersect with theories[].default_counter_attacks when intersection is non-empty; otherwise keep full pool",
+            "step_3_choose_one": "Select exactly one attack_id from resulting pool based only on claim content"
+        }
+    },
+    "retrieval_contracts": {
+        "reasoner_retrieval": {
+            "inputs": [
+                "claim",
+                "causal_type_id"
+            ],
+            "should_return": [
+                "supportive_norms",
+                "neutral_norms",
+                "supportive_precedents",
+                "neutral_precedents"
+            ],
+            "note": "Le anchor_norms (core/accessory) arrivano dalla config; il retrieval aggiunge norme di merito (sostanza) pertinenti al claim."
+        },
+        "counter_retrieval": {
+            "inputs": [
+                "claim",
+                "causal_type_id"
+            ],
+            "should_return": [
+                "contrary_norms",
+                "neutral_norms",
+                "contrary_precedents",
+                "neutral_precedents"
+            ],
+            "note": "Il counter vede solo claim + etichette e riceve retrieval contrario/neutrale; non riceve mai l'argomentazione del reasoner."
+        }
+    },
+    "output_contracts": {
+        "router_output": {
+            "causal_type_id": "PEN_FACTUAL | PEN_INTERVENING | CIV_REMOTENESS | IMPUTATION_FILTER",
+            "theory_id": "one of theories[].id"
+        },
+        "reasoner_output_minimal": {
+            "reasoning": "string",
+            "causal_type_id": "same as router",
+            "theory_id": "same as router"
+        },
+        "counter_input_minimal": {
+            "claim": "string",
+            "causal_type_id": "from reasoner/router",
+            "theory_id": "from reasoner/router",
+            "contrary_norms": "array (optional)",
+            "neutral_norms": "array (optional)",
+            "contrary_precedents": "array (optional)",
+            "neutral_precedents": "array (optional)"
+        },
+        "counter_output_minimal": {
+            "counter_argument": "string (standalone paragraph, does not reference reasoner)"
+        }
+    }
+}

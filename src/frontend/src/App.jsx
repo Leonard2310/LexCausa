@@ -261,17 +261,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {reasoningResult.reasoning_chain && reasoningResult.reasoning_chain.length > 0 && (
-                    <div className="result-section">
-                      <h4>Catena di Ragionamento</h4>
-                      <ul className="reasoning-chain">
-                        {reasoningResult.reasoning_chain.map((step, idx) => (
-                          <li key={idx}>{step}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
                   {reasoningResult.raw_response && (
                     <div className="result-section">
                       <h4>Risposta Completa</h4>
@@ -310,7 +299,7 @@ export default function App() {
                       <div className="subsection">
                         <h4>Articoli Trovati ({pipelineResult.reasoner.statutes.length})</h4>
                         <ul className="articles-list">
-                          {pipelineResult.reasoner.statutes.slice(0, 5).map((art, idx) => (
+                          {pipelineResult.reasoner.statutes.map((art, idx) => (
                             <li key={idx}>
                               <strong>Art. {art.articolo || art.statute_id}</strong>
                               {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
@@ -329,17 +318,6 @@ export default function App() {
                             <li key={idx}>
                               <strong>{prec.title || `Precedente ${idx + 1}`}</strong>
                             </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {pipelineResult.reasoner?.reasoning_chain && pipelineResult.reasoner.reasoning_chain.length > 0 && (
-                      <div className="subsection">
-                        <h4>Catena di Ragionamento</h4>
-                        <ul className="reasoning-chain">
-                          {pipelineResult.reasoner.reasoning_chain.map((step, idx) => (
-                            <li key={idx}>{step}</li>
                           ))}
                         </ul>
                       </div>
@@ -395,7 +373,7 @@ export default function App() {
                       <div className="subsection">
                         <h4>Articoli Trovati (Contro-Tesi) ({pipelineResult.counter_reasoner.statutes.length})</h4>
                         <ul className="articles-list">
-                          {pipelineResult.counter_reasoner.statutes.slice(0, 5).map((art, idx) => (
+                          {pipelineResult.counter_reasoner.statutes.map((art, idx) => (
                             <li key={idx}>
                               <strong>Art. {art.articolo || art.statute_id}</strong>
                               {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
@@ -414,17 +392,6 @@ export default function App() {
                             <li key={idx}>
                               <strong>{prec.title || `Precedente ${idx + 1}`}</strong>
                             </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {pipelineResult.counter_reasoner?.reasoning_chain && pipelineResult.counter_reasoner.reasoning_chain.length > 0 && (
-                      <div className="subsection">
-                        <h4>Catena di Contro-Ragionamento</h4>
-                        <ul className="reasoning-chain">
-                          {pipelineResult.counter_reasoner.reasoning_chain.map((step, idx) => (
-                            <li key={idx}>{step}</li>
                           ))}
                         </ul>
                       </div>

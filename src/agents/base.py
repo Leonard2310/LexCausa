@@ -270,7 +270,7 @@ class BaseAgent(ABC):
         if not any(
             "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
         ):
-            sanitized.append("Precedenti: nessuno trovato.")
+            sanitized.append("Precedents: none found.")
 
         return sanitized
 
@@ -309,13 +309,20 @@ class BaseAgent(ABC):
                     parts.append(f"  {summary[:300]}...")
             parts.append("")
 
-        return "\n".join(parts) if parts else "Nessun contesto normativo disponibile."
+        return "\n".join(parts) if parts else "No legal context available."
 
     def _norm_to_statute_dict(self, norm: dict) -> dict:
         """
         Convert a taxonomy norm entry into a statute-like dict for prompts.
+        Retrieves actual statute text from Neo4j database.
+        Supports both old keys (riferimento/nota) and new keys (ref/role).
         """
-        riferimento = norm.get("riferimento", "Art. N/D")
+        from .tools.neo4j_tools import get_statute_by_article_tool
+
+        # Support both old keys (riferimento) and new keys (ref)
+        riferimento = norm.get("ref") or norm.get("riferimento", "Art. N/D")
+        role = norm.get("role") or norm.get("nota", "")
+
         articolo_match = None
         try:
             import re
@@ -326,11 +333,32 @@ class BaseAgent(ABC):
         articolo = articolo_match.group(1) if articolo_match else riferimento
 
         source = "codice_civile" if "c.c" in riferimento.lower() else "codice_penale"
+
+        # Try to fetch actual statute text from database
+        try:
+            db_result = get_statute_by_article_tool.invoke(
+                {"articolo": articolo, "codice": source}
+            )
+            if db_result.get("found"):
+                return {
+                    "statute_id": db_result.get("statute_id", riferimento),
+                    "articolo": db_result.get("articolo", articolo),
+                    "titolo": db_result.get("titolo", role or riferimento),
+                    "testo": db_result.get("testo", ""),
+                    "libro": db_result.get("libro", ""),
+                    "source": db_result.get("source", source),
+                    "role": role,  # Keep the taxonomy role for context
+                }
+        except Exception as e:
+            self._log(f"⚠️ Failed to fetch statute {articolo} from DB: {e}", "warning")
+
+        # Fallback: return dict without actual text
         return {
             "statute_id": riferimento,
             "articolo": articolo,
-            "titolo": norm.get("nota", riferimento),
-            "testo": norm.get("nota", ""),
+            "titolo": role or riferimento,
+            "testo": f"[Testo art. {articolo} non disponibile nel database]",
             "libro": "",
             "source": source,
+            "role": role,
         }

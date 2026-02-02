@@ -18,7 +18,6 @@ from .base import AgentConfig, BaseAgent
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.taxonomy_tools import get_causality_theory_tool
 
 
 @dataclass
@@ -263,49 +262,49 @@ Select the most useful attack among the following ids and return ONLY the chosen
     def _filtered_anchor_statutes_for_types(
         self, causal_types: List[str], claim: str
     ) -> List[dict]:
-        """Get taxonomy anchor norms filtered by claim for the given causal types."""
+        """
+        Get taxonomy anchor norms for the given causal types.
+        
+        Reads directly from config_taxonomy.json using the correct keys:
+        - anchor_norms -> core_norms / accessory_norms
+        - Each norm has 'ref' and 'role' fields
+        """
         statutes: List[dict] = []
         seen_refs = set()
         unique_cts = list(dict.fromkeys(ct for ct in causal_types if ct))
 
         for ct in unique_cts:
-            try:
-                theory = get_causality_theory_tool.invoke(
-                    {"causality_type": ct, "claim": claim}
-                )
-            except Exception as e:
-                self._log(f"⚠️ Failed to load theory for {ct}: {e}", "warning")
+            # Find causal_type block in config
+            causal_type_block = next(
+                (c for c in self._config.get("causal_types", []) if c.get("id") == ct),
+                None,
+            )
+            if not causal_type_block:
+                self._log(f"⚠️ [taxonomy] Causal type {ct} not found in config", "warning")
                 continue
 
-            core_rel = theory.get("norme_core_rilevanti", []) or []
-            acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
-            core_full = theory.get("norme_core", []) or []
-            acc_full = theory.get("norme_accessorie", []) or []
-            taxonomy_norms = core_rel + acc_rel
+            anchor_norms = causal_type_block.get("anchor_norms", {})
+            core_norms = anchor_norms.get("core_norms", []) or []
+            accessory_norms = anchor_norms.get("accessory_norms", []) or []
+            all_norms = core_norms + accessory_norms
 
-            kept_refs = [
-                n.get("riferimento") for n in taxonomy_norms if n.get("riferimento")
-            ]
-            kept_set = {r for r in kept_refs if r}
-            discarded_refs = [
-                n.get("riferimento")
-                for n in (core_full + acc_full)
-                if n.get("riferimento") and n.get("riferimento") not in kept_set
-            ]
             self._log(
-                f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
+                f"🔎 [taxonomy] Causality {ct}: core {len(core_norms)}/{len(core_norms)}, accessory {len(accessory_norms)}/{len(accessory_norms)}"
             )
-            if kept_refs:
-                self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
-            if discarded_refs:
-                self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
 
-            for n in taxonomy_norms:
-                ref = n.get("riferimento")
+            kept_refs = []
+            for n in all_norms:
+                ref = n.get("ref")
+                role = n.get("role", "")
                 if not ref or ref in seen_refs:
                     continue
                 seen_refs.add(ref)
+                kept_refs.append(ref)
+                # Convert to statute dict format
                 statutes.append(self._norm_to_statute_dict(n))
+
+            if kept_refs:
+                self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
 
         return statutes
 
@@ -367,6 +366,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
             f"⚔️ Selected counter attack: {attack_selection.attack_id or 'N/A'} "
             f"(pool size {len(attack_selection.pool)})"
         )
+        self._log(f"📝 Attack description: {attack_selection.description or 'N/A'}")
 
         all_statutes = pre_retrieved_statutes
         # Add filtered anchor norms for provided causal types (router + additional)
@@ -545,14 +545,15 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 
 INSTRUCTIONS:
 1) Use selected_attack_id as the main lens to attack the causal link.
-2) Build one or more counter-arguments with structure:
-   - Alternative Premise (incompatible with the claim)
-   - Statute (only if present in ALLOWED STATUTES; otherwise omit)
-   - Alternative Causal Link
-   - Contrary Conclusion
+2) Build one or more counter-arguments with EXACTLY this structure and these Italian headers:
+   **Premessa Alternativa**: (incompatible with the claim)
+   **Norma**: (only if present in ALLOWED STATUTES; otherwise omit this section)
+   **Nesso Causale Alternativo**: 
+   **Conclusione Contraria**: 
 3) End with a numbered counter-reasoning chain, without mentioning the Reasoner.
 
-Critical: do not invent sources, do not mention the Reasoner. Respond in Italian."""
+CRITICAL: Respond ENTIRELY in Italian, including ALL section headers exactly as shown above (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria).
+Do not invent sources, do not mention the Reasoner."""
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:
         """Estrae contro-argomenti strutturati dalla risposta."""

@@ -538,6 +538,7 @@ def pipeline():
         )
         final_routing_decision = RoutingDecision(
             claim=claim,
+            domain=routing_decision.domain,
             causal_type_id=reasoner_result.causal_type_id,
             theory_id=reasoner_result.theory_id,
             anchor_norms=reasoner_result.anchor_norms,
@@ -547,7 +548,7 @@ def pipeline():
 
         print("✅ Reasoner completed")
         print(
-            f"   - Causality: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
+            f"   - Domain: {routing_decision.domain} -> Causal type: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
         )
         print(f"   - Mismatch status: {reasoner_result.mismatch_status}")
         print(f"   - Anchor norms: core={len(reasoner_result.anchor_norms.get('core_norms', []))}, accessory={len(reasoner_result.anchor_norms.get('accessory_norms', []))}")

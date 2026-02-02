@@ -17,25 +17,28 @@ from langchain_core.messages import HumanMessage
 from .base import AgentConfig, BaseAgent
 from .tools import config_loader
 
-ROUTER_SYSTEM_PROMPT = """You are a preliminary router for a causal reasoning system.
-Your only task is to assign:
-- a `causal_type_id` (choose ONLY from the listed ids)
-- a `theory_id` applicable to that causal_type_id (choose ONLY from the listed ids)
+ROUTER_SYSTEM_PROMPT = """You are a preliminary router for a legal causal reasoning system.
+Your only task is to classify the DOMAIN of the claim:
+- "CIVILE" if the claim pertains to civil law (contracts, torts, damages, compensation)
+- "PENALE" if the claim pertains to criminal law (crimes, criminal liability, punishment)
+- "ENTRAMBI" if the claim involves both civil and criminal aspects
 
 Rules:
-- Respond ONLY with compact JSON: {"causal_type_id": "...", "theory_id": "..."}
+- Respond ONLY with compact JSON: {"domain": "CIVILE" | "PENALE" | "ENTRAMBI"}
 - Do not add text, comments, or explanations.
-- If uncertain, pick the suggested default pair.
+- If uncertain, prefer "ENTRAMBI".
 """
 
 
 @dataclass
 class RoutingDecision:
-    """Structured output of the router."""
+    """Structured output of the router - domain classification, with optional causal type from chain."""
 
     claim: str
-    causal_type_id: str
-    theory_id: str
+    domain: str  # "CIVILE" | "PENALE" | "ENTRAMBI"
+    # Fields populated after chain classification by Reasoner
+    causal_type_id: str = ""
+    theory_id: str = ""
     anchor_norms: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)
     principle_tests: List[Dict[str, str]] = field(default_factory=list)
     additional_causal_types: List[str] = field(default_factory=list)
@@ -43,6 +46,7 @@ class RoutingDecision:
     def to_dict(self) -> dict:
         return {
             "claim": self.claim,
+            "domain": self.domain,
             "causal_type_id": self.causal_type_id,
             "theory_id": self.theory_id,
             "anchor_norms": self.anchor_norms,
@@ -64,31 +68,20 @@ class Router(BaseAgent):
         self._defaults = config_loader.default_mapping_by_causal(self._config)
 
     def route(self, claim: str) -> RoutingDecision:
-        """Route a claim to (causal_type_id, theory_id)."""
+        """Route a claim to a domain classification (CIVILE/PENALE/ENTRAMBI)."""
         self._log(f"🔀 Routing claim: {claim[:80]}...")
         candidate = self._route_with_llm(claim)
 
-        validated_causal, validated_theory = config_loader.validate_ids(
-            candidate.get("causal_type_id", ""),
-            candidate.get("theory_id"),
-            self._config,
-        )
+        # Validate domain
+        domain = candidate.get("domain", "").upper()
+        if domain not in ("CIVILE", "PENALE", "ENTRAMBI"):
+            domain = "ENTRAMBI"  # fallback
 
-        anchor_norms = config_loader.anchor_norms_for(validated_causal, self._config)
-        principle_tests = config_loader.principle_tests_for(
-            validated_causal, self._config
-        )
-
-        self._log(
-            f"🎯 Router decision -> causal_type_id={validated_causal}, theory_id={validated_theory}"
-        )
+        self._log(f"🎯 Router decision -> domain={domain}")
 
         return RoutingDecision(
             claim=claim,
-            causal_type_id=validated_causal,
-            theory_id=validated_theory or "",
-            anchor_norms=anchor_norms,
-            principle_tests=principle_tests,
+            domain=domain,
         )
 
     # BaseAgent abstract method compatibility
@@ -100,7 +93,7 @@ class Router(BaseAgent):
     # Internal helpers
     # ---------------------------------------------------------------------
     def _route_with_llm(self, claim: str) -> Dict[str, str]:
-        """Use LLM to pick ids, falling back to defaults if parsing fails."""
+        """Use LLM to classify domain, falling back to ENTRAMBI if parsing fails."""
         prompt = self._build_prompt(claim)
         try:
             resp = self.llm.invoke([HumanMessage(content=prompt)])
@@ -111,46 +104,21 @@ class Router(BaseAgent):
         except Exception as e:
             self._log(f"⚠️ Router LLM fallito: {e}", "warning")
 
-        # Fallback to first default mapping
-        if self._defaults:
-            first_ct, mapping = next(iter(self._defaults.items()))
-            return {
-                "causal_type_id": first_ct,
-                "theory_id": mapping.get("reasoner_primary_theory")
-                or config_loader.pick_default_theory(first_ct, self._config)
-                or "",
-            }
-        return {"causal_type_id": "", "theory_id": ""}
+        return {"domain": "ENTRAMBI"}
 
     def _build_prompt(self, claim: str) -> str:
-        """Build a compact instruction listing available ids."""
-        type_lines = []
-        for ct_id, ct in self._causal_types.items():
-            default_th = self._defaults.get(ct_id, {}).get(
-                "reasoner_primary_theory", ""
-            )
-            type_lines.append(
-                f"- {ct_id}: {ct.get('name', '')} [{ct.get('domain', '')}] | default theory: {default_th}"
-            )
-
-        theory_lines = []
-        for th_id, th in self._theories.items():
-            theory_lines.append(
-                f"- {th_id}: {th.get('name','')} | applicabile a: {', '.join(th.get('applicable_causal_types', []))}"
-            )
-
+        """Build a compact instruction for domain classification."""
         return f"""{ROUTER_SYSTEM_PROMPT}
 
 Claim:
 \"\"\"{claim}\"\"\"
 
-Opzioni causal_type_id:
-{chr(10).join(type_lines)}
+Domain options:
+- CIVILE: responsabilità civile, risarcimento danni, inadempimento contrattuale, illecito extracontrattuale
+- PENALE: reati, responsabilità penale, nesso causale tra condotta e evento lesivo
+- ENTRAMBI: casi che coinvolgono sia profili civili che penali
 
-Opzioni theory_id:
-{chr(10).join(theory_lines)}
-
-Ricorda: scegli SOLO id validi e restituisci JSON compatto."""
+Rispondi con JSON compatto."""
 
     def _parse_json_like(self, text: str) -> Dict[str, str]:
         """Parse JSON, tolerating fenced code."""
@@ -164,8 +132,7 @@ Ricorda: scegli SOLO id validi e restituisci JSON compatto."""
             data = json.loads(cleaned)
             if isinstance(data, dict):
                 return {
-                    "causal_type_id": str(data.get("causal_type_id", "")).strip(),
-                    "theory_id": str(data.get("theory_id", "")).strip(),
+                    "domain": str(data.get("domain", "")).strip().upper(),
                 }
         except Exception:
             pass

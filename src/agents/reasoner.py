@@ -15,6 +15,7 @@ Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -140,24 +141,24 @@ class Reasoner(BaseAgent):
             f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents"
         )
 
-        if not routing_decision or not routing_decision.causal_type_id:
-            raise ValueError("routing_decision with a valid causal_type_id is required")
+        if not routing_decision or not routing_decision.domain:
+            raise ValueError("routing_decision with a valid domain is required")
 
         if not pre_retrieved_statutes and not pre_retrieved_precedents:
             self._log("⚠️ No knowledge base provided", "warning")
             return ReasonerOutput(
                 claim=claim,
                 causality_classification={
-                    "causal_type_id": routing_decision.causal_type_id,
-                    "theory_id": routing_decision.theory_id,
+                    "domain": routing_decision.domain,
+                    "causal_type_id": "",
+                    "theory_id": "",
                     "source": "router",
-                    "validated": False,
                     "reason": "empty_kb",
                 },
-                causal_type_id=routing_decision.causal_type_id,
-                theory_id=routing_decision.theory_id,
-                anchor_norms=routing_decision.anchor_norms,
-                principle_tests=routing_decision.principle_tests,
+                causal_type_id="",
+                theory_id="",
+                anchor_norms={},
+                principle_tests=[],
                 relevant_statutes=[],
                 relevant_precedents=[],
                 arguments=[],
@@ -191,107 +192,34 @@ class Reasoner(BaseAgent):
         raw_output1, _ = self._invoke_reasoner(input_prompt1)
         reasoning_chain1 = self._extract_reasoning_chain(raw_output1)
 
-        # Phase 2: classify causality on reasoning chain and validate vs router
+        # Phase 2: classify causality on reasoning chain filtered by domain
+        domain = routing_decision.domain
+        self._log(f"🔬 Router domain: {domain}")
+        
         chain_class = self._classify_causality_from_reasoning(
-            claim, reasoning_chain1, raw_output1
+            claim, reasoning_chain1, raw_output1, domain
         )
 
         # DEBUG: log chain classification results
         self._log(
             f"🔬 Chain classification: causal_type_id={chain_class.get('causal_type_id')}, theory_id={chain_class.get('theory_id')}"
         )
-        self._log(
-            f"🔬 Router decision: causal_type_id={routing_decision.causal_type_id}, theory_id={routing_decision.theory_id}"
-        )
 
-        validated = chain_class.get(
-            "causal_type_id"
-        ) == routing_decision.causal_type_id and (
-            (chain_class.get("theory_id") or routing_decision.theory_id)
-            == routing_decision.theory_id
-        )
-        final_causal_id = (
-            chain_class.get("causal_type_id") or routing_decision.causal_type_id
-        )
-        final_theory_id = (
-            chain_class.get("theory_id") or routing_decision.theory_id or ""
-        )
-
-        self._log(f"🔬 Validation result: validated={validated}")
-
-        mismatch_status = "aligned"
-        causal_types_for_counter: list[str] = []
-        anchor_norms: dict = {}
-        anchor_statutes: list[dict] = []
-        principle_tests: list[dict] = []
-
-        if not validated:
-            self._log(
-                f"⚠️ Causality mismatch: chain={chain_class.get('causal_type_id')} vs router={routing_decision.causal_type_id}",
-                "warning",
-            )
-            chain_class["validated"] = False
-            chain_class["fallback_to_router"] = False
-        else:
-            chain_class["validated"] = True
-            chain_class["fallback_to_router"] = False
-
-        if not validated and chain_class.get("theory_id") == routing_decision.theory_id:
-            # Causal-only mismatch with same theory: use both causal types and filtered norms for both
-            mismatch_status = "causal_mismatch_same_theory"
-            causal_types_for_counter = list(
-                dict.fromkeys(
-                    [
-                        routing_decision.causal_type_id,
-                        chain_class.get("causal_type_id")
-                        or routing_decision.causal_type_id,
-                    ]
-                )
-            )
-            self._log(
-                f"⚠️ MISMATCH same_theory: causal types for counter = {causal_types_for_counter}",
-                "warning",
-            )
-            final_causal_id, final_theory_id = config_loader.validate_ids(
-                chain_class.get("causal_type_id") or routing_decision.causal_type_id,
-                routing_decision.theory_id,
-            )
-            anchor_norms, anchor_statutes, principle_tests = (
-                self._filtered_anchor_norms_for_types(causal_types_for_counter, claim)
-            )
-            self._log(
-                f"📋 Anchor norms retrieved: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
-            )
-            self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
-        elif not validated:
-            # Total mismatch: prefer chain ids, but do NOT inject anchor norms
-            mismatch_status = "total_mismatch"
-            causal_types_for_counter = [
-                chain_class.get("causal_type_id") or routing_decision.causal_type_id
-            ]
-            self._log(
-                f"⚠️ MISMATCH total: preferring chain causal_type={causal_types_for_counter[0]}",
-                "warning",
-            )
-            final_causal_id, final_theory_id = config_loader.validate_ids(
-                chain_class.get("causal_type_id") or routing_decision.causal_type_id,
-                chain_class.get("theory_id") or routing_decision.theory_id,
-            )
-            # Still try to get anchor norms for the chain causality
-            anchor_norms, anchor_statutes, principle_tests = (
-                self._filtered_anchor_norms_for_types(causal_types_for_counter, claim)
-            )
-            self._log(
-                f"📋 Anchor norms from chain causality: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
-            )
-        else:
-            # Aligned: use single causal type, filtered norms
-            mismatch_status = "aligned"
-            causal_types_for_counter = [final_causal_id]
-            self._log(f"✅ ALIGNED: causal_type={final_causal_id}, theory={final_theory_id}")
+        final_causal_id = chain_class.get("causal_type_id") or ""
+        final_theory_id = chain_class.get("theory_id") or ""
+        
+        # Validate and get anchor norms for the classified causal type
+        if final_causal_id:
             final_causal_id, final_theory_id = config_loader.validate_ids(
                 final_causal_id, final_theory_id
             )
+        
+        causal_types_for_counter: list[str] = [final_causal_id] if final_causal_id else []
+        anchor_norms: dict = {}
+        anchor_statutes: list[dict] = []
+        principle_tests: list[dict] = []
+        
+        if final_causal_id:
             anchor_norms, anchor_statutes, principle_tests = (
                 self._filtered_anchor_norms_for_types([final_causal_id], claim)
             )
@@ -348,21 +276,17 @@ class Reasoner(BaseAgent):
 
         raw_output, _ = self._invoke_reasoner(input_prompt)
 
-        final_theory_id_str = final_theory_id or ""
-
         output = ReasonerOutput(
             claim=claim,
             causality_classification={
                 **chain_class,
-                "final_causal_type_id": final_causal_id,
-                "final_theory_id": final_theory_id_str,
+                "domain": domain,
                 "source": "reasoning_chain",
-                "mismatch_status": mismatch_status,
             },
             causal_type_id=final_causal_id,
-            theory_id=final_theory_id_str,
+            theory_id=final_theory_id or "",
             causal_type_ids_for_counter=causal_types_for_counter,
-            mismatch_status=mismatch_status,
+            mismatch_status="",
             anchor_norms=anchor_norms,
             principle_tests=principle_tests,
             relevant_statutes=deduped_statutes,
@@ -405,38 +329,137 @@ class Reasoner(BaseAgent):
                 break
         return raw_output, messages_out
 
+    def _extract_cited_articles(self, text: str) -> list[str]:
+        """Extract article references cited in the reasoning chain."""
+        # Pattern per articoli: "Art. 2043 c.c.", "art. 1223 c.p.", "articolo 40 c.p.", etc.
+        pattern = re.compile(
+            r"(?:art(?:icolo)?\.?\s*)(\d{1,4})\s*(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?))",
+            re.IGNORECASE,
+        )
+        matches = pattern.findall(text)
+        articles = []
+        for num, code in matches:
+            code_norm = "c.c." if "c" in code.lower() and "p" not in code.lower() else "c.p."
+            articles.append(f"Art. {num} {code_norm}")
+        # Deduplica mantenendo ordine
+        seen = set()
+        unique = []
+        for a in articles:
+            if a not in seen:
+                seen.add(a)
+                unique.append(a)
+        return unique
+
     def _classify_causality_from_reasoning(
-        self, claim: str, reasoning_chain: list[str], raw_response: str
+        self, claim: str, reasoning_chain: list[str], raw_response: str, domain: str
     ) -> dict:
-        """Classify causality based on the generated reasoning chain."""
+        """Classify causality based on the articles cited in the reasoning chain, filtered by domain."""
         config = config_loader.load_config()
         ct_index = config_loader.causal_types_by_id(config)
-        allowed_ids = list(ct_index.keys())
+        
+        # Filter causal types by domain
+        domain_lower = domain.lower()
+        if domain_lower == "entrambi":
+            allowed_ids = list(ct_index.keys())
+        else:
+            # "civile" or "penale"
+            allowed_ids = [
+                ct_id for ct_id, ct in ct_index.items()
+                if ct.get("domain", "").lower() == domain_lower
+            ]
+        
+        if not allowed_ids:
+            # Fallback to all if no match
+            allowed_ids = list(ct_index.keys())
+        
+        self._log(f"🔬 Allowed causal_type_ids for domain '{domain}': {allowed_ids}")
 
         chain_text = "\n".join(reasoning_chain) or raw_response or ""
-        prompt = f"""You are a classifier. Based on the reasoning steps below, choose the most appropriate causal_type_id and theory_id.
+        
+        # Estrai gli articoli citati dalla catena di ragionamento
+        cited_articles = self._extract_cited_articles(chain_text)
+        articles_text = ", ".join(cited_articles) if cited_articles else "Nessun articolo citato"
+        
+        self._log(f"🔬 Articoli citati nella catena di ragionamento: {articles_text}")
+        
+        # Build causal type descriptions for prompt
+        type_descriptions = []
+        for ct_id in allowed_ids:
+            ct = ct_index.get(ct_id, {})
+            type_descriptions.append(f"- {ct_id}: {ct.get('name', '')} [{ct.get('domain', '')}]")
+        
+        prompt = f"""You are a classifier. Based PRIMARILY on the CITED ARTICLES from the reasoning chain, choose the most appropriate causal_type_id.
 
-Allowed causal_type_id values: {', '.join(allowed_ids)}
+Allowed causal_type_id values (domain={domain}):
+{chr(10).join(type_descriptions)}
 
-If uncertain, choose the closest and leave theory_id empty.
-Respond with compact JSON only: {{"causal_type_id": "...", "theory_id": "..."}}.
+Classification criteria (based on cited articles):
+- If articles are from codice civile (c.c.) like Art. 2043, 2056, 1223, 1226, 1227 → civil causality types
+- If articles are from codice penale (c.p.) like Art. 40, 41 → criminal causality types
+- Consider the combination of articles to determine the most specific causal type
 
-CLAIM:
+If uncertain, choose the closest from the allowed list.
+Respond with ONLY the causal_type_id (no JSON, no explanation, just the id).
+
+ORIGINAL CLAIM (for context only):
 {claim}
 
-REASONING CHAIN:
+CITED ARTICLES FROM REASONING (primary classification basis):
+{articles_text}
+
+REASONING CHAIN (for context):
 {chain_text}
 """
         try:
             resp = self.llm.invoke([HumanMessage(content=prompt)])
             content = (resp.content or "").strip()
-            parsed = self._parse_json_like(content)
-            if parsed:
-                return parsed
+            
+            # Parse causal_type_id from LLM response
+            causal_type_id = self._extract_causal_type_id(content, allowed_ids)
+            
+            if causal_type_id:
+                # Get theory_id from default_mapping
+                theory_id = self._get_default_theory(causal_type_id, config)
+                result = {"causal_type_id": causal_type_id, "theory_id": theory_id}
+                self._log(f"🔬 Classificazione basata su articoli: {result}")
+                return result
+            else:
+                # Fallback to first allowed
+                self._log(f"⚠️ Could not parse causal_type_id from '{content}', using first allowed: {allowed_ids[0]}", "warning")
+                default_theory = self._get_default_theory(allowed_ids[0], config)
+                return {"causal_type_id": allowed_ids[0], "theory_id": default_theory}
         except Exception as e:
             self._log(f"⚠️ Causality classification on reasoning failed: {e}", "warning")
 
-        return {}
+        # Fallback to first allowed with default theory
+        fallback_causal = allowed_ids[0] if allowed_ids else ""
+        fallback_theory = self._get_default_theory(fallback_causal, config) if fallback_causal else ""
+        return {"causal_type_id": fallback_causal, "theory_id": fallback_theory}
+
+    def _get_default_theory(self, causal_type_id: str, config: dict) -> str:
+        """Get the default theory_id for a causal_type_id from config."""
+        default_mapping = config.get("default_mapping", [])
+        for mapping in default_mapping:
+            if mapping.get("causal_type") == causal_type_id:
+                return mapping.get("reasoner_primary_theory", "")
+        return ""
+
+    def _extract_causal_type_id(self, response: str, allowed_ids: list[str]) -> str:
+        """Extract causal_type_id from LLM response by matching against allowed ids."""
+        response_clean = response.strip().replace("`", "").replace('"', "").replace("'", "")
+        # Try exact match first
+        for ct_id in allowed_ids:
+            if ct_id == response_clean:
+                return ct_id
+        # Try substring match
+        for ct_id in allowed_ids:
+            if ct_id in response_clean:
+                return ct_id
+        # Try case-insensitive match
+        for ct_id in allowed_ids:
+            if ct_id.lower() in response_clean.lower():
+                return ct_id
+        return ""
 
     def _parse_json_like(self, text: str) -> dict:
         """Parse LLM JSON-ish content."""
@@ -680,14 +703,13 @@ No punctuation. No new lines. No extra spaces.
             "\n".join(f"- {p}" for p in allowed_precedents)
             or "- No precedents available"
         )
-        return f"""Analyze the following claim and build SUPPORTING arguments following the router decision.
+        return f"""Analyze the following claim and build SUPPORTING arguments.
 
 CLAIM:
 "{claim}"
 
-ROUTING DECISION (binding):
-- causal_type_id: {routing_decision.causal_type_id}
-- theory_id: {routing_decision.theory_id}
+DOMAIN (from router):
+{routing_decision.domain}
 
 ANCHOR NORMS (structural constraints):
 {anchor_text}
@@ -706,7 +728,7 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 {precedents_list}
 
 INSTRUCTIONS:
-1) Honor the given causal_type_id and theory_id. Do not re-classify.
+1) Build arguments appropriate for the {routing_decision.domain} domain.
 2) Use anchor norms and principle tests as constraints: if the knowledge base lacks the statute text, still cite the article but do NOT invent quotes.
 3) Build arguments using ONLY knowledge base sources:
    - Premise

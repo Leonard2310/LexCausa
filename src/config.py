@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     @property
     def taxonomy_path(self) -> Path:
         """Get causality taxonomy file path."""
-        return self.data_dir / "tassonomia_causale.json"
+        return self.project_root / "src" / "agents" / "tools" / "config_taxonomy.json"
 
     def validate_config(self) -> dict:
         """Validate configuration and return status."""

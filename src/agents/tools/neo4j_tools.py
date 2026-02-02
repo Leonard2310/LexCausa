@@ -398,9 +398,13 @@ def get_statute_by_article_tool(articolo: str, codice: str) -> dict:
     """
     driver = get_driver()
 
+    # Normalize articolo: database stores as "art1223", input might be "1223" or "art1223"
+    articolo_normalized = articolo.lower().replace("art", "").replace(" ", "").strip()
+    articolo_with_prefix = f"art{articolo_normalized}"
+
     query = """
         MATCH (s:Statute)
-        WHERE s.articolo = $articolo AND s.source = $codice
+        WHERE (s.articolo = $articolo OR s.articolo = $articolo_with_prefix) AND s.source = $codice
         RETURN s.statute_id AS id,
                s.articolo AS articolo,
                s.titolo AS titolo,
@@ -413,7 +417,12 @@ def get_statute_by_article_tool(articolo: str, codice: str) -> dict:
     try:
         with driver.session() as session:
             result = session.run(
-                query, parameters={"articolo": articolo, "codice": codice}
+                query,
+                parameters={
+                    "articolo": articolo_normalized,
+                    "articolo_with_prefix": articolo_with_prefix,
+                    "codice": codice,
+                },
             )
             record = result.single()
 

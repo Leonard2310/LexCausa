@@ -206,16 +206,24 @@ class BaseAgent(ABC):
 
         # Patterns that indicate start of reasoning chain section
         chain_markers = [
-            "catena", "ragionamento", "chain", "reasoning",
-            "conclusione", "sintesi", "riepilogo", "summary",
-            "passaggi", "steps", "argomentazione"
+            "catena",
+            "ragionamento",
+            "chain",
+            "reasoning",
+            "conclusione",
+            "sintesi",
+            "riepilogo",
+            "summary",
+            "passaggi",
+            "steps",
+            "argomentazione",
         ]
-        
+
         in_chain = False
         for line in lines:
             line = line.strip()
             lower_line = line.lower()
-            
+
             # Check if this line starts a chain section
             if any(marker in lower_line for marker in chain_markers):
                 in_chain = True
@@ -225,7 +233,7 @@ class BaseAgent(ABC):
                     if content and len(content) > 10:
                         chain.append(content)
                 continue
-            
+
             if in_chain and line:
                 # Numbered items (1., 2., etc.)
                 if line[0].isdigit() and len(line) > 2:
@@ -239,23 +247,7 @@ class BaseAgent(ABC):
                 # Lines starting with ** (markdown bold)
                 elif line.startswith("**") and line.endswith("**"):
                     chain.append(line.strip("*"))
-        
-        # Fallback: if no chain found, look for structured content
-        if not chain:
-            for line in lines:
-                line = line.strip()
-                # Look for lines with legal references
-                if line and ("Art." in line or "art." in line or "c.c." in line or "c.p." in line):
-                    if len(line) > 30:  # Meaningful content
-                        chain.append(line.lstrip("-•*→ 0123456789.)"))
-        
-        # Final fallback: return first substantive paragraphs
-        if not chain:
-            paragraphs = [p.strip() for p in response.split("\n\n") if p.strip()]
-            for p in paragraphs[:3]:
-                if len(p) > 50:
-                    chain.append(p[:500])
-        
+
         return chain if chain else ["Catena di ragionamento non disponibile."]
 
     def _sanitize_reasoning_chain(
@@ -278,7 +270,7 @@ class BaseAgent(ABC):
         if not any(
             "precedent" in s.lower() or "precedente" in s.lower() for s in sanitized
         ):
-            sanitized.append("Precedenti: nessuno trovato.")
+            sanitized.append("Precedents: none found.")
 
         return sanitized
 
@@ -317,4 +309,56 @@ class BaseAgent(ABC):
                     parts.append(f"  {summary[:300]}...")
             parts.append("")
 
-        return "\n".join(parts) if parts else "Nessun contesto normativo disponibile."
+        return "\n".join(parts) if parts else "No legal context available."
+
+    def _norm_to_statute_dict(self, norm: dict) -> dict:
+        """
+        Convert a taxonomy norm entry into a statute-like dict for prompts.
+        Retrieves actual statute text from Neo4j database.
+        Supports both old keys (riferimento/nota) and new keys (ref/role).
+        """
+        from .tools.neo4j_tools import get_statute_by_article_tool
+
+        # Support both old keys (riferimento) and new keys (ref)
+        riferimento = norm.get("ref") or norm.get("riferimento", "Art. N/D")
+        role = norm.get("role") or norm.get("nota", "")
+
+        articolo_match = None
+        try:
+            import re
+
+            articolo_match = re.search(r"(\d+)", riferimento)
+        except Exception:
+            pass
+        articolo = articolo_match.group(1) if articolo_match else riferimento
+
+        source = "codice_civile" if "c.c" in riferimento.lower() else "codice_penale"
+
+        # Try to fetch actual statute text from database
+        try:
+            db_result = get_statute_by_article_tool.invoke(
+                {"articolo": articolo, "codice": source}
+            )
+            if db_result.get("found"):
+                return {
+                    "statute_id": db_result.get("statute_id", riferimento),
+                    "articolo": db_result.get("articolo", articolo),
+                    "titolo": db_result.get("titolo", role or riferimento),
+                    "testo": db_result.get("testo", ""),
+                    "libro": db_result.get("libro", ""),
+                    "source": db_result.get("source", source),
+                    "role": role,  # Keep the taxonomy role for context
+                }
+        except Exception as e:
+            self._log(f"⚠️ Failed to fetch statute {articolo} from DB: {e}", "warning")
+
+        # Fallback: return dict without actual text
+        return {
+            "statute_id": riferimento,
+            "articolo": articolo,
+            "titolo": role or riferimento,
+            "testo": f"[Testo art. {articolo} non disponibile nel database]",
+            "libro": "",
+            "source": source,
+            "role": role,
+        }

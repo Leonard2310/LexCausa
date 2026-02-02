@@ -1,31 +1,23 @@
 """
 LexCausa Counter-Reasoner Agent.
 
-Il Counter-Reasoner è responsabile di:
-1. Ricevere il tipo di causalità dal Reasoner
-2. Recuperare il warrant associato dalla tassonomia
-3. Identificare le causalità "attaccanti" basate sul warrant
-4. Recuperare la descrizione completa delle causalità attaccanti
-5. Generare contro-argomenti che possano invalidare la tesi del Reasoner
-6. Costruire una catena di ragionamento che sfida gli argomenti del Reasoner
-
-IMPORTANT: The CounterReasoner does NOT search for articles/precedents itself.
-The pre-retrieval is done by api_server using LegalSearchPipeline.
-This ensures the agent bases its reasoning ONLY on the retrieved knowledge.
+Generates independent counter-arguments, without using the Reasoner's chain.
+Receives ONLY the claim + causal_type_id/theory_id from the Router and the
+pre-retrieved contrary/neutral sources.
 """
 
-import json
-from pathlib import Path
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from .base import AgentConfig, BaseAgent
+from .router import RoutingDecision
+from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.taxonomy_tools import get_causality_theory_tool
-from config import settings
 
 
 @dataclass
@@ -43,10 +35,10 @@ class CounterReasonerOutput:
     """Structured output from the Counter-Reasoner."""
 
     claim: str
-    reasoner_causality: dict
-    warrant_info: dict = field(default_factory=dict)
-    attacking_causalities: List[str] = field(default_factory=list)
-    counter_causality_details: List[dict] = field(default_factory=list)
+    causal_type_id: str
+    theory_id: str
+    selected_attack_id: str = ""
+    reasoner_causality: dict = field(default_factory=dict)  # compatibility alias
     relevant_statutes: List[dict] = field(default_factory=list)
     relevant_precedents: List[dict] = field(default_factory=list)
     counter_arguments: List[CounterArgument] = field(default_factory=list)
@@ -56,10 +48,10 @@ class CounterReasonerOutput:
     def to_dict(self) -> dict:
         return {
             "claim": self.claim,
+            "causal_type_id": self.causal_type_id,
+            "theory_id": self.theory_id,
+            "selected_attack_id": self.selected_attack_id,
             "reasoner_causality": self.reasoner_causality,
-            "warrant_info": self.warrant_info,
-            "attacking_causalities": self.attacking_causalities,
-            "counter_causality_details": self.counter_causality_details,
             "statutes": self.relevant_statutes,
             "precedents": self.relevant_precedents,
             "counter_arguments": [
@@ -77,169 +69,260 @@ class CounterReasonerOutput:
 
 
 # System prompt for the Counter-Reasoner (with pre-retrieved context)
-COUNTER_REASONER_SYSTEM_PROMPT = """You are an expert legal counter-reasoning agent specializing in Italian law.
+COUNTER_REASONER_SYSTEM_PROMPT = """You are the Counter-Reasoner. Dismantle the claim independently.
+You receive:
+- causal_type_id and theory_id fixed by the Router (do not re-classify)
+- selected_attack_id chosen from the config attack pool
+- KNOWLEDGE BASE with contrary/neutral statutes and precedents
 
-You will receive a legal claim along with PRE-RETRIEVED articles and precedents as your KNOWLEDGE BASE.
-Your task is to build COUNTER-ARGUMENTS to challenge the main thesis using ONLY the provided knowledge.
+Critical rules:
+- Use ONLY the sources in the KNOWLEDGE BASE; do not invent statutes or precedents.
+- Do not reference the Reasoner or its reasoning; produce a standalone counter-argument.
+- If a helpful statute is missing from the knowledge base, omit the citation instead of inventing it.
+- Always cite the statute number/code when available (e.g., “Art. 41 c.p.”).
 
-CRITICAL RULES:
-- Use ONLY the articles provided in the KNOWLEDGE BASE - do NOT invent or cite articles not provided
-- Use ONLY the precedents provided - do NOT invent precedents
-- If no precedents are provided, explicitly state this and proceed without them
-- Your goal is to DISMANTLE the claim, not support it
-- Even if the causality theory lists core/accessory norms, DO NOT cite them unless the article appears in the KNOWLEDGE BASE above
-- ALWAYS cite exact article numbers and codes (e.g., "Art. 41 c.p.", "Art. 1227 c.c.")
+Expected structure:
+- Alternative Premise
+- Statute (only if present in ALLOWED STATUTES)
+- Alternative Causal Link
+- Contrary Conclusion
+- Numbered counter-reasoning chain.
+Respond in Italian."""
 
-Your task follows these steps:
 
-1. **WARRANT ANALYSIS**: Understand the causality type from the Reasoner and its warrant.
-
-2. **GET CAUSAL THEORY**: Use `get_causality_theory` to retrieve theory for attacking causalities.
-
-3. **WEAKNESS IDENTIFICATION**: Identify weak points in the causal chain using the attacking causalities.
-
-4. **COUNTER-ARGUMENT CONSTRUCTION**: For each counter-argument:
-   - **Premessa Alternativa**: An alternative premise that CONTRADICTS the claim
-   - **Norma**: Article citation with quoted text FROM THE KNOWLEDGE BASE
-   - **Nesso Causale Alternativo**: How this challenges the original causal link
-   - **Conclusione Contraria**: The CONTRARY legal implication
-
-5. **COUNTER-REASONING CHAIN**: Build a logical sequence:
-   Alternative Premise → Applicable Norm → Challenge to Causal Link → CONTRARY Legal Consequence
-
-The response language must be Italian."""
+ATTACK_DESCRIPTIONS: Dict[str, str] = {
+    "but_for_fails": "Counterfactual fails: the event would have occurred anyway.",
+    "no_covering_law_or_low_support": "Missing covering law or insufficient support for probabilistic counterfactual.",
+    "alternative_causal_path": "A plausible alternative causal path exists.",
+    "duty_to_act_missing_for_omission": "For omission, the legal duty to act is missing.",
+    "abnormal_or_atypical_chain": "The causal chain is abnormal/atypical and breaks imputability.",
+    "sole_sufficient_cause": "A supervening cause alone was sufficient and breaks the link.",
+    "intervening_cause_breaks_chain": "An intervening autonomous factor breaks the chain.",
+    "force_majeure_filter": "Fortuitous event/force majeure excludes imputability.",
+    "damage_is_indirect": "The damage is indirect or mediated relative to the base fact.",
+    "damage_not_foreseeable": "The damage was not foreseeable ex ante (e.g., art. 1225 c.c.).",
+    "creditor_contributed": "The creditor contributed to causing the event/damage.",
+    "creditor_failed_to_mitigate": "The creditor failed to mitigate avoidable damage (art. 1227 c.c.).",
+    "quantification_uncertain": "Damage quantification is uncertain or speculative.",
+    "event_was_avoidable": "The event was avoidable with ordinary diligence.",
+    "event_was_foreseeable": "The event was foreseeable; it is not fortuitous.",
+    "risk_was_assumed_or_controllable": "The risk was assumed or controllable, so not fortuitous.",
+}
 
 
 class CounterReasoner(BaseAgent):
     """
     Legal Counter-Reasoner Agent.
 
-    Genera contro-argomenti per sfidare gli argomenti del Reasoner.
-    Usa il campo warrant della causalità per trovare punti deboli nella catena di ragionamento.
-    
+    Generates counter-arguments to challenge the claim independently of the Reasoner.
+    Selects the attack from config (counter_attack_pool) based on causal_type_id/theory_id.
+
     Flow:
     1. api_server pre-retrieves statutes and precedents
-    2. CounterReasoner.run() receives the causality from Reasoner + pre-retrieved knowledge
-    3. ReAct agent uses tools (get_causality_theory) to build counter-arguments
+    2. CounterReasoner.run() receives the Router decision + pre-retrieved knowledge
+    3. ReAct agent builds counter-arguments using only contrary/neutral sources
     """
 
     def __init__(self, config: Optional[AgentConfig] = None):
         """Initialize the Counter-Reasoner agent."""
         super().__init__(config)
         self._react_agent = None
-        self._taxonomy = None
+        self._config = config_loader.load_config()
 
-    def _load_taxonomy(self) -> dict:
-        """Carica la tassonomia di causalità."""
-        if self._taxonomy is None:
-            candidate_paths = [
-                settings.taxonomy_path,
-                settings.data_dir / "tassonomia_causalita.json",
-                Path("tassonomia_causale.json"),
-                Path("tassonomia_causalita.json"),
-            ]
+    # ------------------------------------------------------------------
+    # Attack selection logic (config-driven)
+    # ------------------------------------------------------------------
+    def _select_attack(
+        self, claim: str, routing_decision: RoutingDecision
+    ) -> AttackSelection:
+        """Select counter attack id based on config pools."""
+        pool: List[str] = config_loader.counter_attack_pool_for(
+            routing_decision.causal_type_id, self._config
+        )
+        theory_attacks: List[str] = config_loader.theory_counter_attacks(
+            routing_decision.theory_id, self._config
+        )
 
-            for path in candidate_paths:
-                if path.exists():
-                    with open(path, "r", encoding="utf-8") as f:
-                        self._taxonomy = json.load(f)
-                    self._log(f"Tassonomia caricata da: {path}", "success")
-                    break
+        if theory_attacks:
+            intersection = [a for a in pool if a in theory_attacks]
+            if intersection:
+                pool = intersection
 
-            if self._taxonomy is None:
-                self._log(
-                    "⚠️ Tassonomia non trovata, uso struttura vuota", "warning"
+        if not pool:
+            # Fallback to theory attacks or all known attacks
+            pool = theory_attacks or list(ATTACK_DESCRIPTIONS.keys())
+
+        attack_id = self._pick_attack_with_llm(
+            claim, routing_decision.causal_type_id, routing_decision.theory_id, pool
+        )
+
+        return AttackSelection(
+            pool=pool,
+            attack_id=attack_id,
+            description=ATTACK_DESCRIPTIONS.get(attack_id, ""),
+        )
+
+    def _pick_attack_with_llm(
+        self,
+        claim: str,
+        causal_type_id: str,
+        theory_id: str,
+        pool: List[str],
+    ) -> str:
+        """Use LLM to pick the most suitable attack id from pool."""
+        if not pool:
+            return ""
+
+        options_text = "\n".join(
+            f"- {aid}: {ATTACK_DESCRIPTIONS.get(aid, '')}" for aid in pool
+        )
+        prompt = f"""Claim:
+"{claim}"
+
+Routing context:
+- causal_type_id: {causal_type_id}
+- theory_id: {theory_id}
+
+Select the most useful attack among the following ids and return ONLY the chosen id:
+{options_text}
+"""
+        try:
+            resp = self.llm.invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip()
+            attack_id = self._clean_attack_choice(answer, pool)
+            if attack_id:
+                return attack_id
+        except Exception as e:
+            self._log(f"⚠️ LLM attack selection failed: {e}", "warning")
+
+        return pool[0]
+
+    def _clean_attack_choice(self, raw: str, pool: List[str]) -> str:
+        """Normalize LLM output to a valid attack id."""
+        candidate = raw.replace("`", "").strip()
+        if candidate.lower().startswith("json"):
+            candidate = candidate[4:].strip()
+        candidate = candidate.split()[0] if candidate else ""
+        for attack_id in pool:
+            if attack_id.lower() in candidate.lower():
+                return attack_id
+        return ""
+
+    def _expand_with_cross_references(self, statutes: List[dict]) -> List[dict]:
+        """
+        Add statutes referenced inside article text (one hop) to avoid missing rinvii.
+        """
+        try:
+            import re
+        except Exception:
+            return statutes
+
+        seen = {(s.get("articolo"), s.get("source")) for s in statutes}
+        extra: List[dict] = []
+
+        pattern = re.compile(r"art\.?\s*(\d{2,4})", re.IGNORECASE)
+
+        for s in statutes:
+            text = s.get("testo") or ""
+            refs = set(pattern.findall(text))
+            for token in re.findall(r"\b(\d{2,4})\b", text):
+                if "/" in token:
+                    continue
+                refs.add(token)
+
+            added_refs: List[str] = []
+            for ref in refs:
+                key = (ref, s.get("source"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                result = get_statute_by_article_tool.invoke(
+                    {"articolo": ref, "codice": s.get("source", "codice_civile")}
                 )
-                self._taxonomy = {"tassonomia_causalita": []}
+                if result and not result.get("error") and result.get("articolo"):
+                    extra.append(result)
+                    added_refs.append(ref)
 
-        return self._taxonomy
+            if added_refs:
+                self._log(
+                    f"🔗 Cross-ref from Art. {s.get('articolo')} -> {', '.join(sorted(set(added_refs)))}"
+                )
 
-    def _get_warrant_info(self, causality_type: str) -> dict:
-        """
-        Estrae le informazioni del warrant dalla tassonomia.
+        merged = statutes + extra
+        deduped: List[dict] = []
+        seen_final = set()
+        for st in merged:
+            k = (st.get("articolo"), st.get("source"))
+            if k in seen_final:
+                continue
+            seen_final.add(k)
+            deduped.append(st)
+        return deduped
 
-        Args:
-            causality_type: Il tipo di causalità (es. "Materiale", "Giuridica", "Concause / Sopravvenute")
-
-        Returns:
-            Dict contenente:
-            - warrant: dict con denominazione e todo_nli
-            - attacking_causalities: lista dei tipi di causalità che possono attaccare questa
-            - full_details: dettagli completi della causalità dalla tassonomia
-        """
-        taxonomy = self._load_taxonomy()
-
-        for entry in taxonomy.get("tassonomia_causalita", []):
-            if entry.get("tipo_causalita") == causality_type:
-                warrant = entry.get("warrant", {})
-                warrant_denominazione = warrant.get("denominazione", "")
-
-                # Determina le causalità attaccanti basate sul warrant
-                attacking_causalities = []
-
-                if "Necessaria" in warrant_denominazione:
-                    # La causalità necessaria può essere attaccata da cause sufficienti alternative
-                    attacking_causalities.append("Concause / Sopravvenute")
-                elif "Sufficiente Indipendente" in warrant_denominazione:
-                    # La causalità sufficiente indipendente può essere attaccata da condizioni necessarie
-                    attacking_causalities.append("Materiale")
-                elif "Sufficiente (non da sola)" in warrant_denominazione:
-                    # Le concause possono essere attaccate da entrambe
-                    attacking_causalities.extend(["Materiale", "Giuridica"])
-
-                return {
-                    "warrant": warrant,
-                    "attacking_causalities": attacking_causalities,
-                    "full_details": entry,
-                }
-
-        return {
-            "warrant": {},
-            "attacking_causalities": [],
-            "full_details": {},
-        }
-
-    def _get_attacking_causality_descriptions(
-        self, attacking_types: List[str]
+    def _filtered_anchor_statutes_for_types(
+        self, causal_types: List[str], claim: str
     ) -> List[dict]:
         """
-        Recupera le descrizioni complete delle causalità attaccanti.
+        Get taxonomy anchor norms for the given causal types.
 
-        Args:
-            attacking_types: Lista dei tipi di causalità attaccanti
-
-        Returns:
-            Lista di dict con dettagli completi di ogni causalità attaccante
+        Reads directly from config_taxonomy.json using the correct keys:
+        - anchor_norms -> core_norms / accessory_norms
+        - Each norm has 'ref' and 'role' fields
         """
-        taxonomy = self._load_taxonomy()
-        descriptions = []
+        statutes: List[dict] = []
+        seen_refs = set()
+        unique_cts = list(dict.fromkeys(ct for ct in causal_types if ct))
 
-        for entry in taxonomy.get("tassonomia_causalita", []):
-            if entry.get("tipo_causalita") in attacking_types:
-                descriptions.append(
-                    {
-                        "tipo": entry.get("tipo_causalita"),
-                        "descrizione": entry.get("descrizione_ruolo", ""),
-                        "principio": entry.get("principio_test_applicato", ""),
-                        "limiti": entry.get("limiti_criticita", ""),
-                        "norme_core": entry.get("norme_core", []),
-                        "norme_accessorie": entry.get("norme_accessorie", []),
-                        "warrant": entry.get("warrant", {}),
-                    }
+        for ct in unique_cts:
+            # Find causal_type block in config
+            causal_type_block = next(
+                (c for c in self._config.get("causal_types", []) if c.get("id") == ct),
+                None,
+            )
+            if not causal_type_block:
+                self._log(
+                    f"⚠️ [taxonomy] Causal type {ct} not found in config", "warning"
                 )
+                continue
 
-        return descriptions
+            anchor_norms = causal_type_block.get("anchor_norms", {})
+            core_norms = anchor_norms.get("core_norms", []) or []
+            accessory_norms = anchor_norms.get("accessory_norms", []) or []
+            all_norms = core_norms + accessory_norms
+
+            self._log(
+                f"🔎 [taxonomy] Causality {ct}: core {len(core_norms)}/{len(core_norms)}, accessory {len(accessory_norms)}/{len(accessory_norms)}"
+            )
+
+            kept_refs = []
+            for n in all_norms:
+                ref = n.get("ref")
+                # role = n.get("role", "")
+                """
+                TODO: Valutarne l'inserimento futuro per rendere la contro-argomentazione più sofisticata
+                (ad esempio, distinguendo tra attacchi alle norme core e accessorie).
+                """
+                if not ref or ref in seen_refs:
+                    continue
+                seen_refs.add(ref)
+                kept_refs.append(ref)
+                # Convert to statute dict format
+                statutes.append(self._norm_to_statute_dict(n))
+
+            if kept_refs:
+                self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
+
+        return statutes
 
     @property
     def tools(self) -> list:
         """
         Get the tools available to this agent.
-        
+
         NOTE: No search tools - the agent works with pre-retrieved context.
-        Only taxonomy tools for causality theory retrieval.
+        Only statute lookup to keep independence from Reasoner.
         """
         return [
-            get_causality_theory_tool,
             get_statute_by_article_tool,  # For looking up specific articles by number
         ]
 
@@ -257,7 +340,7 @@ class CounterReasoner(BaseAgent):
     def run(
         self,
         claim: str,
-        causality: dict,
+        routing_decision: RoutingDecision,
         pre_retrieved_statutes: List[dict],
         pre_retrieved_precedents: List[dict],
     ) -> CounterReasonerOutput:
@@ -266,7 +349,7 @@ class CounterReasoner(BaseAgent):
 
         Args:
             claim: The legal claim to counter-argue.
-            causality: Causality classification from the Reasoner.
+            routing_decision: Output of the Router with causal_type_id/theory_id.
             pre_retrieved_statutes: Already retrieved and filtered statute articles.
             pre_retrieved_precedents: Already retrieved precedents.
 
@@ -274,42 +357,71 @@ class CounterReasoner(BaseAgent):
             CounterReasonerOutput with counter-arguments and reasoning chain.
         """
         self._log(f"Counter-analyzing claim: {claim[:100]}...")
-        self._log(f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents")
-
-        if not causality or "causality_type" not in causality:
-            self._log("⚠️ Causality not provided or invalid", "warning")
-            causality = {"causality_type": "Unknown"}
-
-        causality_type = causality.get("causality_type", "Unknown")
-        self._log(f"🎯 Causality from Reasoner: {causality_type}")
-
-        # Get warrant and attacking causalities
-        warrant_info = self._get_warrant_info(causality_type)
-        self._log(f"🛡️ Warrant: {warrant_info['warrant'].get('denominazione', 'N/A')}")
-        self._log(f"⚔️ Attacking causalities: {warrant_info['attacking_causalities']}")
-
-        attacking_descriptions = self._get_attacking_causality_descriptions(
-            warrant_info["attacking_causalities"]
+        self._log(
+            f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents"
         )
+
+        if not routing_decision or not routing_decision.causal_type_id:
+            raise ValueError(
+                "routing_decision with causal_type_id/theory_id is required"
+            )
+
+        # Select counter attack from config pools
+        attack_selection = self._select_attack(claim, routing_decision)
+        self._log(
+            f"⚔️ Selected counter attack: {attack_selection.attack_id or 'N/A'} "
+            f"(pool size {len(attack_selection.pool)})"
+        )
+        self._log(f"📝 Attack description: {attack_selection.description or 'N/A'}")
+
+        all_statutes = pre_retrieved_statutes
+        # Add filtered anchor norms for provided causal types (router + additional)
+        anchor_statutes = self._filtered_anchor_statutes_for_types(
+            [routing_decision.causal_type_id]
+            + (routing_decision.additional_causal_types or []),
+            claim,
+        )
+        if anchor_statutes:
+            self._log(
+                f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
+                "info",
+            )
+        all_statutes = all_statutes + anchor_statutes
+        # Deduplicate
+        seen_keys = set()
+        deduped_statutes = []
+        for s in all_statutes:
+            key = (s.get("articolo"), s.get("source"))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped_statutes.append(s)
+
+        before_expand = len(deduped_statutes)
+        deduped_statutes = self._expand_with_cross_references(deduped_statutes)
+        if len(deduped_statutes) > before_expand:
+            self._log(
+                f"➕ Added {len(deduped_statutes) - before_expand} statutes via cross-ref",
+                "info",
+            )
 
         # Format knowledge base for prompt
         knowledge_base = self._format_context_for_prompt(
-            pre_retrieved_statutes, 
-            pre_retrieved_precedents
+            deduped_statutes, pre_retrieved_precedents
         )
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
-            for s in pre_retrieved_statutes
+            for s in deduped_statutes
         ]
-        allowed_precedents = [p.get("title", "Untitled") for p in pre_retrieved_precedents]
+        allowed_precedents = [
+            p.get("title", "Untitled") for p in pre_retrieved_precedents
+        ]
 
         # Build prompt with context
         input_prompt = self._build_counter_reasoning_prompt_with_context(
             claim=claim,
-            causality_type=causality_type,
-            warrant_info=warrant_info,
-            attacking_descriptions=attacking_descriptions,
+            routing_decision=routing_decision,
+            attack_selection=attack_selection,
             knowledge_base=knowledge_base,
             allowed_statutes=allowed_statutes,
             allowed_precedents=allowed_precedents,
@@ -326,10 +438,13 @@ class CounterReasoner(BaseAgent):
             self._log(error_msg, "error")
             return CounterReasonerOutput(
                 claim=claim,
-                reasoner_causality=causality,
-                warrant_info=warrant_info,
-                attacking_causalities=warrant_info["attacking_causalities"],
-                counter_causality_details=attacking_descriptions,
+                causal_type_id=routing_decision.causal_type_id,
+                theory_id=routing_decision.theory_id,
+                selected_attack_id=attack_selection.attack_id,
+                reasoner_causality={
+                    "causal_type_id": routing_decision.causal_type_id,
+                    "theory_id": routing_decision.theory_id,
+                },
                 relevant_statutes=pre_retrieved_statutes,
                 relevant_precedents=pre_retrieved_precedents,
                 counter_arguments=[],
@@ -338,11 +453,10 @@ class CounterReasoner(BaseAgent):
             )
 
         # Log tool calls
-        tool_names = []
+        tool_names: list[str] = []
         for msg in messages_out:
-            if hasattr(msg, 'name') and msg.name:
+            if hasattr(msg, "name") and msg.name:
                 tool_names.append(msg.name)
-                self._log(f"🔧 Tool called: {msg.name}")
 
         if tool_names:
             self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
@@ -361,11 +475,14 @@ class CounterReasoner(BaseAgent):
         # Build output
         output = CounterReasonerOutput(
             claim=claim,
-            reasoner_causality=causality,
-            warrant_info=warrant_info,
-            attacking_causalities=warrant_info["attacking_causalities"],
-            counter_causality_details=attacking_descriptions,
-            relevant_statutes=pre_retrieved_statutes,
+            causal_type_id=routing_decision.causal_type_id,
+            theory_id=routing_decision.theory_id,
+            selected_attack_id=attack_selection.attack_id,
+            reasoner_causality={
+                "causal_type_id": routing_decision.causal_type_id,
+                "theory_id": routing_decision.theory_id,
+            },
+            relevant_statutes=deduped_statutes,
             relevant_precedents=pre_retrieved_precedents,
             raw_response=raw_output,
         )
@@ -374,19 +491,19 @@ class CounterReasoner(BaseAgent):
         output.reasoning_chain = self._extract_reasoning_chain(raw_output)
         output.counter_arguments = self._extract_arguments(raw_output)
         output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, 
-            pre_retrieved_precedents
+            output.reasoning_chain, pre_retrieved_precedents
         )
 
-        self._log(f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success")
+        self._log(
+            f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success"
+        )
         return output
 
     def _build_counter_reasoning_prompt_with_context(
         self,
         claim: str,
-        causality_type: str,
-        warrant_info: dict,
-        attacking_descriptions: List[dict],
+        routing_decision: RoutingDecision,
+        attack_selection: AttackSelection,
         knowledge_base: str,
         allowed_statutes: List[str],
         allowed_precedents: List[str],
@@ -394,23 +511,35 @@ class CounterReasoner(BaseAgent):
         """
         Build the prompt for CounterReasoner with pre-retrieved context.
         """
-        attacking_text = self._format_attacking_info(attacking_descriptions)
-        statutes_list = "\n".join(f"- {a}" for a in allowed_statutes) or "- Nessun articolo disponibile"
-        precedents_list = "\n".join(f"- {p}" for p in allowed_precedents) or "- Nessun precedente disponibile"
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- No precedents available"
+        )
 
-        return f"""Analyze the following legal claim and build COUNTER-ARGUMENTS to dismantle it.
+        attack_id = attack_selection.attack_id or "N/A"
+        attack_desc = attack_selection.description or "N/A"
+        pool = attack_selection.pool
+        pool_lines = "\n".join(f"- {a}" for a in pool) or "- No attack available"
+
+        return f"""Analyze the claim and generate an independent counter-argument that dismantles the thesis.
 
 CLAIM:
 "{claim}"
 
-CAUSALITY IDENTIFIED BY THE REASONER:
-Type: {causality_type}
-Warrant: {warrant_info.get('warrant', {}).get('denominazione', 'N/A')}
+ROUTING DECISION:
+- causal_type_id: {routing_decision.causal_type_id}
+- theory_id: {routing_decision.theory_id}
 
-ATTACKING CAUSALITIES TO EXPLOIT:
-{attacking_text}
+COUNTER ATTACK FOCUS (chosen from config):
+- selected_attack_id: {attack_id}
+- description: {attack_desc}
+- candidate_pool:
+{pool_lines}
 
-=== KNOWLEDGE BASE (Your ONLY source of articles and precedents) ===
+=== KNOWLEDGE BASE (use ONLY these sources) ===
 {knowledge_base}
 === END KNOWLEDGE BASE ===
 
@@ -421,36 +550,22 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 {precedents_list}
 
 INSTRUCTIONS:
-1. Use `get_causality_theory` to understand the attacking causalities theories.
-2. Build counter-arguments that CHALLENGE and DISMANTLE the claim.
-3. Each counter-argument must have:
-   - Premessa Alternativa: An alternative premise that contradicts the claim
-   - Norma: Article citation with quoted text FROM THE KNOWLEDGE BASE (only from ALLOWED STATUTE REFERENCES; if none apply, omit the norma field)
-   - Nesso Causale Alternativo: How this challenges the causal link
-   - Conclusione Contraria: The contrary legal implication
-4. End with a REASONING CHAIN that shows how your counter-arguments dismantle the claim.
+1) Use selected_attack_id as the main lens to attack the causal link.
+2) Build one or more counter-arguments with EXACTLY this structure and these Italian headers:
+   **Premessa Alternativa**: (incompatible with the claim)
+   **Norma**: (only if present in ALLOWED STATUTES; otherwise omit this section)
+   **Nesso Causale Alternativo**:
+   **Conclusione Contraria**:
+3) End with a numbered counter-reasoning chain, without mentioning the Reasoner.
 
-CRITICAL: Use ONLY the articles and precedents in the KNOWLEDGE BASE above.
-Do NOT invent or cite articles not provided. If a needed article/precedent is absent from the allowed lists, omit it instead of stating it is unavailable.
-
-Generate your counter-analysis now (in Italian):"""
-
-    def _format_attacking_info(self, attacking_descriptions: List[dict]) -> str:
-        attacking_info = ""
-        for desc in attacking_descriptions:
-            attacking_info += f"\n**{desc['tipo']}:**\n"
-            attacking_info += f"- Descrizione: {desc['descrizione']}\n"
-            attacking_info += f"- Principio: {desc['principio']}\n"
-            if desc.get("limiti"):
-                attacking_info += f"- Limiti/Criticità: {desc['limiti']}\n"
-            # Norme core/accessorie non riportate per evitare citazioni fuori dal knowledge base
-        return attacking_info or "N/A"
+CRITICAL: Respond ENTIRELY in Italian, including ALL section headers exactly as shown above (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria).
+Do not invent sources, do not mention the Reasoner."""
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:
         """Estrae contro-argomenti strutturati dalla risposta."""
         arguments = []
         sections = response.split("**")
-        current_arg = {}
+        current_arg: dict[str, str] = {}
 
         for section in sections:
             section = section.strip()
@@ -486,3 +601,10 @@ Generate your counter-analysis now (in Italian):"""
             )
 
         return arguments
+
+
+@dataclass
+class AttackSelection:
+    pool: List[str]
+    attack_id: str
+    description: str

@@ -114,6 +114,16 @@ class PolisherEvaluator(BaseAgent):
         """
         self._log("Evaluation not yet implemented", "warning")
 
+        reasoner_ir = (reasoner_output or {}).get("aspic_ir")
+        counter_ir = (counter_reasoner_output or {}).get("aspic_ir")
+        dialectical_tree = {}
+        if reasoner_ir or counter_ir:
+            dialectical_tree = {
+                "schema": "aspic_ir_bundle_v1",
+                "reasoner": reasoner_ir,
+                "counter": counter_ir,
+            }
+
         # Stub implementation
         return EvaluationResult(
             claim=claim,
@@ -121,6 +131,7 @@ class PolisherEvaluator(BaseAgent):
             confidence=0.0,
             summary="Evaluation not yet implemented",
             polished_response="",
+            dialectical_tree=dialectical_tree,
         )
 
     def compute_grounded_extension(

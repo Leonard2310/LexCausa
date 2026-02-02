@@ -311,6 +311,27 @@
   word-break: break-word;
 }
 
+/* ASPIC IR Toggle */
+.ir-toggle {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background-color: #f9fafb;
+}
+
+.ir-toggle summary {
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ir-toggle .code-block {
+  margin-top: 0.75rem;
+}
+
 /* Reasoning Chain */
 .reasoning-chain {
   list-style-type: none;

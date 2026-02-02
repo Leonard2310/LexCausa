@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
+from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
 from .router import RoutingDecision
 from .tools import config_loader
@@ -44,6 +45,7 @@ class CounterReasonerOutput:
     counter_arguments: List[CounterArgument] = field(default_factory=list)
     reasoning_chain: List[str] = field(default_factory=list)
     raw_response: str = ""
+    aspic_ir: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -65,6 +67,7 @@ class CounterReasonerOutput:
             ],
             "reasoning_chain": self.reasoning_chain,
             "raw_response": self.raw_response,
+            "aspic_ir": self.aspic_ir,
         }
 
 
@@ -492,6 +495,23 @@ Select the most useful attack among the following ids and return ONLY the chosen
         output.counter_arguments = self._extract_arguments(raw_output)
         output.reasoning_chain = self._sanitize_reasoning_chain(
             output.reasoning_chain, pre_retrieved_precedents
+        )
+
+        formatter = AspicFormatter(
+            role="counter",
+            statutes=deduped_statutes,
+            precedents=pre_retrieved_precedents,
+        )
+        output.aspic_ir = formatter.format(
+            claim=claim,
+            raw_response=raw_output,
+            reasoning_chain=output.reasoning_chain,
+            arguments=output.counter_arguments,
+            metadata={
+                "selected_attack_id": attack_selection.attack_id,
+                "causal_type_id": routing_decision.causal_type_id,
+                "theory_id": routing_decision.theory_id,
+            },
         )
 
         self._log(

@@ -17,6 +17,7 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
+from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
 from .router import RoutingDecision
 from .tools import config_loader
@@ -56,6 +57,7 @@ class ReasonerOutput:
     arguments: list[dict] = field(default_factory=list)
     reasoning_chain: list[str] = field(default_factory=list)
     raw_response: str = ""
+    aspic_ir: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +74,7 @@ class ReasonerOutput:
             "arguments": self.arguments,
             "reasoning_chain": self.reasoning_chain,
             "raw_response": self.raw_response,
+            "aspic_ir": self.aspic_ir,
         }
 
 
@@ -301,6 +304,22 @@ class Reasoner(BaseAgent):
         output.arguments = self._extract_arguments(raw_output)
         output.reasoning_chain = self._sanitize_reasoning_chain(
             output.reasoning_chain, pre_retrieved_precedents
+        )
+
+        formatter = AspicFormatter(
+            role="support",
+            statutes=output.relevant_statutes,
+            precedents=output.relevant_precedents,
+        )
+        output.aspic_ir = formatter.format(
+            claim=claim,
+            raw_response=output.raw_response,
+            reasoning_chain=output.reasoning_chain,
+            arguments=output.arguments,
+            metadata={
+                "causal_type_id": final_causal_id,
+                "theory_id": final_theory_id,
+            },
         )
 
         self._log(f"✅ Generated {len(output.arguments)} arguments", "success")

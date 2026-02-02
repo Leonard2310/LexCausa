@@ -261,6 +261,17 @@ export default function App() {
                     </div>
                   )}
 
+                  {reasoningResult.aspic_ir && (
+                    <div className="result-section">
+                      <details className="ir-toggle">
+                        <summary>ASPIC+ IR</summary>
+                        <pre className="code-block">
+                          {JSON.stringify(reasoningResult.aspic_ir, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
+                  )}
+
                   {reasoningResult.raw_response && (
                     <div className="result-section">
                       <h4>Risposta Completa</h4>
@@ -332,6 +343,17 @@ export default function App() {
                       </div>
                     )}
 
+                    {pipelineResult.reasoner?.aspic_ir && (
+                      <div className="subsection">
+                        <details className="ir-toggle">
+                          <summary>ASPIC+ IR (Reasoner)</summary>
+                          <pre className="code-block">
+                            {JSON.stringify(pipelineResult.reasoner.aspic_ir, null, 2)}
+                          </pre>
+                        </details>
+                      </div>
+                    )}
+
                     {pipelineResult.reasoner?.raw_response && (
                       <div className="subsection">
                         <h4>Risposta Completa</h4>
@@ -390,6 +412,17 @@ export default function App() {
                             </li>
                           ))}
                         </ul>
+                      </div>
+                    )}
+
+                    {pipelineResult.counter_reasoner?.aspic_ir && (
+                      <div className="subsection">
+                        <details className="ir-toggle">
+                          <summary>ASPIC+ IR (Counter-Reasoner)</summary>
+                          <pre className="code-block">
+                            {JSON.stringify(pipelineResult.counter_reasoner.aspic_ir, null, 2)}
+                          </pre>
+                        </details>
                       </div>
                     )}
 

@@ -295,6 +295,15 @@ export default function App() {
                       1. REASONER - Argomenti a Favore
                     </h3>
 
+                    {pipelineResult.reasoner?.causality && (
+                      <div className="subsection">
+                        <h4>Classificazione Causalità</h4>
+                        <pre className="code-block">
+                          {JSON.stringify(pipelineResult.reasoner.causality, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+
                     {pipelineResult.reasoner?.statutes && pipelineResult.reasoner.statutes.length > 0 && (
                       <div className="subsection">
                         <h4>Articoli Trovati ({pipelineResult.reasoner.statutes.length})</h4>
@@ -331,34 +340,21 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* SEZIONE CLASSIFICAZIONE CAUSALITÀ (dalla catena di ragionamento) */}
-                  {pipelineResult.reasoner?.causality && pipelineResult.reasoner.causality.causality_type && (
-                    <div className="result-section pipeline-section causality-section">
-                      <h3 className="section-header">
-                        <Brain size={20} style={{ color: '#8b5cf6' }} />
-                        2. CLASSIFICAZIONE CAUSALITÀ (dalla catena di ragionamento)
-                      </h3>
-                      <div className="subsection">
-                        <p><strong>Tipo di Causalità:</strong> {pipelineResult.reasoner.causality.causality_type}</p>
-                        {pipelineResult.reasoner.causality.warrant?.denominazione && (
-                          <p><strong>Warrant:</strong> {pipelineResult.reasoner.causality.warrant.denominazione}</p>
-                        )}
-                        {pipelineResult.reasoner.causality.description && (
-                          <p><strong>Descrizione:</strong> {pipelineResult.reasoner.causality.description}</p>
-                        )}
-                        {pipelineResult.reasoner.causality.principle && (
-                          <p><strong>Principio:</strong> {pipelineResult.reasoner.causality.principle}</p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
                   {/* SEZIONE COUNTER-REASONER */}
                   <div className="result-section pipeline-section">
                     <h3 className="section-header">
                       <XCircle size={20} style={{ color: '#ef4444' }} />
-                      3. COUNTER-REASONER - Argomenti Contrari
+                      2. COUNTER-REASONER - Argomenti Contrari
                     </h3>
+
+                    {pipelineResult.counter_reasoner?.reasoner_causality && (
+                      <div className="subsection">
+                        <h4>Causalità del Reasoner (da Attaccare)</h4>
+                        <pre className="code-block">
+                          {JSON.stringify(pipelineResult.counter_reasoner.reasoner_causality, null, 2)}
+                        </pre>
+                      </div>
+                    )}
 
                     {pipelineResult.counter_reasoner?.warrant_info && (
                       <div className="subsection">

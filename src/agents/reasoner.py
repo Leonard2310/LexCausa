@@ -6,13 +6,6 @@ The Reasoner is responsible for:
 2. Generating supporting arguments based on the provided knowledge base
 3. Building a reasoning chain that connects the claim to legal norms
 
-NOTE: The Reasoner does NOT classify causality. Causality classification
-is performed AFTER the reasoning chain is generated, using the chain itself
-as input (not the claim). This classification is then used by the CounterReasoner.
-
-IMPORTANT: The Reasoner does NOT search for articles/precedents itself.
-The pre-retrieval is done by api_server using LegalSearchPipeline.
-
 Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 """
 

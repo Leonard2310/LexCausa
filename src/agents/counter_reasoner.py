@@ -264,7 +264,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
     ) -> List[dict]:
         """
         Get taxonomy anchor norms for the given causal types.
-        
+
         Reads directly from config_taxonomy.json using the correct keys:
         - anchor_norms -> core_norms / accessory_norms
         - Each norm has 'ref' and 'role' fields
@@ -280,7 +280,9 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 None,
             )
             if not causal_type_block:
-                self._log(f"⚠️ [taxonomy] Causal type {ct} not found in config", "warning")
+                self._log(
+                    f"⚠️ [taxonomy] Causal type {ct} not found in config", "warning"
+                )
                 continue
 
             anchor_norms = causal_type_block.get("anchor_norms", {})
@@ -295,7 +297,11 @@ Select the most useful attack among the following ids and return ONLY the chosen
             kept_refs = []
             for n in all_norms:
                 ref = n.get("ref")
-                role = n.get("role", "")
+                # role = n.get("role", "")
+                """
+                TODO: Valutarne l'inserimento futuro per rendere la contro-argomentazione più sofisticata
+                (ad esempio, distinguendo tra attacchi alle norme core e accessorie).
+                """
                 if not ref or ref in seen_refs:
                     continue
                 seen_refs.add(ref)
@@ -548,8 +554,8 @@ INSTRUCTIONS:
 2) Build one or more counter-arguments with EXACTLY this structure and these Italian headers:
    **Premessa Alternativa**: (incompatible with the claim)
    **Norma**: (only if present in ALLOWED STATUTES; otherwise omit this section)
-   **Nesso Causale Alternativo**: 
-   **Conclusione Contraria**: 
+   **Nesso Causale Alternativo**:
+   **Conclusione Contraria**:
 3) End with a numbered counter-reasoning chain, without mentioning the Reasoner.
 
 CRITICAL: Respond ENTIRELY in Italian, including ALL section headers exactly as shown above (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria).

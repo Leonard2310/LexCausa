@@ -318,27 +318,27 @@ class BaseAgent(ABC):
         Supports both old keys (riferimento/nota) and new keys (ref/role).
         """
         from .tools.neo4j_tools import get_statute_by_article_tool
-        
+
         # Support both old keys (riferimento) and new keys (ref)
         riferimento = norm.get("ref") or norm.get("riferimento", "Art. N/D")
         role = norm.get("role") or norm.get("nota", "")
-        
+
         articolo_match = None
         try:
             import re
+
             articolo_match = re.search(r"(\d+)", riferimento)
         except Exception:
             pass
         articolo = articolo_match.group(1) if articolo_match else riferimento
 
         source = "codice_civile" if "c.c" in riferimento.lower() else "codice_penale"
-        
+
         # Try to fetch actual statute text from database
         try:
-            db_result = get_statute_by_article_tool.invoke({
-                "articolo": articolo,
-                "codice": source
-            })
+            db_result = get_statute_by_article_tool.invoke(
+                {"articolo": articolo, "codice": source}
+            )
             if db_result.get("found"):
                 return {
                     "statute_id": db_result.get("statute_id", riferimento),
@@ -351,7 +351,7 @@ class BaseAgent(ABC):
                 }
         except Exception as e:
             self._log(f"⚠️ Failed to fetch statute {articolo} from DB: {e}", "warning")
-        
+
         # Fallback: return dict without actual text
         return {
             "statute_id": riferimento,

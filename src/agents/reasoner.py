@@ -195,7 +195,7 @@ class Reasoner(BaseAgent):
         # Phase 2: classify causality on reasoning chain filtered by domain
         domain = routing_decision.domain
         self._log(f"🔬 Router domain: {domain}")
-        
+
         chain_class = self._classify_causality_from_reasoning(
             claim, reasoning_chain1, raw_output1, domain
         )
@@ -207,18 +207,20 @@ class Reasoner(BaseAgent):
 
         final_causal_id = chain_class.get("causal_type_id") or ""
         final_theory_id = chain_class.get("theory_id") or ""
-        
+
         # Validate and get anchor norms for the classified causal type
         if final_causal_id:
             final_causal_id, final_theory_id = config_loader.validate_ids(
                 final_causal_id, final_theory_id
             )
-        
-        causal_types_for_counter: list[str] = [final_causal_id] if final_causal_id else []
+
+        causal_types_for_counter: list[str] = (
+            [final_causal_id] if final_causal_id else []
+        )
         anchor_norms: dict = {}
         anchor_statutes: list[dict] = []
         principle_tests: list[dict] = []
-        
+
         if final_causal_id:
             anchor_norms, anchor_statutes, principle_tests = (
                 self._filtered_anchor_norms_for_types([final_causal_id], claim)
@@ -229,7 +231,9 @@ class Reasoner(BaseAgent):
             self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
 
         # Phase 3: refine reasoning with anchor norms + cross-ref expansion
-        self._log(f"📌 Phase 3: merging pre_retrieved ({len(pre_retrieved_statutes)}) + anchor ({len(anchor_statutes)}) statutes")
+        self._log(
+            f"📌 Phase 3: merging pre_retrieved ({len(pre_retrieved_statutes)}) + anchor ({len(anchor_statutes)}) statutes"
+        )
         all_statutes = pre_retrieved_statutes + anchor_statutes
         seen_keys = set()
         deduped_statutes = []
@@ -259,10 +263,14 @@ class Reasoner(BaseAgent):
         )
         anchor_text = self._format_anchor_norms(anchor_norms)
         principle_text = self._format_principle_tests(principle_tests)
-        
+
         # DEBUG: log what's being injected
-        self._log(f"📝 Anchor text for prompt:\n{anchor_text[:500] if len(anchor_text) > 500 else anchor_text}")
-        self._log(f"📝 Principle tests for prompt:\n{principle_text[:500] if len(principle_text) > 500 else principle_text}")
+        self._log(
+            f"📝 Anchor text for prompt:\n{anchor_text[:500] if len(anchor_text) > 500 else anchor_text}"
+        )
+        self._log(
+            f"📝 Principle tests for prompt:\n{principle_text[:500] if len(principle_text) > 500 else principle_text}"
+        )
 
         input_prompt = self._build_reasoning_prompt_with_context(
             claim,
@@ -339,7 +347,9 @@ class Reasoner(BaseAgent):
         matches = pattern.findall(text)
         articles = []
         for num, code in matches:
-            code_norm = "c.c." if "c" in code.lower() and "p" not in code.lower() else "c.p."
+            code_norm = (
+                "c.c." if "c" in code.lower() and "p" not in code.lower() else "c.p."
+            )
             articles.append(f"Art. {num} {code_norm}")
         # Deduplica mantenendo ordine
         seen = set()
@@ -356,7 +366,7 @@ class Reasoner(BaseAgent):
         """Classify causality based on the articles cited in the reasoning chain, filtered by domain."""
         config = config_loader.load_config()
         ct_index = config_loader.causal_types_by_id(config)
-        
+
         # Filter causal types by domain
         domain_lower = domain.lower()
         if domain_lower == "entrambi":
@@ -364,30 +374,35 @@ class Reasoner(BaseAgent):
         else:
             # "civile" or "penale"
             allowed_ids = [
-                ct_id for ct_id, ct in ct_index.items()
+                ct_id
+                for ct_id, ct in ct_index.items()
                 if ct.get("domain", "").lower() == domain_lower
             ]
-        
+
         if not allowed_ids:
             # Fallback to all if no match
             allowed_ids = list(ct_index.keys())
-        
+
         self._log(f"🔬 Allowed causal_type_ids for domain '{domain}': {allowed_ids}")
 
         chain_text = "\n".join(reasoning_chain) or raw_response or ""
-        
+
         # Estrai gli articoli citati dalla catena di ragionamento
         cited_articles = self._extract_cited_articles(chain_text)
-        articles_text = ", ".join(cited_articles) if cited_articles else "Nessun articolo citato"
-        
+        articles_text = (
+            ", ".join(cited_articles) if cited_articles else "Nessun articolo citato"
+        )
+
         self._log(f"🔬 Articoli citati nella catena di ragionamento: {articles_text}")
-        
+
         # Build causal type descriptions for prompt
         type_descriptions = []
         for ct_id in allowed_ids:
             ct = ct_index.get(ct_id, {})
-            type_descriptions.append(f"- {ct_id}: {ct.get('name', '')} [{ct.get('domain', '')}]")
-        
+            type_descriptions.append(
+                f"- {ct_id}: {ct.get('name', '')} [{ct.get('domain', '')}]"
+            )
+
         prompt = f"""You are a classifier. Based PRIMARILY on the CITED ARTICLES from the reasoning chain, choose the most appropriate causal_type_id.
 
 Allowed causal_type_id values (domain={domain}):
@@ -413,10 +428,10 @@ REASONING CHAIN (for context):
         try:
             resp = self.llm.invoke([HumanMessage(content=prompt)])
             content = (resp.content or "").strip()
-            
+
             # Parse causal_type_id from LLM response
             causal_type_id = self._extract_causal_type_id(content, allowed_ids)
-            
+
             if causal_type_id:
                 # Get theory_id from default_mapping
                 theory_id = self._get_default_theory(causal_type_id, config)
@@ -425,7 +440,10 @@ REASONING CHAIN (for context):
                 return result
             else:
                 # Fallback to first allowed
-                self._log(f"⚠️ Could not parse causal_type_id from '{content}', using first allowed: {allowed_ids[0]}", "warning")
+                self._log(
+                    f"⚠️ Could not parse causal_type_id from '{content}', using first allowed: {allowed_ids[0]}",
+                    "warning",
+                )
                 default_theory = self._get_default_theory(allowed_ids[0], config)
                 return {"causal_type_id": allowed_ids[0], "theory_id": default_theory}
         except Exception as e:
@@ -433,7 +451,9 @@ REASONING CHAIN (for context):
 
         # Fallback to first allowed with default theory
         fallback_causal = allowed_ids[0] if allowed_ids else ""
-        fallback_theory = self._get_default_theory(fallback_causal, config) if fallback_causal else ""
+        fallback_theory = (
+            self._get_default_theory(fallback_causal, config) if fallback_causal else ""
+        )
         return {"causal_type_id": fallback_causal, "theory_id": fallback_theory}
 
     def _get_default_theory(self, causal_type_id: str, config: dict) -> str:
@@ -446,7 +466,9 @@ REASONING CHAIN (for context):
 
     def _extract_causal_type_id(self, response: str, allowed_ids: list[str]) -> str:
         """Extract causal_type_id from LLM response by matching against allowed ids."""
-        response_clean = response.strip().replace("`", "").replace('"', "").replace("'", "")
+        response_clean = (
+            response.strip().replace("`", "").replace('"', "").replace("'", "")
+        )
         # Try exact match first
         for ct_id in allowed_ids:
             if ct_id == response_clean:
@@ -506,24 +528,27 @@ REASONING CHAIN (for context):
             acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
             core_full = theory.get("norme_core", []) or []
             acc_full = theory.get("norme_accessorie", []) or []
-            
+
             # If no filtered norms available, use full norms (happens when no claim filter applied)
             if not core_rel and core_full:
                 core_rel = core_full
             if not acc_rel and acc_full:
                 acc_rel = acc_full
-                
+
             taxonomy_norms = core_rel + acc_rel
 
             # Support both old keys (riferimento) and new keys (ref)
             kept_refs = [
-                n.get("ref") or n.get("riferimento") for n in taxonomy_norms if n.get("ref") or n.get("riferimento")
+                n.get("ref") or n.get("riferimento")
+                for n in taxonomy_norms
+                if n.get("ref") or n.get("riferimento")
             ]
             kept_set = {r for r in kept_refs if r}
             discarded_refs = [
                 n.get("ref") or n.get("riferimento")
                 for n in (core_full + acc_full)
-                if (n.get("ref") or n.get("riferimento")) and (n.get("ref") or n.get("riferimento")) not in kept_set
+                if (n.get("ref") or n.get("riferimento"))
+                and (n.get("ref") or n.get("riferimento")) not in kept_set
             ]
             self._log(
                 f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
@@ -747,12 +772,12 @@ Critical: do not introduce external sources. Respond in Italian."""
         lines = []
         for n in core:
             # Support both old keys (riferimento/nota) and new keys (ref/role)
-            ref = n.get('ref') or n.get('riferimento', 'N/D')
-            role = n.get('role') or n.get('nota', '')
+            ref = n.get("ref") or n.get("riferimento", "N/D")
+            role = n.get("role") or n.get("nota", "")
             lines.append(f"- [core] {ref}: {role}")
         for n in accessory:
-            ref = n.get('ref') or n.get('riferimento', 'N/D')
-            role = n.get('role') or n.get('nota', '')
+            ref = n.get("ref") or n.get("riferimento", "N/D")
+            role = n.get("role") or n.get("nota", "")
             lines.append(f"- [accessory] {ref}: {role}")
         return "\n".join(lines) or "- No anchor norms defined"
 
@@ -780,7 +805,9 @@ Critical: do not introduce external sources. Respond in Italian."""
             ref = n.get("ref") or n.get("riferimento", "")
             role = n.get("role") or n.get("nota", "")
             if ref:
-                result.append(self._norm_to_statute_dict({"riferimento": ref, "nota": role}))
+                result.append(
+                    self._norm_to_statute_dict({"riferimento": ref, "nota": role})
+                )
         return result
 
     def _expand_with_cross_references(self, statutes: list[dict]) -> list[dict]:

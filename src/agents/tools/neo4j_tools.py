@@ -417,11 +417,12 @@ def get_statute_by_article_tool(articolo: str, codice: str) -> dict:
     try:
         with driver.session() as session:
             result = session.run(
-                query, parameters={
+                query,
+                parameters={
                     "articolo": articolo_normalized,
                     "articolo_with_prefix": articolo_with_prefix,
-                    "codice": codice
-                }
+                    "codice": codice,
+                },
             )
             record = result.single()
 

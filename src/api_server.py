@@ -580,6 +580,44 @@ def pipeline():
             f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
         )
 
+        # STEP 3: Polisher-Evaluator (consistency check)
+        print(f"\n{'─'*70}")
+        print("📊 STEP 3: Polisher-Evaluator (consistency check)...")
+        print(f"{'─'*70}")
+
+        # Merge statutes from both agents for KB reference
+        all_statutes = support_statutes + against_statutes
+        seen_keys = set()
+        merged_statutes = []
+        for s in all_statutes:
+            key = (s.get("articolo"), s.get("source"))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                merged_statutes.append(s)
+
+        all_precedents = support_precedents + against_precedents
+        seen_titles = set()
+        merged_precedents = []
+        for p in all_precedents:
+            title = p.get("title", "")
+            if title not in seen_titles:
+                seen_titles.add(title)
+                merged_precedents.append(p)
+
+        pe = get_polisher_evaluator()
+        evaluation_result = pe.run(
+            claim=claim,
+            statutes=merged_statutes,
+            precedents=merged_precedents,
+            taxonomy=load_taxonomy(),
+            reasoner_output=reasoner_result.to_dict(),
+            counter_reasoner_output=counter_result.to_dict(),
+        )
+
+        print("✅ Polisher-Evaluator completed")
+        print(f"   - Winning side: {evaluation_result.winning_side}")
+        print(f"   - Confidence: {evaluation_result.confidence:.2f}")
+
         print(f"\n{'='*70}")
         print("✅ FULL PIPELINE - END")
         print(f"{'='*70}\n")
@@ -592,6 +630,7 @@ def pipeline():
                 "final_routing": final_routing_decision.to_dict(),
                 "reasoner": reasoner_result.to_dict(),
                 "counter_reasoner": counter_result.to_dict(),
+                "evaluation": evaluation_result.to_dict(),
             }
         )
 
@@ -610,13 +649,16 @@ def pipeline():
 def evaluate():
     """
     Endpoint per la valutazione finale.
-    TODO: Implementare quando Polisher-Evaluator sarà completo.
+    Verifica la consistenza delle argomentazioni con la knowledge base.
     """
     try:
         data = request.get_json()
         claim = data.get("claim", "").strip()
         reasoner_output = data.get("reasoner_output", {})
         counter_output = data.get("counter_output", {})
+        statutes = data.get("statutes", [])
+        precedents = data.get("precedents", [])
+        taxonomy = data.get("taxonomy", {})
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
@@ -624,6 +666,9 @@ def evaluate():
         pe = get_polisher_evaluator()
         result = pe.run(
             claim=claim,
+            statutes=statutes,
+            precedents=precedents,
+            taxonomy=taxonomy,
             reasoner_output=reasoner_output,
             counter_reasoner_output=counter_output,
         )

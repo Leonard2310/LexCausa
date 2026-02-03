@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck } from 'lucide-react';
 import './App.css';
 
 // Tab types
@@ -433,6 +433,160 @@ export default function App() {
                       </div>
                     )}
                   </div>
+
+                  {/* SEZIONE EVALUATOR - Verifica Consistenza */}
+                  {pipelineResult.evaluation?.consistency_report && (
+                    <div className="result-section pipeline-section">
+                      <h3 className="section-header">
+                        <ClipboardCheck size={20} style={{ color: '#8b5cf6' }} />
+                        3. EVALUATOR - Verifica Consistenza
+                      </h3>
+
+                      {/* Reasoner Consistency */}
+                      {pipelineResult.evaluation.consistency_report.reasoner && (
+                        <div className="subsection">
+                          <h4>
+                            Reasoner - Score: {(pipelineResult.evaluation.consistency_report.reasoner.consistency_score * 100).toFixed(0)}%
+                          </h4>
+                          <div className="consistency-stats">
+                            <span className="stat-item stat-valid">
+                              ✅ Valide: {pipelineResult.evaluation.consistency_report.reasoner.valid_citations}/{pipelineResult.evaluation.consistency_report.reasoner.total_citations}
+                            </span>
+                            <span className="stat-item stat-text">
+                              📝 Testo match: {pipelineResult.evaluation.consistency_report.reasoner.text_matches}/{pipelineResult.evaluation.consistency_report.reasoner.text_matches + pipelineResult.evaluation.consistency_report.reasoner.text_mismatches}
+                            </span>
+                          </div>
+
+                          {pipelineResult.evaluation.consistency_report.reasoner.citation_checks?.length > 0 && (
+                            <div className="citation-checks-list">
+                              {pipelineResult.evaluation.consistency_report.reasoner.citation_checks.map((check, idx) => (
+                                <div key={idx} className={`citation-check-item ${check.found_in_kb ? 'check-valid' : 'check-invalid'}`}>
+                                  <div className="check-header">
+                                    {check.found_in_kb ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+                                    <strong>{check.citation}</strong>
+                                    {check.text_verified && (
+                                      <span className={`text-badge ${check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
+                                        {check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
+                                        {check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="check-details">{check.details}</div>
+
+                                  {check.text_verified && (check.cited_text || check.db_text_preview) && (
+                                    <details className="text-comparison">
+                                      <summary>Confronta Testi</summary>
+                                      <div className="text-comparison-content">
+                                        {check.cited_text && (
+                                          <div className="text-block cited-text">
+                                            <h5>📖 Testo Citato nella Catena:</h5>
+                                            <p>{check.cited_text}</p>
+                                          </div>
+                                        )}
+                                        {check.db_text_preview && (
+                                          <div className="text-block db-text">
+                                            <h5>🗄️ Testo nel Database:</h5>
+                                            <p>{check.db_text_preview}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </details>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {pipelineResult.evaluation.consistency_report.reasoner.issues?.length > 0 && (
+                            <div className="issues-list">
+                              <h5><AlertTriangle size={14} /> Problemi Rilevati:</h5>
+                              <ul>
+                                {pipelineResult.evaluation.consistency_report.reasoner.issues.map((issue, idx) => (
+                                  <li key={idx}>{issue}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Counter-Reasoner Consistency */}
+                      {pipelineResult.evaluation.consistency_report.counter_reasoner && (
+                        <div className="subsection">
+                          <h4>
+                            Counter-Reasoner - Score: {(pipelineResult.evaluation.consistency_report.counter_reasoner.consistency_score * 100).toFixed(0)}%
+                          </h4>
+                          <div className="consistency-stats">
+                            <span className="stat-item stat-valid">
+                              ✅ Valide: {pipelineResult.evaluation.consistency_report.counter_reasoner.valid_citations}/{pipelineResult.evaluation.consistency_report.counter_reasoner.total_citations}
+                            </span>
+                            <span className="stat-item stat-text">
+                              📝 Testo match: {pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches}/{pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches + pipelineResult.evaluation.consistency_report.counter_reasoner.text_mismatches}
+                            </span>
+                          </div>
+
+                          {pipelineResult.evaluation.consistency_report.counter_reasoner.citation_checks?.length > 0 && (
+                            <div className="citation-checks-list">
+                              {pipelineResult.evaluation.consistency_report.counter_reasoner.citation_checks.map((check, idx) => (
+                                <div key={idx} className={`citation-check-item ${check.found_in_kb ? 'check-valid' : 'check-invalid'}`}>
+                                  <div className="check-header">
+                                    {check.found_in_kb ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+                                    <strong>{check.citation}</strong>
+                                    {check.text_verified && (
+                                      <span className={`text-badge ${check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
+                                        {check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
+                                        {check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="check-details">{check.details}</div>
+
+                                  {check.text_verified && (check.cited_text || check.db_text_preview) && (
+                                    <details className="text-comparison">
+                                      <summary>Confronta Testi</summary>
+                                      <div className="text-comparison-content">
+                                        {check.cited_text && (
+                                          <div className="text-block cited-text">
+                                            <h5>📖 Testo Citato nella Catena:</h5>
+                                            <p>{check.cited_text}</p>
+                                          </div>
+                                        )}
+                                        {check.db_text_preview && (
+                                          <div className="text-block db-text">
+                                            <h5>🗄️ Testo nel Database:</h5>
+                                            <p>{check.db_text_preview}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </details>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {pipelineResult.evaluation.consistency_report.counter_reasoner.issues?.length > 0 && (
+                            <div className="issues-list">
+                              <h5><AlertTriangle size={14} /> Problemi Rilevati:</h5>
+                              <ul>
+                                {pipelineResult.evaluation.consistency_report.counter_reasoner.issues.map((issue, idx) => (
+                                  <li key={idx}>{issue}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Summary */}
+                      {pipelineResult.evaluation.summary && (
+                        <div className="subsection">
+                          <h4>Riepilogo</h4>
+                          <div className="raw-response">{pipelineResult.evaluation.summary}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>

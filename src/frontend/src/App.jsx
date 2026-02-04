@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench } from 'lucide-react';
 import './App.css';
 
 // Tab types
@@ -583,6 +583,85 @@ export default function App() {
                         <div className="subsection">
                           <h4>Riepilogo</h4>
                           <div className="raw-response">{pipelineResult.evaluation.summary}</div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* SEZIONE CATENE RIPARATE */}
+                  {pipelineResult.evaluation && (pipelineResult.evaluation.repaired_reasoner_chain || pipelineResult.evaluation.repaired_counter_chain) && (
+                    <div className="result-section pipeline-section">
+                      <h3 className="section-header">
+                        <Wrench size={20} style={{ color: '#f59e0b' }} />
+                        4. CATENE DI RAGIONAMENTO RIPARATE
+                      </h3>
+
+                      {/* Repaired Reasoner Chain */}
+                      {pipelineResult.evaluation.repaired_reasoner_chain && (
+                        <div className="subsection">
+                          <h4>
+                            <CheckCircle2 size={16} style={{ color: '#10b981' }} />
+                            Reasoner - Catena Riparata
+                          </h4>
+                          <div className="raw-response repaired-chain">
+                            {pipelineResult.evaluation.repaired_reasoner_chain}
+                          </div>
+
+                          {/* Show repaired ASPIC IR if available */}
+                          {pipelineResult.evaluation.repaired_reasoner_aspic_ir && Object.keys(pipelineResult.evaluation.repaired_reasoner_aspic_ir).length > 0 && (
+                            <details className="ir-toggle">
+                              <summary>ASPIC+ IR Riparato (Reasoner)</summary>
+                              <pre className="code-block">
+                                {JSON.stringify(pipelineResult.evaluation.repaired_reasoner_aspic_ir, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Repaired Counter-Reasoner Chain */}
+                      {pipelineResult.evaluation.repaired_counter_chain && (
+                        <div className="subsection">
+                          <h4>
+                            <XCircle size={16} style={{ color: '#ef4444' }} />
+                            Counter-Reasoner - Catena Riparata
+                          </h4>
+                          <div className="raw-response repaired-chain">
+                            {pipelineResult.evaluation.repaired_counter_chain}
+                          </div>
+
+                          {/* Show repaired ASPIC IR if available */}
+                          {pipelineResult.evaluation.repaired_counter_aspic_ir && Object.keys(pipelineResult.evaluation.repaired_counter_aspic_ir).length > 0 && (
+                            <details className="ir-toggle">
+                              <summary>ASPIC+ IR Riparato (Counter-Reasoner)</summary>
+                              <pre className="code-block">
+                                {JSON.stringify(pipelineResult.evaluation.repaired_counter_aspic_ir, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Repair Statistics */}
+                      {pipelineResult.evaluation.consistency_report && (
+                        <div className="subsection repair-stats">
+                          <h4>Statistiche Riparazione</h4>
+                          <div className="consistency-stats">
+                            {pipelineResult.evaluation.consistency_report.reasoner && (
+                              <>
+                                <span className="stat-item stat-repaired">
+                                  🔧 Reasoner: {pipelineResult.evaluation.consistency_report.reasoner.repaired_citations || 0} riparate, {pipelineResult.evaluation.consistency_report.reasoner.dropped_citations || 0} scartate
+                                </span>
+                              </>
+                            )}
+                            {pipelineResult.evaluation.consistency_report.counter_reasoner && (
+                              <>
+                                <span className="stat-item stat-repaired">
+                                  🔧 Counter: {pipelineResult.evaluation.consistency_report.counter_reasoner.repaired_citations || 0} riparate, {pipelineResult.evaluation.consistency_report.counter_reasoner.dropped_citations || 0} scartate
+                                </span>
+                              </>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>

@@ -672,3 +672,38 @@
   padding: 0.125rem 0;
   border-bottom: none;
 }
+
+/* Repaired Chain Styles */
+.repaired-chain {
+  background-color: #fffbeb;
+  border: 1px solid #fcd34d;
+  position: relative;
+}
+
+.repaired-chain::before {
+  content: "🔧 RIPARATO";
+  position: absolute;
+  top: -0.75rem;
+  right: 0.75rem;
+  background-color: #f59e0b;
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  letter-spacing: 0.05em;
+}
+
+.stat-repaired {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.repair-stats {
+  background-color: #fffbeb;
+  border-color: #fcd34d;
+}
+
+.repair-stats h4 {
+  color: #92400e;
+}

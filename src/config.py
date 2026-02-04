@@ -100,6 +100,120 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # AQA / Polisher Evaluator Defaults
+    # =========================================================================
+    aqa_enabled: bool = Field(
+        default=True,
+        alias="AQA_ENABLED",
+        description="Enable the AQA scoring phase in the Polisher-Evaluator.",
+    )
+    aqa_alpha: float = Field(
+        default=0.3,
+        alias="AQA_ALPHA",
+        description="AQA weight for Cogency.",
+    )
+    aqa_beta: float = Field(
+        default=0.4,
+        alias="AQA_BETA",
+        description="AQA weight for NormSupport.",
+    )
+    aqa_gamma: float = Field(
+        default=0.3,
+        alias="AQA_GAMMA",
+        description="AQA weight for Semantics.",
+    )
+    aqa_attack_top_k: int = Field(
+        default=3,
+        alias="AQA_ATTACK_TOP_K",
+        description="Top-K cross-attacks to keep per link for explainability.",
+    )
+    aqa_verdict_pos_threshold: float = Field(
+        default=0.2,
+        alias="AQA_VERDICT_POS_THRESHOLD",
+        description="Final plausibility threshold for 'plausible'.",
+    )
+    aqa_verdict_neg_threshold: float = Field(
+        default=-0.2,
+        alias="AQA_VERDICT_NEG_THRESHOLD",
+        description="Final plausibility threshold for 'implausible'.",
+    )
+    aqa_embedding_model: str = Field(
+        default="all-mpnet-base-v2",
+        alias="AQA_EMBEDDING_MODEL",
+        description="Sentence-transformers model for overlap embeddings.",
+    )
+    aqa_nli_model: str = Field(
+        default="MoritzLaurer/DeBERTa-v3-base-mnli",
+        alias="AQA_NLI_MODEL",
+        description="NLI model for semantics entailment.",
+    )
+    aqa_argument_quality_model: str = Field(
+        default="",
+        alias="AQA_ARGUMENT_QUALITY_MODEL",
+        description="Optional argument-quality classifier model name.",
+    )
+    aqa_argument_quality_use_model: bool = Field(
+        default=False,
+        alias="AQA_ARGUMENT_QUALITY_USE_MODEL",
+        description="Use argument-quality model when available.",
+    )
+    aqa_tfidf_max_features: int = Field(
+        default=5000,
+        alias="AQA_TFIDF_MAX_FEATURES",
+        description="Max features for TF-IDF overlap vectors.",
+    )
+    aqa_normsupport_max_citations: int = Field(
+        default=3,
+        alias="AQA_NORMSUPPORT_MAX_CITATIONS",
+        description="Cap for normalized citation count in NormSupport.",
+    )
+    aqa_normsupport_citation_weight: float = Field(
+        default=0.7,
+        alias="AQA_NORMSUPPORT_CITATION_WEIGHT",
+        description="Weight for citation count in NormSupport.",
+    )
+    aqa_normsupport_retrieved_weight: float = Field(
+        default=0.3,
+        alias="AQA_NORMSUPPORT_RETRIEVED_WEIGHT",
+        description="Weight for retrieved_norms similarity in NormSupport.",
+    )
+    aqa_normsupport_retrieved_agg: str = Field(
+        default="avg",
+        alias="AQA_NORMSUPPORT_RETRIEVED_AGG",
+        description="Aggregation for retrieved_norms similarity: avg or max.",
+    )
+    aqa_severity_map_penale: dict = Field(
+        default_factory=lambda: {
+            "i": "generale",
+            "ii": "delitti",
+            "iii": "contravvenzioni",
+            "primo": "generale",
+            "secondo": "delitti",
+            "terzo": "contravvenzioni",
+        },
+        alias="AQA_SEVERITY_MAP_PENALE",
+        description="Mapping from libro token to severity category (Codice Penale).",
+    )
+    aqa_severity_map_civile: dict = Field(
+        default_factory=lambda: {
+            "i": "persone_famiglia",
+            "ii": "successioni",
+            "iii": "proprieta",
+            "iv": "obbligazioni",
+            "v": "lavoro",
+            "vi": "tutela_diritti",
+            "primo": "persone_famiglia",
+            "secondo": "successioni",
+            "terzo": "proprieta",
+            "quarto": "obbligazioni",
+            "quinto": "lavoro",
+            "sesto": "tutela_diritti",
+        },
+        alias="AQA_SEVERITY_MAP_CIVILE",
+        description="Mapping from libro token to severity category (Codice Civile).",
+    )
+
+    # =========================================================================
     # Paths
     # =========================================================================
     @property

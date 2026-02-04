@@ -234,9 +234,7 @@ class PolisherEvaluator(BaseAgent):
             }
 
         # Generate summary
-        summary = self._generate_consistency_summary(
-            reasoner_report, counter_report
-        )
+        summary = self._generate_consistency_summary(reasoner_report, counter_report)
 
         self._log("✅ Evaluation complete")
 
@@ -256,7 +254,9 @@ class PolisherEvaluator(BaseAgent):
     # ------------------------------------------------------------------
     # Neo4j Verification
     # ------------------------------------------------------------------
-    def _verify_statute_in_neo4j(self, article_num: str, domain: str) -> tuple[bool, str]:
+    def _verify_statute_in_neo4j(
+        self, article_num: str, domain: str
+    ) -> tuple[bool, str]:
         """
         Verify if an article exists in Neo4j and return its text.
 
@@ -303,17 +303,23 @@ class PolisherEvaluator(BaseAgent):
                     testo = record.get("testo", "") or ""
                     titolo = record.get("titolo", "") or ""
                     if testo:
-                        self._log(f"      🗄️ Neo4j: Art. {article_num} found - '{titolo[:50]}...'")
+                        self._log(
+                            f"      🗄️ Neo4j: Art. {article_num} found - '{titolo[:50]}...'"
+                        )
                         self._log(f"      📄 DB text preview: '{testo[:100]}...'")
                     else:
-                        self._log(f"      🗄️ Neo4j: Art. {article_num} found but NO TEXT in DB")
+                        self._log(
+                            f"      🗄️ Neo4j: Art. {article_num} found but NO TEXT in DB"
+                        )
                     return True, testo
                 return False, ""
         except Exception as e:
             self._log(f"⚠️ Neo4j query failed: {e}", "warning")
             return False, ""
 
-    def _extract_cited_text_for_article(self, full_text: str, article_num: str, aspic_ir: dict | None = None) -> str:
+    def _extract_cited_text_for_article(
+        self, full_text: str, article_num: str, aspic_ir: dict | None = None
+    ) -> str:
         """
         Extract the text cited in the reasoning chain for a specific article.
 
@@ -330,15 +336,32 @@ class PolisherEvaluator(BaseAgent):
         Returns:
             Extracted text associated with the article, or empty string if not found.
         """
+        # Pattern 0: block with Norma + Testo lines
+        block_pattern = (
+            rf"Norma.*?Art(?:icolo)?\.?\s*{article_num}.*?\n"
+            rf".*?Testo\s*:\s*\"([^\"]{{20,}})\""
+        )
+        match = re.search(block_pattern, full_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            extracted = match.group(1).strip()
+            extracted = re.sub(r"\s+", " ", extracted)
+            if len(extracted) >= 20:
+                self._log("      🎯 Found 'Norma + Testo' block pattern")
+                return extracted
+
         # Pattern 1: "L'Art. 1223 c.c. stabilisce/prevede/limita che..."
         # Captures the verb + "che" + text until period
         pattern1 = rf"[Ll][''']?Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\s+(?:stabilisce|prevede|limita|dispone|sancisce|afferma)\s+(?:che\s+)?(.+?)(?:\.|$)"
         match = re.search(pattern1, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
-            extracted = re.sub(r'\s+', ' ', extracted)
+            extracted = re.sub(r"\s+", " ", extracted)
             if len(extracted) >= 20:
-                self._log(f"      🎯 Found 'Art. {article_num} stabilisce/prevede...' pattern")
+                self._log(
+                    "      🎯 Found 'Art. "
+                    + str(article_num)
+                    + " stabilisce/prevede...' pattern"
+                )
                 return extracted
 
         # Pattern 2: "Art. 1223 c.c. - [testo]"
@@ -346,11 +369,13 @@ class PolisherEvaluator(BaseAgent):
         match = re.search(pattern2, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
-            extracted = re.sub(r'\s+', ' ', extracted)
+            extracted = re.sub(r"\s+", " ", extracted)
             # Avoid if it contains other article references (means it's a list)
-            if not re.search(r'Art(?:icolo)?\.?\s*\d{3,4}', extracted, re.IGNORECASE):
+            if not re.search(r"Art(?:icolo)?\.?\s*\d{3,4}", extracted, re.IGNORECASE):
                 if len(extracted) >= 20:
-                    self._log(f"      🎯 Found 'Art. {article_num} - ...' pattern")
+                    self._log(
+                        "      🎯 Found 'Art. " + str(article_num) + " - ...' pattern"
+                    )
                     return extracted
 
         # Pattern 3: "Secondo l'Art. 1223 c.c., [testo]"
@@ -358,9 +383,13 @@ class PolisherEvaluator(BaseAgent):
         match = re.search(pattern3, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
-            extracted = re.sub(r'\s+', ' ', extracted)
+            extracted = re.sub(r"\s+", " ", extracted)
             if len(extracted) >= 20:
-                self._log(f"      🎯 Found 'Secondo l'Art. {article_num}...' pattern")
+                self._log(
+                    "      🎯 Found 'Secondo l'Art. "
+                    + str(article_num)
+                    + "...' pattern"
+                )
                 return extracted
 
         # Pattern 4: "(Art. 1223 c.c.)" in parentheses after text - capture text before
@@ -369,14 +398,18 @@ class PolisherEvaluator(BaseAgent):
         if match:
             extracted = match.group(1).strip()
             # Take last sentence before the article reference
-            sentences = extracted.split('.')
+            sentences = extracted.split(".")
             if sentences:
                 last_sentence = sentences[-1].strip()
                 if len(last_sentence) >= 20:
-                    self._log(f"      🎯 Found text before '(Art. {article_num})' pattern")
+                    self._log(
+                        "      🎯 Found text before '(Art. "
+                        + str(article_num)
+                        + ")' pattern"
+                    )
                     return last_sentence
 
-        self._log(f"      ⚠️ No text found for Art. {article_num}")
+        self._log("      ⚠️ No text found for Art. " + str(article_num))
         return ""
 
     def _extract_text_from_aspic_ir(self, aspic_ir: dict, article_num: str) -> str:
@@ -396,10 +429,10 @@ class PolisherEvaluator(BaseAgent):
             The text associated with the article from the IR structure.
         """
         if not aspic_ir:
-            self._log(f"      ⚠️ ASPIC IR is empty or None")
+            self._log("      ⚠️ ASPIC IR is empty or None")
             return ""
 
-        self._log(f"      🔍 Searching ASPIC IR for Art. {article_num}")
+        self._log("      🔍 Searching ASPIC IR for Art. {article_num}")
 
         # Helper to check if an article is in citations
         def article_in_citations(citations: dict, art_num: str) -> bool:
@@ -411,8 +444,13 @@ class PolisherEvaluator(BaseAgent):
         # Helper to extract text specific to an article from a larger text block
         def extract_article_specific_text(full_text: str, art_num: str) -> str:
             """Extract the portion of text that refers specifically to this article."""
+            clean_text = full_text.replace("**", "")
             # Pattern to find text associated with specific article
             patterns = [
+                # Testo: "..."
+                r"testo\s*:\s*\"([^\"]{20,})\"",
+                # Testo: ... (no quotes)
+                r"testo\s*:\s*([^.]+(?:\.[^.]+)?)",
                 # Art. 1223: text or Art. 1223 - text
                 rf"art(?:icolo)?\.?\s*{art_num}[^:.\n]*[:.-]\s*([^.]+(?:\.[^.]+)?)",
                 # Art. 1223 c.c. che prevede/stabilisce che...
@@ -421,7 +459,7 @@ class PolisherEvaluator(BaseAgent):
                 rf"art(?:icolo)?\.?\s*{art_num}[^(]*\(([^)]+)\)",
             ]
             for pattern in patterns:
-                match = re.search(pattern, full_text, re.IGNORECASE)
+                match = re.search(pattern, clean_text, re.IGNORECASE)
                 if match:
                     extracted = match.group(1).strip()
                     if len(extracted) >= 20:
@@ -439,40 +477,60 @@ class PolisherEvaluator(BaseAgent):
                     if full_text:
                         # Count how many articles are cited in this block
                         num_statutes = len(citations.get("statutes", []))
-                        self._log(f"      📋 Found norm block with {num_statutes} statute(s)")
-                        
+                        self._log(
+                            "      📋 Found norm block with {} statute(s)".format(
+                                num_statutes
+                            )
+                        )
+
                         if num_statutes == 1:
+                            specific_text = extract_article_specific_text(
+                                full_text, article_num
+                            )
+                            if specific_text:
+                                self._log(
+                                    "      ✅ Extracted testo from single-article block"
+                                )
+                                return specific_text
                             # Only this article, return full text
-                            self._log(f"      ✅ Single article block - using full text")
+                            self._log("      ✅ Single article block - using full text")
                             return full_text
                         else:
                             # Multiple articles, try to extract specific portion
-                            specific_text = extract_article_specific_text(full_text, article_num)
+                            specific_text = extract_article_specific_text(
+                                full_text, article_num
+                            )
                             if specific_text:
-                                self._log(f"      ✅ Extracted specific text for Art. {article_num}")
+                                self._log(
+                                    "      ✅ Extracted specific text for Art. {}".format(
+                                        article_num
+                                    )
+                                )
                                 return specific_text
                             # If can't extract specific, still return full text with warning
-                            self._log(f"      ⚠️ Multi-article block, returning full text")
+                            self._log(
+                                "      ⚠️ Multi-article block, returning full text"
+                            )
                             return full_text
 
         # Search in reasoning_chain steps - look for step that mentions ONLY this article
         for step in aspic_ir.get("reasoning_chain", []):
             citations = step.get("citations", {})
             statutes = citations.get("statutes", [])
-            
+
             # Check if this step cites the article
             if any(str(s.get("articolo", "")).strip() == article_num for s in statutes):
                 text = step.get("text", "").strip()
                 if text and len(text) >= 15:
                     # If only this article is cited, return full step text
                     if len(statutes) == 1:
-                        self._log(f"      ✅ Found in reasoning chain (single article)")
+                        self._log("      ✅ Found in reasoning chain (single article)")
                         return text
                     else:
                         # Try to extract specific portion
                         specific_text = extract_article_specific_text(text, article_num)
                         if specific_text:
-                            self._log(f"      ✅ Extracted from reasoning chain step")
+                            self._log("      ✅ Extracted from reasoning chain step")
                             return specific_text
 
         # Fallback: get title from sources
@@ -480,10 +538,12 @@ class PolisherEvaluator(BaseAgent):
             if str(statute.get("articolo", "")).strip() == article_num:
                 title = statute.get("title", "").strip()
                 if title:
-                    self._log(f"      📚 Using title from sources: {title[:50]}...")
+                    self._log(
+                        "      📚 Using title from sources: " + title[:50] + "..."
+                    )
                     return f"[Titolo] {title}"
 
-        self._log(f"      ❌ No text found in ASPIC IR for Art. {article_num}")
+        self._log("      ❌ No text found in ASPIC IR for Art. " + str(article_num))
         return ""
 
     def _compute_text_similarity(self, cited_text: str, db_text: str) -> float:
@@ -511,8 +571,8 @@ class PolisherEvaluator(BaseAgent):
             return 1.0
 
         # Extract meaningful words (>3 chars)
-        cited_words = set(w for w in re.findall(r'\b\w{4,}\b', cited_lower))
-        db_words = set(w for w in re.findall(r'\b\w{4,}\b', db_lower))
+        cited_words = set(w for w in re.findall(r"\b\w{4,}\b", cited_lower))
+        db_words = set(w for w in re.findall(r"\b\w{4,}\b", db_lower))
 
         if not cited_words:
             return 0.0
@@ -558,7 +618,9 @@ class PolisherEvaluator(BaseAgent):
 
         # Extract statute citations from the text
         statute_citations = self._extract_statute_citations(full_text)
-        self._log(f"📜 [{agent}] Found {len(statute_citations)} statute citations to verify")
+        self._log(
+            f"📜 [{agent}] Found {len(statute_citations)} statute citations to verify"
+        )
 
         # Track already verified articles to avoid duplicates
         verified_articles: set[str] = set()
@@ -591,8 +653,10 @@ class PolisherEvaluator(BaseAgent):
                 report.valid_citations += 1
                 self._log(f"   ✅ Art. {article_num} -> EXISTS in Neo4j")
 
-                # Extract cited text from ASPIC IR (preferred) or reasoning chain (fallback)
-                cited_text = self._extract_cited_text_for_article(full_text, article_num, aspic_ir)
+                # Extract cited text from the reasoning chain / raw response
+                cited_text = self._extract_cited_text_for_article(
+                    full_text, article_num, aspic_ir
+                )
 
                 if cited_text:
                     self._log(f"      📖 Cited text extracted: '{cited_text[:80]}...'")
@@ -605,24 +669,30 @@ class PolisherEvaluator(BaseAgent):
                     check.text_verified = True
                     check.text_match = text_match
                     check.text_similarity = similarity
-                    check.cited_text = cited_text[:200]  # Truncate for storage
-                    check.db_text_preview = db_text[:200]  # Preview of DB text
+                    check.cited_text = cited_text
+                    check.db_text_preview = db_text
 
                     if text_match:
                         report.text_matches += 1
                         check.details = f"Verified in Neo4j ({domain}), text match: {similarity:.0%}"
-                        self._log(f"      📝 Text similarity: {similarity:.0%} ✅ MATCH")
+                        self._log(
+                            f"      📝 Text similarity: {similarity:.0%} ✅ MATCH"
+                        )
                     else:
                         report.text_mismatches += 1
                         check.details = f"Verified in Neo4j ({domain}), text mismatch: {similarity:.0%}"
-                        self._log(f"      📝 Text similarity: {similarity:.0%} ⚠️ MISMATCH")
+                        self._log(
+                            f"      📝 Text similarity: {similarity:.0%} ⚠️ MISMATCH"
+                        )
                         report.issues.append(
                             f"Art. {article_num}: cited text differs from DB (similarity: {similarity:.0%})"
                         )
                 else:
-                    check.details = f"Verified in Neo4j ({domain}), no text cited for verification"
+                    check.details = (
+                        f"Verified in Neo4j ({domain}), no text cited for verification"
+                    )
                     if not cited_text:
-                        self._log(f"      📝 No cited text found for verification")
+                        self._log("      📝 No cited text found for verification")
             else:
                 report.invalid_citations += 1
                 check.details = f"Not found in Neo4j ({domain})"
@@ -660,7 +730,11 @@ class PolisherEvaluator(BaseAgent):
 
             # Determine code
             if code_part:
-                code = "c.c." if "c" in code_part.lower() and "p" not in code_part.lower() else "c.p."
+                code = (
+                    "c.c."
+                    if "c" in code_part.lower() and "p" not in code_part.lower()
+                    else "c.p."
+                )
             else:
                 code = ""
 

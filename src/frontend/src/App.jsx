@@ -175,6 +175,24 @@ export default function App() {
     }
   };
 
+  const aqaReport = pipelineResult?.evaluation?.aqa_report;
+  const aqaProScore = aqaReport?.net_plausibility?.pro ?? 0;
+  const aqaContraScore = aqaReport?.net_plausibility?.contra ?? 0;
+  const aqaFinalScore = aqaReport?.net_plausibility?.final ?? 0;
+  const aqaProLinks = aqaReport?.links?.pro ?? [];
+  const aqaContraLinks = aqaReport?.links?.contra ?? [];
+  const aqaVerdict = aqaReport?.verdict ?? 'uncertain';
+  const aqaVerdictLabel = aqaVerdict === 'plausible'
+    ? 'Plausibile'
+    : aqaVerdict === 'implausible'
+      ? 'Implausibile'
+      : 'Incerto';
+  const aqaVerdictClass = aqaVerdict === 'plausible'
+    ? 'aqa-verdict-positive'
+    : aqaVerdict === 'implausible'
+      ? 'aqa-verdict-negative'
+      : 'aqa-verdict-uncertain';
+
   return (
     <div className="chatbot-container">
       {/* Header */}
@@ -583,6 +601,194 @@ export default function App() {
                         <div className="subsection">
                           <h4>Riepilogo</h4>
                           <div className="raw-response">{pipelineResult.evaluation.summary}</div>
+                        </div>
+                      )}
+
+                      {/* AQA Report */}
+                      {aqaReport && (
+                        <div className="subsection aqa-section">
+                          <h4>AQA - Valutazione Argomentativa</h4>
+                          {aqaReport.enabled ? (
+                            <>
+                              <div className="aqa-stats">
+                                <span className={`aqa-badge ${aqaVerdictClass}`}>
+                                  Verdetto: {aqaVerdictLabel}
+                                </span>
+                                <span className="stat-item stat-valid">
+                                  Pro: {(aqaProScore * 100).toFixed(0)}%
+                                </span>
+                                <span className="stat-item stat-text">
+                                  Contro: {(aqaContraScore * 100).toFixed(0)}%
+                                </span>
+                                <span className="stat-item stat-repaired">
+                                  Finale: {(aqaFinalScore * 100).toFixed(0)}%
+                                </span>
+                              </div>
+                              <div className="aqa-meta">
+                                <span>Link pro: {aqaProLinks.length}</span>
+                                <span>Link contro: {aqaContraLinks.length}</span>
+                                {aqaReport.weights && (
+                                  <span>
+                                    Pesi: α {aqaReport.weights.alpha.toFixed(2)}, β {aqaReport.weights.beta.toFixed(2)}, γ {aqaReport.weights.gamma.toFixed(2)}
+                                  </span>
+                                )}
+                                {aqaReport.notes?.attacks_enabled === false && (
+                                  <span>Attacchi: disabilitati</span>
+                                )}
+                              </div>
+
+                              {aqaReport.notes?.weakest_links?.length > 0 && (
+                                <div className="aqa-notes">
+                                  <h5>Link più deboli</h5>
+                                  <ul className="aqa-list">
+                                    {aqaReport.notes.weakest_links.map((link, idx) => (
+                                      <li key={idx}>
+                                        {link.link_id || `Link ${idx + 1}`} - nesso {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {aqaReport.notes?.dominant_attacks?.length > 0 && (
+                                <div className="aqa-notes">
+                                  <h5>Attacchi dominanti</h5>
+                                  <ul className="aqa-list">
+                                    {aqaReport.notes.dominant_attacks.map((attack, idx) => (
+                                      <li key={idx}>
+                                        {attack.link_id || `Link ${idx + 1}`} - attacchi {(attack.attacks_sum ?? 0).toFixed(2)}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {aqaReport.notes?.precedent_swings?.length > 0 && (
+                                <div className="aqa-notes">
+                                  <h5>Impatto precedenti</h5>
+                                  <ul className="aqa-list">
+                                    {aqaReport.notes.precedent_swings.map((item, idx) => (
+                                      <li key={idx}>
+                                        {item.link_id || `Link ${idx + 1}`} - Δ {(item.delta ?? 0).toFixed(2)}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {(aqaProLinks.length > 0 || aqaContraLinks.length > 0) && (
+                                <div className="aqa-link-breakdown">
+                                  <h5>Dettaglio valutazioni per link</h5>
+                                  {aqaProLinks.length > 0 && (
+                                    <div className="aqa-link-group">
+                                      <h6>Reasoner (Pro)</h6>
+                                      <div className="aqa-link-list">
+                                        {aqaProLinks.map((link, idx) => (
+                                          <div key={idx} className="aqa-link-card">
+                                            <div className="aqa-link-header">
+                                              <strong>{link.link_id || `Pro ${idx + 1}`}</strong>
+                                              <span className="aqa-link-score">
+                                                Nesso {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                              </span>
+                                            </div>
+                                            <div className="aqa-link-metrics">
+                                              <span>Base {(link.base_score ?? 0).toFixed(2)}</span>
+                                              <span>Δ precedenti {(link.precedent_delta ?? 0).toFixed(2)}</span>
+                                              <span>Cogency {(link.cogency ?? 0).toFixed(2)}</span>
+                                              <span>Norm {((link.norm_support ?? 0)).toFixed(2)}</span>
+                                              <span>Sem {(link.semantics ?? 0).toFixed(2)}</span>
+                                            </div>
+                                            <details className="aqa-link-details">
+                                              <summary>Dettagli valutazione</summary>
+                                              <pre className="code-block">
+                                                {JSON.stringify({
+                                                  link_id: link.link_id,
+                                                  role: link.role,
+                                                  text: link.text,
+                                                  premise_text: link.premise_text,
+                                                  conclusion_text: link.conclusion_text,
+                                                  cogency: link.cogency,
+                                                  cogency_details: link.cogency_details,
+                                                  norm_support: link.norm_support,
+                                                  norm_support_details: link.norm_support_details,
+                                                  semantics: link.semantics,
+                                                  semantics_details: link.semantics_details,
+                                                  base_score: link.base_score,
+                                                  precedent_delta: link.precedent_delta,
+                                                  precedent_influences: link.precedent_influences,
+                                                  nesso_plausibility: link.nesso_plausibility,
+                                                  severity_category: link.severity_category,
+                                                  libro: link.libro,
+                                                }, null, 2)}
+                                              </pre>
+                                            </details>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {aqaContraLinks.length > 0 && (
+                                    <div className="aqa-link-group">
+                                      <h6>Counter-Reasoner (Contro)</h6>
+                                      <div className="aqa-link-list">
+                                        {aqaContraLinks.map((link, idx) => (
+                                          <div key={idx} className="aqa-link-card">
+                                            <div className="aqa-link-header">
+                                              <strong>{link.link_id || `Contro ${idx + 1}`}</strong>
+                                              <span className="aqa-link-score">
+                                                Nesso {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                              </span>
+                                            </div>
+                                            <div className="aqa-link-metrics">
+                                              <span>Base {(link.base_score ?? 0).toFixed(2)}</span>
+                                              <span>Δ precedenti {(link.precedent_delta ?? 0).toFixed(2)}</span>
+                                              <span>Cogency {(link.cogency ?? 0).toFixed(2)}</span>
+                                              <span>Norm {((link.norm_support ?? 0)).toFixed(2)}</span>
+                                              <span>Sem {(link.semantics ?? 0).toFixed(2)}</span>
+                                            </div>
+                                            <details className="aqa-link-details">
+                                              <summary>Dettagli valutazione</summary>
+                                              <pre className="code-block">
+                                                {JSON.stringify({
+                                                  link_id: link.link_id,
+                                                  role: link.role,
+                                                  text: link.text,
+                                                  premise_text: link.premise_text,
+                                                  conclusion_text: link.conclusion_text,
+                                                  cogency: link.cogency,
+                                                  cogency_details: link.cogency_details,
+                                                  norm_support: link.norm_support,
+                                                  norm_support_details: link.norm_support_details,
+                                                  semantics: link.semantics,
+                                                  semantics_details: link.semantics_details,
+                                                  base_score: link.base_score,
+                                                  precedent_delta: link.precedent_delta,
+                                                  precedent_influences: link.precedent_influences,
+                                                  nesso_plausibility: link.nesso_plausibility,
+                                                  severity_category: link.severity_category,
+                                                  libro: link.libro,
+                                                }, null, 2)}
+                                              </pre>
+                                            </details>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              <details className="ir-toggle">
+                                <summary>Dettagli AQA (JSON)</summary>
+                                <pre className="code-block">
+                                  {JSON.stringify(aqaReport, null, 2)}
+                                </pre>
+                              </details>
+                            </>
+                          ) : (
+                            <div className="aqa-disabled">AQA disabilitata</div>
+                          )}
                         </div>
                       )}
                     </div>

@@ -1938,13 +1938,23 @@ Rewrite the normative passage in Italian using only the official text, including
 
     def _run_aqa_phase(self, reasoner_ir: dict, counter_ir: dict, domain: str) -> dict:
         if not self._aqa_enabled:
+            self._log("🧪 AQA disabled - skipping scoring")
             return {"enabled": False}
+        self._log("🧪 Starting AQA scoring...")
+        self._log(f"🧠 AQA domain: {domain}")
         pro_links = self._collect_links(reasoner_ir, "support", domain)
         contra_links = self._collect_links(counter_ir, "counter", domain)
+        total_links = len(pro_links) + len(contra_links)
+        self._log(
+            f"🔗 AQA links collected: pro={len(pro_links)} contra={len(contra_links)}"
+        )
         self._populate_precedent_influences(reasoner_ir, pro_links)
         self._populate_precedent_influences(counter_ir, contra_links)
 
-        for link in pro_links + contra_links:
+        for idx, link in enumerate(pro_links + contra_links, start=1):
+            link_id = link.get("link_id") or f"L{idx}"
+            role = (link.get("role") or "link").upper()
+            self._log(f"   🔹 [{idx}/{total_links}] {role} link {link_id}")
             premise_text = link.get("premise_text", "")
             rule_text = link.get("text", "")
             conclusion_text = link.get("conclusion_text", "")
@@ -1975,6 +1985,29 @@ Rewrite the normative passage in Italian using only the official text, including
                 + self._aqa_gamma * semantics
             )
 
+            self._log(
+                "      🧠 Cogency "
+                f"{cogency:.2f} (coh {coherence:.2f}, read {readability:.2f}, "
+                f"qual {arg_quality:.2f})"
+            )
+            self._log(
+                "      📚 Norm support "
+                f"{norm_support:.2f} (cit {norm_details.get('citation_count', 0)}, "
+                f"cit_score {norm_details.get('citation_score', 0.0):.2f}, "
+                f"retrieved {norm_details.get('retrieved_score', 0.0):.2f})"
+            )
+            self._log(
+                "      🧩 Semantics "
+                f"{semantics:.2f} ({semantics_details.get('method', 'n/a')})"
+            )
+            self._log(f"      ➕ Base score {base:.2f}")
+            if link.get("libro") or link.get("severity_category"):
+                self._log(
+                    "      🗂️ Severity "
+                    f"{link.get('severity_category') or '-'} / libro "
+                    f"{link.get('libro') or '-'}"
+                )
+
             link["cogency"] = cogency
             link["norm_support"] = norm_support
             link["semantics"] = semantics
@@ -1984,17 +2017,23 @@ Rewrite the normative passage in Italian using only the official text, including
             link["base_score"] = base
             link["total_score"] = base
 
-        self._compute_cross_attacks(pro_links, contra_links)
+        self._log("⚔️ Cross-attacks disabled - independent link scoring")
 
-        for link in pro_links + contra_links:
+        for idx, link in enumerate(pro_links + contra_links, start=1):
+            link_id = link.get("link_id") or f"L{idx}"
+            role = (link.get("role") or "link").upper()
             delta, influences = self._compute_precedent_delta(link)
             link["precedent_delta"] = delta
             link["precedent_influences"] = influences
-            nesso = self._clamp01(
-                link.get("base_score", 0.0) - link.get("attacks_sum", 0.0)
-            )
-            nesso = self._clamp01(nesso + delta)
+            nesso = self._clamp01(link.get("base_score", 0.0) + delta)
             link["nesso_plausibility"] = nesso
+            self._log(
+                "   🔸 "
+                f"[{idx}/{total_links}] {role} link {link_id} "
+                f"precedent Δ {delta:.2f} nesso {nesso:.2f}"
+            )
+            if influences:
+                self._log(f"      📚 Precedent influences: {len(influences)}")
 
         def avg_score(items: list[dict]) -> float:
             if not items:
@@ -2005,6 +2044,12 @@ Rewrite the normative passage in Italian using only the official text, including
         contra_score = avg_score(contra_links)
         final_plausibility = pro_score - contra_score
 
+        self._log(
+            "📈 AQA scores "
+            f"pro={pro_score:.2f} contra={contra_score:.2f} "
+            f"final={final_plausibility:.2f}"
+        )
+
         if final_plausibility >= self._aqa_verdict_pos:
             verdict = "plausible"
         elif final_plausibility <= self._aqa_verdict_neg:
@@ -2012,20 +2057,21 @@ Rewrite the normative passage in Italian using only the official text, including
         else:
             verdict = "uncertain"
 
+        self._log(
+            "🧾 AQA verdict "
+            f"{verdict} (pos≥{self._aqa_verdict_pos:.2f}, "
+            f"neg≤{self._aqa_verdict_neg:.2f})"
+        )
+
         weakest = sorted(
             pro_links + contra_links,
             key=lambda x: x.get("nesso_plausibility", 0.0),
         )[:3]
-        dominant_attacks = []
-        for link in pro_links + contra_links:
-            if link.get("attacks_sum", 0.0) > 0.0:
-                dominant_attacks.append(
-                    {
-                        "link_id": link.get("link_id"),
-                        "attacks_sum": link.get("attacks_sum"),
-                        "top_attack": (link.get("attacks_received") or [{}])[0],
-                    }
-                )
+        if weakest:
+            weakest_ids = ", ".join(
+                str(item.get("link_id") or "link") for item in weakest
+            )
+            self._log(f"🔎 Weakest links: {weakest_ids}")
         precedent_swings = [
             {
                 "link_id": link.get("link_id"),
@@ -2034,6 +2080,9 @@ Rewrite the normative passage in Italian using only the official text, including
             for link in pro_links + contra_links
             if abs(link.get("precedent_delta", 0.0)) > 0.0
         ]
+        self._log("⚔️ Dominant attacks: disabled")
+        if precedent_swings:
+            self._log(f"📚 Precedent swings: {len(precedent_swings)}")
         severity_debug = [
             {
                 "link_id": link.get("link_id"),
@@ -2063,7 +2112,8 @@ Rewrite the normative passage in Italian using only the official text, including
             "verdict": verdict,
             "notes": {
                 "weakest_links": weakest,
-                "dominant_attacks": dominant_attacks[: self._aqa_attack_top_k],
+                "dominant_attacks": [],
+                "attacks_enabled": False,
                 "precedent_swings": precedent_swings,
                 "severity_debug": severity_debug,
             },

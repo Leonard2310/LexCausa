@@ -497,6 +497,140 @@
   flex-wrap: wrap;
 }
 
+/* AQA Styles */
+.aqa-section h4 {
+  margin-bottom: 0.5rem;
+}
+
+.aqa-stats {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.aqa-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.aqa-verdict-positive {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.aqa-verdict-negative {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.aqa-verdict-uncertain {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.aqa-meta {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+}
+
+.aqa-notes h5 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #374151;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.aqa-link-breakdown {
+  margin-top: 0.75rem;
+}
+
+.aqa-link-group {
+  margin-top: 0.75rem;
+  border-top: 1px dashed #e5e7eb;
+  padding-top: 0.75rem;
+}
+
+.aqa-link-group h6 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: #111827;
+}
+
+.aqa-link-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.aqa-link-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  background-color: #ffffff;
+}
+
+.aqa-link-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.aqa-link-score {
+  font-weight: 600;
+  color: #1f2937;
+  background-color: #f3f4f6;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+.aqa-link-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: #374151;
+  margin-bottom: 0.5rem;
+}
+
+.aqa-link-details summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.aqa-list {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin: 0;
+}
+
+.aqa-list li {
+  font-size: 0.8rem;
+  color: #374151;
+  padding: 0.125rem 0;
+  border-bottom: none;
+}
+
+.aqa-disabled {
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
 .stat-item {
   display: inline-flex;
   align-items: center;

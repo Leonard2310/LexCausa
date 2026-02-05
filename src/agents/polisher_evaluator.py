@@ -1454,6 +1454,54 @@ Rewrite the normative passage in Italian using only the official text, including
             return base
         return self._clamp01(0.7 * base + 0.3 * (sum(sims) / len(sims)))
 
+    def _build_chain_text(self, aspic_ir: dict) -> str:
+        """
+        Build the full text of a reasoning chain from ASPIC IR for norm support calculation.
+        
+        Extracts text from all arguments (premises, rules, conclusions) and reasoning chain steps.
+        
+        Args:
+            aspic_ir: ASPIC IR structure
+            
+        Returns:
+            Concatenated text of the entire chain.
+        """
+        if not aspic_ir:
+            return ""
+        
+        parts = []
+        
+        # Extract from arguments
+        for arg in aspic_ir.get("arguments", []):
+            # Premises
+            for premise in arg.get("premises", []):
+                if isinstance(premise, dict):
+                    parts.append(premise.get("text", ""))
+                elif isinstance(premise, str):
+                    parts.append(premise)
+            # Rule/norm
+            rule = arg.get("rule") or arg.get("norm") or {}
+            if isinstance(rule, dict):
+                parts.append(rule.get("text", ""))
+            elif isinstance(rule, str):
+                parts.append(rule)
+            # Conclusion
+            conclusion = arg.get("conclusion") or {}
+            if isinstance(conclusion, dict):
+                parts.append(conclusion.get("text", ""))
+            elif isinstance(conclusion, str):
+                parts.append(conclusion)
+        
+        # Extract from reasoning_chain steps
+        for step in aspic_ir.get("reasoning_chain", []):
+            if isinstance(step, dict):
+                parts.append(step.get("text", ""))
+            elif isinstance(step, str):
+                parts.append(step)
+        
+        # Filter empty and join
+        return " ".join(p for p in parts if p and isinstance(p, str))
+
     def _norm_support_score(
         self,
         text: str,
@@ -1581,23 +1629,49 @@ Rewrite the normative passage in Italian using only the official text, including
 
     def _collect_links(self, aspic_ir: dict, role: str, domain: str) -> list[dict]:
         links = []
-        for arg in aspic_ir.get("arguments", []):
-            rule = arg.get("rule") or {}
-            arg_id = arg.get("id") or ""
-            premise_ids = [p.get("id") for p in arg.get("premises", []) if p.get("id")]
-            conclusion_id = (arg.get("conclusion") or {}).get("id") or ""
-            rule_id = rule.get("id") or ""
-            link_text = self._normalize_text(
-                rule.get("text", "")
-            ) or self._normalize_text((arg.get("conclusion") or {}).get("text", ""))
-            premise_text = " ".join(
-                self._normalize_text(p.get("text", "")) for p in arg.get("premises", [])
+        reasoning_chain = aspic_ir.get("reasoning_chain", [])
+        
+        # Check if this is a repaired IR
+        repair_meta = aspic_ir.get("_repair_metadata", {})
+        if repair_meta:
+            self._log(
+                f"   🔧 [{role.upper()}] Using REPAIRED IR: "
+                f"{repair_meta.get('total_repaired', 0)} repaired, "
+                f"{repair_meta.get('total_dropped', 0)} dropped"
             )
-            conclusion_text = self._normalize_text(
-                (arg.get("conclusion") or {}).get("text", "")
-            )
-            citations_text = " ".join([premise_text, link_text, conclusion_text])
+        
+        # Filter reasoning_chain to exclude noise steps (e.g., "Precedents: none found.")
+        valid_chain_steps = [
+            step for step in reasoning_chain
+            if step.get("text") and not step.get("text", "").lower().startswith("precedent")
+        ]
+        
+        if len(valid_chain_steps) < 2:
+            self._log(f"   ⚠️ [{role.upper()}] Not enough chain steps to build links (found {len(valid_chain_steps)})")
+            return links
+        
+        self._log(
+            f"   📋 [{role.upper()}] Building {len(valid_chain_steps) - 1} links from reasoning_chain"
+        )
+        
+        for idx in range(len(valid_chain_steps) - 1):
+            step_from = valid_chain_steps[idx]
+            step_to = valid_chain_steps[idx + 1]
+            
+            step_from_id = step_from.get("id") or f"S{idx + 1}"
+            step_to_id = step_to.get("id") or f"S{idx + 2}"
+            link_id = f"{step_from_id}->{step_to_id}"
+            
+            premise_text = self._normalize_text(step_from.get("text", ""))
+            conclusion_text = self._normalize_text(step_to.get("text", ""))
+            # The "rule" or nesso is the logical connection between the two steps
+            # We use the premise text as it contains the normative basis
+            link_text = premise_text
+            
+            # Extract citations from both steps
+            citations_text = f"{premise_text} {conclusion_text}"
             statute_refs = self._extract_statute_refs_from_text(citations_text)
+            
             libri = set()
             severities = set()
             for ref in statute_refs:
@@ -1608,27 +1682,37 @@ Rewrite the normative passage in Italian using only the official text, including
                 severity = self._derive_severity_category(meta)
                 if severity:
                     severities.add(severity)
+            
             link_libro = list(libri)[0] if len(libri) == 1 else ""
             severity_category = list(severities)[0] if len(severities) == 1 else ""
-            retrieved_norms = arg.get("retrieved_norms") or arg.get(
-                "norm_support", {}
-            ).get("retrieved_norms")
-            links.append(
-                {
-                    "link_id": rule.get("id") or f"{arg.get('id', 'A')}.R0",
-                    "argument_id": arg_id,
-                    "premise_ids": premise_ids,
-                    "conclusion_id": conclusion_id,
-                    "rule_id": rule_id,
-                    "role": role,
-                    "text": link_text,
-                    "premise_text": premise_text,
-                    "conclusion_text": conclusion_text,
-                    "libro": link_libro,
-                    "severity_category": severity_category,
-                    "retrieved_norms": retrieved_norms,
-                }
+            
+            # Log the link
+            self._log(
+                f"      🔗 Link {idx + 1}: {link_id} | "
+                f"from={step_from_id} to={step_to_id} | norms={len(statute_refs)}"
             )
+            if statute_refs:
+                refs_str = ", ".join(f"Art. {r.get('articolo', '?')}" for r in statute_refs[:3])
+                self._log(f"         📜 Statutes: {refs_str}")
+            if link_libro or severity_category:
+                self._log(f"         🗂️ Libro: {link_libro or '-'} | Severity: {severity_category or '-'}")
+            
+            links.append({
+                "link_id": link_id,
+                "argument_id": f"chain_{idx + 1}",
+                "premise_ids": [step_from_id],
+                "conclusion_id": step_to_id,
+                "rule_id": "",
+                "role": role,
+                "text": link_text,
+                "premise_text": premise_text,
+                "conclusion_text": conclusion_text,
+                "libro": link_libro,
+                "severity_category": severity_category,
+                "retrieved_norms": None,
+            })
+        
+        self._log(f"   ✅ [{role.upper()}] Collected {len(links)} links from reasoning_chain")
         return links
 
     def _compute_cross_attacks(
@@ -1940,8 +2024,19 @@ Rewrite the normative passage in Italian using only the official text, including
         if not self._aqa_enabled:
             self._log("🧪 AQA disabled - skipping scoring")
             return {"enabled": False}
-        self._log("🧪 Starting AQA scoring...")
+        self._log("🧪 Starting AQA scoring on REPAIRED reasoning chains...")
         self._log(f"🧠 AQA domain: {domain}")
+        
+        # Check if we're using repaired IRs
+        reasoner_repaired = bool(reasoner_ir.get("_repair_metadata"))
+        counter_repaired = bool(counter_ir.get("_repair_metadata"))
+        if reasoner_repaired or counter_repaired:
+            self._log(
+                f"   ✅ Using repaired chains: Reasoner={reasoner_repaired}, Counter={counter_repaired}"
+            )
+        else:
+            self._log("   ℹ️ No repairs were needed - using original chains")
+        
         pro_links = self._collect_links(reasoner_ir, "support", domain)
         contra_links = self._collect_links(counter_ir, "counter", domain)
         total_links = len(pro_links) + len(contra_links)
@@ -1951,6 +2046,24 @@ Rewrite the normative passage in Italian using only the official text, including
         self._populate_precedent_influences(reasoner_ir, pro_links)
         self._populate_precedent_influences(counter_ir, contra_links)
 
+        # Calculate norm_support once per chain (not per link)
+        reasoner_chain_text = self._build_chain_text(reasoner_ir)
+        counter_chain_text = self._build_chain_text(counter_ir)
+        pro_norm_support, pro_norm_details = self._norm_support_score(
+            text=reasoner_chain_text,
+            retrieved_norms=None,
+        )
+        contra_norm_support, contra_norm_details = self._norm_support_score(
+            text=counter_chain_text,
+            retrieved_norms=None,
+        )
+        self._log(
+            f"📚 Chain-level norm support: pro={pro_norm_support:.2f} "
+            f"(cit={pro_norm_details.get('citation_count', 0)}), "
+            f"contra={contra_norm_support:.2f} "
+            f"(cit={contra_norm_details.get('citation_count', 0)})"
+        )
+
         for idx, link in enumerate(pro_links + contra_links, start=1):
             link_id = link.get("link_id") or f"L{idx}"
             role = (link.get("role") or "link").upper()
@@ -1958,49 +2071,52 @@ Rewrite the normative passage in Italian using only the official text, including
             premise_text = link.get("premise_text", "")
             rule_text = link.get("text", "")
             conclusion_text = link.get("conclusion_text", "")
+            
+            # Fallback: if premise_text is empty, use rule_text for semantics
+            semantics_premise = premise_text if premise_text else rule_text
+            if not premise_text and rule_text:
+                self._log(f"      ⚠️ premise_text empty, using rule_text for semantics")
 
-            norm_support, norm_details = self._norm_support_score(
-                text=f"{premise_text} {rule_text} {conclusion_text}",
-                retrieved_norms=link.get("retrieved_norms"),
-            )
             semantics, semantics_details = self._semantics_score(
-                premise_text, conclusion_text
+                semantics_premise, conclusion_text
             )
+            # Add fallback info to semantics_details
+            if not premise_text and rule_text:
+                semantics_details["used_fallback"] = True
+                semantics_details["fallback_source"] = "rule_text"
+            
             coherence = self._coherence_score(premise_text, conclusion_text, rule_text)
-            readability = self._readability_score(rule_text or conclusion_text)
             arg_quality = self._argument_quality_score(
                 premise_text, rule_text, conclusion_text
             )
-            cogency = self._clamp01((coherence + readability + arg_quality) / 3.0)
+            # Cogency: average of coherence and argument_quality (readability removed)
+            cogency = self._clamp01((coherence + arg_quality) / 2.0)
             cogency_details = {
                 "coherence_score": coherence,
-                "readability_score": readability,
                 "argument_quality_score": arg_quality,
-                "explanation": "coherence/readability/argument_quality averaged",
+                "explanation": "coherence/argument_quality averaged (readability removed)",
             }
 
-            base = (
-                self._aqa_alpha * cogency
-                + self._aqa_beta * norm_support
-                + self._aqa_gamma * semantics
-            )
+            # Link base_score uses only cogency and semantics (normSupport is chain-level)
+            # Normalize weights for 2 parameters: alpha/(alpha+gamma) and gamma/(alpha+gamma)
+            weight_sum = self._aqa_alpha + self._aqa_gamma
+            if weight_sum > 0:
+                base = (
+                    (self._aqa_alpha / weight_sum) * cogency
+                    + (self._aqa_gamma / weight_sum) * semantics
+                )
+            else:
+                base = (cogency + semantics) / 2.0
 
             self._log(
                 "      🧠 Cogency "
-                f"{cogency:.2f} (coh {coherence:.2f}, read {readability:.2f}, "
-                f"qual {arg_quality:.2f})"
-            )
-            self._log(
-                "      📚 Norm support "
-                f"{norm_support:.2f} (cit {norm_details.get('citation_count', 0)}, "
-                f"cit_score {norm_details.get('citation_score', 0.0):.2f}, "
-                f"retrieved {norm_details.get('retrieved_score', 0.0):.2f})"
+                f"{cogency:.2f} (coh {coherence:.2f}, qual {arg_quality:.2f})"
             )
             self._log(
                 "      🧩 Semantics "
                 f"{semantics:.2f} ({semantics_details.get('method', 'n/a')})"
             )
-            self._log(f"      ➕ Base score {base:.2f}")
+            self._log(f"      ➕ Link base score {base:.2f}")
             if link.get("libro") or link.get("severity_category"):
                 self._log(
                     "      🗂️ Severity "
@@ -2009,10 +2125,8 @@ Rewrite the normative passage in Italian using only the official text, including
                 )
 
             link["cogency"] = cogency
-            link["norm_support"] = norm_support
             link["semantics"] = semantics
             link["cogency_details"] = cogency_details
-            link["norm_support_details"] = norm_details
             link["semantics_details"] = semantics_details
             link["base_score"] = base
             link["total_score"] = base
@@ -2035,14 +2149,52 @@ Rewrite the normative passage in Italian using only the official text, including
             if influences:
                 self._log(f"      📚 Precedent influences: {len(influences)}")
 
-        def avg_score(items: list[dict]) -> float:
+        # Helper to compute average of a field across links
+        def avg_field(items: list[dict], field: str) -> float:
             if not items:
                 return 0.0
-            return sum(i.get("nesso_plausibility", 0.0) for i in items) / len(items)
+            return sum(i.get(field, 0.0) for i in items) / len(items)
 
-        pro_score = avg_score(pro_links)
-        contra_score = avg_score(contra_links)
+        # Calculate chain-level averages for cogency and semantics
+        pro_cogency_avg = avg_field(pro_links, "cogency")
+        pro_semantics_avg = avg_field(pro_links, "semantics")
+        contra_cogency_avg = avg_field(contra_links, "cogency")
+        contra_semantics_avg = avg_field(contra_links, "semantics")
+        
+        # base_score = α*cogency + β*normSupport + γ*semantics (at chain level)
+        pro_base_score = self._clamp01(
+            self._aqa_alpha * pro_cogency_avg
+            + self._aqa_beta * pro_norm_support
+            + self._aqa_gamma * pro_semantics_avg
+        )
+        contra_base_score = self._clamp01(
+            self._aqa_alpha * contra_cogency_avg
+            + self._aqa_beta * contra_norm_support
+            + self._aqa_gamma * contra_semantics_avg
+        )
+        
+        # Apply precedent delta at chain level (average of link deltas)
+        pro_precedent_delta = avg_field(pro_links, "precedent_delta")
+        contra_precedent_delta = avg_field(contra_links, "precedent_delta")
+        
+        pro_score = self._clamp01(pro_base_score + pro_precedent_delta)
+        contra_score = self._clamp01(contra_base_score + contra_precedent_delta)
         final_plausibility = pro_score - contra_score
+        
+        self._log(
+            f"📊 Chain averages: pro(cog={pro_cogency_avg:.2f}, sem={pro_semantics_avg:.2f}), "
+            f"contra(cog={contra_cogency_avg:.2f}, sem={contra_semantics_avg:.2f})"
+        )
+        self._log(
+            f"📚 base_score = α({self._aqa_alpha:.2f})*cogency + β({self._aqa_beta:.2f})*normSupport + γ({self._aqa_gamma:.2f})*semantics"
+        )
+        self._log(
+            f"📈 Base scores: pro={pro_base_score:.2f}, contra={contra_base_score:.2f}"
+        )
+        self._log(
+            f"⚖️ With precedent Δ: pro={pro_score:.2f} (+{pro_precedent_delta:.2f}), "
+            f"contra={contra_score:.2f} (+{contra_precedent_delta:.2f})"
+        )
 
         self._log(
             "📈 AQA scores "
@@ -2103,6 +2255,26 @@ Rewrite the normative passage in Italian using only the official text, including
             "links": {
                 "pro": pro_links,
                 "contra": contra_links,
+            },
+            "chain_scores": {
+                "pro": {
+                    "cogency_avg": pro_cogency_avg,
+                    "semantics_avg": pro_semantics_avg,
+                    "norm_support": pro_norm_support,
+                    "norm_support_details": pro_norm_details,
+                    "base_score": pro_base_score,
+                    "precedent_delta": pro_precedent_delta,
+                    "final_score": pro_score,
+                },
+                "contra": {
+                    "cogency_avg": contra_cogency_avg,
+                    "semantics_avg": contra_semantics_avg,
+                    "norm_support": contra_norm_support,
+                    "norm_support_details": contra_norm_details,
+                    "base_score": contra_base_score,
+                    "precedent_delta": contra_precedent_delta,
+                    "final_score": contra_score,
+                },
             },
             "net_plausibility": {
                 "pro": pro_score,

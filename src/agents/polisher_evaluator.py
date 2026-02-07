@@ -11,7 +11,6 @@ The Polisher-Evaluator is responsible for:
 This agent acts as a judge/evaluator of the argumentation.
 """
 
-import copy
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +27,7 @@ from transformers import pipeline
 from config import settings
 
 from .base import AgentConfig, BaseAgent
+from .aspic_formatter import AspicFormatter
 from .tools.neo4j_tools import get_driver
 
 
@@ -68,6 +68,7 @@ class CitationCheck:
     mismatch_action: str = "none"  # MismatchAction value
     is_core: bool = False  # True if article is core to the argument
     llm_mismatch_confirmed: bool = False  # True if LLM confirmed logical mismatch
+    llm_validated: bool = False  # True if initial similarity mismatch was rescued by LLM equivalence check
     repaired_text: str = ""  # Repaired text using DB constraint
     repair_success: bool = False  # True if repair was successful
 
@@ -85,6 +86,7 @@ class CitationCheck:
             "mismatch_action": self.mismatch_action,
             "is_core": self.is_core,
             "llm_mismatch_confirmed": self.llm_mismatch_confirmed,
+            "llm_validated": self.llm_validated,
             "repaired_text": self.repaired_text,
             "repair_success": self.repair_success,
         }
@@ -329,14 +331,26 @@ class PolisherEvaluator(BaseAgent):
         else:
             repaired_counter_chain = counter_raw  # No changes needed
 
-        # Repair ASPIC IR structures
+        # Repair ASPIC IR structures by rebuilding from repaired chain
         repaired_reasoner_aspic = self._repair_aspic_ir(
             aspic_ir=reasoner_aspic_ir,
             citation_checks=reasoner_report.citation_checks,
+            repaired_chain_text=repaired_reasoner_chain,
+            claim=claim,
+            role="support",
+            statutes=reasoner_output.get("relevant_statutes", []),
+            precedents=reasoner_output.get("relevant_precedents", []),
+            metadata=reasoner_aspic_ir.get("metadata", {}),
         )
         repaired_counter_aspic = self._repair_aspic_ir(
             aspic_ir=counter_aspic_ir,
             citation_checks=counter_report.citation_checks,
+            repaired_chain_text=repaired_counter_chain,
+            claim=claim,
+            role="counter",
+            statutes=counter_reasoner_output.get("relevant_statutes", []),
+            precedents=counter_reasoner_output.get("relevant_precedents", []),
+            metadata=counter_aspic_ir.get("metadata", {}),
         )
 
         # Build dialectical tree (with repaired IRs)
@@ -355,9 +369,35 @@ class PolisherEvaluator(BaseAgent):
         # Generate summary
         summary = self._generate_consistency_summary(reasoner_report, counter_report)
 
+        # ------------------------------------------------------------------
+        # AQA Phase: ALWAYS use repaired ASPIC IR when available
+        # ------------------------------------------------------------------
+        # Determine which IR to use: prefer repaired, fallback to original
+        aqa_reasoner_ir = repaired_reasoner_aspic if repaired_reasoner_aspic else (reasoner_aspic_ir or {})
+        aqa_counter_ir = repaired_counter_aspic if repaired_counter_aspic else (counter_aspic_ir or {})
+
+        # Log which IR version is being used
+        if repaired_reasoner_aspic:
+            r_meta = repaired_reasoner_aspic.get("_repair_metadata", {})
+            self._log(
+                f"🔧 AQA using REPAIRED Reasoner IR "
+                f"(repaired={r_meta.get('total_repaired', 0)}, dropped={r_meta.get('total_dropped', 0)})"
+            )
+        else:
+            self._log("📋 AQA using ORIGINAL Reasoner IR (no repairs needed)")
+
+        if repaired_counter_aspic:
+            c_meta = repaired_counter_aspic.get("_repair_metadata", {})
+            self._log(
+                f"🔧 AQA using REPAIRED Counter IR "
+                f"(repaired={c_meta.get('total_repaired', 0)}, dropped={c_meta.get('total_dropped', 0)})"
+            )
+        else:
+            self._log("📋 AQA using ORIGINAL Counter IR (no repairs needed)")
+
         aqa_report = self._run_aqa_phase(
-            reasoner_ir=repaired_reasoner_aspic or reasoner_ir or {},
-            counter_ir=repaired_counter_aspic or counter_ir or {},
+            reasoner_ir=aqa_reasoner_ir,
+            counter_ir=aqa_counter_ir,
             domain=domain,
         )
 
@@ -782,6 +822,84 @@ Are the two texts EQUIVALENTI or DIVERSI? (Answer in Italian)"""
             # In case of error, assume mismatch to be conservative
             return True
 
+    def _check_pertinence_with_llm(
+        self,
+        article_num: str,
+        cited_text: str,
+        full_text: str,
+    ) -> bool:
+        """
+        Use LLM to check if a peripheral norm is still logically pertinent
+        to the reasoning chain, even if not core.
+
+        A norm is PERTINENT if it contributes meaningfully to the legal
+        reasoning — e.g., it provides context, reinforces a conclusion,
+        or integrates the normative framework. It should be kept and repaired.
+
+        A norm is NOT PERTINENT if it is tangential, redundant, or does not
+        add value to the argument. It can safely be dropped.
+
+        Args:
+            article_num: Article number
+            cited_text: Text cited in the reasoning chain for this article
+            full_text: Full reasoning chain text
+
+        Returns:
+            True if the norm is pertinent (should be repaired),
+            False if not pertinent (can be dropped).
+        """
+        try:
+            llm = ChatGroq(
+                model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0
+            )
+
+            system_prompt = """You are an expert in Italian law. Your task is to assess whether a legal norm cited in a reasoning chain is PERTINENT or NOT_PERTINENT to the argumentative logic.
+
+A norm is PERTINENT if:
+- It contributes meaningfully to the legal reasoning (e.g., establishes liability, defines scope, sets conditions)
+- It reinforces or integrates the legal conclusion
+- It provides necessary normative context for the argument's thesis
+- It completes the regulatory framework by filling a logical gap
+- It is causally or logically connected to other steps in the chain
+
+A norm is NOT_PERTINENT if:
+- It is tangential to the main line of reasoning
+- It is redundant with respect to other norms already cited that cover the same concept
+- It adds no argumentative value to the reasoning chain
+- It has no logical or causal link to the conclusion
+
+Respond ONLY with one of these words: PERTINENT or NOT_PERTINENT"""
+
+            user_prompt = f"""COMPLETE REASONING CHAIN:
+\"\"\"
+{full_text[:3000]}
+\"\"\"
+
+NORM TO EVALUATE: Art. {article_num}
+CITED TEXT: "{cited_text}"
+
+Is this norm PERTINENT or NOT_PERTINENT to the argumentative logic of the reasoning chain?"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+
+            response = llm.invoke(messages)
+            answer = response.content.strip().upper()
+
+            is_pertinent = "NOT_PERTINENT" not in answer and "NOT PERTINENT" not in answer
+            self._log(
+                f"      🤖 LLM pertinence check Art. {article_num}: "
+                f"{'PERTINENTE ✅' if is_pertinent else 'NON PERTINENTE 🗑️'}"
+            )
+            return is_pertinent
+
+        except Exception as e:
+            self._log(f"      ⚠️ LLM pertinence check failed: {e}", "warning")
+            # In case of error, assume pertinent to be conservative (repair > drop)
+            return True
+
     def _is_article_core(
         self,
         article_num: str,
@@ -958,7 +1076,10 @@ Rewrite the normative passage in Italian using only the official text, including
         1. Verify mismatch with LLM
         2. If confirmed, classify as core/peripheral
         3. If core: attempt repair with DB constraint
-        4. If peripheral or repair fails: drop the citation
+        4. If peripheral: check pertinence with LLM
+           4a. If pertinent: attempt repair (keep useful norms)
+           4b. If not pertinent: drop the citation
+        5. If repair fails (core or peripheral): drop the citation
 
         Args:
             check: CitationCheck object to update
@@ -980,6 +1101,7 @@ Rewrite the normative passage in Italian using only the official text, including
             self._log("      ✅ LLM says texts are equivalent - treating as match")
             check.mismatch_action = MismatchAction.MATCH.value
             check.text_match = True
+            check.llm_validated = True  # Mark as LLM-rescued
             report.text_matches += 1
             report.text_mismatches -= 1  # Correct the earlier increment
             return
@@ -1014,11 +1136,48 @@ Rewrite the normative passage in Italian using only the official text, including
                     f"      ❌ Art. {article_num} repair FAILED - marked as unreliable"
                 )
         else:
-            # Peripheral: just drop it
-            check.mismatch_action = MismatchAction.DROPPED.value
-            check.details += " [DROPPED - peripheral citation]"
-            report.dropped_citations += 1
-            self._log(f"      🗑️ Art. {article_num} DROPPED (peripheral)")
+            # Peripheral: check if it's still pertinent to the reasoning
+            self._log(f"      🔍 Art. {article_num} is PERIPHERAL - checking pertinence...")
+            is_pertinent = self._check_pertinence_with_llm(
+                article_num, cited_text, full_text
+            )
+
+            if is_pertinent:
+                # Pertinent peripheral norm → attempt repair (keep it)
+                self._log(f"      🔄 Art. {article_num} is PERTINENT - attempting repair...")
+                success, repaired_text = self._repair_with_db_constraint(
+                    article_num, db_text, cited_text
+                )
+
+                if success:
+                    check.mismatch_action = MismatchAction.REPAIRED.value
+                    check.repaired_text = repaired_text
+                    check.repair_success = True
+                    check.details += " [REPAIRED - pertinent peripheral citation]"
+                    report.repaired_citations += 1
+                    self._log(
+                        f"      ✅ Art. {article_num} REPAIRED (pertinent peripheral)"
+                    )
+                else:
+                    # Repair failed even for pertinent norm → drop
+                    check.mismatch_action = MismatchAction.REPAIR_FAILED.value
+                    check.repair_success = False
+                    check.details += " [REPAIR FAILED - pertinent peripheral, repair unsuccessful]"
+                    report.dropped_citations += 1
+                    report.issues.append(
+                        f"Art. {article_num}: pertinent peripheral citation repair failed"
+                    )
+                    self._log(
+                        f"      ❌ Art. {article_num} repair FAILED (pertinent peripheral)"
+                    )
+            else:
+                # Not pertinent → safe to drop
+                check.mismatch_action = MismatchAction.DROPPED.value
+                check.details += " [DROPPED - non-pertinent peripheral citation]"
+                report.dropped_citations += 1
+                self._log(
+                    f"      🗑️ Art. {article_num} DROPPED (non-pertinent peripheral)"
+                )
 
     # ------------------------------------------------------------------
     # Consistency Checking
@@ -1136,12 +1295,34 @@ Rewrite the normative passage in Italian using only the official text, including
                             full_text=full_text,
                             report=report,
                         )
+                elif not cited_text and db_text:
+                    # Article exists in DB but no text was cited in the response.
+                    # Treat as mismatch → repair by injecting DB text.
+                    self._log(
+                        f"      ⚠️ Art. {article_num}: no text cited but DB text available → forcing repair"
+                    )
+                    check.text_verified = True
+                    check.text_match = False
+                    check.text_similarity = 0.0
+                    check.cited_text = ""
+                    check.db_text_preview = db_text
+                    check.is_core = True  # no text at all → treat as core (must be repaired)
+                    check.mismatch_action = MismatchAction.REPAIRED.value
+                    check.repaired_text = db_text
+                    check.repair_success = True
+                    check.details = (
+                        f"Verified in Neo4j ({domain}), no text cited → repaired with DB text"
+                    )
+                    report.text_mismatches += 1
+                    report.repaired_citations += 1
+                    report.issues.append(
+                        f"Art. {article_num}: no text cited in response, repaired with DB text"
+                    )
                 else:
                     check.details = (
-                        f"Verified in Neo4j ({domain}), no text cited for verification"
+                        f"Verified in Neo4j ({domain}), no text available for verification"
                     )
-                    if not cited_text:
-                        self._log("      📝 No cited text found for verification")
+                    self._log("      📝 No cited text and no DB text for verification")
             else:
                 report.invalid_citations += 1
                 check.details = f"Not found in Neo4j ({domain})"
@@ -2469,142 +2650,173 @@ Rewrite the reasoning chain in Italian, integrating the corrections and handling
         self,
         aspic_ir: dict,
         citation_checks: list[CitationCheck],
+        repaired_chain_text: str = "",
+        claim: str = "",
+        role: str = "support",
+        statutes: list[dict] | None = None,
+        precedents: list[dict] | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         """
-        Repair the ASPIC IR structure based on citation checks.
+        Rebuild the ASPIC IR from the repaired reasoning chain.
 
-        Updates premises and conclusions with repaired texts, and marks
-        dropped citations as inactive.
+        Instead of patching the original IR, this method re-parses the repaired
+        chain text and rebuilds the IR from scratch using AspicFormatter,
+        exactly like Reasoner/Counter-Reasoner do for their original chains.
 
         Args:
-            aspic_ir: Original ASPIC IR structure
+            aspic_ir: Original ASPIC IR structure (used only for fallback/metadata)
             citation_checks: List of CitationCheck objects with mismatch actions
+            repaired_chain_text: The LLM-regenerated reasoning chain text
+            claim: The original legal claim
+            role: "support" or "counter"
+            statutes: Relevant statutes for the formatter
+            precedents: Relevant precedents for the formatter
+            metadata: Additional metadata (causal_type_id, theory_id, etc.)
 
         Returns:
-            Updated ASPIC IR structure (deep copy with modifications).
+            Rebuilt ASPIC IR structure from the repaired chain, or empty dict
+            if no repairs were needed.
         """
         if not aspic_ir:
             return {}
 
-        # Deep copy to avoid modifying original
-        repaired_ir = copy.deepcopy(aspic_ir)
+        # Count repairs and drops
+        total_repaired = sum(
+            1
+            for c in citation_checks
+            if c.mismatch_action == MismatchAction.REPAIRED.value
+        )
+        total_dropped = sum(
+            1
+            for c in citation_checks
+            if c.mismatch_action
+            in (MismatchAction.DROPPED.value, MismatchAction.REPAIR_FAILED.value)
+        )
 
-        # Build lookup for citation checks by article number
-        checks_by_article: dict[str, CitationCheck] = {}
-        for check in citation_checks:
-            # Extract article number from citation
-            match = re.search(r"(\d{1,4})", check.citation)
-            if match:
-                article_num = match.group(1)
-                checks_by_article[article_num] = check
+        # If no changes were needed, return empty (signals "use original")
+        if total_repaired == 0 and total_dropped == 0:
+            return {}
 
-        if not checks_by_article:
-            return repaired_ir
+        # If no repaired text available, fall back to original
+        if not repaired_chain_text:
+            self._log(f"   ⚠️ [{role}] No repaired chain text available, skipping IR rebuild")
+            return {}
 
-        # Helper to check if citations dict contains an article
-        def find_article_in_citations(citations: dict, art_num: str) -> bool:
-            for statute in citations.get("statutes", []):
-                if str(statute.get("articolo", "")).strip() == art_num:
-                    return True
-            return False
+        self._log(
+            f"   🔄 [{role.upper()}] Rebuilding ASPIC IR from repaired chain "
+            f"(repaired={total_repaired}, dropped={total_dropped})"
+        )
 
-        # Process arguments
-        for arg in repaired_ir.get("arguments", []):
-            # Process premises
-            new_premises = []
-            for premise in arg.get("premises", []):
-                citations = premise.get("citations", {})
+        # Parse the repaired chain text the same way agents do
+        reasoning_chain = self._extract_reasoning_chain(repaired_chain_text)
+        reasoning_chain = self._sanitize_reasoning_chain(
+            reasoning_chain, precedents or []
+        )
+        arguments = self._extract_arguments_from_text(repaired_chain_text)
 
-                # Check each article in this premise
-                should_drop = False
-                for art_num, check in checks_by_article.items():
-                    if find_article_in_citations(citations, art_num):
-                        if check.mismatch_action == MismatchAction.REPAIRED.value:
-                            # Update text with repaired version
-                            premise["text"] = check.repaired_text
-                            premise["_repaired"] = True
-                            premise["_original_text"] = check.cited_text
-                            self._log(
-                                f"      📝 ASPIC IR: Repaired Art. {art_num} in premise"
-                            )
-                        elif check.mismatch_action in (
-                            MismatchAction.DROPPED.value,
-                            MismatchAction.REPAIR_FAILED.value,
-                        ):
-                            # Mark as dropped
-                            premise["_dropped"] = True
-                            premise["_drop_reason"] = check.mismatch_action
-                            should_drop = True
-                            self._log(
-                                f"      🗑️ ASPIC IR: Marked Art. {art_num} premise as dropped"
-                            )
-
-                # Keep premise unless it's type="norm" and dropped
-                if not (should_drop and premise.get("type") == "norm"):
-                    new_premises.append(premise)
-                else:
-                    # Add a marker that this premise was removed
-                    removed_marker = {
-                        "type": "removed",
-                        "original_type": premise.get("type"),
-                        "reason": "dropped citation",
-                        "citation": str(citations.get("statutes", [])),
-                    }
-                    new_premises.append(removed_marker)
-
-            arg["premises"] = new_premises
-
-            # Process conclusion
-            conclusion = arg.get("conclusion", {})
-            if conclusion:
-                conclusion_citations = conclusion.get("citations", {})
-                for art_num, check in checks_by_article.items():
-                    if find_article_in_citations(conclusion_citations, art_num):
-                        if check.mismatch_action == MismatchAction.REPAIRED.value:
-                            conclusion["text"] = check.repaired_text
-                            conclusion["_repaired"] = True
-                            self._log(
-                                f"      📝 ASPIC IR: Repaired Art. {art_num} in conclusion"
-                            )
-                        elif check.mismatch_action in (
-                            MismatchAction.DROPPED.value,
-                            MismatchAction.REPAIR_FAILED.value,
-                        ):
-                            conclusion["_has_dropped_citation"] = True
-                            self._log(
-                                f"      ⚠️ ASPIC IR: Conclusion has dropped citation Art. {art_num}"
-                            )
-
-        # Process reasoning_chain steps
-        for step in repaired_ir.get("reasoning_chain", []):
-            step_citations = step.get("citations", {})
-            for art_num, check in checks_by_article.items():
-                if find_article_in_citations(step_citations, art_num):
-                    if check.mismatch_action == MismatchAction.REPAIRED.value:
-                        step["text"] = check.repaired_text
-                        step["_repaired"] = True
-                    elif check.mismatch_action in (
-                        MismatchAction.DROPPED.value,
-                        MismatchAction.REPAIR_FAILED.value,
-                    ):
-                        step["_dropped"] = True
+        # Build new IR using AspicFormatter (same as Reasoner/Counter-Reasoner)
+        formatter = AspicFormatter(
+            role=role,
+            statutes=statutes or [],
+            precedents=precedents or [],
+        )
+        rebuilt_ir = formatter.format(
+            claim=claim or aspic_ir.get("claim", ""),
+            raw_response=repaired_chain_text,
+            reasoning_chain=reasoning_chain,
+            arguments=arguments,
+            metadata=metadata or aspic_ir.get("metadata", {}),
+        )
 
         # Add repair metadata
-        repaired_ir["_repair_metadata"] = {
-            "total_repaired": sum(
-                1
-                for c in citation_checks
-                if c.mismatch_action == MismatchAction.REPAIRED.value
-            ),
-            "total_dropped": sum(
-                1
-                for c in citation_checks
-                if c.mismatch_action
-                in (MismatchAction.DROPPED.value, MismatchAction.REPAIR_FAILED.value)
-            ),
+        rebuilt_ir["_repair_metadata"] = {
+            "total_repaired": total_repaired,
+            "total_dropped": total_dropped,
         }
 
-        return repaired_ir
+        self._log(
+            f"   ✅ [{role.upper()}] ASPIC IR rebuilt: "
+            f"{len(rebuilt_ir.get('arguments', []))} arguments, "
+            f"{len(rebuilt_ir.get('reasoning_chain', []))} chain steps"
+        )
+
+        return rebuilt_ir
+
+    def _extract_arguments_from_text(self, response: str) -> list[dict]:
+        """
+        Extract argument blocks from raw response text.
+
+        Reuses the same logic as Reasoner._extract_arguments and
+        CounterReasoner._extract_arguments to parse structured blocks.
+        """
+        arguments = []
+        current_arg = {}
+        current_section = None
+
+        section_markers = {
+            "premessa": "premise",
+            "premessa alternativa": "premise",
+            "norma": "norm",
+            "nesso causale": "link",
+            "nesso causale alternativo": "link",
+            "causal link": "link",
+            "conclusione": "conclusion",
+            "conclusione contraria": "conclusion",
+        }
+
+        for line in response.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Remove markdown bold markers
+            clean = line.replace("**", "").strip()
+            lower_clean = clean.lower()
+
+            # Check for section headers
+            matched_section = None
+            for marker, section_key in section_markers.items():
+                if lower_clean.startswith(marker):
+                    matched_section = section_key
+                    # Extract content after the marker
+                    content = clean[len(marker):].lstrip(" :.-").strip()
+                    break
+
+            if matched_section:
+                if matched_section == "premise" and current_arg.get("conclusion"):
+                    # New argument block
+                    if current_arg:
+                        arguments.append(current_arg)
+                    current_arg = {}
+
+                current_section = matched_section
+                if content:
+                    current_arg[current_section] = content
+                continue
+
+            # Check for chain/reasoning section → stop parsing arguments
+            if any(
+                kw in lower_clean
+                for kw in [
+                    "ragionamento",
+                    "chain of reasoning",
+                    "catena di ragionamento",
+                ]
+            ):
+                break
+
+            # Continuation of current section
+            if current_section and line:
+                existing = current_arg.get(current_section, "")
+                current_arg[current_section] = (
+                    (existing + " " + line).strip() if existing else line
+                )
+
+        if current_arg:
+            arguments.append(current_arg)
+
+        return arguments
 
     def compute_grounded_extension(
         self,

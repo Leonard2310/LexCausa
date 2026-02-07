@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # LLM Configuration
     # =========================================================================
     llm_temperature: float = Field(default=0.3, alias="LLM_TEMPERATURE")
-    llm_max_tokens: int = Field(default=4096, alias="LLM_MAX_TOKENS")
+    llm_max_tokens: int = Field(default=8192, alias="LLM_MAX_TOKENS")
 
     # =========================================================================
     # Embedding Model Configuration
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     # Search & Retrieval Defaults
     # =========================================================================
     search_top_k_default: int = Field(
-        default=20,
+        default=100,
         alias="SEARCH_TOP_K_DEFAULT",
         description="Default number of statute results to return when not specified.",
     )
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
         description="How many top classified libri to query during statute search.",
     )
     precedents_limit_default: int = Field(
-        default=10,
+        default=5,
         alias="PRECEDENTS_LIMIT_DEFAULT",
         description="Default number of precedents to retrieve when not specified.",
     )

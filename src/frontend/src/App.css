@@ -708,6 +708,12 @@
   color: #92400e;
 }
 
+.badge-llm-validated {
+  background-color: #dbeafe;
+  color: #1e40af;
+  border: 1px solid #93c5fd;
+}
+
 /* Text Comparison */
 .text-comparison {
   margin-top: 0.5rem;

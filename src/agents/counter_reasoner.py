@@ -72,7 +72,9 @@ class CounterReasonerOutput:
 
 
 # System prompt for the Counter-Reasoner (with pre-retrieved context)
-COUNTER_REASONER_SYSTEM_PROMPT = """You are the Counter-Reasoner. Dismantle the claim independently.
+COUNTER_REASONER_SYSTEM_PROMPT = """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
+
+You are the Counter-Reasoner. Dismantle the claim independently.
 You receive:
 - causal_type_id and theory_id fixed by the Router (do not re-classify)
 - selected_attack_id chosen from the config attack pool
@@ -82,15 +84,15 @@ Critical rules:
 - Use ONLY the sources in the KNOWLEDGE BASE; do not invent statutes or precedents.
 - Do not reference the Reasoner or its reasoning; produce a standalone counter-argument.
 - If a helpful statute is missing from the knowledge base, omit the citation instead of inventing it.
-- Always cite the statute number/code when available (e.g., “Art. 41 c.p.”).
+- Always cite the statute number/code when available (e.g., "Art. 41 c.p.").
 
-Expected structure:
-- Alternative Premise
-- Statute (only if present in ALLOWED STATUTES)
-- Alternative Causal Link
-- Contrary Conclusion
+Expected structure (use these EXACT Italian headers):
+- **Premessa Alternativa**
+- **Norma** (only if present in ALLOWED STATUTES)
+- **Nesso Causale Alternativo**
+- **Conclusione Contraria**
 - Numbered counter-reasoning chain.
-Respond in Italian."""
+MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
 
 
 ATTACK_DESCRIPTIONS: Dict[str, str] = {
@@ -436,7 +438,56 @@ Select the most useful attack among the following ids and return ONLY the chosen
             result = self.react_agent.invoke({"messages": messages})
             messages_out = result.get("messages", [])
         except Exception as e:
-            # Graceful fallback to avoid breaking the pipeline when tool calls fail
+            # Handle Groq tool_use_failed: extract valid response from failed_generation
+            recovered = self._extract_failed_generation(e)
+            if recovered:
+                self._log(
+                    "⚠️ Tool call failed but valid response recovered from failed_generation",
+                    "warning",
+                )
+                messages_out = []
+                # Skip normal message extraction, use recovered text directly
+                output = CounterReasonerOutput(
+                    claim=claim,
+                    causal_type_id=routing_decision.causal_type_id,
+                    theory_id=routing_decision.theory_id,
+                    selected_attack_id=attack_selection.attack_id,
+                    reasoner_causality={
+                        "causal_type_id": routing_decision.causal_type_id,
+                        "theory_id": routing_decision.theory_id,
+                    },
+                    relevant_statutes=deduped_statutes,
+                    relevant_precedents=pre_retrieved_precedents,
+                    raw_response=recovered,
+                )
+                output.reasoning_chain = self._extract_reasoning_chain(recovered)
+                output.counter_arguments = self._extract_arguments(recovered)
+                output.reasoning_chain = self._sanitize_reasoning_chain(
+                    output.reasoning_chain, pre_retrieved_precedents
+                )
+                formatter = AspicFormatter(
+                    role="counter",
+                    statutes=deduped_statutes,
+                    precedents=pre_retrieved_precedents,
+                )
+                output.aspic_ir = formatter.format(
+                    claim=claim,
+                    raw_response=recovered,
+                    reasoning_chain=output.reasoning_chain,
+                    arguments=output.counter_arguments,
+                    metadata={
+                        "selected_attack_id": attack_selection.attack_id,
+                        "causal_type_id": routing_decision.causal_type_id,
+                        "theory_id": routing_decision.theory_id,
+                    },
+                )
+                self._log(
+                    f"✅ Generated {len(output.counter_arguments)} counter-arguments (recovered)",
+                    "success",
+                )
+                return output
+
+            # Graceful fallback for other errors
             error_msg = f"Errore durante l'esecuzione del Counter-Reasoner: {e}"
             self._log(error_msg, "error")
             return CounterReasonerOutput(
@@ -519,6 +570,36 @@ Select the most useful attack among the following ids and return ONLY the chosen
         )
         return output
 
+    def _extract_failed_generation(self, exc: Exception) -> str:
+        """Extract the valid response from a Groq tool_use_failed error."""
+        error_str = str(exc)
+        if "tool_use_failed" not in error_str:
+            return ""
+        # Try to extract from exception body (groq.BadRequestError)
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error_data = body.get("error", {})
+            failed = error_data.get("failed_generation", "")
+            if failed and len(failed) > 50:
+                return failed
+        # Fallback: parse from string representation
+        marker = "'failed_generation': \""
+        idx = error_str.find(marker)
+        if idx == -1:
+            marker = "'failed_generation': '"
+            idx = error_str.find(marker)
+        if idx != -1:
+            start = idx + len(marker)
+            end = error_str.find('"}}', start)
+            if end == -1:
+                end = error_str.find("'}", start)
+            if end != -1:
+                text = error_str[start:end]
+                text = text.replace("\\n", "\n")
+                if len(text) > 50:
+                    return text
+        return ""
+
     def _build_counter_reasoning_prompt_with_context(
         self,
         claim: str,
@@ -573,13 +654,28 @@ INSTRUCTIONS:
 1) Use selected_attack_id as the main lens to attack the causal link.
 2) Build one or more counter-arguments with EXACTLY this structure and these Italian headers:
    **Premessa Alternativa**: (incompatible with the claim)
-   **Norma**: (only if present in ALLOWED STATUTES; otherwise omit this section)
+   **Norma**: (cite MULTIPLE relevant statutes from ALLOWED STATUTES, not just one;
+              if none apply, omit this section)
    **Nesso Causale Alternativo**:
    **Conclusione Contraria**:
 3) End with a numbered counter-reasoning chain, without mentioning the Reasoner.
+   Each step of the chain MUST reference the specific article(s) it relies on.
 
-CRITICAL: Respond ENTIRELY in Italian, including ALL section headers exactly as shown above (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria).
-Do not invent sources, do not mention the Reasoner."""
+IMPORTANT - NORM USAGE REQUIREMENTS:
+- You have {len(allowed_statutes)} statutes available. Cite EVERY article you deem pertinent
+  to dismantling the claim — do not artificially limit yourself to a fixed number.
+- Do NOT rely on a single norm for the entire counter-argument.
+- For each factual aspect you attack (e.g., causation, foreseeability, duty, mitigation),
+  identify the most specific applicable statute from the ALLOWED STATUTES list.
+- Quote the relevant text from each statute when available in the KNOWLEDGE BASE.
+- Anchor norms provide the framework, but integrate additional non-anchor statutes
+  from the knowledge base that strengthen your counter-argument on the specific facts.
+- COHERENCE RULE: Every norm you cite in the **Norma** section MUST appear in at least one
+  step of the numbered counter-reasoning chain, with an explanation of its specific role.
+  Do NOT list norms in **Norma** that you never use in the chain.
+
+CRITICAL: Do not invent sources, do not mention the Reasoner.
+MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT write in English. Every sentence, header, and explanation must be in Italian. Use EXACTLY the Italian headers shown above (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria)."""
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:
         """Estrae contro-argomenti strutturati dalla risposta."""

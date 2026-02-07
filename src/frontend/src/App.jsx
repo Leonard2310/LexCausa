@@ -483,9 +483,11 @@ export default function App() {
                                     {check.found_in_kb ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
                                     <strong>{check.citation}</strong>
                                     {check.text_verified && (
-                                      <span className={`text-badge ${check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
-                                        {check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
-                                        {check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
+                                      <span className={`text-badge ${check.llm_validated ? 'badge-llm-validated' : check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
+                                        {check.llm_validated
+                                          ? `🤖 Validato LLM (sim. ${(check.text_similarity * 100).toFixed(0)}%)`
+                                          : check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
+                                        {!check.llm_validated && check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
                                       </span>
                                     )}
                                   </div>
@@ -551,9 +553,11 @@ export default function App() {
                                     {check.found_in_kb ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
                                     <strong>{check.citation}</strong>
                                     {check.text_verified && (
-                                      <span className={`text-badge ${check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
-                                        {check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
-                                        {check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
+                                      <span className={`text-badge ${check.llm_validated ? 'badge-llm-validated' : check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
+                                        {check.llm_validated
+                                          ? `🤖 Validato LLM (sim. ${(check.text_similarity * 100).toFixed(0)}%)`
+                                          : check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
+                                        {!check.llm_validated && check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
                                       </span>
                                     )}
                                   </div>

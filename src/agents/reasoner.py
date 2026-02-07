@@ -25,7 +25,9 @@ from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 # System prompt for the Reasoner (with pre-retrieved context)
-REASONER_SYSTEM_PROMPT = """You are the Reasoner. The router already set causal_type_id and theory_id.
+REASONER_SYSTEM_PROMPT = """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
+
+You are the Reasoner. The router already set causal_type_id and theory_id.
 Do NOT re-classify. Use these as structural constraints:
 - anchor_norms (core + accessory) from config
 - principle_tests for the causal type
@@ -35,9 +37,9 @@ Build ONLY supporting arguments for the claim using the provided sources.
 
 Critical rules:
 - Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
-- If a needed statute is missing, state “article not available in the knowledge base”.
+- If a needed statute is missing, state "articolo non disponibile nella knowledge base".
 - Keep reasoning independent: do not reference the Counter-Reasoner.
-- Respond in Italian."""
+- MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
 
 
 @dataclass
@@ -331,7 +333,20 @@ class Reasoner(BaseAgent):
     def _invoke_reasoner(self, prompt: str) -> tuple[str, list]:
         """Invoke the ReAct agent and return (raw_output, messages)."""
         messages = [HumanMessage(content=prompt)]
-        result = self.react_agent.invoke({"messages": messages})
+        try:
+            result = self.react_agent.invoke({"messages": messages})
+        except Exception as e:
+            # Handle Groq tool_use_failed: the model generated a valid response
+            # but the tool-calling mechanism failed. Extract the response.
+            raw_response = self._extract_failed_generation(e)
+            if raw_response:
+                self._log(
+                    "⚠️ Tool call failed but valid response recovered from failed_generation",
+                    "warning",
+                )
+                return raw_response, []
+            raise
+
         messages_out = result.get("messages", [])
 
         tool_names: list[str] = []
@@ -350,6 +365,38 @@ class Reasoner(BaseAgent):
                 raw_output = str(msg_content)
                 break
         return raw_output, messages_out
+
+    def _extract_failed_generation(self, exc: Exception) -> str:
+        """Extract the valid response from a Groq tool_use_failed error."""
+        error_str = str(exc)
+        if "tool_use_failed" not in error_str:
+            return ""
+        # Try to extract from exception body (groq.BadRequestError)
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error_data = body.get("error", {})
+            failed = error_data.get("failed_generation", "")
+            if failed and len(failed) > 50:
+                return failed
+        # Fallback: parse from string representation
+        marker = "'failed_generation': \""
+        idx = error_str.find(marker)
+        if idx == -1:
+            marker = "'failed_generation': '"
+            idx = error_str.find(marker)
+        if idx != -1:
+            start = idx + len(marker)
+            # Find the closing quote
+            end = error_str.find('"}}', start)
+            if end == -1:
+                end = error_str.find("'}", start)
+            if end != -1:
+                text = error_str[start:end]
+                # Unescape newlines
+                text = text.replace("\\n", "\n")
+                if len(text) > 50:
+                    return text
+        return ""
 
     def _extract_cited_articles(self, text: str) -> list[str]:
         """Extract article references cited in the reasoning chain."""
@@ -768,16 +815,35 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 
 INSTRUCTIONS:
 1) Build arguments appropriate for the {routing_decision.domain} domain.
-2) Use anchor norms and principle tests as constraints: if the knowledge base lacks the statute text, still cite the article but do NOT invent quotes.
-3) Build arguments using ONLY knowledge base sources:
-   - Premise
-   - Statute (with precise citation) from ALLOWED STATUTES; if absent, write “article not available in the knowledge base”
-   - Precedent (only if present in ALLOWED PRECEDENTS)
-   - Causal Link
-   - Conclusion
-4) End with a numbered reasoning chain that respects anchor norms and principle tests.
+2) Use anchor norms and principle tests as structural constraints, but DO NOT limit yourself to them.
+   Your reasoning MUST cite multiple statutes from the KNOWLEDGE BASE — not only anchor norms.
+   Anchor norms provide the framework, but you MUST integrate additional non-anchor statutes
+   from the ALLOWED STATUTES list that are relevant to the specific facts of the claim.
+   A good legal argument combines the general principle (anchor) with specific rules that apply
+   to the concrete case (e.g., warranty, defects, remedies, damages, obligations).
+3) If the knowledge base lacks a statute's text, still cite the article but do NOT invent quotes.
+4) Build arguments using ONLY knowledge base sources, with EXACTLY these Italian headers:
+   **Premessa**: (premise)
+   **Norma**: (statute with precise citation from ALLOWED STATUTES; if absent, write "articolo non disponibile nella knowledge base")
+   **Precedente**: (only if present in ALLOWED PRECEDENTS; otherwise omit)
+   **Nesso Causale**: (causal link)
+   **Conclusione**: (conclusion)
+5) End with a numbered reasoning chain. Each step of the chain MUST reference the specific
+   article(s) it relies on.
 
-Critical: do not introduce external sources. Respond in Italian."""
+IMPORTANT - NORM USAGE REQUIREMENTS:
+- You have {len(allowed_statutes)} statutes available. Cite EVERY article you deem pertinent
+  to the case — do not artificially limit yourself to a fixed number.
+- Do NOT rely on a single anchor norm for the entire chain.
+- For each factual aspect of the claim (contract formation, defects, remedies, damages, etc.),
+  identify the most specific applicable statute from the ALLOWED STATUTES list.
+- Quote the relevant text from each statute when available in the KNOWLEDGE BASE.
+- COHERENCE RULE: Every norm you cite in the **Norma** section MUST appear in at least one
+  step of the numbered reasoning chain, with an explanation of its specific role in the argument.
+  Do NOT list norms in **Norma** that you never use in the chain.
+
+CRITICAL: Do not introduce external sources.
+MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT write in English. Every sentence, header, and explanation must be in Italian."""
 
     def _format_anchor_norms(self, anchor_norms: dict) -> str:
         """Format anchor norms for prompt readability."""

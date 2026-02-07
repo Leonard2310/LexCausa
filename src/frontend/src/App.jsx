@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings } from 'lucide-react';
 import './App.css';
 
 // Tab types
@@ -25,6 +25,20 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [reasoningResult, setReasoningResult] = useState(null);
   const [pipelineResult, setPipelineResult] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [pipelineSettings, setPipelineSettings] = useState({
+    reasoner_model: '',
+    counter_model: '',
+    llm_temperature: 0.3,
+    llm_max_tokens: 8192,
+    search_top_k_default: 100,
+    search_use_top_n_libri: 3,
+    precedents_limit_default: 5,
+    aqa_alpha: 0.3,
+    aqa_beta: 0.4,
+    aqa_gamma: 0.3,
+  });
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -35,6 +49,34 @@ export default function App() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, reasoningResult, pipelineResult]);
+
+  // Load default settings from backend on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/settings`)
+      .then((res) => res.json())
+      .then((data) => {
+        setAvailableModels(data.models || []);
+        const d = data.defaults || {};
+        setPipelineSettings((prev) => ({
+          ...prev,
+          reasoner_model: d.groq_model || prev.reasoner_model,
+          counter_model: d.groq_model || prev.counter_model,
+          llm_temperature: d.llm_temperature ?? prev.llm_temperature,
+          llm_max_tokens: d.llm_max_tokens ?? prev.llm_max_tokens,
+          search_top_k_default: d.search_top_k_default ?? prev.search_top_k_default,
+          search_use_top_n_libri: d.search_use_top_n_libri ?? prev.search_use_top_n_libri,
+          precedents_limit_default: d.precedents_limit_default ?? prev.precedents_limit_default,
+          aqa_alpha: d.aqa_alpha ?? prev.aqa_alpha,
+          aqa_beta: d.aqa_beta ?? prev.aqa_beta,
+          aqa_gamma: d.aqa_gamma ?? prev.aqa_gamma,
+        }));
+      })
+      .catch((err) => console.warn('Could not load settings:', err));
+  }, []);
+
+  const updateSetting = (key, value) => {
+    setPipelineSettings((prev) => ({ ...prev, [key]: value }));
+  };
 
   const handleSearchSubmit = async () => {
     if (!input.trim() || isLoading) return;
@@ -130,6 +172,18 @@ export default function App() {
         body: JSON.stringify({
           claim,
           include_precedents: true,
+          max_statutes: pipelineSettings.search_top_k_default,
+          max_precedents: pipelineSettings.precedents_limit_default,
+          settings: {
+            reasoner_model: pipelineSettings.reasoner_model,
+            counter_model: pipelineSettings.counter_model,
+            llm_temperature: pipelineSettings.llm_temperature,
+            llm_max_tokens: pipelineSettings.llm_max_tokens,
+            search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
+            aqa_alpha: pipelineSettings.aqa_alpha,
+            aqa_beta: pipelineSettings.aqa_beta,
+            aqa_gamma: pipelineSettings.aqa_gamma,
+          },
         }),
       });
 
@@ -231,6 +285,161 @@ export default function App() {
           <FileText size={16} />
           <span>Pipeline Completa</span>
         </button>
+      </div>
+
+      {/* Settings Panel (collapsible) */}
+      <div className="settings-panel">
+        <button className="settings-toggle" onClick={() => setSettingsOpen(!settingsOpen)}>
+          <Settings size={16} />
+          <span>Impostazioni Pipeline</span>
+          <span className={`settings-chevron ${settingsOpen ? 'open' : ''}`}>▸</span>
+        </button>
+
+        {settingsOpen && (
+          <div className="settings-body">
+            {/* Models per step */}
+            <fieldset className="settings-group">
+              <legend>🤖 Modelli LLM per Step</legend>
+              <div className="settings-row">
+                <label>
+                  <span>Reasoner</span>
+                  <select
+                    value={pipelineSettings.reasoner_model}
+                    onChange={(e) => updateSetting('reasoner_model', e.target.value)}
+                  >
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>{m.split('/').pop()}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Counter-Reasoner</span>
+                  <select
+                    value={pipelineSettings.counter_model}
+                    onChange={(e) => updateSetting('counter_model', e.target.value)}
+                  >
+                    {availableModels.map((m) => (
+                      <option key={m} value={m}>{m.split('/').pop()}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            {/* Temperature & Max Tokens */}
+            <fieldset className="settings-group">
+              <legend>🎛️ Parametri LLM</legend>
+              <div className="settings-row">
+                <label>
+                  <span>Temperature <strong>{pipelineSettings.llm_temperature.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.llm_temperature}
+                    onChange={(e) => updateSetting('llm_temperature', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>Max Tokens</span>
+                  <input
+                    type="number"
+                    min="256"
+                    max="32768"
+                    step="256"
+                    value={pipelineSettings.llm_max_tokens}
+                    onChange={(e) => updateSetting('llm_max_tokens', parseInt(e.target.value, 10))}
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            {/* Search & Retrieval */}
+            <fieldset className="settings-group">
+              <legend>🔍 Ricerca e Retrieval</legend>
+              <div className="settings-row">
+                <label>
+                  <span>Top-K Articoli</span>
+                  <input
+                    type="number"
+                    min="10"
+                    max="500"
+                    step="10"
+                    value={pipelineSettings.search_top_k_default}
+                    onChange={(e) => updateSetting('search_top_k_default', parseInt(e.target.value, 10))}
+                  />
+                </label>
+                <label>
+                  <span>Top-N Libri</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={pipelineSettings.search_use_top_n_libri}
+                    onChange={(e) => updateSetting('search_use_top_n_libri', parseInt(e.target.value, 10))}
+                  />
+                </label>
+                <label>
+                  <span>Max Precedenti</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="20"
+                    value={pipelineSettings.precedents_limit_default}
+                    onChange={(e) => updateSetting('precedents_limit_default', parseInt(e.target.value, 10))}
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            {/* AQA Weights */}
+            <fieldset className="settings-group">
+              <legend>⚖️ Pesi AQA (α + β + γ = 1)</legend>
+              <div className="settings-row">
+                <label>
+                  <span>α Cogency <strong>{pipelineSettings.aqa_alpha.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.aqa_alpha}
+                    onChange={(e) => updateSetting('aqa_alpha', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>β NormSupport <strong>{pipelineSettings.aqa_beta.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.aqa_beta}
+                    onChange={(e) => updateSetting('aqa_beta', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>γ Semantics <strong>{pipelineSettings.aqa_gamma.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.aqa_gamma}
+                    onChange={(e) => updateSetting('aqa_gamma', parseFloat(e.target.value))}
+                  />
+                </label>
+              </div>
+              <div className="aqa-weight-sum">
+                Somma: {(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma).toFixed(2)}
+                {Math.abs(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma - 1) > 0.01 && (
+                  <span className="aqa-weight-warning"> ⚠️ Dovrebbe essere 1.00</span>
+                )}
+              </div>
+            </fieldset>
+          </div>
+        )}
       </div>
 
       {/* Content Area */}

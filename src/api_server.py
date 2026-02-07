@@ -32,6 +32,7 @@ sys.path.insert(0, src_path)
 os.chdir(project_root)
 
 from agents import CounterReasoner, PolisherEvaluator, Reasoner  # noqa: E402
+from agents.base import AgentConfig  # noqa: E402
 from agents.router import Router, RoutingDecision  # noqa: E402
 from agents.tools import config_loader  # noqa: E402
 from agents.tools.neo4j_tools import (  # noqa: E402
@@ -384,6 +385,47 @@ def health_check():
     return jsonify({"status": "ok", "service": "LexCausa API", "version": "0.2.0"})
 
 
+@app.route("/api/settings", methods=["GET"])
+def get_settings():
+    """
+    Return current default settings and available models.
+
+    The frontend uses this to populate the Settings panel.
+    """
+    return jsonify(
+        {
+            "models": settings.groq_models,
+            "defaults": {
+                "groq_model": settings.groq_model,
+                "groq_fallback_model": settings.groq_fallback_model,
+                "llm_temperature": settings.llm_temperature,
+                "llm_max_tokens": settings.llm_max_tokens,
+                "search_top_k_default": settings.search_top_k_default,
+                "search_use_top_n_libri": settings.search_use_top_n_libri,
+                "precedents_limit_default": settings.precedents_limit_default,
+                "aqa_alpha": settings.aqa_alpha,
+                "aqa_beta": settings.aqa_beta,
+                "aqa_gamma": settings.aqa_gamma,
+            },
+        }
+    )
+
+
+def _build_agent_config(
+    model_override: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> AgentConfig:
+    """Build an AgentConfig from optional frontend overrides."""
+    return AgentConfig(
+        model_name=model_override or settings.groq_model,
+        temperature=(
+            temperature if temperature is not None else settings.llm_temperature
+        ),
+        max_tokens=max_tokens if max_tokens is not None else settings.llm_max_tokens,
+    )
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """
@@ -555,6 +597,18 @@ def pipeline():
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
 
+        # ── Frontend-configurable settings ────────────────────────────────
+        fe_settings = data.get("settings", {})
+        fe_temperature = fe_settings.get("llm_temperature")
+        fe_max_tokens = fe_settings.get("llm_max_tokens")
+        # Per-step model selection (primary + fallback derived automatically)
+        fe_reasoner_model = fe_settings.get("reasoner_model")
+        fe_counter_model = fe_settings.get("counter_model")
+        # AQA weights
+        fe_aqa_alpha = fe_settings.get("aqa_alpha")
+        fe_aqa_beta = fe_settings.get("aqa_beta")
+        fe_aqa_gamma = fe_settings.get("aqa_gamma")
+
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
@@ -563,6 +617,9 @@ def pipeline():
             print("🚀 FULL PIPELINE - START")
             print(f"{'='*70}")
             print(f"Claim: {claim[:100]}...")
+
+            if fe_settings:
+                print(f"⚙️  Frontend settings override: {fe_settings}")
 
             routing_decision = resolve_routing_decision(claim, data)
 
@@ -590,7 +647,13 @@ def pipeline():
                 f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
             )
 
-            reas = get_reasoner()
+            # Build per-step agent with optional model/temperature/max_tokens overrides
+            reasoner_config = _build_agent_config(
+                model_override=fe_reasoner_model,
+                temperature=fe_temperature,
+                max_tokens=fe_max_tokens,
+            )
+            reas = Reasoner(config=reasoner_config)
             reasoner_result = reas.run(
                 claim=claim,
                 routing_decision=routing_decision,
@@ -629,7 +692,12 @@ def pipeline():
                 f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
             )
 
-            cr = get_counter_reasoner()
+            counter_config = _build_agent_config(
+                model_override=fe_counter_model,
+                temperature=fe_temperature,
+                max_tokens=fe_max_tokens,
+            )
+            cr = CounterReasoner(config=counter_config)
             counter_result = cr.run(
                 claim=claim,
                 routing_decision=final_routing_decision,
@@ -656,6 +724,15 @@ def pipeline():
             print(f"{'─'*70}")
 
             pe = get_polisher_evaluator()
+
+            # Apply AQA weight overrides if provided by frontend
+            if fe_aqa_alpha is not None:
+                settings.aqa_alpha = float(fe_aqa_alpha)
+            if fe_aqa_beta is not None:
+                settings.aqa_beta = float(fe_aqa_beta)
+            if fe_aqa_gamma is not None:
+                settings.aqa_gamma = float(fe_aqa_gamma)
+
             evaluation_result = pe.run(
                 claim=claim,
                 domain=final_routing_decision.domain,
@@ -784,6 +861,7 @@ if __name__ == "__main__":
     print()
     print("  Endpoints:")
     print("  • GET  /health              - Health check")
+    print("  • GET  /api/settings        - Impostazioni configurabili")
     print("  • POST /api/chat            - Ricerca legale (Tab Ricerca)")
     print("  • POST /api/reason          - Ragionamento causale (Tab Ragionamento)")
     print("  • POST /api/counter_reason  - Contro-ragionamento")

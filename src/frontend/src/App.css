@@ -847,3 +847,118 @@
 .repair-stats h4 {
   color: #92400e;
 }
+
+/* ====================================================================
+   Settings Panel
+   ==================================================================== */
+
+.settings-panel {
+  border-bottom: 1px solid #e5e7eb;
+  background-color: #fff;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.6rem 1.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #4b5563;
+  transition: background 0.15s;
+}
+
+.settings-toggle:hover {
+  background-color: #f3f4f6;
+}
+
+.settings-chevron {
+  margin-left: auto;
+  transition: transform 0.2s;
+  font-size: 0.75rem;
+}
+
+.settings-chevron.open {
+  transform: rotate(90deg);
+}
+
+.settings-body {
+  padding: 0.5rem 1.25rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.settings-group {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin: 0;
+}
+
+.settings-group legend {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #374151;
+  padding: 0 0.25rem;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+}
+
+.settings-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+  min-width: 140px;
+}
+
+.settings-row label span {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.settings-row select,
+.settings-row input[type="number"] {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.375rem;
+  font-size: 0.8rem;
+  background: #f9fafb;
+  width: 100%;
+}
+
+.settings-row select:focus,
+.settings-row input[type="number"]:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.settings-row input[type="range"] {
+  width: 100%;
+  accent-color: #2563eb;
+}
+
+.aqa-weight-sum {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+  text-align: right;
+}
+
+.aqa-weight-warning {
+  color: #dc2626;
+  font-weight: 600;
+}

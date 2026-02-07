@@ -53,9 +53,29 @@ class Settings(BaseSettings):
     # =========================================================================
     # Groq Cloud Configuration
     # =========================================================================
-    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY_V1")
+    groq_api_key_v2: str = Field(default="", alias="GROQ_API_KEY_V2")
+    groq_api_key_v3: str = Field(default="", alias="GROQ_API_KEY_V3")
     groq_model: str = Field(
         default="meta-llama/llama-4-scout-17b-16e-instruct", alias="GROQ_MODEL"
+    )
+    groq_fallback_model: str = Field(
+        default="meta-llama/llama-4-maverick-17b-128e-instruct",
+        alias="GROQ_FALLBACK_MODEL",
+    )
+
+    # =========================================================================
+    # Retry / Resilience Configuration
+    # =========================================================================
+    groq_max_retries: int = Field(
+        default=3,
+        alias="GROQ_MAX_RETRIES",
+        description="Maximum number of retries per API call (key rotation + model fallback).",
+    )
+    groq_retry_base_delay: float = Field(
+        default=1.0,
+        alias="GROQ_RETRY_BASE_DELAY",
+        description="Base delay in seconds for exponential backoff between retries.",
     )
 
     # =========================================================================
@@ -216,6 +236,20 @@ class Settings(BaseSettings):
     # =========================================================================
     # Paths
     # =========================================================================
+    @property
+    def groq_api_keys(self) -> list[str]:
+        """Get all available Groq API keys (non-empty)."""
+        return [
+            k
+            for k in [self.groq_api_key, self.groq_api_key_v2, self.groq_api_key_v3]
+            if k
+        ]
+
+    @property
+    def groq_models(self) -> list[str]:
+        """Get ordered list of models: primary first, then fallback."""
+        return [self.groq_model, self.groq_fallback_model]
+
     @property
     def project_root(self) -> Path:
         """Get project root directory."""

@@ -12,23 +12,27 @@ This agent acts as a judge/evaluator of the argumentation.
 """
 
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 import textstat
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_groq import ChatGroq
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from transformers import pipeline
 
 from config import settings
 
-from .base import AgentConfig, BaseAgent
 from .aspic_formatter import AspicFormatter
+from .base import AgentConfig, BaseAgent
 from .tools.neo4j_tools import get_driver
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
 
 
 class MismatchAction(Enum):
@@ -68,7 +72,9 @@ class CitationCheck:
     mismatch_action: str = "none"  # MismatchAction value
     is_core: bool = False  # True if article is core to the argument
     llm_mismatch_confirmed: bool = False  # True if LLM confirmed logical mismatch
-    llm_validated: bool = False  # True if initial similarity mismatch was rescued by LLM equivalence check
+    llm_validated: bool = (
+        False  # True if initial similarity mismatch was rescued by LLM equivalence check
+    )
     repaired_text: str = ""  # Repaired text using DB constraint
     repair_success: bool = False  # True if repair was successful
 
@@ -373,8 +379,16 @@ class PolisherEvaluator(BaseAgent):
         # AQA Phase: ALWAYS use repaired ASPIC IR when available
         # ------------------------------------------------------------------
         # Determine which IR to use: prefer repaired, fallback to original
-        aqa_reasoner_ir = repaired_reasoner_aspic if repaired_reasoner_aspic else (reasoner_aspic_ir or {})
-        aqa_counter_ir = repaired_counter_aspic if repaired_counter_aspic else (counter_aspic_ir or {})
+        aqa_reasoner_ir = (
+            repaired_reasoner_aspic
+            if repaired_reasoner_aspic
+            else (reasoner_aspic_ir or {})
+        )
+        aqa_counter_ir = (
+            repaired_counter_aspic
+            if repaired_counter_aspic
+            else (counter_aspic_ir or {})
+        )
 
         # Log which IR version is being used
         if repaired_reasoner_aspic:
@@ -774,9 +788,7 @@ class PolisherEvaluator(BaseAgent):
             True if LLM confirms the texts are logically different (mismatch).
         """
         try:
-            llm = ChatGroq(
-                model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0
-            )
+            llm = get_chat_groq(temperature=0, max_tokens=2048)
 
             system_prompt = """You are an expert in Italian law. Your task is to determine whether two normative texts are LOGICALLY EQUIVALENT or DIFFERENT.
 
@@ -808,7 +820,7 @@ Are the two texts EQUIVALENTI or DIVERSI? (Answer in Italian)"""
                 HumanMessage(content=user_prompt),
             ]
 
-            response = llm.invoke(messages)
+            response = resilient_chat_call(llm, messages)
             answer = response.content.strip().upper()
 
             is_different = "DIVERSI" in answer
@@ -849,9 +861,7 @@ Are the two texts EQUIVALENTI or DIVERSI? (Answer in Italian)"""
             False if not pertinent (can be dropped).
         """
         try:
-            llm = ChatGroq(
-                model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0
-            )
+            llm = get_chat_groq(temperature=0, max_tokens=2048)
 
             system_prompt = """You are an expert in Italian law. Your task is to assess whether a legal norm cited in a reasoning chain is PERTINENT or NOT_PERTINENT to the argumentative logic.
 
@@ -885,10 +895,12 @@ Is this norm PERTINENT or NOT_PERTINENT to the argumentative logic of the reason
                 HumanMessage(content=user_prompt),
             ]
 
-            response = llm.invoke(messages)
+            response = resilient_chat_call(llm, messages)
             answer = response.content.strip().upper()
 
-            is_pertinent = "NOT_PERTINENT" not in answer and "NOT PERTINENT" not in answer
+            is_pertinent = (
+                "NOT_PERTINENT" not in answer and "NOT PERTINENT" not in answer
+            )
             self._log(
                 f"      🤖 LLM pertinence check Art. {article_num}: "
                 f"{'PERTINENTE ✅' if is_pertinent else 'NON PERTINENTE 🗑️'}"
@@ -1001,9 +1013,7 @@ Is this norm PERTINENT or NOT_PERTINENT to the argumentative logic of the reason
             Success is True only if the repaired text contains a verbatim DB quote.
         """
         try:
-            llm = ChatGroq(
-                model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0
-            )
+            llm = get_chat_groq(temperature=0, max_tokens=2048)
 
             system_prompt = """You are an expert in Italian law. You must rewrite a normative passage using EXCLUSIVELY the official text of the provided article.
 
@@ -1030,7 +1040,7 @@ Rewrite the normative passage in Italian using only the official text, including
                 HumanMessage(content=user_prompt),
             ]
 
-            response = llm.invoke(messages)
+            response = resilient_chat_call(llm, messages)
             repaired_text = response.content.strip()
 
             # Validate: check if there's a verbatim quote from DB
@@ -1137,14 +1147,18 @@ Rewrite the normative passage in Italian using only the official text, including
                 )
         else:
             # Peripheral: check if it's still pertinent to the reasoning
-            self._log(f"      🔍 Art. {article_num} is PERIPHERAL - checking pertinence...")
+            self._log(
+                f"      🔍 Art. {article_num} is PERIPHERAL - checking pertinence..."
+            )
             is_pertinent = self._check_pertinence_with_llm(
                 article_num, cited_text, full_text
             )
 
             if is_pertinent:
                 # Pertinent peripheral norm → attempt repair (keep it)
-                self._log(f"      🔄 Art. {article_num} is PERTINENT - attempting repair...")
+                self._log(
+                    f"      🔄 Art. {article_num} is PERTINENT - attempting repair..."
+                )
                 success, repaired_text = self._repair_with_db_constraint(
                     article_num, db_text, cited_text
                 )
@@ -1162,7 +1176,9 @@ Rewrite the normative passage in Italian using only the official text, including
                     # Repair failed even for pertinent norm → drop
                     check.mismatch_action = MismatchAction.REPAIR_FAILED.value
                     check.repair_success = False
-                    check.details += " [REPAIR FAILED - pertinent peripheral, repair unsuccessful]"
+                    check.details += (
+                        " [REPAIR FAILED - pertinent peripheral, repair unsuccessful]"
+                    )
                     report.dropped_citations += 1
                     report.issues.append(
                         f"Art. {article_num}: pertinent peripheral citation repair failed"
@@ -1306,22 +1322,20 @@ Rewrite the normative passage in Italian using only the official text, including
                     check.text_similarity = 0.0
                     check.cited_text = ""
                     check.db_text_preview = db_text
-                    check.is_core = True  # no text at all → treat as core (must be repaired)
+                    check.is_core = (
+                        True  # no text at all → treat as core (must be repaired)
+                    )
                     check.mismatch_action = MismatchAction.REPAIRED.value
                     check.repaired_text = db_text
                     check.repair_success = True
-                    check.details = (
-                        f"Verified in Neo4j ({domain}), no text cited → repaired with DB text"
-                    )
+                    check.details = f"Verified in Neo4j ({domain}), no text cited → repaired with DB text"
                     report.text_mismatches += 1
                     report.repaired_citations += 1
                     report.issues.append(
                         f"Art. {article_num}: no text cited in response, repaired with DB text"
                     )
                 else:
-                    check.details = (
-                        f"Verified in Neo4j ({domain}), no text available for verification"
-                    )
+                    check.details = f"Verified in Neo4j ({domain}), no text available for verification"
                     self._log("      📝 No cited text and no DB text for verification")
             else:
                 report.invalid_citations += 1
@@ -1638,20 +1652,20 @@ Rewrite the normative passage in Italian using only the official text, including
     def _build_chain_text(self, aspic_ir: dict) -> str:
         """
         Build the full text of a reasoning chain from ASPIC IR for norm support calculation.
-        
+
         Extracts text from all arguments (premises, rules, conclusions) and reasoning chain steps.
-        
+
         Args:
             aspic_ir: ASPIC IR structure
-            
+
         Returns:
             Concatenated text of the entire chain.
         """
         if not aspic_ir:
             return ""
-        
+
         parts = []
-        
+
         # Extract from arguments
         for arg in aspic_ir.get("arguments", []):
             # Premises
@@ -1672,14 +1686,14 @@ Rewrite the normative passage in Italian using only the official text, including
                 parts.append(conclusion.get("text", ""))
             elif isinstance(conclusion, str):
                 parts.append(conclusion)
-        
+
         # Extract from reasoning_chain steps
         for step in aspic_ir.get("reasoning_chain", []):
             if isinstance(step, dict):
                 parts.append(step.get("text", ""))
             elif isinstance(step, str):
                 parts.append(step)
-        
+
         # Filter empty and join
         return " ".join(p for p in parts if p and isinstance(p, str))
 
@@ -1809,9 +1823,9 @@ Rewrite the normative passage in Italian using only the official text, including
         return ""
 
     def _collect_links(self, aspic_ir: dict, role: str, domain: str) -> list[dict]:
-        links = []
+        links: list[dict] = []
         reasoning_chain = aspic_ir.get("reasoning_chain", [])
-        
+
         # Check if this is a repaired IR
         repair_meta = aspic_ir.get("_repair_metadata", {})
         if repair_meta:
@@ -1820,39 +1834,43 @@ Rewrite the normative passage in Italian using only the official text, including
                 f"{repair_meta.get('total_repaired', 0)} repaired, "
                 f"{repair_meta.get('total_dropped', 0)} dropped"
             )
-        
+
         # Filter reasoning_chain to exclude noise steps (e.g., "Precedents: none found.")
         valid_chain_steps = [
-            step for step in reasoning_chain
-            if step.get("text") and not step.get("text", "").lower().startswith("precedent")
+            step
+            for step in reasoning_chain
+            if step.get("text")
+            and not step.get("text", "").lower().startswith("precedent")
         ]
-        
+
         if len(valid_chain_steps) < 2:
-            self._log(f"   ⚠️ [{role.upper()}] Not enough chain steps to build links (found {len(valid_chain_steps)})")
+            self._log(
+                f"   ⚠️ [{role.upper()}] Not enough chain steps to build links (found {len(valid_chain_steps)})"
+            )
             return links
-        
+
         self._log(
             f"   📋 [{role.upper()}] Building {len(valid_chain_steps) - 1} links from reasoning_chain"
         )
-        
+
         for idx in range(len(valid_chain_steps) - 1):
             step_from = valid_chain_steps[idx]
             step_to = valid_chain_steps[idx + 1]
-            
+
             step_from_id = step_from.get("id") or f"S{idx + 1}"
             step_to_id = step_to.get("id") or f"S{idx + 2}"
             link_id = f"{step_from_id}->{step_to_id}"
-            
+
             premise_text = self._normalize_text(step_from.get("text", ""))
             conclusion_text = self._normalize_text(step_to.get("text", ""))
             # The "rule" or nesso is the logical connection between the two steps
             # We use the premise text as it contains the normative basis
             link_text = premise_text
-            
+
             # Extract citations from both steps
             citations_text = f"{premise_text} {conclusion_text}"
             statute_refs = self._extract_statute_refs_from_text(citations_text)
-            
+
             libri = set()
             severities = set()
             for ref in statute_refs:
@@ -1863,37 +1881,45 @@ Rewrite the normative passage in Italian using only the official text, including
                 severity = self._derive_severity_category(meta)
                 if severity:
                     severities.add(severity)
-            
+
             link_libro = list(libri)[0] if len(libri) == 1 else ""
             severity_category = list(severities)[0] if len(severities) == 1 else ""
-            
+
             # Log the link
             self._log(
                 f"      🔗 Link {idx + 1}: {link_id} | "
                 f"from={step_from_id} to={step_to_id} | norms={len(statute_refs)}"
             )
             if statute_refs:
-                refs_str = ", ".join(f"Art. {r.get('articolo', '?')}" for r in statute_refs[:3])
+                refs_str = ", ".join(
+                    f"Art. {r.get('articolo', '?')}" for r in statute_refs[:3]
+                )
                 self._log(f"         📜 Statutes: {refs_str}")
             if link_libro or severity_category:
-                self._log(f"         🗂️ Libro: {link_libro or '-'} | Severity: {severity_category or '-'}")
-            
-            links.append({
-                "link_id": link_id,
-                "argument_id": f"chain_{idx + 1}",
-                "premise_ids": [step_from_id],
-                "conclusion_id": step_to_id,
-                "rule_id": "",
-                "role": role,
-                "text": link_text,
-                "premise_text": premise_text,
-                "conclusion_text": conclusion_text,
-                "libro": link_libro,
-                "severity_category": severity_category,
-                "retrieved_norms": None,
-            })
-        
-        self._log(f"   ✅ [{role.upper()}] Collected {len(links)} links from reasoning_chain")
+                self._log(
+                    f"         🗂️ Libro: {link_libro or '-'} | Severity: {severity_category or '-'}"
+                )
+
+            links.append(
+                {
+                    "link_id": link_id,
+                    "argument_id": f"chain_{idx + 1}",
+                    "premise_ids": [step_from_id],
+                    "conclusion_id": step_to_id,
+                    "rule_id": "",
+                    "role": role,
+                    "text": link_text,
+                    "premise_text": premise_text,
+                    "conclusion_text": conclusion_text,
+                    "libro": link_libro,
+                    "severity_category": severity_category,
+                    "retrieved_norms": None,
+                }
+            )
+
+        self._log(
+            f"   ✅ [{role.upper()}] Collected {len(links)} links from reasoning_chain"
+        )
         return links
 
     def _compute_cross_attacks(
@@ -2207,7 +2233,7 @@ Rewrite the normative passage in Italian using only the official text, including
             return {"enabled": False}
         self._log("🧪 Starting AQA scoring on REPAIRED reasoning chains...")
         self._log(f"🧠 AQA domain: {domain}")
-        
+
         # Check if we're using repaired IRs
         reasoner_repaired = bool(reasoner_ir.get("_repair_metadata"))
         counter_repaired = bool(counter_ir.get("_repair_metadata"))
@@ -2217,7 +2243,7 @@ Rewrite the normative passage in Italian using only the official text, including
             )
         else:
             self._log("   ℹ️ No repairs were needed - using original chains")
-        
+
         pro_links = self._collect_links(reasoner_ir, "support", domain)
         contra_links = self._collect_links(counter_ir, "counter", domain)
         total_links = len(pro_links) + len(contra_links)
@@ -2252,11 +2278,11 @@ Rewrite the normative passage in Italian using only the official text, including
             premise_text = link.get("premise_text", "")
             rule_text = link.get("text", "")
             conclusion_text = link.get("conclusion_text", "")
-            
+
             # Fallback: if premise_text is empty, use rule_text for semantics
             semantics_premise = premise_text if premise_text else rule_text
             if not premise_text and rule_text:
-                self._log(f"      ⚠️ premise_text empty, using rule_text for semantics")
+                self._log("      ⚠️ premise_text empty, using rule_text for semantics")
 
             semantics, semantics_details = self._semantics_score(
                 semantics_premise, conclusion_text
@@ -2265,7 +2291,7 @@ Rewrite the normative passage in Italian using only the official text, including
             if not premise_text and rule_text:
                 semantics_details["used_fallback"] = True
                 semantics_details["fallback_source"] = "rule_text"
-            
+
             coherence = self._coherence_score(premise_text, conclusion_text, rule_text)
             arg_quality = self._argument_quality_score(
                 premise_text, rule_text, conclusion_text
@@ -2282,10 +2308,9 @@ Rewrite the normative passage in Italian using only the official text, including
             # Normalize weights for 2 parameters: alpha/(alpha+gamma) and gamma/(alpha+gamma)
             weight_sum = self._aqa_alpha + self._aqa_gamma
             if weight_sum > 0:
-                base = (
-                    (self._aqa_alpha / weight_sum) * cogency
-                    + (self._aqa_gamma / weight_sum) * semantics
-                )
+                base = (self._aqa_alpha / weight_sum) * cogency + (
+                    self._aqa_gamma / weight_sum
+                ) * semantics
             else:
                 base = (cogency + semantics) / 2.0
 
@@ -2341,7 +2366,7 @@ Rewrite the normative passage in Italian using only the official text, including
         pro_semantics_avg = avg_field(pro_links, "semantics")
         contra_cogency_avg = avg_field(contra_links, "cogency")
         contra_semantics_avg = avg_field(contra_links, "semantics")
-        
+
         # base_score = α*cogency + β*normSupport + γ*semantics (at chain level)
         pro_base_score = self._clamp01(
             self._aqa_alpha * pro_cogency_avg
@@ -2353,15 +2378,15 @@ Rewrite the normative passage in Italian using only the official text, including
             + self._aqa_beta * contra_norm_support
             + self._aqa_gamma * contra_semantics_avg
         )
-        
+
         # Apply precedent delta at chain level (average of link deltas)
         pro_precedent_delta = avg_field(pro_links, "precedent_delta")
         contra_precedent_delta = avg_field(contra_links, "precedent_delta")
-        
+
         pro_score = self._clamp01(pro_base_score + pro_precedent_delta)
         contra_score = self._clamp01(contra_base_score + contra_precedent_delta)
         final_plausibility = pro_score - contra_score
-        
+
         self._log(
             f"📊 Chain averages: pro(cog={pro_cogency_avg:.2f}, sem={pro_semantics_avg:.2f}), "
             f"contra(cog={contra_cogency_avg:.2f}, sem={contra_semantics_avg:.2f})"
@@ -2584,9 +2609,7 @@ Rewrite the normative passage in Italian using only the official text, including
         )
 
         try:
-            llm = ChatGroq(
-                model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0
-            )
+            llm = get_chat_groq(temperature=0, max_tokens=2048)
 
             system_prompt = """You are an expert in Italian law. Your task is to rewrite a legal reasoning chain to integrate corrections.
 
@@ -2633,7 +2656,7 @@ Rewrite the reasoning chain in Italian, integrating the corrections and handling
                 HumanMessage(content=user_prompt),
             ]
 
-            response = llm.invoke(messages)
+            response = resilient_chat_call(llm, messages)
             regenerated = response.content.strip()
 
             self._log(
@@ -2700,7 +2723,9 @@ Rewrite the reasoning chain in Italian, integrating the corrections and handling
 
         # If no repaired text available, fall back to original
         if not repaired_chain_text:
-            self._log(f"   ⚠️ [{role}] No repaired chain text available, skipping IR rebuild")
+            self._log(
+                f"   ⚠️ [{role}] No repaired chain text available, skipping IR rebuild"
+            )
             return {}
 
         self._log(
@@ -2751,7 +2776,7 @@ Rewrite the reasoning chain in Italian, integrating the corrections and handling
         CounterReasoner._extract_arguments to parse structured blocks.
         """
         arguments = []
-        current_arg = {}
+        current_arg: dict[str, str] = {}
         current_section = None
 
         section_markers = {
@@ -2780,7 +2805,7 @@ Rewrite the reasoning chain in Italian, integrating the corrections and handling
                 if lower_clean.startswith(marker):
                     matched_section = section_key
                     # Extract content after the marker
-                    content = clean[len(marker):].lstrip(" :.-").strip()
+                    content = clean[len(marker) :].lstrip(" :.-").strip()
                     break
 
             if matched_section:

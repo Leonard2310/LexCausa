@@ -726,6 +726,18 @@ export default function App() {
                             )}
                           </div>
 
+                          {/* Chain-level Norm Support */}
+                          {aqaReport.chain_scores && (
+                            <div className="aqa-meta" style={{ marginTop: '0.5rem' }}>
+                              <span className="stat-item stat-valid">
+                                📚 Norm Pro: {((aqaReport.chain_scores.pro?.norm_support ?? 0) * 100).toFixed(0)}%
+                              </span>
+                              <span className="stat-item stat-text">
+                                📚 Norm Contro: {((aqaReport.chain_scores.contra?.norm_support ?? 0) * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                          )}
+
                           {aqaReport.notes?.weakest_links?.length > 0 && (
                             <div className="aqa-notes">
                               <h5>Link più deboli</h5>
@@ -784,33 +796,8 @@ export default function App() {
                                           <span>Base {(link.base_score ?? 0).toFixed(2)}</span>
                                           <span>Δ precedenti {(link.precedent_delta ?? 0).toFixed(2)}</span>
                                           <span>Cogency {(link.cogency ?? 0).toFixed(2)}</span>
-                                          <span>Norm {((link.norm_support ?? 0)).toFixed(2)}</span>
                                           <span>Sem {(link.semantics ?? 0).toFixed(2)}</span>
                                         </div>
-                                        <details className="aqa-link-details">
-                                          <summary>Dettagli valutazione</summary>
-                                          <pre className="code-block">
-                                            {JSON.stringify({
-                                              link_id: link.link_id,
-                                              role: link.role,
-                                              text: link.text,
-                                              premise_text: link.premise_text,
-                                              conclusion_text: link.conclusion_text,
-                                              cogency: link.cogency,
-                                              cogency_details: link.cogency_details,
-                                              norm_support: link.norm_support,
-                                              norm_support_details: link.norm_support_details,
-                                              semantics: link.semantics,
-                                              semantics_details: link.semantics_details,
-                                              base_score: link.base_score,
-                                              precedent_delta: link.precedent_delta,
-                                              precedent_influences: link.precedent_influences,
-                                              nesso_plausibility: link.nesso_plausibility,
-                                              severity_category: link.severity_category,
-                                              libro: link.libro,
-                                            }, null, 2)}
-                                          </pre>
-                                        </details>
                                       </div>
                                     ))}
                                   </div>
@@ -833,33 +820,8 @@ export default function App() {
                                           <span>Base {(link.base_score ?? 0).toFixed(2)}</span>
                                           <span>Δ precedenti {(link.precedent_delta ?? 0).toFixed(2)}</span>
                                           <span>Cogency {(link.cogency ?? 0).toFixed(2)}</span>
-                                          <span>Norm {((link.norm_support ?? 0)).toFixed(2)}</span>
                                           <span>Sem {(link.semantics ?? 0).toFixed(2)}</span>
                                         </div>
-                                        <details className="aqa-link-details">
-                                          <summary>Dettagli valutazione</summary>
-                                          <pre className="code-block">
-                                            {JSON.stringify({
-                                              link_id: link.link_id,
-                                              role: link.role,
-                                              text: link.text,
-                                              premise_text: link.premise_text,
-                                              conclusion_text: link.conclusion_text,
-                                              cogency: link.cogency,
-                                              cogency_details: link.cogency_details,
-                                              norm_support: link.norm_support,
-                                              norm_support_details: link.norm_support_details,
-                                              semantics: link.semantics,
-                                              semantics_details: link.semantics_details,
-                                              base_score: link.base_score,
-                                              precedent_delta: link.precedent_delta,
-                                              precedent_influences: link.precedent_influences,
-                                              nesso_plausibility: link.nesso_plausibility,
-                                              severity_category: link.severity_category,
-                                              libro: link.libro,
-                                            }, null, 2)}
-                                          </pre>
-                                        </details>
                                       </div>
                                     ))}
                                   </div>

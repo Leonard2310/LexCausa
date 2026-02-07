@@ -8,7 +8,9 @@ pre-retrieved contrary/neutral sources.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -19,6 +21,9 @@ from .base import AgentConfig, BaseAgent
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
 
 
 @dataclass
@@ -192,7 +197,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
 {options_text}
 """
         try:
-            resp = self.llm.invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             answer = (resp.content or "").strip()
             attack_id = self._clean_attack_choice(answer, pool)
             if attack_id:
@@ -342,6 +347,20 @@ Select the most useful attack among the following ids and return ONLY the chosen
             )
         return self._react_agent
 
+    def _build_react_agent(self, api_key: str, model: str):
+        """Build a fresh ReAct agent with specified key and model (for resilient invocation)."""
+        llm = get_chat_groq(
+            model=model,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            api_key=api_key,
+        )
+        return create_react_agent(
+            llm,
+            self.tools,
+            prompt=COUNTER_REASONER_SYSTEM_PROMPT,
+        )
+
     def run(
         self,
         claim: str,
@@ -432,10 +451,13 @@ Select the most useful attack among the following ids and return ONLY the chosen
             allowed_precedents=allowed_precedents,
         )
 
-        # Execute the ReAct agent
+        # Execute the ReAct agent with resilient retry/key-rotation/fallback
         messages = [HumanMessage(content=input_prompt)]
         try:
-            result = self.react_agent.invoke({"messages": messages})
+            result = resilient_react_invoke(
+                self._build_react_agent,
+                {"messages": messages},
+            )
             messages_out = result.get("messages", [])
         except Exception as e:
             # Handle Groq tool_use_failed: extract valid response from failed_generation

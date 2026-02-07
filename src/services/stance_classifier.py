@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import settings  # noqa: E402
+from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
 
 
 class Stance(Enum):
@@ -56,11 +56,9 @@ class StanceClassifier:
 
     @property
     def llm(self) -> ChatGroq:
-        """Lazy initialization of LLM."""
+        """Lazy initialization of LLM with resilient key management."""
         if self._llm is None:
-            self._llm = ChatGroq(
-                api_key=settings.groq_api_key,
-                model=settings.groq_model,
+            self._llm = get_chat_groq(
                 temperature=0.0,  # Deterministic for classification
                 max_tokens=50,
             )
@@ -85,7 +83,7 @@ class StanceClassifier:
         prompt = self._build_statute_prompt(claim, article_num, source, title, text)
 
         try:
-            response = self.llm.invoke([HumanMessage(content=prompt)])
+            response = resilient_chat_call(self.llm, [HumanMessage(content=prompt)])
             answer = response.content.strip().upper()
             return self._parse_response(statute, answer)
         except Exception as e:
@@ -114,7 +112,7 @@ class StanceClassifier:
         prompt = self._build_precedent_prompt(claim, title, summary)
 
         try:
-            response = self.llm.invoke([HumanMessage(content=prompt)])
+            response = resilient_chat_call(self.llm, [HumanMessage(content=prompt)])
             answer = response.content.strip().upper()
             return self._parse_response(precedent, answer)
         except Exception as e:

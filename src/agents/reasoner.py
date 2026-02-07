@@ -11,7 +11,9 @@ Uses LangGraph with Groq Cloud for LLM-powered reasoning.
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -23,6 +25,9 @@ from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.taxonomy_tools import get_causality_theory_tool
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
 
 # System prompt for the Reasoner (with pre-retrieved context)
 REASONER_SYSTEM_PROMPT = """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
@@ -122,6 +127,20 @@ class Reasoner(BaseAgent):
                 prompt=REASONER_SYSTEM_PROMPT,
             )
         return self._react_agent
+
+    def _build_react_agent(self, api_key: str, model: str):
+        """Build a fresh ReAct agent with specified key and model (for resilient invocation)."""
+        llm = get_chat_groq(
+            model=model,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            api_key=api_key,
+        )
+        return create_react_agent(
+            llm,
+            self.tools,
+            prompt=REASONER_SYSTEM_PROMPT,
+        )
 
     def run(
         self,
@@ -331,10 +350,13 @@ class Reasoner(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
     def _invoke_reasoner(self, prompt: str) -> tuple[str, list]:
-        """Invoke the ReAct agent and return (raw_output, messages)."""
+        """Invoke the ReAct agent with resilient retry/key-rotation/fallback."""
         messages = [HumanMessage(content=prompt)]
         try:
-            result = self.react_agent.invoke({"messages": messages})
+            result = resilient_react_invoke(
+                self._build_react_agent,
+                {"messages": messages},
+            )
         except Exception as e:
             # Handle Groq tool_use_failed: the model generated a valid response
             # but the tool-calling mechanism failed. Extract the response.
@@ -487,7 +509,7 @@ REASONING CHAIN (for context):
 {chain_text}
 """
         try:
-            resp = self.llm.invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             content = (resp.content or "").strip()
 
             # Parse causal_type_id from LLM response
@@ -683,7 +705,7 @@ No punctuation. No new lines. No extra spaces.
 """
 
             try:
-                response = self.llm.invoke([HumanMessage(content=prompt)])
+                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(
@@ -747,7 +769,7 @@ No punctuation. No new lines. No extra spaces.
 """
 
             try:
-                response = self.llm.invoke([HumanMessage(content=prompt)])
+                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(

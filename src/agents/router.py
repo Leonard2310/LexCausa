@@ -93,10 +93,10 @@ class Router(BaseAgent):
     # Internal helpers
     # ---------------------------------------------------------------------
     def _route_with_llm(self, claim: str) -> Dict[str, str]:
-        """Use LLM to classify domain, falling back to ENTRAMBI if parsing fails."""
+        """Use LLM to classify domain, with resilient retry/key-rotation/fallback."""
         prompt = self._build_prompt(claim)
         try:
-            resp = self.llm.invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             content = (resp.content or "").strip()
             parsed = self._parse_json_like(content)
             if parsed:

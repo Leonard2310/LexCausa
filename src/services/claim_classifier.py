@@ -15,6 +15,7 @@ from groq import Groq
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
+from services.groq_client import get_groq_client, resilient_groq_call  # noqa: E402
 
 # Taxonomy mapping to Neo4j libro names
 # I nomi dei libri includono il prefisso del codice (CC/CP) per univocità
@@ -147,16 +148,16 @@ class ClaimClassifier:
         Initialize the classifier.
 
         Args:
-            api_key: Groq API key. If None, reads from settings.
+            api_key: Groq API key. If None, uses the resilient client with key rotation.
             model: Model to use for classification. If None, reads from settings.
         """
-        self.api_key = api_key or settings.groq_api_key
-        if not self.api_key:
+        self.api_key = api_key  # May be None → resilient_groq_call handles rotation
+        if not api_key and not settings.groq_api_keys:
             raise ValueError(
-                "GROQ_API_KEY not found. Set it in .env or pass api_key parameter."
+                "GROQ_API_KEY not found. Set GROQ_API_KEY_V1/V2/V3 in .env."
             )
 
-        self.client = Groq(api_key=self.api_key)
+        self.client = get_groq_client(api_key=self.api_key)
         self.model = model or settings.groq_model
 
     def _build_messages(self, claim: str) -> list[dict]:
@@ -210,17 +211,20 @@ class ClaimClassifier:
         messages: list[dict],
         temperature: float,
     ) -> ClassificationResult:
-        """Synchronous classification."""
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=64,
-            top_p=1,
-            stream=False,
-        )
+        """Synchronous classification with resilient retry/key-rotation/fallback."""
 
-        response_text = completion.choices[0].message.content.strip()
+        def _call(client: Groq, model: str):
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_completion_tokens=64,
+                top_p=1,
+                stream=False,
+            )
+            return completion.choices[0].message.content.strip()
+
+        response_text = resilient_groq_call(_call)
         return self._parse_response(claim, response_text)
 
     def _classify_stream(
@@ -229,22 +233,25 @@ class ClaimClassifier:
         messages: list[dict],
         temperature: float,
     ) -> ClassificationResult:
-        """Streaming classification."""
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_completion_tokens=64,
-            top_p=1,
-            stream=True,
-        )
+        """Streaming classification with resilient retry/key-rotation/fallback."""
 
-        response_text = ""
-        for chunk in completion:
-            content = chunk.choices[0].delta.content or ""
-            response_text += content
+        def _call(client: Groq, model: str):
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_completion_tokens=64,
+                top_p=1,
+                stream=True,
+            )
+            response_text = ""
+            for chunk in completion:
+                content = chunk.choices[0].delta.content or ""
+                response_text += content
+            return response_text.strip()
 
-        return self._parse_response(claim, response_text.strip())
+        response_text = resilient_groq_call(_call)
+        return self._parse_response(claim, response_text)
 
     def _parse_response(
         self,

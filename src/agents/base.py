@@ -22,6 +22,7 @@ from neo4j import GraphDatabase
 # Add parent to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
+from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
 
 
 @dataclass
@@ -90,15 +91,28 @@ class BaseAgent(ABC):
 
     @property
     def llm(self) -> ChatGroq:
-        """Lazy initialization of LLM."""
+        """Lazy initialization of LLM with resilient key management."""
         if self._llm is None:
-            self._llm = ChatGroq(
-                api_key=self.config.groq_api_key,
+            self._llm = get_chat_groq(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
+                api_key=self.config.groq_api_key or None,
             )
         return self._llm
+
+    def _rebuild_llm(self, api_key: str, model: str) -> ChatGroq:
+        """Rebuild the LLM with a new API key and model (used by resilient wrappers)."""
+        return get_chat_groq(
+            model=model,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens,
+            api_key=api_key,
+        )
+
+    def _resilient_llm_invoke(self, messages, **kwargs):
+        """Invoke LLM with automatic retry, key rotation, and model fallback."""
+        return resilient_chat_call(self.llm, messages, **kwargs)
 
     @property
     def neo4j_driver(self):

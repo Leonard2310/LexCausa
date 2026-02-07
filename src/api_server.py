@@ -10,6 +10,10 @@ import json
 import os
 import sys
 import warnings
+from contextlib import contextmanager
+from datetime import datetime
+from io import StringIO
+from pathlib import Path
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -41,6 +45,59 @@ from services.stance_classifier import StanceClassifier  # noqa: E402
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# ─── Pipeline file logging ──────────────────────────────────────────
+LOG_DIR = Path(project_root) / "logs"
+
+
+class _TeeWriter:
+    """Write to both the original stream and a StringIO buffer."""
+
+    def __init__(self, original, buffer: StringIO):
+        self._original = original
+        self._buffer = buffer
+
+    def write(self, text: str) -> int:
+        self._original.write(text)
+        self._buffer.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self._original.flush()
+
+    # delegate any other attribute to the original stream
+    def __getattr__(self, name: str):
+        return getattr(self._original, name)
+
+
+@contextmanager
+def _pipeline_logger(claim: str):
+    """
+    Context manager: captures all stdout produced during a pipeline run
+    and saves it to ``logs/<timestamp>_<slug>.log``.
+    """
+    LOG_DIR.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = claim[:60].replace(" ", "_").replace("/", "-")
+    log_path = LOG_DIR / f"{ts}_{slug}.log"
+
+    buf = StringIO()
+    buf.write(f"[{datetime.now().isoformat()}] Pipeline log for claim:\n")
+    buf.write(f"{claim}\n")
+    buf.write("=" * 70 + "\n\n")
+
+    old_stdout = sys.stdout
+    sys.stdout = _TeeWriter(old_stdout, buf)  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+        try:
+            log_path.write_text(buf.getvalue(), encoding="utf-8")
+            print(f"\n📝 Pipeline log salvato in: {log_path}")
+        except Exception as exc:
+            print(f"⚠️ Errore salvataggio log: {exc}")
+
 
 # Agenti globali (lazy initialization)
 classifier = None
@@ -501,105 +558,136 @@ def pipeline():
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
-        print(f"\n{'='*70}")
-        print("🚀 FULL PIPELINE - START")
-        print(f"{'='*70}")
-        print(f"Claim: {claim[:100]}...")
+        with _pipeline_logger(claim):
+            print(f"\n{'='*70}")
+            print("🚀 FULL PIPELINE - START")
+            print(f"{'='*70}")
+            print(f"Claim: {claim[:100]}...")
 
-        routing_decision = resolve_routing_decision(claim, data)
+            routing_decision = resolve_routing_decision(claim, data)
 
-        # Preload context once for both Reasoner and Counter-Reasoner
-        statutes, precedents = prepare_claim_context(
-            claim=claim,
-            include_precedents=include_precedents,
-            max_statutes=max_statutes,
-            max_precedents=max_precedents,
-        )
+            # Preload context once for both Reasoner and Counter-Reasoner
+            statutes, precedents = prepare_claim_context(
+                claim=claim,
+                include_precedents=include_precedents,
+                max_statutes=max_statutes,
+                max_precedents=max_precedents,
+            )
 
-        # Classify stance using NLI to separate support vs against
-        support_statutes, against_statutes, support_precedents, against_precedents = (
-            classify_stance_for_agents(claim, statutes, precedents)
-        )
+            # Classify stance using NLI to separate support vs against
+            (
+                support_statutes,
+                against_statutes,
+                support_precedents,
+                against_precedents,
+            ) = classify_stance_for_agents(claim, statutes, precedents)
 
-        # STEP 1: Reasoner (receives SUPPORT articles/precedents)
-        print(f"\n{'─'*70}")
-        print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
-        print(f"{'─'*70}")
-        print(
-            f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
-        )
+            # STEP 1: Reasoner (receives SUPPORT articles/precedents)
+            print(f"\n{'─'*70}")
+            print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
+            print(f"{'─'*70}")
+            print(
+                f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
+            )
 
-        reas = get_reasoner()
-        reasoner_result = reas.run(
-            claim=claim,
-            routing_decision=routing_decision,
-            pre_retrieved_statutes=support_statutes,
-            pre_retrieved_precedents=support_precedents,
-        )
-        final_routing_decision = RoutingDecision(
-            claim=claim,
-            domain=routing_decision.domain,
-            causal_type_id=reasoner_result.causal_type_id,
-            theory_id=reasoner_result.theory_id,
-            anchor_norms=reasoner_result.anchor_norms,
-            principle_tests=reasoner_result.principle_tests,
-            additional_causal_types=reasoner_result.causal_type_ids_for_counter,
-        )
+            reas = get_reasoner()
+            reasoner_result = reas.run(
+                claim=claim,
+                routing_decision=routing_decision,
+                pre_retrieved_statutes=support_statutes,
+                pre_retrieved_precedents=support_precedents,
+            )
+            final_routing_decision = RoutingDecision(
+                claim=claim,
+                domain=routing_decision.domain,
+                causal_type_id=reasoner_result.causal_type_id,
+                theory_id=reasoner_result.theory_id,
+                anchor_norms=reasoner_result.anchor_norms,
+                principle_tests=reasoner_result.principle_tests,
+                additional_causal_types=reasoner_result.causal_type_ids_for_counter,
+            )
 
-        print("✅ Reasoner completed")
-        print(
-            f"   - Domain: {routing_decision.domain} -> Causal type: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
-        )
-        print(f"   - Mismatch status: {reasoner_result.mismatch_status}")
-        print(
-            f"   - Anchor norms: core={len(reasoner_result.anchor_norms.get('core_norms', []))}, accessory={len(reasoner_result.anchor_norms.get('accessory_norms', []))}"
-        )
-        print(f"   - Statutes for reasoning: {len(reasoner_result.relevant_statutes)}")
-        print(f"   - Arguments: {len(reasoner_result.arguments)}")
-        print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
+            print("✅ Reasoner completed")
+            print(
+                f"   - Domain: {routing_decision.domain} -> Causal type: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
+            )
+            print(f"   - Mismatch status: {reasoner_result.mismatch_status}")
+            print(
+                f"   - Anchor norms: core={len(reasoner_result.anchor_norms.get('core_norms', []))}, accessory={len(reasoner_result.anchor_norms.get('accessory_norms', []))}"
+            )
+            print(
+                f"   - Statutes for reasoning: {len(reasoner_result.relevant_statutes)}"
+            )
+            print(f"   - Arguments: {len(reasoner_result.arguments)}")
+            print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
 
-        # STEP 2: Counter-Reasoner (receives AGAINST articles/precedents)
-        print(f"\n{'─'*70}")
-        print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
-        print(f"{'─'*70}")
-        print(
-            f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
-        )
+            # STEP 2: Counter-Reasoner (receives AGAINST articles/precedents)
+            print(f"\n{'─'*70}")
+            print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
+            print(f"{'─'*70}")
+            print(
+                f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
+            )
 
-        cr = get_counter_reasoner()
-        counter_result = cr.run(
-            claim=claim,
-            routing_decision=final_routing_decision,
-            pre_retrieved_statutes=against_statutes,
-            pre_retrieved_precedents=against_precedents,
-        )
+            cr = get_counter_reasoner()
+            counter_result = cr.run(
+                claim=claim,
+                routing_decision=final_routing_decision,
+                pre_retrieved_statutes=against_statutes,
+                pre_retrieved_precedents=against_precedents,
+            )
 
-        print("✅ Counter-Reasoner completed")
-        print(f"   - Counter-arguments: {len(counter_result.counter_arguments)}")
-        print(
-            f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
-        )
+            print("✅ Counter-Reasoner completed")
+            print(
+                f"   - Causal type: {counter_result.causal_type_id} / {counter_result.theory_id}"
+            )
+            print(f"   - Selected attack: {counter_result.selected_attack_id}")
+            print(
+                f"   - Statutes for counter-reasoning: {len(counter_result.relevant_statutes)}"
+            )
+            print(f"   - Counter-arguments: {len(counter_result.counter_arguments)}")
+            print(
+                f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
+            )
 
-        # STEP 3: Polisher-Evaluator (consistency check)
-        print(f"\n{'─'*70}")
-        print("📊 STEP 3: Polisher-Evaluator (consistency check)...")
-        print(f"{'─'*70}")
+            # STEP 3: Polisher-Evaluator (consistency check)
+            print(f"\n{'─'*70}")
+            print("📊 STEP 3: Polisher-Evaluator (consistency check)...")
+            print(f"{'─'*70}")
 
-        pe = get_polisher_evaluator()
-        evaluation_result = pe.run(
-            claim=claim,
-            domain=final_routing_decision.domain,
-            reasoner_output=reasoner_result.to_dict(),
-            counter_reasoner_output=counter_result.to_dict(),
-        )
+            pe = get_polisher_evaluator()
+            evaluation_result = pe.run(
+                claim=claim,
+                domain=final_routing_decision.domain,
+                reasoner_output=reasoner_result.to_dict(),
+                counter_reasoner_output=counter_result.to_dict(),
+            )
 
-        print("✅ Polisher-Evaluator completed")
-        print(f"   - Winning side: {evaluation_result.winning_side}")
-        print(f"   - Confidence: {evaluation_result.confidence:.2f}")
+            # Derive winning_side and confidence from AQA verdict
+            aqa = evaluation_result.aqa_report or {}
+            aqa_verdict = aqa.get("verdict", "uncertain")
+            aqa_net = aqa.get("net_plausibility", {})
+            verdict_map = {
+                "plausible": "support",
+                "implausible": "counter",
+                "uncertain": "undecided",
+            }
+            evaluation_result.winning_side = verdict_map.get(aqa_verdict, "undecided")
+            evaluation_result.confidence = abs(aqa_net.get("final", 0.0))
 
-        print(f"\n{'='*70}")
-        print("✅ FULL PIPELINE - END")
-        print(f"{'='*70}\n")
+            print("✅ Polisher-Evaluator completed")
+            print(f"   - Winning side: {evaluation_result.winning_side}")
+            print(f"   - Confidence: {evaluation_result.confidence:.2f}")
+            print(
+                f"   - AQA verdict: {aqa_verdict} "
+                f"(pro={aqa_net.get('pro', 0):.2f}, "
+                f"contra={aqa_net.get('contra', 0):.2f}, "
+                f"final={aqa_net.get('final', 0):.2f})"
+            )
+
+            print(f"\n{'='*70}")
+            print("✅ FULL PIPELINE - END")
+            print(f"{'='*70}\n")
 
         # Restituisci entrambi i risultati
         return jsonify(

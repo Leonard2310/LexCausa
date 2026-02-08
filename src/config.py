@@ -108,6 +108,22 @@ class Settings(BaseSettings):
         alias="SEARCH_TOP_K_DEFAULT",
         description="Default number of statute results to return when not specified.",
     )
+    search_min_kept_statutes: int = Field(
+        default=10,
+        alias="SEARCH_MIN_KEPT_STATUTES",
+        description="Minimum number of statutes to keep after relevance filtering. "
+        "If fewer are kept, the search expands progressively by +10 until this threshold is met.",
+    )
+    search_expansion_step: int = Field(
+        default=10,
+        alias="SEARCH_EXPANSION_STEP",
+        description="Number of additional statutes to fetch per expansion round.",
+    )
+    search_max_expansions: int = Field(
+        default=5,
+        alias="SEARCH_MAX_EXPANSIONS",
+        description="Maximum number of progressive expansion rounds to avoid infinite loops.",
+    )
     search_use_top_n_libri: int = Field(
         default=3,
         alias="SEARCH_USE_TOP_N_LIBRI",

@@ -136,20 +136,9 @@ def get_pipeline():
     return get_legal_search_pipeline()
 
 
-def prepare_claim_context(
-    claim: str,
-    include_precedents: bool,
-    max_statutes: int,
-    max_precedents: int,
-) -> tuple[list[dict], list[dict]]:
-    """Pre-retrieve statutes and precedents before reasoning."""
-    print(
-        f"🔎 Pre-retrieval config: top_k_statutes={max_statutes}, max_precedents={max_precedents}"
-    )
-    pipe = get_pipeline()
-    search_result = pipe.search(claim, top_k=max_statutes)
-
-    statutes = [
+def _articles_to_dicts(articles) -> list[dict]:
+    """Convert ArticleResult objects to plain dicts."""
+    return [
         {
             "statute_id": art.statute_id,
             "articolo": art.articolo,
@@ -158,12 +147,90 @@ def prepare_claim_context(
             "libro": art.libro,
             "source": art.source,
         }
-        for art in search_result.articles
+        for art in articles
     ]
 
-    reas = get_reasoner()
-    statutes = reas.filter_irrelevant_statutes(claim, statutes)
 
+def prepare_claim_context(
+    claim: str,
+    include_precedents: bool,
+    max_statutes: int,
+    max_precedents: int,
+) -> tuple[list[dict], list[dict]]:
+    """Pre-retrieve statutes and precedents before reasoning.
+
+    Implements progressive search: if the initial top_k search yields fewer
+    than `search_min_kept_statutes` after relevance filtering, the search
+    expands by `search_expansion_step` at a time (up to `search_max_expansions`
+    rounds) until the minimum is met or no more articles can be found.
+    """
+    min_kept = settings.search_min_kept_statutes
+    expansion_step = settings.search_expansion_step
+    max_expansions = settings.search_max_expansions
+
+    print(
+        f"🔎 Pre-retrieval config: top_k_statutes={max_statutes}, "
+        f"min_kept={min_kept}, max_precedents={max_precedents}"
+    )
+
+    pipe = get_pipeline()
+    reas = get_reasoner()
+
+    # ── Step 1: classify + embed once ──────────────────────────────────
+    classification = pipe.classifier.classify(claim)
+    embedding = pipe.embed_text(claim)
+    libri_filters = classification.libro_mappings[: settings.search_use_top_n_libri]
+
+    # ── Step 2: initial vector search ──────────────────────────────────
+    current_top_k = max_statutes
+    articles = pipe.vector_search(embedding, libri_filters, current_top_k)
+    statutes = _articles_to_dicts(articles)
+    kept_statutes = reas.filter_irrelevant_statutes(claim, statutes)
+    seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
+
+    print(
+        f"📊 Initial search: {len(statutes)} fetched, "
+        f"{len(kept_statutes)} kept (min={min_kept})"
+    )
+
+    # ── Step 3: progressive expansion ──────────────────────────────────
+    expansion = 0
+    while len(kept_statutes) < min_kept and expansion < max_expansions:
+        expansion += 1
+        current_top_k += expansion_step
+        print(
+            f"🔄 Expansion {expansion}/{max_expansions}: "
+            f"top_k={current_top_k}, kept so far={len(kept_statutes)}"
+        )
+
+        # Re-query with larger top_k (embedding & classification reused)
+        articles = pipe.vector_search(embedding, libri_filters, current_top_k)
+        new_statutes = [
+            d for d in _articles_to_dicts(articles) if d["statute_id"] not in seen_ids
+        ]
+
+        if not new_statutes:
+            print("   ⚠️ No new articles found — stopping expansion")
+            break
+
+        seen_ids.update(s["statute_id"] for s in new_statutes)
+        new_kept = reas.filter_irrelevant_statutes(claim, new_statutes)
+        kept_statutes.extend(new_kept)
+
+        print(
+            f"   📊 +{len(new_statutes)} new fetched, "
+            f"+{len(new_kept)} kept → total kept={len(kept_statutes)}"
+        )
+
+    if expansion > 0:
+        print(
+            f"✅ Progressive search complete: {expansion} expansion(s), "
+            f"{len(kept_statutes)} statutes kept"
+        )
+
+    statutes = kept_statutes
+
+    # ── Precedents (unchanged) ─────────────────────────────────────────
     precedents: list[dict] = []
     if include_precedents:
         try:

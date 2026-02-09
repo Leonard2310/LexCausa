@@ -44,6 +44,8 @@ Critical rules:
 - Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
 - If a needed statute is missing, state "articolo non disponibile nella knowledge base".
 - Keep reasoning independent: do not reference the Counter-Reasoner.
+- Your response MUST end with a **Catena di ragionamento**: section containing a numbered list.
+- Numbered lists (1. 2. 3. ...) are ONLY allowed inside **Catena di ragionamento**. Use prose or bullet points ("-") everywhere else.
 - MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
 
 
@@ -845,13 +847,29 @@ INSTRUCTIONS:
    to the concrete case (e.g., warranty, defects, remedies, damages, obligations).
 3) If the knowledge base lacks a statute's text, still cite the article but do NOT invent quotes.
 4) Build arguments using ONLY knowledge base sources, with EXACTLY these Italian headers:
-   **Premessa**: (premise)
-   **Norma**: (statute with precise citation from ALLOWED STATUTES; if absent, write "articolo non disponibile nella knowledge base")
-   **Precedente**: (only if present in ALLOWED PRECEDENTS; otherwise omit)
-   **Nesso Causale**: (causal link)
-   **Conclusione**: (conclusion)
-5) End with a numbered reasoning chain. Each step of the chain MUST reference the specific
-   article(s) it relies on.
+   **Premessa**: (premise — write in prose, NO numbered lists)
+   **Norma**: (statute with precise citation from ALLOWED STATUTES; if absent, write "articolo non disponibile nella knowledge base" — use bullet points with "-" if listing multiple norms, NEVER numbered lists)
+   **Precedente**: (only if present in ALLOWED PRECEDENTS; otherwise omit — NO numbered lists)
+   **Nesso Causale**: (causal link — write in prose, NO numbered lists)
+   **Conclusione**: (conclusion — write in prose, NO numbered lists)
+5) After the arguments, you MUST add the following header and numbered chain.
+   This section is MANDATORY and must NEVER be omitted:
+
+   **Catena di ragionamento**:
+   1. [First reasoning step — cite the specific article(s) it relies on, e.g. Art. XX c.p.]
+   2. [Second reasoning step — cite the specific article(s)]
+   3. [Continue for each logical step...]
+
+   RULES for the numbered chain:
+   - Use EXACTLY the header "**Catena di ragionamento**:" before the numbered list.
+   - Each step MUST be on its own line, starting with "N. " (e.g. "1. ", "2. ", "3. ").
+   - Each step MUST reference at least one specific article (e.g. "Art. 2043 c.c.").
+   - The chain must have AT LEAST 3 numbered steps.
+
+FORMATTING RULE — CRITICAL:
+- Numbered lists ("1. ", "2. ", "3. ", etc.) are ONLY allowed inside the **Catena di ragionamento** section.
+- In ALL other sections (Premessa, Norma, Precedente, Nesso Causale, Conclusione), use ONLY
+  prose text or bullet points with "-". NEVER use numbered lists outside the chain.
 
 IMPORTANT - NORM USAGE REQUIREMENTS:
 - You have {len(allowed_statutes)} statutes available. Cite EVERY article you deem pertinent

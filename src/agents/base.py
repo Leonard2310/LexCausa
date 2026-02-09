@@ -9,6 +9,7 @@ Provides common functionality for all agents including:
 """
 
 import json
+import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -233,6 +234,14 @@ class BaseAgent(ABC):
             "argomentazione",
         ]
 
+        # Pattern to detect pure norm-reference lines like:
+        # "**Offesa ingiusta**: Art. 52 c.p."  or  "Causalità: Art. 40 c.p. e Art. 41 c.p."
+        # These are short summary items, NOT reasoning steps.
+        _norm_ref_pattern = re.compile(
+            r"^(?:\*\*)?[^:]{2,40}(?:\*\*)?:\s*Art\.?\s*\d",
+            re.IGNORECASE,
+        )
+
         in_chain = False
         for line in lines:
             line = line.strip()
@@ -248,13 +257,27 @@ class BaseAgent(ABC):
                         chain.append(content)
                 continue
 
+            # Detect a new bold section header that is NOT a chain section
+            # (e.g. **Premessa**, **Norma**, **Nesso Causale**).
+            # When we hit one of these while already in_chain, stop collecting.
+            if in_chain and line.startswith("**") and ":" in line:
+                header_text = line.split(":", 1)[0].replace("*", "").strip().lower()
+                if not any(marker in header_text for marker in chain_markers):
+                    in_chain = False
+                    continue
+
             if in_chain and line:
                 # Skip markdown bold section headers (e.g. **Ulteriore Norma**:)
                 if line.startswith("**"):
                     continue
                 # Numbered items (1., 2., etc.)
                 if line[0].isdigit() and len(line) > 2:
-                    chain.append(line.lstrip("0123456789.) "))
+                    step_text = line.lstrip("0123456789.) ")
+                    # Skip pure norm-reference items
+                    # e.g. "**Offesa ingiusta**: Art. 52 c.p."
+                    if _norm_ref_pattern.match(step_text):
+                        continue
+                    chain.append(step_text)
                 # Bullet points
                 elif line.startswith(("-", "•", "—", "→")):
                     chain.append(line.lstrip("-•—→ "))

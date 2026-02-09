@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch } from 'lucide-react';
 import './App.css';
+import AspicMetagraph from './AspicMetagraph';
 
 // Tab types
 const TABS = {
@@ -933,17 +934,30 @@ export default function App() {
                             {aqaReport.notes?.attacks_enabled === false && (
                               <span>Attacchi: disabilitati</span>
                             )}
+                            {aqaReport.notes?.attacks_enabled === true && (
+                              <span style={{ color: '#f59e0b' }}>⚔️ Attacchi: abilitati</span>
+                            )}
                           </div>
 
-                          {/* Chain-level Norm Support */}
+                          {/* Chain-level averages */}
                           {aqaReport.chain_scores && (
                             <div className="aqa-meta" style={{ marginTop: '0.5rem' }}>
                               <span className="stat-item stat-valid">
-                                📚 Norm Pro: {((aqaReport.chain_scores.pro?.norm_support ?? 0) * 100).toFixed(0)}%
+                                📚 Norm Pro: {((aqaReport.chain_scores.pro?.norm_support_avg ?? 0) * 100).toFixed(0)}%
                               </span>
                               <span className="stat-item stat-text">
-                                📚 Norm Contro: {((aqaReport.chain_scores.contra?.norm_support ?? 0) * 100).toFixed(0)}%
+                                📚 Norm Contro: {((aqaReport.chain_scores.contra?.norm_support_avg ?? 0) * 100).toFixed(0)}%
                               </span>
+                              {aqaReport.chain_scores.pro?.attacks_avg > 0 && (
+                                <span className="stat-item stat-repaired">
+                                  ⚔️ Attacchi Pro: {((aqaReport.chain_scores.pro?.attacks_avg ?? 0)).toFixed(3)}
+                                </span>
+                              )}
+                              {aqaReport.chain_scores.contra?.attacks_avg > 0 && (
+                                <span className="stat-item stat-repaired">
+                                  ⚔️ Attacchi Contro: {((aqaReport.chain_scores.contra?.attacks_avg ?? 0)).toFixed(3)}
+                                </span>
+                              )}
                             </div>
                           )}
 
@@ -964,11 +978,20 @@ export default function App() {
                             <div className="aqa-notes">
                               <h5>Attacchi dominanti</h5>
                               <ul className="aqa-list">
-                                {aqaReport.notes.dominant_attacks.map((attack, idx) => (
-                                  <li key={idx}>
-                                    {attack.link_id || `Link ${idx + 1}`} - attacchi {(attack.attacks_sum ?? 0).toFixed(2)}
-                                  </li>
-                                ))}
+                                {aqaReport.notes.dominant_attacks.map((attack, idx) => {
+                                  const attackerLabel = attack.attacker_role === 'contra' ? 'C' : 'P';
+                                  const targetLabel = attack.target_role === 'counter' ? 'C' : 'P';
+                                  return (
+                                    <li key={idx}>
+                                      <span className={`role-tag ${attack.attacker_role === 'contra' ? 'role-contra' : 'role-pro'}`}>{attackerLabel}</span>
+                                      {attack.attacker}
+                                      {' → '}
+                                      <span className={`role-tag ${attack.target_role === 'counter' ? 'role-contra' : 'role-pro'}`}>{targetLabel}</span>
+                                      {attack.target}
+                                      {' — val '}{(attack.value ?? 0).toFixed(3)} (overlap {((attack.overlap ?? 0) * 100).toFixed(0)}%)
+                                    </li>
+                                  );
+                                })}
                               </ul>
                             </div>
                           )}
@@ -1003,9 +1026,13 @@ export default function App() {
                                         </div>
                                         <div className="aqa-link-metrics">
                                           <span>Base {(link.base_score ?? 0).toFixed(2)}</span>
-                                          <span>Δ precedenti {(link.precedent_delta ?? 0).toFixed(2)}</span>
+                                          <span>Norm {(link.norm_support ?? 0).toFixed(2)}</span>
                                           <span>Cogency {(link.cogency ?? 0).toFixed(2)}</span>
                                           <span>Sem {(link.semantics ?? 0).toFixed(2)}</span>
+                                          {(link.attacks_sum ?? 0) > 0 && (
+                                            <span style={{ color: '#f59e0b' }}>⚔️ {(link.attacks_sum ?? 0).toFixed(3)}</span>
+                                          )}
+                                          <span>Δ prec {(link.precedent_delta ?? 0).toFixed(2)}</span>
                                         </div>
                                       </div>
                                     ))}
@@ -1027,9 +1054,13 @@ export default function App() {
                                         </div>
                                         <div className="aqa-link-metrics">
                                           <span>Base {(link.base_score ?? 0).toFixed(2)}</span>
-                                          <span>Δ precedenti {(link.precedent_delta ?? 0).toFixed(2)}</span>
+                                          <span>Norm {(link.norm_support ?? 0).toFixed(2)}</span>
                                           <span>Cogency {(link.cogency ?? 0).toFixed(2)}</span>
                                           <span>Sem {(link.semantics ?? 0).toFixed(2)}</span>
+                                          {(link.attacks_sum ?? 0) > 0 && (
+                                            <span style={{ color: '#f59e0b' }}>⚔️ {(link.attacks_sum ?? 0).toFixed(3)}</span>
+                                          )}
+                                          <span>Δ prec {(link.precedent_delta ?? 0).toFixed(2)}</span>
                                         </div>
                                       </div>
                                     ))}
@@ -1049,6 +1080,20 @@ export default function App() {
                       ) : (
                         <div className="aqa-disabled">AQA disabilitata</div>
                       )}
+                    </div>
+                  )}
+
+                  {/* SEZIONE METAGRAFO ASPIC+ */}
+                  {aqaReport && aqaReport.enabled && (aqaProLinks.length > 0 || aqaContraLinks.length > 0) && (
+                    <div className="result-section pipeline-section">
+                      <h3 className="section-header">
+                        <GitBranch size={20} style={{ color: '#7c3aed' }} />
+                        6. ASPIC+ Metagrafo — Attacchi Incrociati
+                      </h3>
+                      <p style={{ fontSize: '0.82rem', color: '#6b7280', marginBottom: '0.75rem' }}>
+                        Clicca su un nodo per vedere i dettagli. Scroll per zoomare, trascina per spostare il grafo.
+                      </p>
+                      <AspicMetagraph aqaReport={aqaReport} />
                     </div>
                   )}
                 </>

@@ -1915,6 +1915,7 @@ Rewrite the normative passage in Italian using only the official text, including
 
             libri = set()
             severities = set()
+            sources = set()
             for ref in statute_refs:
                 meta = self._get_statute_meta(
                     ref.get("articolo", ""), domain, ref.get("source", "")
@@ -1922,11 +1923,19 @@ Rewrite the normative passage in Italian using only the official text, including
                 libro = meta.get("libro")
                 if libro:
                     libri.add(libro)
+                source = meta.get("source")
+                if source:
+                    sources.add(source)
                 severity = self._derive_severity_category(meta)
                 if severity:
                     severities.add(severity)
 
             link_libro = list(libri)[0] if len(libri) == 1 else ""
+            link_source = (
+                list(sources)[0]
+                if len(sources) == 1
+                else (list(sources)[0] if sources else "")
+            )
             severity_category = list(severities)[0] if len(severities) == 1 else ""
 
             # Log the link
@@ -1956,6 +1965,7 @@ Rewrite the normative passage in Italian using only the official text, including
                     "premise_text": premise_text,
                     "conclusion_text": conclusion_text,
                     "libro": link_libro,
+                    "source": link_source,
                     "severity_category": severity_category,
                     "retrieved_norms": None,
                 }
@@ -1969,64 +1979,98 @@ Rewrite the normative passage in Italian using only the official text, including
     def _compute_cross_attacks(
         self, pro_links: list[dict], contra_links: list[dict]
     ) -> None:
+        """Bidirectional cross-attacks between PRO and CONTRA links (ASPIC+).
+
+        Domain rules (hard gates):
+        1. Both links must have at least one normative citation
+           (represented by a non-empty severity_category).
+        2. Both links must reference norms from the **same codice**
+           (codice_penale ↔ codice_penale, codice_civile ↔ codice_civile).
+        3. Severity category compatibility:
+           - Same severity_category → allowed.
+           - One is "generale" (c.p. libro I, cross-cutting) → allowed.
+           - Otherwise → denied.
+
+        Attack formula:
+            attack_value = overlap × attacker.base_score
+        where overlap = semantic similarity(target_text, attacker_text).
+        """
+        # Initialise
         for link in pro_links + contra_links:
             link["attacks_received"] = []
             link["attacks_sum"] = 0.0
-        for target in pro_links:
-            for opponent in contra_links:
-                has_libro = target.get("libro") and opponent.get("libro")
-                has_severity = target.get("severity_category") and opponent.get(
-                    "severity_category"
-                )
-                allowed = (
-                    has_libro
-                    and has_severity
-                    and target.get("libro") == opponent.get("libro")
-                    and target.get("severity_category")
-                    == opponent.get("severity_category")
-                )
-                if not allowed:
-                    if not has_libro or not has_severity:
-                        reason = "denied: missing severity/libro"
+
+        def _domain_rules_allow(
+            target: dict, attacker: dict
+        ) -> tuple[bool, str]:
+            t_sev = target.get("severity_category", "")
+            a_sev = attacker.get("severity_category", "")
+
+            # Rule 1: both must have norms
+            if not t_sev or not a_sev:
+                return False, "denied: missing severity/norms"
+
+            # Rule 2: same codice
+            t_src = target.get("source", "")
+            a_src = attacker.get("source", "")
+            if t_src and a_src and t_src != a_src:
+                return False, f"denied: different codice ({t_src} vs {a_src})"
+
+            # Rule 3: severity compatibility
+            if t_sev == a_sev:
+                return True, "allowed: same severity"
+            if t_sev == "generale" or a_sev == "generale":
+                return True, "allowed: generale cross-cutting"
+            return False, f"denied: severity mismatch ({t_sev} vs {a_sev})"
+
+        def _apply_attacks(
+            targets: list[dict], attackers: list[dict], attacker_role: str
+        ) -> None:
+            for target in targets:
+                for attacker in attackers:
+                    allowed, reason = _domain_rules_allow(target, attacker)
+                    if allowed:
+                        target_text = (
+                            f"{target.get('premise_text', '')} "
+                            f"{target.get('conclusion_text', '')}"
+                        )
+                        attacker_text = (
+                            f"{attacker.get('premise_text', '')} "
+                            f"{attacker.get('conclusion_text', '')}"
+                        )
+                        overlap = self._similarity(target_text, attacker_text)
+                        attack_value = overlap * attacker.get("base_score", 0.0)
                     else:
-                        reason = "denied: domain rules"
-                else:
-                    reason = "allowed"
-                overlap = (
-                    self._similarity(target.get("text", ""), opponent.get("text", ""))
-                    if allowed
-                    else 0.0
-                )
-                attack_value = overlap * opponent.get("total_score", 0.0)
-                if overlap > 0.0:
+                        overlap = 0.0
+                        attack_value = 0.0
+
                     target["attacks_received"].append(
                         {
-                            "opponent_link_id": opponent.get("link_id"),
-                            "overlap": overlap,
-                            "opponent_score": opponent.get("base_score", 0.0),
-                            "attack_value": attack_value,
+                            "attacker_link_id": attacker.get("link_id"),
+                            "attacker_role": attacker_role,
+                            "overlap": round(overlap, 4),
+                            "attacker_base_score": round(
+                                attacker.get("base_score", 0.0), 4
+                            ),
+                            "attack_value": round(attack_value, 4),
                             "reason": reason,
                         }
                     )
-                    target["attacks_sum"] += attack_value
-                else:
-                    target["attacks_received"].append(
-                        {
-                            "opponent_link_id": opponent.get("link_id"),
-                            "overlap": 0.0,
-                            "opponent_score": opponent.get("base_score", 0.0),
-                            "attack_value": 0.0,
-                            "reason": reason,
-                        }
-                    )
+                    if attack_value > 0:
+                        target["attacks_sum"] += attack_value
+
+        # CONTRA attacks PRO
+        _apply_attacks(pro_links, contra_links, attacker_role="contra")
+        # PRO attacks CONTRA
+        _apply_attacks(contra_links, pro_links, attacker_role="support")
+
+        # Sort attacks by value (descending) for readability; keep ALL attacks
         for link in pro_links + contra_links:
-            attacks = sorted(
+            link["attacks_received"] = sorted(
                 link.get("attacks_received", []),
                 key=lambda x: x.get("attack_value", 0.0),
                 reverse=True,
             )
-            link["attacks_received"] = attacks[: self._aqa_attack_top_k]
-            link["attacks_sum"] = sum(a.get("attack_value", 0.0) for a in attacks)
 
     def _extract_year(self, text: str) -> int | None:
         if not text:
@@ -2297,24 +2341,6 @@ Rewrite the normative passage in Italian using only the official text, including
         self._populate_precedent_influences(reasoner_ir, pro_links)
         self._populate_precedent_influences(counter_ir, contra_links)
 
-        # Calculate norm_support once per chain (not per link)
-        reasoner_chain_text = self._build_chain_text(reasoner_ir)
-        counter_chain_text = self._build_chain_text(counter_ir)
-        pro_norm_support, pro_norm_details = self._norm_support_score(
-            text=reasoner_chain_text,
-            retrieved_norms=None,
-        )
-        contra_norm_support, contra_norm_details = self._norm_support_score(
-            text=counter_chain_text,
-            retrieved_norms=None,
-        )
-        self._log(
-            f"📚 Chain-level norm support: pro={pro_norm_support:.2f} "
-            f"(cit={pro_norm_details.get('citation_count', 0)}), "
-            f"contra={contra_norm_support:.2f} "
-            f"(cit={contra_norm_details.get('citation_count', 0)})"
-        )
-
         for idx, link in enumerate(pro_links + contra_links, start=1):
             link_id = link.get("link_id") or f"L{idx}"
             role = (link.get("role") or "link").upper()
@@ -2348,19 +2374,29 @@ Rewrite the normative passage in Italian using only the official text, including
                 "explanation": "coherence/argument_quality averaged (readability removed)",
             }
 
-            # Link base_score uses only cogency and semantics (normSupport is chain-level)
-            # Normalize weights for 2 parameters: alpha/(alpha+gamma) and gamma/(alpha+gamma)
-            weight_sum = self._aqa_alpha + self._aqa_gamma
-            if weight_sum > 0:
-                base = (self._aqa_alpha / weight_sum) * cogency + (
-                    self._aqa_gamma / weight_sum
-                ) * semantics
-            else:
-                base = (cogency + semantics) / 2.0
+            # ----------------------------------------------------------
+            # Per-link NormSupport (β component)
+            # ----------------------------------------------------------
+            link_citations_text = f"{premise_text} {conclusion_text}"
+            norm_support_link, norm_details_link = self._norm_support_score(
+                text=link_citations_text,
+                retrieved_norms=link.get("retrieved_norms"),
+            )
+
+            # Link base_score = α·cogency + β·normSupport + γ·semantics
+            base = self._clamp01(
+                self._aqa_alpha * cogency
+                + self._aqa_beta * norm_support_link
+                + self._aqa_gamma * semantics
+            )
 
             self._log(
                 "      🧠 Cogency "
                 f"{cogency:.2f} (coh {coherence:.2f}, qual {arg_quality:.2f})"
+            )
+            self._log(
+                "      📚 NormSupport "
+                f"{norm_support_link:.2f} (cit={norm_details_link.get('citation_count', 0)})"
             )
             self._log(
                 "      🧩 Semantics "
@@ -2376,80 +2412,116 @@ Rewrite the normative passage in Italian using only the official text, including
 
             link["cogency"] = cogency
             link["semantics"] = semantics
+            link["norm_support"] = norm_support_link
             link["cogency_details"] = cogency_details
             link["semantics_details"] = semantics_details
+            link["norm_support_details"] = norm_details_link
             link["base_score"] = base
-            link["total_score"] = base
 
-        self._log("⚔️ Cross-attacks disabled - independent link scoring")
+        # ==============================================================
+        # Cross-attacks (ASPIC+ bidirectional)
+        # ==============================================================
+        self._log("⚔️ Computing bidirectional cross-attacks (ASPIC+)...")
+        self._compute_cross_attacks(pro_links, contra_links)
 
+        # Log attack summaries
+        for link in pro_links + contra_links:
+            active = [
+                a
+                for a in link.get("attacks_received", [])
+                if a.get("attack_value", 0.0) > 0
+            ]
+            if active:
+                role_tag = (link.get("role") or "link").upper()
+                self._log(
+                    f"   ⚔️ [{role_tag}] {link.get('link_id')} received "
+                    f"{len(active)} active attack(s), "
+                    f"Σattack={link.get('attacks_sum', 0.0):.4f}"
+                )
+
+        # ==============================================================
+        # Precedent delta + nesso_plausibility per link
+        # ==============================================================
+        # Formula: nesso_plausibility = clamp01(base_score - Σattacks ± δ)
         for idx, link in enumerate(pro_links + contra_links, start=1):
             link_id = link.get("link_id") or f"L{idx}"
             role = (link.get("role") or "link").upper()
             delta, influences = self._compute_precedent_delta(link)
             link["precedent_delta"] = delta
             link["precedent_influences"] = influences
-            nesso = self._clamp01(link.get("base_score", 0.0) + delta)
+            nesso = self._clamp01(
+                link.get("base_score", 0.0)
+                - link.get("attacks_sum", 0.0)
+                + delta
+            )
             link["nesso_plausibility"] = nesso
             self._log(
                 "   🔸 "
                 f"[{idx}/{total_links}] {role} link {link_id} "
-                f"precedent Δ {delta:.2f} nesso {nesso:.2f}"
+                f"base={link.get('base_score', 0.0):.2f} "
+                f"- attacks={link.get('attacks_sum', 0.0):.2f} "
+                f"+ Δprec={delta:.2f} "
+                f"→ nesso={nesso:.2f}"
             )
             if influences:
                 self._log(f"      📚 Precedent influences: {len(influences)}")
 
-        # Helper to compute average of a field across links
+        # ==============================================================
+        # Chain-level aggregation
+        # ==============================================================
+        # net_plausibility = mean(nesso_plausibility_i) per side
+        # final = net_PRO − net_CONTRA
         def avg_field(items: list[dict], field: str) -> float:
             if not items:
                 return 0.0
             return sum(i.get(field, 0.0) for i in items) / len(items)
 
-        # Calculate chain-level averages for cogency and semantics
+        pro_net = avg_field(pro_links, "nesso_plausibility")
+        contra_net = avg_field(contra_links, "nesso_plausibility")
+        final_plausibility = pro_net - contra_net
+
+        # Component averages (kept for reporting / explainability)
         pro_cogency_avg = avg_field(pro_links, "cogency")
         pro_semantics_avg = avg_field(pro_links, "semantics")
+        pro_norm_support_avg = avg_field(pro_links, "norm_support")
+        pro_base_avg = avg_field(pro_links, "base_score")
+        pro_attacks_avg = avg_field(pro_links, "attacks_sum")
+        pro_precedent_delta = avg_field(pro_links, "precedent_delta")
+
         contra_cogency_avg = avg_field(contra_links, "cogency")
         contra_semantics_avg = avg_field(contra_links, "semantics")
-
-        # base_score = α*cogency + β*normSupport + γ*semantics (at chain level)
-        pro_base_score = self._clamp01(
-            self._aqa_alpha * pro_cogency_avg
-            + self._aqa_beta * pro_norm_support
-            + self._aqa_gamma * pro_semantics_avg
-        )
-        contra_base_score = self._clamp01(
-            self._aqa_alpha * contra_cogency_avg
-            + self._aqa_beta * contra_norm_support
-            + self._aqa_gamma * contra_semantics_avg
-        )
-
-        # Apply precedent delta at chain level (average of link deltas)
-        pro_precedent_delta = avg_field(pro_links, "precedent_delta")
+        contra_norm_support_avg = avg_field(contra_links, "norm_support")
+        contra_base_avg = avg_field(contra_links, "base_score")
+        contra_attacks_avg = avg_field(contra_links, "attacks_sum")
         contra_precedent_delta = avg_field(contra_links, "precedent_delta")
 
-        pro_score = self._clamp01(pro_base_score + pro_precedent_delta)
-        contra_score = self._clamp01(contra_base_score + contra_precedent_delta)
-        final_plausibility = pro_score - contra_score
-
         self._log(
-            f"📊 Chain averages: pro(cog={pro_cogency_avg:.2f}, sem={pro_semantics_avg:.2f}), "
-            f"contra(cog={contra_cogency_avg:.2f}, sem={contra_semantics_avg:.2f})"
+            f"📊 Chain averages: "
+            f"pro(cog={pro_cogency_avg:.2f}, norm={pro_norm_support_avg:.2f}, "
+            f"sem={pro_semantics_avg:.2f}), "
+            f"contra(cog={contra_cogency_avg:.2f}, norm={contra_norm_support_avg:.2f}, "
+            f"sem={contra_semantics_avg:.2f})"
         )
         self._log(
-            f"📚 base_score = α({self._aqa_alpha:.2f})*cogency + β({self._aqa_beta:.2f})*normSupport + γ({self._aqa_gamma:.2f})*semantics"
+            f"📚 base_score = α({self._aqa_alpha:.2f})*cogency "
+            f"+ β({self._aqa_beta:.2f})*normSupport "
+            f"+ γ({self._aqa_gamma:.2f})*semantics"
         )
         self._log(
-            f"📈 Base scores: pro={pro_base_score:.2f}, contra={contra_base_score:.2f}"
+            f"📈 Chain base avg: pro={pro_base_avg:.2f}, "
+            f"contra={contra_base_avg:.2f}"
         )
         self._log(
-            f"⚖️ With precedent Δ: pro={pro_score:.2f} (+{pro_precedent_delta:.2f}), "
-            f"contra={contra_score:.2f} (+{contra_precedent_delta:.2f})"
+            f"⚔️ Chain attacks avg: pro={pro_attacks_avg:.2f}, "
+            f"contra={contra_attacks_avg:.2f}"
         )
-
         self._log(
-            "📈 AQA scores "
-            f"pro={pro_score:.2f} contra={contra_score:.2f} "
-            f"final={final_plausibility:.2f}"
+            f"⚖️ Chain precedent Δ avg: pro={pro_precedent_delta:+.2f}, "
+            f"contra={contra_precedent_delta:+.2f}"
+        )
+        self._log(
+            f"📈 net_plausibility: pro={pro_net:.2f}, "
+            f"contra={contra_net:.2f}, final={final_plausibility:+.2f}"
         )
 
         if final_plausibility >= self._aqa_verdict_pos:
@@ -2474,6 +2546,28 @@ Rewrite the normative passage in Italian using only the official text, including
                 str(item.get("link_id") or "link") for item in weakest
             )
             self._log(f"🔎 Weakest links: {weakest_ids}")
+
+        # Collect dominant attacks for reporting
+        dominant_attacks = []
+        for link in pro_links + contra_links:
+            target_role = link.get("role", "")
+            for atk in link.get("attacks_received", []):
+                if atk.get("attack_value", 0.0) > 0:
+                    dominant_attacks.append(
+                        {
+                            "target": link.get("link_id"),
+                            "target_role": target_role,
+                            "attacker": atk.get("attacker_link_id"),
+                            "attacker_role": atk.get("attacker_role", ""),
+                            "value": atk.get("attack_value"),
+                            "overlap": atk.get("overlap"),
+                        }
+                    )
+        dominant_attacks.sort(key=lambda x: x.get("value", 0.0), reverse=True)
+        dominant_attacks = dominant_attacks[:10]
+        if dominant_attacks:
+            self._log(f"⚔️ Dominant attacks: {len(dominant_attacks)}")
+
         precedent_swings = [
             {
                 "link_id": link.get("link_id"),
@@ -2482,13 +2576,14 @@ Rewrite the normative passage in Italian using only the official text, including
             for link in pro_links + contra_links
             if abs(link.get("precedent_delta", 0.0)) > 0.0
         ]
-        self._log("⚔️ Dominant attacks: disabled")
         if precedent_swings:
             self._log(f"📚 Precedent swings: {len(precedent_swings)}")
+
         severity_debug = [
             {
                 "link_id": link.get("link_id"),
                 "role": link.get("role"),
+                "source": link.get("source"),
                 "libro": link.get("libro"),
                 "severity_category": link.get("severity_category"),
             }
@@ -2510,32 +2605,32 @@ Rewrite the normative passage in Italian using only the official text, including
                 "pro": {
                     "cogency_avg": pro_cogency_avg,
                     "semantics_avg": pro_semantics_avg,
-                    "norm_support": pro_norm_support,
-                    "norm_support_details": pro_norm_details,
-                    "base_score": pro_base_score,
-                    "precedent_delta": pro_precedent_delta,
-                    "final_score": pro_score,
+                    "norm_support_avg": pro_norm_support_avg,
+                    "base_score_avg": pro_base_avg,
+                    "attacks_avg": pro_attacks_avg,
+                    "precedent_delta_avg": pro_precedent_delta,
+                    "net_plausibility": pro_net,
                 },
                 "contra": {
                     "cogency_avg": contra_cogency_avg,
                     "semantics_avg": contra_semantics_avg,
-                    "norm_support": contra_norm_support,
-                    "norm_support_details": contra_norm_details,
-                    "base_score": contra_base_score,
-                    "precedent_delta": contra_precedent_delta,
-                    "final_score": contra_score,
+                    "norm_support_avg": contra_norm_support_avg,
+                    "base_score_avg": contra_base_avg,
+                    "attacks_avg": contra_attacks_avg,
+                    "precedent_delta_avg": contra_precedent_delta,
+                    "net_plausibility": contra_net,
                 },
             },
             "net_plausibility": {
-                "pro": pro_score,
-                "contra": contra_score,
+                "pro": pro_net,
+                "contra": contra_net,
                 "final": final_plausibility,
             },
             "verdict": verdict,
             "notes": {
                 "weakest_links": weakest,
-                "dominant_attacks": [],
-                "attacks_enabled": False,
+                "dominant_attacks": dominant_attacks,
+                "attacks_enabled": True,
                 "precedent_swings": precedent_swings,
                 "severity_debug": severity_debug,
             },

@@ -96,7 +96,7 @@ Expected structure (use these EXACT Italian headers):
 - **Norma** (only if present in ALLOWED STATUTES)
 - **Nesso Causale Alternativo**
 - **Conclusione Contraria**
-- Numbered counter-reasoning chain.
+- **Catena di ragionamento**: followed by a numbered list (1. 2. 3. ...). This section is MANDATORY.
 MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
 
 
@@ -675,13 +675,31 @@ ALLOWED PRECEDENT REFERENCES (do not cite others):
 INSTRUCTIONS:
 1) Use selected_attack_id as the main lens to attack the causal link.
 2) Build one or more counter-arguments with EXACTLY this structure and these Italian headers:
-   **Premessa Alternativa**: (incompatible with the claim)
+   **Premessa Alternativa**: (incompatible with the claim — write in prose, NO numbered lists)
    **Norma**: (cite MULTIPLE relevant statutes from ALLOWED STATUTES, not just one;
-              if none apply, omit this section)
-   **Nesso Causale Alternativo**:
-   **Conclusione Contraria**:
-3) End with a numbered counter-reasoning chain, without mentioning the Reasoner.
-   Each step of the chain MUST reference the specific article(s) it relies on.
+              if none apply, omit this section — use bullet points with "-" if listing multiple norms, NEVER numbered lists)
+   **Nesso Causale Alternativo**: (write in prose, NO numbered lists)
+   **Conclusione Contraria**: (write in prose, NO numbered lists)
+3) After the counter-arguments, you MUST add the following header and numbered chain.
+   This section is MANDATORY and must NEVER be omitted:
+
+   **Catena di ragionamento**:
+   1. [First reasoning step — cite the specific article(s) it relies on, e.g. Art. XX c.p.]
+   2. [Second reasoning step — cite the specific article(s)]
+   3. [Continue for each logical step...]
+
+   RULES for the numbered chain:
+   - Use EXACTLY the header "**Catena di ragionamento**:" before the numbered list.
+   - Each step MUST be on its own line, starting with "N. " (e.g. "1. ", "2. ", "3. ").
+   - Each step MUST reference at least one specific article (e.g. "Art. 40 c.p.").
+   - The chain must have AT LEAST 3 numbered steps.
+   - Do NOT mention the Reasoner.
+   - If you omit this section, your response is INVALID.
+
+FORMATTING RULE — CRITICAL:
+- Numbered lists ("1. ", "2. ", "3. ", etc.) are ONLY allowed inside the **Catena di ragionamento** section.
+- In ALL other sections (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria),
+  use ONLY prose text or bullet points with "-". NEVER use numbered lists outside the chain.
 
 IMPORTANT - NORM USAGE REQUIREMENTS:
 - You have {len(allowed_statutes)} statutes available. Cite EVERY article you deem pertinent

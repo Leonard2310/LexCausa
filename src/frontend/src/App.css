@@ -626,6 +626,24 @@
   border-bottom: none;
 }
 
+.role-tag {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  margin-right: 0.2rem;
+  vertical-align: middle;
+}
+.role-pro {
+  background: #d1fae5;
+  color: #065f46;
+}
+.role-contra {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 .aqa-disabled {
   font-size: 0.85rem;
   color: #6b7280;
@@ -961,4 +979,147 @@
 .aqa-weight-warning {
   color: #dc2626;
   font-weight: 600;
+}
+
+/* ====================================================================
+   ASPIC+ Metagraph Styles
+   ==================================================================== */
+
+.metagraph-wrapper {
+  margin-top: 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  overflow: hidden;
+  position: relative;
+}
+
+.metagraph-legend {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
+}
+
+.metagraph-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: #374151;
+  font-weight: 500;
+}
+
+.metagraph-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+.metagraph-zoom-info {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: #9ca3af;
+}
+
+.metagraph-canvas-wrap {
+  overflow: auto;
+  max-height: 700px;
+  background:
+    radial-gradient(circle, #e5e7eb 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.metagraph-canvas-wrap svg {
+  display: block;
+  min-width: 100%;
+}
+
+/* Detail panel */
+.metagraph-detail-panel {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 280px;
+  max-height: calc(100% - 1rem);
+  overflow-y: auto;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  z-index: 20;
+  font-size: 0.8rem;
+}
+
+.metagraph-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+  font-size: 0.9rem;
+}
+
+.metagraph-detail-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: #6b7280;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+
+.metagraph-detail-close:hover {
+  background: #e5e7eb;
+}
+
+.metagraph-detail-body {
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+.metagraph-detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.2rem 0;
+  border-bottom: 1px dotted #f3f4f6;
+}
+
+.metagraph-detail-row.metagraph-detail-total {
+  border-top: 1.5px solid #e5e7eb;
+  border-bottom: none;
+  margin-top: 0.3rem;
+  padding-top: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.metagraph-detail-sub {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+  margin: 0.6rem 0 0.2rem;
+}
+
+.metagraph-attack-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px dotted #f3f4f6;
+  font-size: 0.75rem;
+}
+
+.metagraph-attack-detail em {
+  color: #9ca3af;
+}
+
+.metagraph-attack-reason {
+  color: #6b7280;
+  font-style: italic;
+  font-size: 0.7rem;
 }

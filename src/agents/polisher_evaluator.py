@@ -439,7 +439,7 @@ class PolisherEvaluator(BaseAgent):
     # Neo4j Verification
     # ------------------------------------------------------------------
     def _verify_statute_in_neo4j(
-        self, article_num: str, domain: str
+        self, article_num: str, domain: str, citation_str: str = ""
     ) -> tuple[bool, str]:
         """
         Verify if an article exists in Neo4j and return its text.
@@ -447,11 +447,24 @@ class PolisherEvaluator(BaseAgent):
         Args:
             article_num: The article number (e.g., "1223")
             domain: Legal domain ("CIVILE", "PENALE", or "ENTRAMBI")
+            citation_str: Original citation string (e.g., "Art. 52 c.p.") used
+                          to disambiguate codice when domain is ENTRAMBI.
 
         Returns:
             Tuple of (exists: bool, text: str). Text is empty if not found.
         """
         driver = get_driver()
+
+        # When domain is ENTRAMBI, try to determine the correct codice
+        # from the citation string (e.g. "c.p." → penale, "c.c." → civile)
+        if domain == "ENTRAMBI" and citation_str:
+            citation_lower = citation_str.lower()
+            if "c.p" in citation_lower or ("cod" in citation_lower and "pen" in citation_lower):
+                self._log(f"      🔍 ENTRAMBI → detected c.p. in '{citation_str}', searching PENALE")
+                return self._verify_statute_in_neo4j(article_num, "PENALE", citation_str)
+            elif "c.c" in citation_lower or ("cod" in citation_lower and "civ" in citation_lower):
+                self._log(f"      🔍 ENTRAMBI → detected c.c. in '{citation_str}', searching CIVILE")
+                return self._verify_statute_in_neo4j(article_num, "CIVILE", citation_str)
 
         # Determine codice based on domain
         if domain == "CIVILE":
@@ -463,11 +476,11 @@ class PolisherEvaluator(BaseAgent):
             articolo_normalized = article_num
             codice = "codice_penale"
         else:
-            # ENTRAMBI: cerca in entrambi i codici
-            found, text = self._verify_statute_in_neo4j(article_num, "CIVILE")
+            # ENTRAMBI without citation hint: try both codici
+            found, text = self._verify_statute_in_neo4j(article_num, "PENALE", citation_str)
             if found:
                 return found, text
-            return self._verify_statute_in_neo4j(article_num, "PENALE")
+            return self._verify_statute_in_neo4j(article_num, "CIVILE", citation_str)
 
         query = """
             MATCH (s:Statute)
@@ -1252,7 +1265,7 @@ Rewrite the normative passage in Italian using only the official text, including
             verified_articles.add(article_num)
 
             # Verify existence in Neo4j and get text
-            found, db_text = self._verify_statute_in_neo4j(article_num, domain)
+            found, db_text = self._verify_statute_in_neo4j(article_num, domain, citation)
 
             # Initialize check object
             check = CitationCheck(
@@ -1764,7 +1777,14 @@ Rewrite the normative passage in Italian using only the official text, including
             refs.append({"articolo": art, "source": source})
         return refs
 
-    def _get_statute_meta(self, article_num: str, domain: str) -> dict:
+    def _get_statute_meta(self, article_num: str, domain: str, source_hint: str = "") -> dict:
+        # If a source_hint is provided (e.g. "codice_penale"), resolve domain
+        if source_hint and domain == "ENTRAMBI":
+            if source_hint == "codice_penale":
+                domain = "PENALE"
+            elif source_hint == "codice_civile":
+                domain = "CIVILE"
+
         key = (article_num, domain)
         if key in self._statute_meta_cache:
             return self._statute_meta_cache[key]
@@ -1776,10 +1796,11 @@ Rewrite the normative passage in Italian using only the official text, including
             articolo = article_num
             codice = "codice_penale"
         else:
-            meta = self._get_statute_meta(article_num, "CIVILE")
+            # ENTRAMBI without hint: try PENALE first, then CIVILE
+            meta = self._get_statute_meta(article_num, "PENALE")
             if meta:
                 return meta
-            meta = self._get_statute_meta(article_num, "PENALE")
+            meta = self._get_statute_meta(article_num, "CIVILE")
             if meta:
                 return meta
             return {}
@@ -1874,7 +1895,7 @@ Rewrite the normative passage in Italian using only the official text, including
             libri = set()
             severities = set()
             for ref in statute_refs:
-                meta = self._get_statute_meta(ref.get("articolo", ""), domain)
+                meta = self._get_statute_meta(ref.get("articolo", ""), domain, ref.get("source", ""))
                 libro = meta.get("libro")
                 if libro:
                     libri.add(libro)

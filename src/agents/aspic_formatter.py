@@ -128,23 +128,37 @@ def _is_chain_header(text: str) -> bool:
     )
 
 
+def _is_citation_removed(text: str) -> bool:
+    """Detect lines produced by citation repair (should never become chain steps)."""
+    lower = text.strip().lower()
+    return lower.startswith("[citation removed") or lower.startswith("citation removed")
+
+
 def _is_chain_noise(text: str) -> bool:
     lower = text.strip().lower()
-    return lower.startswith(
-        (
-            "argomento",
-            "argument",
-            "norma",
-            "testo",
-            "causal link",
-            "nesso causale",
-            "premessa",
-            "conclusione",
-            "chain of reasoning",
-            "catena di ragionamento",
-            "nota",
-        )
+    if _is_citation_removed(lower):
+        return True
+    # Strip common LLM prefixes like "ulteriore", "altra", "nuovo/a"
+    core = re.sub(
+        r"^(ulteriore|ulteriori|altra|altro|altri|nuova|nuovo|nuovi)\s+",
+        "",
+        lower,
     )
+    noise_prefixes = (
+        "argomento",
+        "argument",
+        "norma",
+        "testo",
+        "causal link",
+        "nesso causale",
+        "nesso",
+        "premessa",
+        "conclusione",
+        "chain of reasoning",
+        "catena di ragionamento",
+        "nota",
+    )
+    return lower.startswith(noise_prefixes) or core.startswith(noise_prefixes)
 
 
 def _detect_section(line: str) -> tuple[str, str]:
@@ -172,6 +186,8 @@ def _parse_argument_blocks(raw_response: str) -> list[dict]:
             continue
         cleaned = _strip_markup(line)
         if not cleaned:
+            continue
+        if _is_citation_removed(cleaned):
             continue
         if _is_chain_header(cleaned):
             break

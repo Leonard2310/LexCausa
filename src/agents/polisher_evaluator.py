@@ -459,12 +459,24 @@ class PolisherEvaluator(BaseAgent):
         # from the citation string (e.g. "c.p." → penale, "c.c." → civile)
         if domain == "ENTRAMBI" and citation_str:
             citation_lower = citation_str.lower()
-            if "c.p" in citation_lower or ("cod" in citation_lower and "pen" in citation_lower):
-                self._log(f"      🔍 ENTRAMBI → detected c.p. in '{citation_str}', searching PENALE")
-                return self._verify_statute_in_neo4j(article_num, "PENALE", citation_str)
-            elif "c.c" in citation_lower or ("cod" in citation_lower and "civ" in citation_lower):
-                self._log(f"      🔍 ENTRAMBI → detected c.c. in '{citation_str}', searching CIVILE")
-                return self._verify_statute_in_neo4j(article_num, "CIVILE", citation_str)
+            if "c.p" in citation_lower or (
+                "cod" in citation_lower and "pen" in citation_lower
+            ):
+                self._log(
+                    f"      🔍 ENTRAMBI → detected c.p. in '{citation_str}', searching PENALE"
+                )
+                return self._verify_statute_in_neo4j(
+                    article_num, "PENALE", citation_str
+                )
+            elif "c.c" in citation_lower or (
+                "cod" in citation_lower and "civ" in citation_lower
+            ):
+                self._log(
+                    f"      🔍 ENTRAMBI → detected c.c. in '{citation_str}', searching CIVILE"
+                )
+                return self._verify_statute_in_neo4j(
+                    article_num, "CIVILE", citation_str
+                )
 
         # Determine codice based on domain
         if domain == "CIVILE":
@@ -477,7 +489,9 @@ class PolisherEvaluator(BaseAgent):
             codice = "codice_penale"
         else:
             # ENTRAMBI without citation hint: try both codici
-            found, text = self._verify_statute_in_neo4j(article_num, "PENALE", citation_str)
+            found, text = self._verify_statute_in_neo4j(
+                article_num, "PENALE", citation_str
+            )
             if found:
                 return found, text
             return self._verify_statute_in_neo4j(article_num, "CIVILE", citation_str)
@@ -1265,7 +1279,9 @@ Rewrite the normative passage in Italian using only the official text, including
             verified_articles.add(article_num)
 
             # Verify existence in Neo4j and get text
-            found, db_text = self._verify_statute_in_neo4j(article_num, domain, citation)
+            found, db_text = self._verify_statute_in_neo4j(
+                article_num, domain, citation
+            )
 
             # Initialize check object
             check = CitationCheck(
@@ -1777,7 +1793,9 @@ Rewrite the normative passage in Italian using only the official text, including
             refs.append({"articolo": art, "source": source})
         return refs
 
-    def _get_statute_meta(self, article_num: str, domain: str, source_hint: str = "") -> dict:
+    def _get_statute_meta(
+        self, article_num: str, domain: str, source_hint: str = ""
+    ) -> dict:
         # If a source_hint is provided (e.g. "codice_penale"), resolve domain
         if source_hint and domain == "ENTRAMBI":
             if source_hint == "codice_penale":
@@ -1856,12 +1874,15 @@ Rewrite the normative passage in Italian using only the official text, including
                 f"{repair_meta.get('total_dropped', 0)} dropped"
             )
 
-        # Filter reasoning_chain to exclude noise steps (e.g., "Precedents: none found.")
+        # Filter reasoning_chain to exclude noise steps and citation-removal markers
         valid_chain_steps = [
             step
             for step in reasoning_chain
             if step.get("text")
             and not step.get("text", "").lower().startswith("precedent")
+            and not step.get("text", "").lower().startswith("[citation removed")
+            and not step.get("text", "").lower().startswith("citation removed")
+            and "[citation removed" not in step.get("text", "").lower()
         ]
 
         if len(valid_chain_steps) < 2:
@@ -1895,7 +1916,9 @@ Rewrite the normative passage in Italian using only the official text, including
             libri = set()
             severities = set()
             for ref in statute_refs:
-                meta = self._get_statute_meta(ref.get("articolo", ""), domain, ref.get("source", ""))
+                meta = self._get_statute_meta(
+                    ref.get("articolo", ""), domain, ref.get("source", "")
+                )
                 libro = meta.get("libro")
                 if libro:
                     libri.add(libro)

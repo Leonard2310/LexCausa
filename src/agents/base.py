@@ -249,18 +249,21 @@ class BaseAgent(ABC):
                 continue
 
             if in_chain and line:
+                # Skip markdown bold section headers (e.g. **Ulteriore Norma**:)
+                if line.startswith("**"):
+                    continue
                 # Numbered items (1., 2., etc.)
                 if line[0].isdigit() and len(line) > 2:
                     chain.append(line.lstrip("0123456789.) "))
                 # Bullet points
-                elif line.startswith(("-", "•", "*", "—", "→")):
-                    chain.append(line.lstrip("-•*—→ "))
+                elif line.startswith(("-", "•", "—", "→")):
+                    chain.append(line.lstrip("-•—→ "))
                 # Arrow notation
                 elif "→" in line or "->" in line:
                     chain.append(line)
-                # Lines starting with ** (markdown bold)
-                elif line.startswith("**") and line.endswith("**"):
-                    chain.append(line.strip("*"))
+                # Single * bullet (not markdown bold **)
+                elif line.startswith("*") and not line.startswith("**"):
+                    chain.append(line.lstrip("* "))
 
         return chain if chain else ["Catena di ragionamento non disponibile."]
 
@@ -268,12 +271,27 @@ class BaseAgent(ABC):
         self, chain: list[str], precedents: list[dict]
     ) -> list[str]:
         """Clean and sanitize reasoning chain, handling precedent mentions."""
+
+        def _is_citation_removed(text: str) -> bool:
+            t = text.strip().lower()
+            return (
+                t.startswith("[citation removed")
+                or t.startswith("citation removed")
+                or "[citation removed" in t
+            )
+
         if precedents:
-            return [self._clean_chain_step(step) for step in chain]
+            return [
+                self._clean_chain_step(step)
+                for step in chain
+                if not _is_citation_removed(step)
+            ]
 
         sanitized = []
         for step in chain:
             cleaned = self._clean_chain_step(step)
+            if _is_citation_removed(cleaned):
+                continue
             lower = cleaned.lower()
             mentions_precedent = "precedent" in lower or "precedente" in lower
             mentions_absence = "nessun" in lower or "nessuna" in lower

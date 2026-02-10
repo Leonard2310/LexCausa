@@ -193,7 +193,13 @@ class Settings(BaseSettings):
     )
     aqa_double_relevance_crimes: list[str] = Field(
         default_factory=lambda: [
-            "595", "590", "640", "624", "635", "572", "582",
+            "595",
+            "590",
+            "640",
+            "624",
+            "635",
+            "572",
+            "582",
         ],
         alias="AQA_DOUBLE_RELEVANCE_CRIMES",
         description="Article numbers of crimes with automatic civil relevance.",
@@ -214,6 +220,27 @@ class Settings(BaseSettings):
         },
         alias="AQA_ATTACK_TYPE_MULTIPLIERS",
         description="Damage multipliers by attack type.",
+    )
+    aqa_nli_min_contradiction_score: float = Field(
+        default=0.65,
+        alias="AQA_NLI_MIN_CONTRADICTION_SCORE",
+        description="Minimum NLI contradiction probability to bypass strength ratio. "
+        "If the NLI model returns contradiction with score >= this threshold, "
+        "the attack proceeds regardless of strength ratio.",
+    )
+    aqa_strength_ratio_by_type: dict = Field(
+        default_factory=lambda: {
+            "contradiction": 0.0,
+            "exception": 0.9,
+            "derogation": 1.0,
+            "extinction": 0.8,
+            "factual_impediment": 1.3,
+            "general_opposition": 1.2,
+        },
+        alias="AQA_STRENGTH_RATIO_BY_TYPE",
+        description="Per-attack-type strength ratio thresholds. "
+        "An attack of a given type needs raw_attack >= ratio * target_base. "
+        "Set to 0.0 to always allow that type (e.g. NLI-confirmed contradictions).",
     )
     aqa_severity_book_map: dict = Field(
         default_factory=lambda: {

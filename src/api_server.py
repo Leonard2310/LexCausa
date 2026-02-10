@@ -473,6 +473,13 @@ def get_settings():
                 "aqa_alpha": settings.aqa_alpha,
                 "aqa_beta": settings.aqa_beta,
                 "aqa_gamma": settings.aqa_gamma,
+                "aqa_min_semantic_overlap": settings.aqa_min_semantic_overlap,
+                "aqa_min_strength_ratio": settings.aqa_min_strength_ratio,
+                "aqa_damage_factor": settings.aqa_damage_factor,
+                "aqa_allow_factual_attacks": settings.aqa_allow_factual_attacks,
+                "aqa_allow_cross_codice": settings.aqa_allow_cross_codice,
+                "aqa_nli_min_contradiction_score": settings.aqa_nli_min_contradiction_score,
+                "aqa_strength_ratio_by_type": settings.aqa_strength_ratio_by_type,
             },
         }
     )
@@ -675,6 +682,16 @@ def pipeline():
         fe_aqa_alpha = fe_settings.get("aqa_alpha")
         fe_aqa_beta = fe_settings.get("aqa_beta")
         fe_aqa_gamma = fe_settings.get("aqa_gamma")
+        # AQA attack parameters
+        fe_aqa_min_semantic_overlap = fe_settings.get("aqa_min_semantic_overlap")
+        fe_aqa_min_strength_ratio = fe_settings.get("aqa_min_strength_ratio")
+        fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
+        fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
+        fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
+        fe_aqa_nli_min_contradiction_score = fe_settings.get(
+            "aqa_nli_min_contradiction_score"
+        )
+        fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
@@ -799,6 +816,23 @@ def pipeline():
                 settings.aqa_beta = float(fe_aqa_beta)
             if fe_aqa_gamma is not None:
                 settings.aqa_gamma = float(fe_aqa_gamma)
+            # Apply AQA attack parameter overrides
+            if fe_aqa_min_semantic_overlap is not None:
+                settings.aqa_min_semantic_overlap = float(fe_aqa_min_semantic_overlap)
+            if fe_aqa_min_strength_ratio is not None:
+                settings.aqa_min_strength_ratio = float(fe_aqa_min_strength_ratio)
+            if fe_aqa_damage_factor is not None:
+                settings.aqa_damage_factor = float(fe_aqa_damage_factor)
+            if fe_aqa_allow_factual_attacks is not None:
+                settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
+            if fe_aqa_allow_cross_codice is not None:
+                settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
+            if fe_aqa_nli_min_contradiction_score is not None:
+                settings.aqa_nli_min_contradiction_score = float(
+                    fe_aqa_nli_min_contradiction_score
+                )
+            if fe_aqa_strength_ratio_by_type is not None:
+                settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 
             evaluation_result = pe.run(
                 claim=claim,

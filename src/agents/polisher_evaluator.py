@@ -236,6 +236,8 @@ class PolisherEvaluator(BaseAgent):
         self._aqa_double_relevance_crimes = set(settings.aqa_double_relevance_crimes)
         self._aqa_bridge_norms = set(settings.aqa_bridge_norms)
         self._aqa_attack_type_multipliers = settings.aqa_attack_type_multipliers
+        self._aqa_nli_min_contradiction_score = settings.aqa_nli_min_contradiction_score
+        self._aqa_strength_ratio_by_type = settings.aqa_strength_ratio_by_type
         self._aqa_severity_book_map = settings.aqa_severity_book_map
         self._aqa_verdict_pos = settings.aqa_verdict_pos_threshold
         self._aqa_verdict_neg = settings.aqa_verdict_neg_threshold
@@ -276,6 +278,18 @@ class PolisherEvaluator(BaseAgent):
         """
         self._log("Starting consistency evaluation...")
         self._log(f"🔍 Domain: {domain}")
+
+        # Refresh AQA parameters from settings (supports frontend overrides)
+        self._aqa_alpha = settings.aqa_alpha
+        self._aqa_beta = settings.aqa_beta
+        self._aqa_gamma = settings.aqa_gamma
+        self._aqa_min_semantic_overlap = settings.aqa_min_semantic_overlap
+        self._aqa_min_strength_ratio = settings.aqa_min_strength_ratio
+        self._aqa_damage_factor = settings.aqa_damage_factor
+        self._aqa_allow_factual_attacks = settings.aqa_allow_factual_attacks
+        self._aqa_allow_cross_codice = settings.aqa_allow_cross_codice
+        self._aqa_nli_min_contradiction_score = settings.aqa_nli_min_contradiction_score
+        self._aqa_strength_ratio_by_type = settings.aqa_strength_ratio_by_type
 
         reasoner_output = reasoner_output or {}
         counter_reasoner_output = counter_reasoner_output or {}
@@ -1500,6 +1514,41 @@ Rewrite the normative passage in Italian using only the official text, including
             self._nli = None
         return self._nli
 
+    def _check_nli_contradiction(
+        self, target_text: str, attacker_text: str
+    ) -> tuple[str, float]:
+        """Run NLI inference to detect genuine contradiction.
+
+        Uses the DeBERTa MNLI model to classify the relationship between
+        target and attacker reasoning as *contradiction*, *entailment*,
+        or *neutral*.
+
+        Returns:
+            (label, score) -- the highest-scoring NLI label and its
+            probability.  Falls back to ("neutral", 0.0) if the NLI
+            pipeline is unavailable.
+        """
+        nli = self._get_nli_pipeline()
+        if nli is None:
+            return ("neutral", 0.0)
+
+        # Truncate to avoid exceeding model max-length (512 tokens)
+        max_chars = 800
+        premise = target_text[:max_chars].strip()
+        hypothesis = attacker_text[:max_chars].strip()
+        if not premise or not hypothesis:
+            return ("neutral", 0.0)
+
+        try:
+            results = nli(premise, text_pair=hypothesis)
+            # results is a list of dicts: [{"label": ..., "score": ...}, ...]
+            best = max(results, key=lambda r: r["score"])
+            label = best["label"].lower()  # "contradiction" | "entailment" | "neutral"
+            return (label, round(best["score"], 4))
+        except Exception as exc:
+            self._log(f"NLI inference failed: {exc}")
+            return ("neutral", 0.0)
+
     def _get_tfidf_vectorizer(self):
         if self._tfidf_vectorizer is not None:
             return self._tfidf_vectorizer
@@ -2069,7 +2118,12 @@ Rewrite the normative passage in Italian using only the official text, including
         return (sev1 in PROCEDURAL) != (sev2 in PROCEDURAL)
 
     def _classify_attack_type(self, target: dict, attacker: dict) -> str:
-        """Classify the legal attack type for damage modulation.
+        """Classify the legal attack type via LLM for damage modulation.
+
+        Uses an LLM prompt to determine the logical relationship between
+        the target reasoning link and the attacking link.  This replaces
+        the former keyword-based heuristic so that the classification
+        generalises to any legal domain and phrasing.
 
         Categories:
         - contradiction:       direct opposition on the same legal object
@@ -2077,65 +2131,96 @@ Rewrite the normative passage in Italian using only the official text, including
         - derogation:          lex specialis overriding generalis
         - extinction:          prescription / forfeiture / estinzione
         - factual_impediment:  factual argument without normative basis
-        - general_opposition:  fallback
+        - general_opposition:  fallback / generic rebuttal
+
+        Falls back to ``general_opposition`` if the LLM is unavailable or
+        returns an unparseable answer.
         """
+        valid_types = {
+            "contradiction",
+            "exception",
+            "derogation",
+            "extinction",
+            "factual_impediment",
+            "general_opposition",
+        }
+
+        target_text = self._normalize_text(
+            f"{target.get('premise_text', '')} " f"{target.get('conclusion_text', '')}"
+        ).strip()
         attacker_text = self._normalize_text(
             f"{attacker.get('premise_text', '')} "
             f"{attacker.get('conclusion_text', '')}"
-        ).lower()
+        ).strip()
 
-        # 1. Contraddizione diretta
-        if any(
-            kw in attacker_text
-            for kw in [
-                "non sussiste",
-                "escluso",
-                "assente",
-                "manca",
-                "insussistente",
-                "inesistente",
+        if not target_text or not attacker_text:
+            return "general_opposition"
+
+        try:
+            llm = get_chat_groq(temperature=0, max_tokens=256)
+
+            system_prompt = (
+                "You are an expert in Italian law and ASPIC+ argumentation theory.\n"
+                "Given two reasoning steps from opposing legal arguments, classify "
+                "the TYPE of attack the attacker performs on the target.\n\n"
+                "Choose EXACTLY ONE of these categories:\n"
+                "- CONTRADICTION: the attacker directly negates the same legal "
+                "conclusion or factual premise (e.g. the attacker claims the opposite "
+                "outcome on the same legal question).\n"
+                "- EXCEPTION: the attacker invokes a condition, proviso, or "
+                "exception that blocks the target norm from applying (e.g. "
+                "legitimate defence as an exception to criminal liability).\n"
+                "- DEROGATION: the attacker invokes a more specific norm (lex "
+                "specialis) that overrides or displaces the target norm (lex "
+                "generalis).\n"
+                "- EXTINCTION: the attacker claims the right/liability has been "
+                "extinguished (e.g. prescription, forfeiture, settlement, "
+                "pardon, statute of limitations).\n"
+                "- FACTUAL_IMPEDIMENT: the attacker raises a factual circumstance "
+                "(without a normative basis) that impedes the target conclusion "
+                "(e.g. alibi, absence of evidence, factual impossibility).\n"
+                "- GENERAL_OPPOSITION: none of the above; a generic rebuttal or "
+                "weakening that does not fit any specific category.\n\n"
+                "Respond with EXACTLY ONE WORD: the category name in upper case.\n"
+                "No punctuation, no explanation, no extra text."
+            )
+
+            user_prompt = (
+                f"TARGET REASONING STEP:\n"
+                f'"{target_text[:600]}"\n\n'
+                f"ATTACKER REASONING STEP:\n"
+                f'"{attacker_text[:600]}"\n\n'
+                f"Attack type?"
+            )
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
             ]
-        ):
-            return "contradiction"
 
-        # 2. Eccezione
-        if any(
-            kw in attacker_text
-            for kw in [
-                "salvo che",
-                "tranne",
-                "fatta eccezione",
-                "non si applica",
-                "inapplicabile",
-            ]
-        ):
-            return "exception"
+            response = resilient_chat_call(llm, messages)
+            answer = response.content.strip().upper().replace(" ", "_")
 
-        # 3. Deroga (lex specialis)
-        if any(
-            kw in attacker_text
-            for kw in ["deroga", "lex specialis", "in deroga", "norma speciale"]
-        ):
-            return "derogation"
+            # Normalise common LLM variations
+            if answer in valid_types:
+                return answer
+            # Partial match (e.g. "CONTRADICTION." or "- CONTRADICTION")
+            for vt in valid_types:
+                if vt in answer:
+                    return vt
 
-        # 4. Prescrizione / decadenza / estinzione
-        if any(
-            kw in attacker_text
-            for kw in [
-                "prescritto",
-                "decaduto",
-                "estinto",
-                "prescrizione",
-                "decadenza",
-            ]
-        ):
-            return "extinction"
+            self._log(
+                f"      \u26a0\ufe0f LLM attack-type unrecognised: "
+                f'"{answer}", falling back to general_opposition'
+            )
+            return "general_opposition"
 
-        # 5. Fatto impeditivo (no normative basis)
-        if not attacker.get("severity_category"):
-            return "factual_impediment"
-
-        return "general_opposition"
+        except Exception as exc:
+            self._log(
+                f"      \u26a0\ufe0f LLM attack-type classification failed: {exc}",
+                "warning",
+            )
+            return "general_opposition"
 
     def _get_attack_type_multiplier(self, attack_type: str) -> float:
         """Return the damage multiplier for a given attack type."""
@@ -2145,9 +2230,7 @@ Rewrite the normative passage in Italian using only the official text, including
     # Improved domain-rules gate
     # ------------------------------------------------------------------
 
-    def _domain_rules_allow(
-        self, target: dict, attacker: dict
-    ) -> tuple[bool, str]:
+    def _domain_rules_allow(self, target: dict, attacker: dict) -> tuple[bool, str]:
         """Improved domain rules for realistic legal attacks.
 
         Allows:
@@ -2215,7 +2298,7 @@ Rewrite the normative passage in Italian using only the official text, including
 
         # Same libro (e.g. contratti generali vs speciali)
         if self._same_book(t_sev, a_sev):
-            return True, f"allowed: same libro"
+            return True, "allowed: same libro"
 
         # Constitutional principles
         if "costituzionale" in t_sev or "costituzionale" in a_sev:
@@ -2232,28 +2315,35 @@ Rewrite the normative passage in Italian using only the official text, including
     ) -> None:
         """Bidirectional cross-attacks between PRO and CONTRA links (ASPIC+).
 
-        Realistic filtering approach to prevent score zeroing:
+        **Option E – Hybrid NLI + type-specific ratios**
 
-        Hard gates (domain rules – see ``_domain_rules_allow``):
-        1. Fact vs Fact blocked; factual attacks on norms allowed.
-        2. Cross-codice allowed only via double-relevance / bridge norms.
-        3. Severity compatibility: same, generale, same-libro,
-           constitutional, procedural-vs-substantive.
+        Pipeline per ogni coppia (target, attacker):
 
-        Soft filters:
-        4. Semantic overlap must be >= MIN_SEMANTIC_OVERLAP (default 0.5).
-        5. attack_value (overlap × attacker_base) must be >= MIN_STRENGTH_RATIO
-           × target_base (default 1.2).
+        1. **Hard gate** – domain rules (``_domain_rules_allow``).
+        2. **Soft filter 1** – semantic overlap >= MIN_SEMANTIC_OVERLAP.
+        3. **Classify attack type** – keyword heuristic.
+        4. **NLI contradiction gate** – DeBERTa MNLI inference:
+           - *contradiction* with score >= threshold  ->  bypass ratio,
+             attack always proceeds.
+           - *entailment* with score >= threshold  ->  block attack
+             (the two nessi *support* each other – not a real attack).
+           - *neutral*  ->  fall through to step 5.
+        5. **Type-specific strength ratio** – ``aqa_strength_ratio_by_type``
+           replaces the old single ``MIN_STRENGTH_RATIO`` for neutral pairs.
+        6. **Damage** – excess formula with type multiplier.
 
         Damage formula (only the *excess* counts):
-            raw_attack       = overlap × attacker_base_score
-            effective_damage = (raw_attack - target_base) × DAMAGE_FACTOR
-            final_damage     = effective_damage × position_weight
-                               × attack_type_multiplier
+            raw_attack       = overlap x attacker_base_score
+            effective_damage = (raw_attack - target_base) x DAMAGE_FACTOR
+            final_damage     = effective_damage x position_weight
+                               x attack_type_multiplier
         """
         MIN_SEMANTIC_OVERLAP = self._aqa_min_semantic_overlap
-        MIN_STRENGTH_RATIO = self._aqa_min_strength_ratio
         DAMAGE_FACTOR = self._aqa_damage_factor
+        NLI_THRESHOLD = self._aqa_nli_min_contradiction_score
+        RATIO_BY_TYPE = self._aqa_strength_ratio_by_type
+        # Fallback global ratio (used if type missing from dict)
+        FALLBACK_RATIO = self._aqa_min_strength_ratio
 
         # Initialise
         for link in pro_links + contra_links:
@@ -2274,7 +2364,7 @@ Rewrite the normative passage in Italian using only the official text, including
                 for attacker in attackers:
                     allowed, reason = self._domain_rules_allow(target, attacker)
 
-                    # --- Hard gate: domain rules ---
+                    # ---- Stage 1: Hard gate (domain rules) ----
                     if not allowed:
                         target["attacks_received"].append(
                             {
@@ -2287,6 +2377,7 @@ Rewrite the normative passage in Italian using only the official text, including
                                 "attack_value": 0.0,
                                 "reason": reason,
                                 "filtered": True,
+                                "filter_stage": "domain",
                             }
                         )
                         continue
@@ -2297,7 +2388,7 @@ Rewrite the normative passage in Italian using only the official text, including
                     )
                     overlap = self._similarity(target_text, attacker_text)
 
-                    # --- Soft filter 1: semantic overlap threshold ---
+                    # ---- Stage 2: Semantic overlap threshold ----
                     if overlap < MIN_SEMANTIC_OVERLAP:
                         target["attacks_received"].append(
                             {
@@ -2313,6 +2404,7 @@ Rewrite the normative passage in Italian using only the official text, including
                                     f"< {MIN_SEMANTIC_OVERLAP}"
                                 ),
                                 "filtered": True,
+                                "filter_stage": "overlap",
                             }
                         )
                         continue
@@ -2320,8 +2412,21 @@ Rewrite the normative passage in Italian using only the official text, including
                     attacker_base = attacker.get("base_score", 0.0)
                     raw_attack = overlap * attacker_base
 
-                    # --- Soft filter 2: strength ratio ---
-                    if raw_attack < MIN_STRENGTH_RATIO * target_base:
+                    # ---- Stage 3: Classify attack type ----
+                    attack_type = self._classify_attack_type(target, attacker)
+                    type_multiplier = self._get_attack_type_multiplier(attack_type)
+
+                    # ---- Stage 4: NLI contradiction gate ----
+                    nli_label, nli_score = self._check_nli_contradiction(
+                        target_text, attacker_text
+                    )
+                    nli_bypass = False
+
+                    if nli_label == "contradiction" and nli_score >= NLI_THRESHOLD:
+                        # Genuine contradiction confirmed by NLI -> bypass ratio
+                        nli_bypass = True
+                    elif nli_label == "entailment" and nli_score >= NLI_THRESHOLD:
+                        # NLI says these two nessi *support* each other
                         target["attacks_received"].append(
                             {
                                 "attacker_link_id": attacker.get("link_id"),
@@ -2329,24 +2434,50 @@ Rewrite the normative passage in Italian using only the official text, including
                                 "overlap": round(overlap, 4),
                                 "attacker_base_score": round(attacker_base, 4),
                                 "attack_value": 0.0,
+                                "attack_type": attack_type,
+                                "nli_label": nli_label,
+                                "nli_score": nli_score,
                                 "reason": (
-                                    f"filtered: attack_value "
-                                    f"{raw_attack:.3f} < "
-                                    f"{MIN_STRENGTH_RATIO} × {target_base:.3f}"
+                                    f"filtered: NLI entailment "
+                                    f"({nli_score:.3f} >= {NLI_THRESHOLD}) "
+                                    f"- nessi non contraddittori"
                                 ),
                                 "filtered": True,
+                                "filter_stage": "nli_entailment",
                             }
                         )
                         continue
 
-                    # --- Classify attack type & compute multiplier ---
-                    attack_type = self._classify_attack_type(target, attacker)
-                    type_multiplier = self._get_attack_type_multiplier(attack_type)
+                    # ---- Stage 5: Type-specific strength ratio ----
+                    if not nli_bypass:
+                        type_ratio = RATIO_BY_TYPE.get(attack_type, FALLBACK_RATIO)
+                        if type_ratio > 0 and raw_attack < type_ratio * target_base:
+                            target["attacks_received"].append(
+                                {
+                                    "attacker_link_id": attacker.get("link_id"),
+                                    "attacker_role": attacker_role,
+                                    "overlap": round(overlap, 4),
+                                    "attacker_base_score": round(attacker_base, 4),
+                                    "attack_value": 0.0,
+                                    "attack_type": attack_type,
+                                    "nli_label": nli_label,
+                                    "nli_score": nli_score,
+                                    "reason": (
+                                        f"filtered: raw {raw_attack:.3f} < "
+                                        f"{type_ratio} x {target_base:.3f} "
+                                        f"(ratio for {attack_type})"
+                                    ),
+                                    "filtered": True,
+                                    "filter_stage": "strength_ratio",
+                                }
+                            )
+                            continue
 
-                    # --- Damage: only the excess, scaled down ---
+                    # ---- Stage 6: Compute damage ----
                     effective_damage = (raw_attack - target_base) * DAMAGE_FACTOR
                     attack_value = effective_damage * position_weight * type_multiplier
 
+                    bypass_tag = " [NLI-bypass]" if nli_bypass else ""
                     target["attacks_received"].append(
                         {
                             "attacker_link_id": attacker.get("link_id"),
@@ -2358,7 +2489,10 @@ Rewrite the normative passage in Italian using only the official text, including
                             "position_weight": round(position_weight, 4),
                             "attack_type": attack_type,
                             "type_multiplier": round(type_multiplier, 2),
-                            "reason": f"active: {attack_type}",
+                            "nli_label": nli_label,
+                            "nli_score": nli_score,
+                            "nli_bypass": nli_bypass,
+                            "reason": f"active: {attack_type}{bypass_tag}",
                             "filtered": False,
                         }
                     )
@@ -2730,19 +2864,46 @@ Rewrite the normative passage in Italian using only the official text, including
         self._log("⚔️ Computing bidirectional cross-attacks (ASPIC+)...")
         self._compute_cross_attacks(pro_links, contra_links)
 
-        # Log attack summaries
+        # Log attack summaries (active + filtered breakdown)
         for link in pro_links + contra_links:
-            active = [
-                a
-                for a in link.get("attacks_received", [])
-                if a.get("attack_value", 0.0) > 0
-            ]
+            all_attacks = link.get("attacks_received", [])
+            active = [a for a in all_attacks if a.get("attack_value", 0.0) > 0]
+            filtered = [a for a in all_attacks if a.get("filtered", False)]
+            role_tag = (link.get("role") or "link").upper()
+            link_id = link.get("link_id", "?")
+
             if active:
-                role_tag = (link.get("role") or "link").upper()
                 self._log(
-                    f"   ⚔️ [{role_tag}] {link.get('link_id')} received "
+                    f"   \u2694\ufe0f [{role_tag}] {link_id} received "
                     f"{len(active)} active attack(s), "
-                    f"Σattack={link.get('attacks_sum', 0.0):.4f}"
+                    f"\u03a3attack={link.get('attacks_sum', 0.0):.4f}"
+                )
+
+            if filtered:
+                # Breakdown by filter stage
+                from collections import Counter as _Counter
+
+                stage_counts = _Counter(
+                    a.get("filter_stage", "unknown") for a in filtered
+                )
+                parts = [
+                    f"{stage}={cnt}" for stage, cnt in sorted(stage_counts.items())
+                ]
+                self._log(
+                    f"   \U0001f6ab [{role_tag}] {link_id} "
+                    f"filtered {len(filtered)} attack(s) "
+                    f"({', '.join(parts)})"
+                )
+                # Detail: log each filtered attack reason
+                for fa in filtered:
+                    self._log(
+                        f"      \u21b3 attacker={fa.get('attacker_link_id')} "
+                        f"({fa.get('attacker_role')}) \u2014 {fa.get('reason')}"
+                    )
+
+            if not active and not filtered:
+                self._log(
+                    f"   \u2139\ufe0f [{role_tag}] {link_id} " f"no attacks attempted"
                 )
 
         # ==============================================================
@@ -2756,9 +2917,7 @@ Rewrite the normative passage in Italian using only the official text, including
             link["precedent_delta"] = delta
             link["precedent_influences"] = influences
             nesso = self._clamp01(
-                link.get("base_score", 0.0)
-                - link.get("attacks_sum", 0.0)
-                + delta
+                link.get("base_score", 0.0) - link.get("attacks_sum", 0.0) + delta
             )
             link["nesso_plausibility"] = nesso
             self._log(

@@ -969,6 +969,23 @@
   accent-color: #2563eb;
 }
 
+.settings-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: #374151;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.settings-toggle-label input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
 .aqa-weight-sum {
   margin-top: 0.35rem;
   font-size: 0.75rem;

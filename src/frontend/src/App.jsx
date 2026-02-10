@@ -39,6 +39,12 @@ export default function App() {
     aqa_alpha: 0.3,
     aqa_beta: 0.4,
     aqa_gamma: 0.3,
+    aqa_min_semantic_overlap: 0.5,
+    aqa_min_strength_ratio: 1.2,
+    aqa_damage_factor: 0.5,
+    aqa_allow_factual_attacks: true,
+    aqa_allow_cross_codice: true,
+    aqa_nli_min_contradiction_score: 0.65,
   });
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -70,6 +76,12 @@ export default function App() {
           aqa_alpha: d.aqa_alpha ?? prev.aqa_alpha,
           aqa_beta: d.aqa_beta ?? prev.aqa_beta,
           aqa_gamma: d.aqa_gamma ?? prev.aqa_gamma,
+          aqa_min_semantic_overlap: d.aqa_min_semantic_overlap ?? prev.aqa_min_semantic_overlap,
+          aqa_min_strength_ratio: d.aqa_min_strength_ratio ?? prev.aqa_min_strength_ratio,
+          aqa_damage_factor: d.aqa_damage_factor ?? prev.aqa_damage_factor,
+          aqa_allow_factual_attacks: d.aqa_allow_factual_attacks ?? prev.aqa_allow_factual_attacks,
+          aqa_allow_cross_codice: d.aqa_allow_cross_codice ?? prev.aqa_allow_cross_codice,
+          aqa_nli_min_contradiction_score: d.aqa_nli_min_contradiction_score ?? prev.aqa_nli_min_contradiction_score,
         }));
       })
       .catch((err) => console.warn('Could not load settings:', err));
@@ -184,6 +196,12 @@ export default function App() {
             aqa_alpha: pipelineSettings.aqa_alpha,
             aqa_beta: pipelineSettings.aqa_beta,
             aqa_gamma: pipelineSettings.aqa_gamma,
+            aqa_min_semantic_overlap: pipelineSettings.aqa_min_semantic_overlap,
+            aqa_min_strength_ratio: pipelineSettings.aqa_min_strength_ratio,
+            aqa_damage_factor: pipelineSettings.aqa_damage_factor,
+            aqa_allow_factual_attacks: pipelineSettings.aqa_allow_factual_attacks,
+            aqa_allow_cross_codice: pipelineSettings.aqa_allow_cross_codice,
+            aqa_nli_min_contradiction_score: pipelineSettings.aqa_nli_min_contradiction_score,
           },
         }),
       });
@@ -437,6 +455,75 @@ export default function App() {
                 {Math.abs(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma - 1) > 0.01 && (
                   <span className="aqa-weight-warning"> ⚠️ Dovrebbe essere 1.00</span>
                 )}
+              </div>
+            </fieldset>
+
+            {/* AQA Cross-Attack Parameters */}
+            <fieldset className="settings-group">
+              <legend>⚔️ Parametri Cross-Attack</legend>
+              <div className="settings-row">
+                <label>
+                  <span>Min Overlap Semantico <strong>{pipelineSettings.aqa_min_semantic_overlap.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.aqa_min_semantic_overlap}
+                    onChange={(e) => updateSetting('aqa_min_semantic_overlap', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>Min Strength Ratio <strong>{pipelineSettings.aqa_min_strength_ratio.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.0"
+                    step="0.05"
+                    value={pipelineSettings.aqa_min_strength_ratio}
+                    onChange={(e) => updateSetting('aqa_min_strength_ratio', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>Damage Factor <strong>{pipelineSettings.aqa_damage_factor.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.aqa_damage_factor}
+                    onChange={(e) => updateSetting('aqa_damage_factor', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>NLI Soglia Contraddizione <strong>{pipelineSettings.aqa_nli_min_contradiction_score.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0.3"
+                    max="1.0"
+                    step="0.05"
+                    value={pipelineSettings.aqa_nli_min_contradiction_score}
+                    onChange={(e) => updateSetting('aqa_nli_min_contradiction_score', parseFloat(e.target.value))}
+                  />
+                </label>
+              </div>
+              <div className="settings-row">
+                <label className="settings-toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={pipelineSettings.aqa_allow_factual_attacks}
+                    onChange={(e) => updateSetting('aqa_allow_factual_attacks', e.target.checked)}
+                  />
+                  <span>Attacchi Fattuali su Norme</span>
+                </label>
+                <label className="settings-toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={pipelineSettings.aqa_allow_cross_codice}
+                    onChange={(e) => updateSetting('aqa_allow_cross_codice', e.target.checked)}
+                  />
+                  <span>Cross-Codice (doppia rilevanza)</span>
+                </label>
               </div>
             </fieldset>
           </div>

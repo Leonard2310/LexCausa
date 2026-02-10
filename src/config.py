@@ -231,17 +231,26 @@ class Settings(BaseSettings):
     aqa_strength_ratio_by_type: dict = Field(
         default_factory=lambda: {
             "contradiction": 0.0,
-            "exception": 0.9,
-            "derogation": 1.0,
-            "extinction": 0.8,
-            "factual_impediment": 1.3,
-            "general_opposition": 1.2,
+            "exception": 0.75,
+            "derogation": 0.8,
+            "extinction": 0.65,
+            "factual_impediment": 0.9,
+            "general_opposition": 0.95,
         },
         alias="AQA_STRENGTH_RATIO_BY_TYPE",
         description="Per-attack-type strength ratio thresholds. "
         "An attack of a given type needs raw_attack >= ratio * target_base. "
         "Set to 0.0 to always allow that type (e.g. NLI-confirmed contradictions).",
     )
+
+    aqa_nli_min_entailment_score: float = Field(
+        default=0.55,
+        alias="AQA_NLI_MIN_ENTAILMENT_SCORE",
+        description="Minimum NLI entailment probability to bypass strength ratio. "
+        "If the NLI model returns entailment with score >= this threshold, "
+        "the attack proceeds regardless of strength ratio.",
+    )
+    
     aqa_severity_book_map: dict = Field(
         default_factory=lambda: {
             "persone_famiglia": "I_civile",

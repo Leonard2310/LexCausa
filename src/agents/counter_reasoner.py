@@ -451,68 +451,72 @@ Select the most useful attack among the following ids and return ONLY the chosen
             allowed_precedents=allowed_precedents,
         )
 
-        # Execute the ReAct agent with resilient retry/key-rotation/fallback
-        messages = [HumanMessage(content=input_prompt)]
-        try:
-            result = resilient_react_invoke(
-                self._build_react_agent,
-                {"messages": messages},
-            )
-            messages_out = result.get("messages", [])
-        except Exception as e:
-            # Handle Groq tool_use_failed: extract valid response from failed_generation
-            recovered = self._extract_failed_generation(e)
-            if recovered:
-                self._log(
-                    "⚠️ Tool call failed but valid response recovered from failed_generation",
-                    "warning",
-                )
-                messages_out = []
-                # Skip normal message extraction, use recovered text directly
-                output = CounterReasonerOutput(
-                    claim=claim,
-                    causal_type_id=routing_decision.causal_type_id,
-                    theory_id=routing_decision.theory_id,
-                    selected_attack_id=attack_selection.attack_id,
-                    reasoner_causality={
-                        "causal_type_id": routing_decision.causal_type_id,
-                        "theory_id": routing_decision.theory_id,
-                    },
-                    relevant_statutes=deduped_statutes,
-                    relevant_precedents=pre_retrieved_precedents,
-                    raw_response=recovered,
-                )
-                output.reasoning_chain = self._extract_reasoning_chain(recovered)
-                output.counter_arguments = self._extract_arguments(recovered)
-                output.reasoning_chain = self._sanitize_reasoning_chain(
-                    output.reasoning_chain, pre_retrieved_precedents
-                )
-                formatter = AspicFormatter(
-                    role="counter",
-                    statutes=deduped_statutes,
-                    precedents=pre_retrieved_precedents,
-                )
-                output.aspic_ir = formatter.format(
-                    claim=claim,
-                    raw_response=recovered,
-                    reasoning_chain=output.reasoning_chain,
-                    arguments=output.counter_arguments,
-                    metadata={
-                        "selected_attack_id": attack_selection.attack_id,
-                        "causal_type_id": routing_decision.causal_type_id,
-                        "theory_id": routing_decision.theory_id,
-                    },
-                )
-                self._log(
-                    f"✅ Generated {len(output.counter_arguments)} counter-arguments (recovered)",
-                    "success",
-                )
-                return output
+        # ----------------------------------------------------------
+        # Execute with retry for valid reasoning chain
+        # ----------------------------------------------------------
+        MAX_CHAIN_RETRIES = 5
+        output = None
 
-            # Graceful fallback for other errors
-            error_msg = f"Errore durante l'esecuzione del Counter-Reasoner: {e}"
-            self._log(error_msg, "error")
-            return CounterReasonerOutput(
+        for attempt in range(1, MAX_CHAIN_RETRIES + 1):
+            self._log(f"🔄 Counter-Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
+
+            raw_output = ""
+
+            try:
+                result = resilient_react_invoke(
+                    self._build_react_agent,
+                    {"messages": [HumanMessage(content=input_prompt)]},
+                )
+                messages_out = result.get("messages", [])
+
+                # Log tool calls
+                tool_names = [
+                    msg.name
+                    for msg in messages_out
+                    if hasattr(msg, "name") and msg.name
+                ]
+                if tool_names:
+                    self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
+
+                # Get the final response
+                for msg in reversed(messages_out):
+                    if isinstance(msg, ToolMessage):
+                        continue
+                    msg_content = getattr(msg, "content", None)
+                    if msg_content:
+                        raw_output = str(msg_content)
+                        break
+
+            except Exception as e:
+                recovered = self._extract_failed_generation(e)
+                if recovered:
+                    self._log(
+                        "⚠️ Tool call failed but valid response recovered from failed_generation",
+                        "warning",
+                    )
+                    raw_output = recovered
+                else:
+                    # Non-recoverable error → return error output immediately
+                    error_msg = f"Errore durante l'esecuzione del Counter-Reasoner: {e}"
+                    self._log(error_msg, "error")
+                    return CounterReasonerOutput(
+                        claim=claim,
+                        causal_type_id=routing_decision.causal_type_id,
+                        theory_id=routing_decision.theory_id,
+                        selected_attack_id=attack_selection.attack_id,
+                        reasoner_causality={
+                            "causal_type_id": routing_decision.causal_type_id,
+                            "theory_id": routing_decision.theory_id,
+                        },
+                        relevant_statutes=pre_retrieved_statutes,
+                        relevant_precedents=pre_retrieved_precedents,
+                        counter_arguments=[],
+                        reasoning_chain=[error_msg],
+                        raw_response=error_msg,
+                    )
+
+            # Build output
+            output = CounterReasonerOutput(
                 claim=claim,
                 causal_type_id=routing_decision.causal_type_id,
                 theory_id=routing_decision.theory_id,
@@ -521,71 +525,55 @@ Select the most useful attack among the following ids and return ONLY the chosen
                     "causal_type_id": routing_decision.causal_type_id,
                     "theory_id": routing_decision.theory_id,
                 },
-                relevant_statutes=pre_retrieved_statutes,
+                relevant_statutes=deduped_statutes,
                 relevant_precedents=pre_retrieved_precedents,
-                counter_arguments=[],
-                reasoning_chain=[error_msg],
-                raw_response=error_msg,
+                raw_response=raw_output,
             )
 
-        # Log tool calls
-        tool_names: list[str] = []
-        for msg in messages_out:
-            if hasattr(msg, "name") and msg.name:
-                tool_names.append(msg.name)
+            # Parse response
+            output.reasoning_chain = self._extract_reasoning_chain(raw_output)
+            output.counter_arguments = self._extract_arguments(raw_output)
+            output.reasoning_chain = self._sanitize_reasoning_chain(
+                output.reasoning_chain, pre_retrieved_precedents
+            )
 
-        if tool_names:
-            self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
+            formatter = AspicFormatter(
+                role="counter",
+                statutes=deduped_statutes,
+                precedents=pre_retrieved_precedents,
+            )
+            output.aspic_ir = formatter.format(
+                claim=claim,
+                raw_response=raw_output,
+                reasoning_chain=output.reasoning_chain,
+                arguments=output.counter_arguments,
+                metadata={
+                    "selected_attack_id": attack_selection.attack_id,
+                    "causal_type_id": routing_decision.causal_type_id,
+                    "theory_id": routing_decision.theory_id,
+                },
+            )
 
-        # Get the final response
-        raw_output = ""
-        for msg in reversed(messages_out):
-            # Skip tool responses; keep the final LLM message
-            if isinstance(msg, ToolMessage):
-                continue
-            msg_content = getattr(msg, "content", None)
-            if msg_content:
-                raw_output = str(msg_content)
+            # Validate: ASPIC_IR must contain reasoning chain nodes (S1, S2, …)
+            if self._has_valid_reasoning_chain(output.aspic_ir):
+                chain_len = len(output.aspic_ir.get("reasoning_chain", []))
+                self._log(
+                    f"✅ Valid reasoning chain ({chain_len} steps) on attempt {attempt}",
+                    "success",
+                )
                 break
-
-        # Build output
-        output = CounterReasonerOutput(
-            claim=claim,
-            causal_type_id=routing_decision.causal_type_id,
-            theory_id=routing_decision.theory_id,
-            selected_attack_id=attack_selection.attack_id,
-            reasoner_causality={
-                "causal_type_id": routing_decision.causal_type_id,
-                "theory_id": routing_decision.theory_id,
-            },
-            relevant_statutes=deduped_statutes,
-            relevant_precedents=pre_retrieved_precedents,
-            raw_response=raw_output,
-        )
-
-        # Parse response
-        output.reasoning_chain = self._extract_reasoning_chain(raw_output)
-        output.counter_arguments = self._extract_arguments(raw_output)
-        output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, pre_retrieved_precedents
-        )
-
-        formatter = AspicFormatter(
-            role="counter",
-            statutes=deduped_statutes,
-            precedents=pre_retrieved_precedents,
-        )
-        output.aspic_ir = formatter.format(
-            claim=claim,
-            raw_response=raw_output,
-            reasoning_chain=output.reasoning_chain,
-            arguments=output.counter_arguments,
-            metadata={
-                "selected_attack_id": attack_selection.attack_id,
-                "causal_type_id": routing_decision.causal_type_id,
-                "theory_id": routing_decision.theory_id,
-            },
-        )
+            else:
+                self._log(
+                    f"⚠️ Attempt {attempt}/{MAX_CHAIN_RETRIES}: empty reasoning chain "
+                    f"(no S* nodes in ASPIC_IR) — retrying…",
+                    "warning",
+                )
+                if attempt == MAX_CHAIN_RETRIES:
+                    self._log(
+                        f"❌ Failed to generate a valid reasoning chain after "
+                        f"{MAX_CHAIN_RETRIES} attempts",
+                        "error",
+                    )
 
         self._log(
             f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success"

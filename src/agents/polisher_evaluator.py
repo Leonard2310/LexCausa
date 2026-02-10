@@ -2199,7 +2199,7 @@ Rewrite the normative passage in Italian using only the official text, including
             ]
 
             response = resilient_chat_call(llm, messages)
-            answer = response.content.strip().upper().replace(" ", "_")
+            answer = response.content.strip().replace(" ", "_").lower()
 
             # Normalise common LLM variations
             if answer in valid_types:
@@ -2224,7 +2224,7 @@ Rewrite the normative passage in Italian using only the official text, including
 
     def _get_attack_type_multiplier(self, attack_type: str) -> float:
         """Return the damage multiplier for a given attack type."""
-        return self._aqa_attack_type_multipliers.get(attack_type, 1.0)
+        return self._aqa_attack_type_multipliers.get(attack_type.lower(), 1.0)
 
     # ------------------------------------------------------------------
     # Improved domain-rules gate
@@ -2413,7 +2413,7 @@ Rewrite the normative passage in Italian using only the official text, including
                     raw_attack = overlap * attacker_base
 
                     # ---- Stage 3: Classify attack type ----
-                    attack_type = self._classify_attack_type(target, attacker)
+                    attack_type = self._classify_attack_type(target, attacker).lower()
                     type_multiplier = self._get_attack_type_multiplier(attack_type)
 
                     # ---- Stage 4: NLI contradiction gate ----
@@ -2449,28 +2449,34 @@ Rewrite the normative passage in Italian using only the official text, including
                         continue
 
                     # ---- Stage 5: Type-specific strength ratio ----
+                    # In _compute_cross_attacks, FASE 4:
+
                     if not nli_bypass:
-                        type_ratio = RATIO_BY_TYPE.get(attack_type, FALLBACK_RATIO)
-                        if type_ratio > 0 and raw_attack < type_ratio * target_base:
-                            target["attacks_received"].append(
-                                {
-                                    "attacker_link_id": attacker.get("link_id"),
-                                    "attacker_role": attacker_role,
-                                    "overlap": round(overlap, 4),
-                                    "attacker_base_score": round(attacker_base, 4),
-                                    "attack_value": 0.0,
-                                    "attack_type": attack_type,
-                                    "nli_label": nli_label,
-                                    "nli_score": nli_score,
-                                    "reason": (
-                                        f"filtered: raw {raw_attack:.3f} < "
-                                        f"{type_ratio} x {target_base:.3f} "
-                                        f"(ratio for {attack_type})"
-                                    ),
-                                    "filtered": True,
-                                    "filter_stage": "strength_ratio",
-                                }
-                            )
+                        attack_type = self._classify_attack_type(target, attacker)
+                        type_ratio = self._aqa_strength_ratio_by_type.get(
+                            attack_type.lower(), 
+                            self._aqa_min_strength_ratio  # fallback
+                        )
+                        
+                        # ✅ CONFRONTO PULITO: base vs base (NO overlap)
+                        if type_ratio > 0 and attacker_base < type_ratio * target_base:
+                            target["attacks_received"].append({
+                                "attacker_link_id": attacker.get("link_id"),
+                                "attacker_role": attacker_role,
+                                "overlap": round(overlap, 4),
+                                "attacker_base_score": round(attacker_base, 4),
+                                "attack_value": 0.0,
+                                "attack_type": attack_type,
+                                "nli_label": nli_label,
+                                "nli_score": nli_score,
+                                "reason": (
+                                    f"filtered: attacker_base {attacker_base:.3f} < "
+                                    f"{type_ratio} × {target_base:.3f} "
+                                    f"(ratio for {attack_type})"
+                                ),
+                                "filtered": True,
+                                "filter_stage": "strength_ratio",
+                            })
                             continue
 
                     # ---- Stage 6: Compute damage ----

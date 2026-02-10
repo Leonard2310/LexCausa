@@ -336,6 +336,23 @@ class BaseAgent(ABC):
             cleaned = cleaned.replace("**", "")
         return cleaned.strip()
 
+    def _has_valid_reasoning_chain(self, aspic_ir: dict) -> bool:
+        """Check if ASPIC_IR contains valid reasoning chain nodes (S1, S2, …).
+
+        A valid reasoning chain must have at least one step whose id
+        starts with 'S' (e.g. S1, S2, S3).  Used to decide whether
+        the LLM generation should be retried.
+        """
+        if not aspic_ir:
+            return False
+        chain = aspic_ir.get("reasoning_chain", [])
+        if not chain:
+            return False
+        return any(
+            isinstance(step, dict) and step.get("id", "").startswith("S")
+            for step in chain
+        )
+
     def _format_context_for_prompt(
         self,
         statutes: list[dict],

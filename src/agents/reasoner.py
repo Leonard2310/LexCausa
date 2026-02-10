@@ -303,47 +303,77 @@ class Reasoner(BaseAgent):
             allowed_precedents,
         )
 
-        raw_output, _ = self._invoke_reasoner(input_prompt)
+        # ----------------------------------------------------------
+        # Phase 3 generation with retry for valid reasoning chain
+        # ----------------------------------------------------------
+        MAX_CHAIN_RETRIES = 5
+        output = None
 
-        output = ReasonerOutput(
-            claim=claim,
-            causality_classification={
-                **chain_class,
-                "domain": domain,
-                "source": "reasoning_chain",
-            },
-            causal_type_id=final_causal_id,
-            theory_id=final_theory_id or "",
-            causal_type_ids_for_counter=causal_types_for_counter,
-            mismatch_status="",
-            anchor_norms=anchor_norms,
-            principle_tests=principle_tests,
-            relevant_statutes=deduped_statutes,
-            relevant_precedents=pre_retrieved_precedents,
-            raw_response=raw_output,
-        )
+        for attempt in range(1, MAX_CHAIN_RETRIES + 1):
+            self._log(f"🔄 Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
 
-        output.reasoning_chain = self._extract_reasoning_chain(raw_output)
-        output.arguments = self._extract_arguments(raw_output)
-        output.reasoning_chain = self._sanitize_reasoning_chain(
-            output.reasoning_chain, pre_retrieved_precedents
-        )
+            raw_output, _ = self._invoke_reasoner(input_prompt)
 
-        formatter = AspicFormatter(
-            role="support",
-            statutes=output.relevant_statutes,
-            precedents=output.relevant_precedents,
-        )
-        output.aspic_ir = formatter.format(
-            claim=claim,
-            raw_response=output.raw_response,
-            reasoning_chain=output.reasoning_chain,
-            arguments=output.arguments,
-            metadata={
-                "causal_type_id": final_causal_id,
-                "theory_id": final_theory_id,
-            },
-        )
+            output = ReasonerOutput(
+                claim=claim,
+                causality_classification={
+                    **chain_class,
+                    "domain": domain,
+                    "source": "reasoning_chain",
+                },
+                causal_type_id=final_causal_id,
+                theory_id=final_theory_id or "",
+                causal_type_ids_for_counter=causal_types_for_counter,
+                mismatch_status="",
+                anchor_norms=anchor_norms,
+                principle_tests=principle_tests,
+                relevant_statutes=deduped_statutes,
+                relevant_precedents=pre_retrieved_precedents,
+                raw_response=raw_output,
+            )
+
+            output.reasoning_chain = self._extract_reasoning_chain(raw_output)
+            output.arguments = self._extract_arguments(raw_output)
+            output.reasoning_chain = self._sanitize_reasoning_chain(
+                output.reasoning_chain, pre_retrieved_precedents
+            )
+
+            formatter = AspicFormatter(
+                role="support",
+                statutes=output.relevant_statutes,
+                precedents=output.relevant_precedents,
+            )
+            output.aspic_ir = formatter.format(
+                claim=claim,
+                raw_response=output.raw_response,
+                reasoning_chain=output.reasoning_chain,
+                arguments=output.arguments,
+                metadata={
+                    "causal_type_id": final_causal_id,
+                    "theory_id": final_theory_id,
+                },
+            )
+
+            # Validate: ASPIC_IR must contain reasoning chain nodes (S1, S2, …)
+            if self._has_valid_reasoning_chain(output.aspic_ir):
+                chain_len = len(output.aspic_ir.get("reasoning_chain", []))
+                self._log(
+                    f"✅ Valid reasoning chain ({chain_len} steps) on attempt {attempt}",
+                    "success",
+                )
+                break
+            else:
+                self._log(
+                    f"⚠️ Attempt {attempt}/{MAX_CHAIN_RETRIES}: empty reasoning chain "
+                    f"(no S* nodes in ASPIC_IR) — retrying…",
+                    "warning",
+                )
+                if attempt == MAX_CHAIN_RETRIES:
+                    self._log(
+                        f"❌ Failed to generate a valid reasoning chain after "
+                        f"{MAX_CHAIN_RETRIES} attempts",
+                        "error",
+                    )
 
         self._log(f"✅ Generated {len(output.arguments)} arguments", "success")
         return output

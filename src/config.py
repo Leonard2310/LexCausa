@@ -163,6 +163,82 @@ class Settings(BaseSettings):
         alias="AQA_ATTACK_TOP_K",
         description="Top-K cross-attacks to keep per link for explainability.",
     )
+    aqa_min_semantic_overlap: float = Field(
+        default=0.5,
+        alias="AQA_MIN_SEMANTIC_OVERLAP",
+        description="Minimum semantic similarity between two links for an attack to be valid. "
+        "Attacks below this threshold are filtered out.",
+    )
+    aqa_min_strength_ratio: float = Field(
+        default=1.2,
+        alias="AQA_MIN_STRENGTH_RATIO",
+        description="Attacker base_score must be >= this ratio × target base_score. "
+        "Ensures only meaningfully stronger arguments can inflict damage.",
+    )
+    aqa_damage_factor: float = Field(
+        default=0.5,
+        alias="AQA_DAMAGE_FACTOR",
+        description="Scaling factor applied to the excess damage (attacker_base - target_base). "
+        "Lower values make attacks less destructive.",
+    )
+    aqa_allow_factual_attacks: bool = Field(
+        default=True,
+        alias="AQA_ALLOW_FACTUAL_ATTACKS",
+        description="Allow factual (non-normative) arguments to attack normative ones.",
+    )
+    aqa_allow_cross_codice: bool = Field(
+        default=True,
+        alias="AQA_ALLOW_CROSS_CODICE",
+        description="Allow cross-codice attacks via double relevance and bridge norms.",
+    )
+    aqa_double_relevance_crimes: list[str] = Field(
+        default_factory=lambda: [
+            "595", "590", "640", "624", "635", "572", "582",
+        ],
+        alias="AQA_DOUBLE_RELEVANCE_CRIMES",
+        description="Article numbers of crimes with automatic civil relevance.",
+    )
+    aqa_bridge_norms: list[str] = Field(
+        default_factory=lambda: ["185", "198"],
+        alias="AQA_BRIDGE_NORMS",
+        description="Article numbers that bridge penale→civile liability.",
+    )
+    aqa_attack_type_multipliers: dict = Field(
+        default_factory=lambda: {
+            "contradiction": 1.5,
+            "exception": 1.3,
+            "derogation": 1.4,
+            "extinction": 1.6,
+            "factual_impediment": 1.2,
+            "general_opposition": 1.0,
+        },
+        alias="AQA_ATTACK_TYPE_MULTIPLIERS",
+        description="Damage multipliers by attack type.",
+    )
+    aqa_severity_book_map: dict = Field(
+        default_factory=lambda: {
+            "persone_famiglia": "I_civile",
+            "successioni": "II_civile",
+            "proprieta": "III_civile",
+            "diritti_reali": "III_civile",
+            "obbligazioni": "IV_civile",
+            "contratti_generali": "IV_civile",
+            "contratti_speciali": "IV_civile",
+            "responsabilita": "IV_civile",
+            "lavoro": "V_civile",
+            "tutela_diritti": "VI_civile",
+            "prescrizione": "VI_civile",
+            "decadenza": "VI_civile",
+            "generale": "I_penale",
+            "delitti": "II_penale",
+            "delitti_persona": "II_penale",
+            "delitti_patrimonio": "II_penale",
+            "delitti_stato": "II_penale",
+            "contravvenzioni": "III_penale",
+        },
+        alias="AQA_SEVERITY_BOOK_MAP",
+        description="Map severity_category → libro identifier for same-book checks.",
+    )
     aqa_verdict_pos_threshold: float = Field(
         default=0.2,
         alias="AQA_VERDICT_POS_THRESHOLD",

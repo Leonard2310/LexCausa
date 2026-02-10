@@ -228,6 +228,15 @@ class PolisherEvaluator(BaseAgent):
         self._aqa_beta = settings.aqa_beta
         self._aqa_gamma = settings.aqa_gamma
         self._aqa_attack_top_k = settings.aqa_attack_top_k
+        self._aqa_min_semantic_overlap = settings.aqa_min_semantic_overlap
+        self._aqa_min_strength_ratio = settings.aqa_min_strength_ratio
+        self._aqa_damage_factor = settings.aqa_damage_factor
+        self._aqa_allow_factual_attacks = settings.aqa_allow_factual_attacks
+        self._aqa_allow_cross_codice = settings.aqa_allow_cross_codice
+        self._aqa_double_relevance_crimes = set(settings.aqa_double_relevance_crimes)
+        self._aqa_bridge_norms = set(settings.aqa_bridge_norms)
+        self._aqa_attack_type_multipliers = settings.aqa_attack_type_multipliers
+        self._aqa_severity_book_map = settings.aqa_severity_book_map
         self._aqa_verdict_pos = settings.aqa_verdict_pos_threshold
         self._aqa_verdict_neg = settings.aqa_verdict_neg_threshold
         self._aqa_embedding_model = settings.aqa_embedding_model
@@ -1976,84 +1985,381 @@ Rewrite the normative passage in Italian using only the official text, including
         )
         return links
 
+    def _get_position_weight(self, link: dict) -> float:
+        """Compute position-based weight for attack damage.
+
+        Links involving foundational premises or severe norms receive
+        higher weight, making them harder to attack (the attacker needs
+        proportionally more excess strength to inflict the same damage).
+
+        Categories:
+        - Foundational premises (premessa, presupposto, principio…) → 1.5
+        - Severe norm categories (delitti, contravvenzioni, tutela_diritti) → 1.3
+        - All other links → 1.0
+
+        Returns:
+            Weight factor (>= 1.0). Higher = more resistance to attacks.
+        """
+        text = self._normalize_text(
+            f"{link.get('premise_text', '')} {link.get('conclusion_text', '')}"
+        ).lower()
+        severity = link.get("severity_category", "").lower()
+
+        # Foundational premise keywords
+        premise_keywords = [
+            "premessa",
+            "presupposto",
+            "fondamento",
+            "principio",
+            "elemento costitutivo",
+            "fatto costitutivo",
+        ]
+        if any(kw in text for kw in premise_keywords):
+            return 1.5
+
+        # Severe norm categories
+        severe_categories = {"delitti", "contravvenzioni", "tutela_diritti"}
+        if severity in severe_categories:
+            return 1.3
+
+        return 1.0
+
+    # ------------------------------------------------------------------
+    # Domain-rules helpers for cross-attacks
+    # ------------------------------------------------------------------
+
+    def _is_double_relevance(self, target: dict, attacker: dict) -> bool:
+        """Check if a double penale-civile relevance exists.
+
+        Returns True when any cited article belongs to the configurable
+        set of crimes that carry automatic civil consequences
+        (e.g. diffamazione 595, lesioni 590, truffa 640 …).
+        """
+        all_text = (
+            f"{target.get('premise_text', '')} {target.get('conclusion_text', '')} "
+            f"{attacker.get('premise_text', '')} {attacker.get('conclusion_text', '')}"
+        )
+        refs = self._extract_statute_refs_from_text(all_text)
+        return any(
+            ref.get("articolo") in self._aqa_double_relevance_crimes for ref in refs
+        )
+
+    def _is_bridge_norm(self, target: dict, attacker: dict) -> bool:
+        """Check for bridge norms that connect penale → civile liability.
+
+        Examples: Art. 185 c.p. (restituzione/risarcimento),
+                  Art. 198 c.p. (azione civile nel processo penale).
+        """
+        all_text = (
+            f"{target.get('text', '')} {target.get('premise_text', '')} "
+            f"{attacker.get('text', '')} {attacker.get('premise_text', '')}"
+        )
+        refs = self._extract_statute_refs_from_text(all_text)
+        return any(ref.get("articolo") in self._aqa_bridge_norms for ref in refs)
+
+    def _same_book(self, sev1: str, sev2: str) -> bool:
+        """Return True if two severity categories belong to the same libro."""
+        book1 = self._aqa_severity_book_map.get(sev1, "")
+        book2 = self._aqa_severity_book_map.get(sev2, "")
+        return book1 == book2 if book1 and book2 else False
+
+    def _is_procedural_vs_substantive(self, sev1: str, sev2: str) -> bool:
+        """Return True if one severity is procedural and the other substantive."""
+        PROCEDURAL = {"prescrizione", "decadenza", "tutela_diritti", "processo"}
+        return (sev1 in PROCEDURAL) != (sev2 in PROCEDURAL)
+
+    def _classify_attack_type(self, target: dict, attacker: dict) -> str:
+        """Classify the legal attack type for damage modulation.
+
+        Categories:
+        - contradiction:       direct opposition on the same legal object
+        - exception:           condition blocking norm application
+        - derogation:          lex specialis overriding generalis
+        - extinction:          prescription / forfeiture / estinzione
+        - factual_impediment:  factual argument without normative basis
+        - general_opposition:  fallback
+        """
+        attacker_text = self._normalize_text(
+            f"{attacker.get('premise_text', '')} "
+            f"{attacker.get('conclusion_text', '')}"
+        ).lower()
+
+        # 1. Contraddizione diretta
+        if any(
+            kw in attacker_text
+            for kw in [
+                "non sussiste",
+                "escluso",
+                "assente",
+                "manca",
+                "insussistente",
+                "inesistente",
+            ]
+        ):
+            return "contradiction"
+
+        # 2. Eccezione
+        if any(
+            kw in attacker_text
+            for kw in [
+                "salvo che",
+                "tranne",
+                "fatta eccezione",
+                "non si applica",
+                "inapplicabile",
+            ]
+        ):
+            return "exception"
+
+        # 3. Deroga (lex specialis)
+        if any(
+            kw in attacker_text
+            for kw in ["deroga", "lex specialis", "in deroga", "norma speciale"]
+        ):
+            return "derogation"
+
+        # 4. Prescrizione / decadenza / estinzione
+        if any(
+            kw in attacker_text
+            for kw in [
+                "prescritto",
+                "decaduto",
+                "estinto",
+                "prescrizione",
+                "decadenza",
+            ]
+        ):
+            return "extinction"
+
+        # 5. Fatto impeditivo (no normative basis)
+        if not attacker.get("severity_category"):
+            return "factual_impediment"
+
+        return "general_opposition"
+
+    def _get_attack_type_multiplier(self, attack_type: str) -> float:
+        """Return the damage multiplier for a given attack type."""
+        return self._aqa_attack_type_multipliers.get(attack_type, 1.0)
+
+    # ------------------------------------------------------------------
+    # Improved domain-rules gate
+    # ------------------------------------------------------------------
+
+    def _domain_rules_allow(
+        self, target: dict, attacker: dict
+    ) -> tuple[bool, str]:
+        """Improved domain rules for realistic legal attacks.
+
+        Allows:
+        - Factual attacks on normative arguments
+        - Double penale-civile relevance
+        - Bridge norms (Art. 185, 198 c.p.)
+        - Same-book severity compatibility
+        - Constitutional principles overriding ordinary norms
+        - Procedural vs substantive interactions
+
+        Blocks:
+        - Fatto vs Fatto (no legal value)
+        - Different codice without a recognised exception
+        - Incompatible severity categories (different libro, no special rule)
+        """
+        t_sev = target.get("severity_category", "")
+        a_sev = attacker.get("severity_category", "")
+
+        # ==================================================
+        # RULE 1 – Normative content
+        # ==================================================
+        # Block only: both lack normative content (fact vs fact)
+        if not t_sev and not a_sev:
+            return False, "denied: both lack normative content"
+
+        # Factual attack (one side has no norm)
+        if not t_sev or not a_sev:
+            if self._aqa_allow_factual_attacks:
+                return True, "allowed: factual attack"
+            return False, "denied: factual attacks disabled"
+
+        # ==================================================
+        # RULE 2 – Codice compatibility
+        # ==================================================
+        t_src = target.get("source", "")
+        a_src = attacker.get("source", "")
+
+        # Missing source → treat as factual, allow
+        if not t_src or not a_src:
+            return True, "allowed: missing source (factual)"
+
+        if t_src == a_src:
+            # Same codice → fall through to severity check
+            pass
+        elif self._aqa_allow_cross_codice:
+            # Check exceptions for cross-codice attacks
+            if self._is_double_relevance(target, attacker):
+                return True, "allowed: double relevance (penale-civile)"
+            if self._is_bridge_norm(target, attacker):
+                return True, "allowed: bridge norm"
+            return False, f"denied: different codice ({t_src} vs {a_src})"
+        else:
+            return False, f"denied: different codice ({t_src} vs {a_src})"
+
+        # ==================================================
+        # RULE 3 – Severity compatibility
+        # ==================================================
+        # Same severity
+        if t_sev == a_sev:
+            return True, "allowed: same severity"
+
+        # Norme generali cross-cut everything
+        if "generale" in t_sev or "generale" in a_sev:
+            return True, "allowed: generale cross-cutting"
+
+        # Same libro (e.g. contratti generali vs speciali)
+        if self._same_book(t_sev, a_sev):
+            return True, f"allowed: same libro"
+
+        # Constitutional principles
+        if "costituzionale" in t_sev or "costituzionale" in a_sev:
+            return True, "allowed: constitutional principle"
+
+        # Procedural vs substantive (e.g. prescrizione vs responsabilità)
+        if self._is_procedural_vs_substantive(t_sev, a_sev):
+            return True, "allowed: procedural vs substantive"
+
+        return False, f"denied: severity mismatch ({t_sev} vs {a_sev})"
+
     def _compute_cross_attacks(
         self, pro_links: list[dict], contra_links: list[dict]
     ) -> None:
         """Bidirectional cross-attacks between PRO and CONTRA links (ASPIC+).
 
-        Domain rules (hard gates):
-        1. Both links must have at least one normative citation
-           (represented by a non-empty severity_category).
-        2. Both links must reference norms from the **same codice**
-           (codice_penale ↔ codice_penale, codice_civile ↔ codice_civile).
-        3. Severity category compatibility:
-           - Same severity_category → allowed.
-           - One is "generale" (c.p. libro I, cross-cutting) → allowed.
-           - Otherwise → denied.
+        Realistic filtering approach to prevent score zeroing:
 
-        Attack formula:
-            attack_value = overlap × attacker.base_score
-        where overlap = semantic similarity(target_text, attacker_text).
+        Hard gates (domain rules – see ``_domain_rules_allow``):
+        1. Fact vs Fact blocked; factual attacks on norms allowed.
+        2. Cross-codice allowed only via double-relevance / bridge norms.
+        3. Severity compatibility: same, generale, same-libro,
+           constitutional, procedural-vs-substantive.
+
+        Soft filters:
+        4. Semantic overlap must be >= MIN_SEMANTIC_OVERLAP (default 0.5).
+        5. attack_value (overlap × attacker_base) must be >= MIN_STRENGTH_RATIO
+           × target_base (default 1.2).
+
+        Damage formula (only the *excess* counts):
+            raw_attack       = overlap × attacker_base_score
+            effective_damage = (raw_attack - target_base) × DAMAGE_FACTOR
+            final_damage     = effective_damage × position_weight
+                               × attack_type_multiplier
         """
+        MIN_SEMANTIC_OVERLAP = self._aqa_min_semantic_overlap
+        MIN_STRENGTH_RATIO = self._aqa_min_strength_ratio
+        DAMAGE_FACTOR = self._aqa_damage_factor
+
         # Initialise
         for link in pro_links + contra_links:
             link["attacks_received"] = []
             link["attacks_sum"] = 0.0
 
-        def _domain_rules_allow(
-            target: dict, attacker: dict
-        ) -> tuple[bool, str]:
-            t_sev = target.get("severity_category", "")
-            a_sev = attacker.get("severity_category", "")
-
-            # Rule 1: both must have norms
-            if not t_sev or not a_sev:
-                return False, "denied: missing severity/norms"
-
-            # Rule 2: same codice
-            t_src = target.get("source", "")
-            a_src = attacker.get("source", "")
-            if t_src and a_src and t_src != a_src:
-                return False, f"denied: different codice ({t_src} vs {a_src})"
-
-            # Rule 3: severity compatibility
-            if t_sev == a_sev:
-                return True, "allowed: same severity"
-            if t_sev == "generale" or a_sev == "generale":
-                return True, "allowed: generale cross-cutting"
-            return False, f"denied: severity mismatch ({t_sev} vs {a_sev})"
-
         def _apply_attacks(
             targets: list[dict], attackers: list[dict], attacker_role: str
         ) -> None:
             for target in targets:
+                target_base = target.get("base_score", 0.0)
+                target_text = (
+                    f"{target.get('premise_text', '')} "
+                    f"{target.get('conclusion_text', '')}"
+                )
+                position_weight = self._get_position_weight(target)
+
                 for attacker in attackers:
-                    allowed, reason = _domain_rules_allow(target, attacker)
-                    if allowed:
-                        target_text = (
-                            f"{target.get('premise_text', '')} "
-                            f"{target.get('conclusion_text', '')}"
+                    allowed, reason = self._domain_rules_allow(target, attacker)
+
+                    # --- Hard gate: domain rules ---
+                    if not allowed:
+                        target["attacks_received"].append(
+                            {
+                                "attacker_link_id": attacker.get("link_id"),
+                                "attacker_role": attacker_role,
+                                "overlap": 0.0,
+                                "attacker_base_score": round(
+                                    attacker.get("base_score", 0.0), 4
+                                ),
+                                "attack_value": 0.0,
+                                "reason": reason,
+                                "filtered": True,
+                            }
                         )
-                        attacker_text = (
-                            f"{attacker.get('premise_text', '')} "
-                            f"{attacker.get('conclusion_text', '')}"
+                        continue
+
+                    attacker_text = (
+                        f"{attacker.get('premise_text', '')} "
+                        f"{attacker.get('conclusion_text', '')}"
+                    )
+                    overlap = self._similarity(target_text, attacker_text)
+
+                    # --- Soft filter 1: semantic overlap threshold ---
+                    if overlap < MIN_SEMANTIC_OVERLAP:
+                        target["attacks_received"].append(
+                            {
+                                "attacker_link_id": attacker.get("link_id"),
+                                "attacker_role": attacker_role,
+                                "overlap": round(overlap, 4),
+                                "attacker_base_score": round(
+                                    attacker.get("base_score", 0.0), 4
+                                ),
+                                "attack_value": 0.0,
+                                "reason": (
+                                    f"filtered: overlap {overlap:.3f} "
+                                    f"< {MIN_SEMANTIC_OVERLAP}"
+                                ),
+                                "filtered": True,
+                            }
                         )
-                        overlap = self._similarity(target_text, attacker_text)
-                        attack_value = overlap * attacker.get("base_score", 0.0)
-                    else:
-                        overlap = 0.0
-                        attack_value = 0.0
+                        continue
+
+                    attacker_base = attacker.get("base_score", 0.0)
+                    raw_attack = overlap * attacker_base
+
+                    # --- Soft filter 2: strength ratio ---
+                    if raw_attack < MIN_STRENGTH_RATIO * target_base:
+                        target["attacks_received"].append(
+                            {
+                                "attacker_link_id": attacker.get("link_id"),
+                                "attacker_role": attacker_role,
+                                "overlap": round(overlap, 4),
+                                "attacker_base_score": round(attacker_base, 4),
+                                "attack_value": 0.0,
+                                "reason": (
+                                    f"filtered: attack_value "
+                                    f"{raw_attack:.3f} < "
+                                    f"{MIN_STRENGTH_RATIO} × {target_base:.3f}"
+                                ),
+                                "filtered": True,
+                            }
+                        )
+                        continue
+
+                    # --- Classify attack type & compute multiplier ---
+                    attack_type = self._classify_attack_type(target, attacker)
+                    type_multiplier = self._get_attack_type_multiplier(attack_type)
+
+                    # --- Damage: only the excess, scaled down ---
+                    effective_damage = (raw_attack - target_base) * DAMAGE_FACTOR
+                    attack_value = effective_damage * position_weight * type_multiplier
 
                     target["attacks_received"].append(
                         {
                             "attacker_link_id": attacker.get("link_id"),
                             "attacker_role": attacker_role,
                             "overlap": round(overlap, 4),
-                            "attacker_base_score": round(
-                                attacker.get("base_score", 0.0), 4
-                            ),
+                            "attacker_base_score": round(attacker_base, 4),
                             "attack_value": round(attack_value, 4),
-                            "reason": reason,
+                            "effective_damage": round(effective_damage, 4),
+                            "position_weight": round(position_weight, 4),
+                            "attack_type": attack_type,
+                            "type_multiplier": round(type_multiplier, 2),
+                            "reason": f"active: {attack_type}",
+                            "filtered": False,
                         }
                     )
                     if attack_value > 0:
@@ -2064,7 +2370,7 @@ Rewrite the normative passage in Italian using only the official text, including
         # PRO attacks CONTRA
         _apply_attacks(contra_links, pro_links, attacker_role="support")
 
-        # Sort attacks by value (descending) for readability; keep ALL attacks
+        # Sort attacks by value (descending) for readability
         for link in pro_links + contra_links:
             link["attacks_received"] = sorted(
                 link.get("attacks_received", []),

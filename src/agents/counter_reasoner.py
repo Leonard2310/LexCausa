@@ -8,12 +8,13 @@ pre-retrieved contrary/neutral sources.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from .aspic_formatter import AspicFormatter
@@ -24,7 +25,7 @@ from .tools.neo4j_tools import get_statute_by_article_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
-from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
+from services.groq_client import get_chat_groq  # noqa: E402
 
 
 @dataclass
@@ -442,18 +443,8 @@ Select the most useful attack among the following ids and return ONLY the chosen
             p.get("title", "Untitled") for p in pre_retrieved_precedents
         ]
 
-        # Build prompt with context
-        input_prompt = self._build_counter_reasoning_prompt_with_context(
-            claim=claim,
-            routing_decision=routing_decision,
-            attack_selection=attack_selection,
-            knowledge_base=knowledge_base,
-            allowed_statutes=allowed_statutes,
-            allowed_precedents=allowed_precedents,
-        )
-
         # ----------------------------------------------------------
-        # Execute with retry for valid reasoning chain
+        # Execute with iterative step-by-step chain generation
         # ----------------------------------------------------------
         MAX_CHAIN_RETRIES = settings.chain_max_retries
         output = None
@@ -463,60 +454,14 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 f"🔄 Counter-Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}"
             )
 
-            raw_output = ""
-
-            try:
-                result = resilient_react_invoke(
-                    self._build_react_agent,
-                    {"messages": [HumanMessage(content=input_prompt)]},
-                )
-                messages_out = result.get("messages", [])
-
-                # Log tool calls
-                tool_names = [
-                    msg.name
-                    for msg in messages_out
-                    if hasattr(msg, "name") and msg.name
-                ]
-                if tool_names:
-                    self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
-
-                # Get the final response
-                for msg in reversed(messages_out):
-                    if isinstance(msg, ToolMessage):
-                        continue
-                    msg_content = getattr(msg, "content", None)
-                    if msg_content:
-                        raw_output = str(msg_content)
-                        break
-
-            except Exception as e:
-                recovered = self._extract_failed_generation(e)
-                if recovered:
-                    self._log(
-                        "⚠️ Tool call failed but valid response recovered from failed_generation",
-                        "warning",
-                    )
-                    raw_output = recovered
-                else:
-                    # Non-recoverable error → return error output immediately
-                    error_msg = f"Errore durante l'esecuzione del Counter-Reasoner: {e}"
-                    self._log(error_msg, "error")
-                    return CounterReasonerOutput(
-                        claim=claim,
-                        causal_type_id=routing_decision.causal_type_id,
-                        theory_id=routing_decision.theory_id,
-                        selected_attack_id=attack_selection.attack_id,
-                        reasoner_causality={
-                            "causal_type_id": routing_decision.causal_type_id,
-                            "theory_id": routing_decision.theory_id,
-                        },
-                        relevant_statutes=pre_retrieved_statutes,
-                        relevant_precedents=pre_retrieved_precedents,
-                        counter_arguments=[],
-                        reasoning_chain=[error_msg],
-                        raw_response=error_msg,
-                    )
+            raw_output, iterative_chain = self._generate_counter_chain_iteratively(
+                claim=claim,
+                routing_decision=routing_decision,
+                attack_selection=attack_selection,
+                knowledge_base=knowledge_base,
+                allowed_statutes=allowed_statutes,
+                allowed_precedents=allowed_precedents,
+            )
 
             # Build output
             output = CounterReasonerOutput(
@@ -533,8 +478,12 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 raw_response=raw_output,
             )
 
-            # Parse response
-            output.reasoning_chain = self._extract_reasoning_chain(raw_output)
+            # Use iterative chain directly; fall back to extraction if empty
+            output.reasoning_chain = (
+                iterative_chain
+                if iterative_chain
+                else self._extract_reasoning_chain(raw_output)
+            )
             output.counter_arguments = self._extract_arguments(raw_output)
             output.reasoning_chain = self._sanitize_reasoning_chain(
                 output.reasoning_chain, pre_retrieved_precedents
@@ -615,6 +564,373 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 if len(text) > 50:
                     return text
         return ""
+
+    def _extract_cited_articles(self, text: str) -> List[str]:
+        """Extract article references cited in the text."""
+        import re
+
+        pattern = re.compile(
+            r"(?:art(?:icolo)?\.?\s*)(\d{1,4})\s*"
+            r"(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?))",
+            re.IGNORECASE,
+        )
+        matches = pattern.findall(text)
+        articles: List[str] = []
+        for num, code in matches:
+            code_norm = (
+                "c.c." if "c" in code.lower() and "p" not in code.lower() else "c.p."
+            )
+            articles.append(f"Art. {num} {code_norm}")
+        seen: set[str] = set()
+        unique: List[str] = []
+        for a in articles:
+            if a not in seen:
+                seen.add(a)
+                unique.append(a)
+        return unique
+
+    def _generate_counter_chain_iteratively(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        attack_selection: AttackSelection,
+        knowledge_base: str,
+        allowed_statutes: List[str],
+        allowed_precedents: List[str],
+    ) -> tuple[str, List[str]]:
+        """Generate counter-reasoning chain step-by-step.
+
+        Same iterative approach as Reasoner but with counter-argument
+        framing.  The LLM autonomously decides when to stop; only
+        ``chain_max_steps`` acts as a safety cap.
+
+        Returns
+        -------
+        (raw_response, reasoning_chain)
+        """
+        MAX_STEPS = settings.chain_max_steps
+        MIN_STEPS = settings.chain_min_steps
+        steps: List[str] = []
+        used_norms: List[str] = []
+
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- No precedents available"
+        )
+
+        attack_id = attack_selection.attack_id or "N/A"
+        attack_desc = attack_selection.description or "N/A"
+
+        for step_num in range(1, MAX_STEPS + 1):
+            is_last_possible = step_num == MAX_STEPS
+            can_conclude = step_num >= MIN_STEPS
+
+            # --- EVALUATION PHASE (separate LLM call) ---
+            if can_conclude and not is_last_possible and steps:
+                should_continue = self._evaluate_should_continue(
+                    claim=claim,
+                    domain=routing_decision.domain,
+                    steps=steps,
+                    used_norms=used_norms,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    role="counter",
+                )
+                if not should_continue:
+                    self._log(
+                        f"🏁 Counter-chain concluded at step {step_num - 1} "
+                        f"by evaluator (before generating step {step_num})"
+                    )
+                    break
+
+            if steps:
+                prev_context = "\n".join(
+                    f"  Step {i + 1}: {s}" for i, s in enumerate(steps)
+                )
+                used_norms_text = ", ".join(used_norms) if used_norms else "none"
+            else:
+                prev_context = "  (No previous steps — you are at step 1.)"
+                used_norms_text = "none"
+
+            # ---- Per-step prompt (English, response in Italian) ----
+            last_step_notice = (
+                "\nTHIS IS THE LAST ALLOWED STEP. "
+                "You MUST conclude the counter-argument forcefully."
+                if is_last_possible
+                else ""
+            )
+            step_prompt = f"""You are an expert Italian jurist. You are building a COUNTER-ARGUMENT STEP BY STEP to dismantle the following legal claim.
+
+CLAIM TO ATTACK:
+"{claim}"
+
+ATTACK STRATEGY: {attack_id}
+DESCRIPTION: {attack_desc}
+
+DOMAIN: {routing_decision.domain}
+CAUSAL TYPE: {routing_decision.causal_type_id}
+THEORY: {routing_decision.theory_id}
+
+=== KNOWLEDGE BASE (use ONLY these sources) ===
+{knowledge_base}
+=== END KNOWLEDGE BASE ===
+
+ALLOWED STATUTE REFERENCES (do not cite others):
+{statutes_list}
+
+ALLOWED PRECEDENT REFERENCES (do not cite others):
+{precedents_list}
+
+--- CURRENT COUNTER-ARGUMENT STATE ---
+Steps completed so far:
+{prev_context}
+
+Norms already used: {used_norms_text}
+Current step: {step_num} (safety cap: {MAX_STEPS})
+
+--- INSTRUCTIONS FOR STEP {step_num} ---
+Generate EXACTLY ONE counter-reasoning step (step {step_num}).
+
+REQUIREMENTS for this step:
+1. SUBSTANCE: Do NOT just cite an article. You must:
+   - Identify which WEAK POINT of the claim you are attacking in this step
+   - Cite the relevant norm(s) from the knowledge base (e.g. Art. XX c.p./c.c.)
+   - Explain IN DETAIL why the norm weakens, contradicts, or limits the claim
+   - Draw a SUBSTANTIVE INTERMEDIATE CONCLUSION that advances the counter-argument
+2. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
+3. CONTINUITY: The step must logically connect to the previous ones
+4. DIFFERENTIATION: Do NOT repeat arguments already made. Attack a DIFFERENT aspect of the claim.
+5. EXPLICIT CONTRADICTION: Each step must make clear WHY it contradicts the opposing thesis
+{last_step_notice}
+
+RESPONSE FORMAT:
+STEP: [Your counter-reasoning step]
+
+CRITICAL RULES:
+- Your ENTIRE STEP text must be written in Italian.
+- The step must be at least 2-3 substantive sentences.
+- Cite at least one specific article (e.g. Art. 52 c.p.).
+- Do NOT mention the Reasoner. Produce a standalone counter-argument.
+- Do NOT invent sources not present in the knowledge base.
+"""
+
+            self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
+
+            try:
+                resp = self._resilient_llm_invoke([HumanMessage(content=step_prompt)])
+                step_response = (resp.content or "").strip()
+            except Exception as e:
+                self._log(
+                    f"⚠️ Counter-step {step_num} generation failed: {e}", "warning"
+                )
+                break
+
+            step_text = self._parse_step_text(step_response)
+
+            if not step_text:
+                self._log(
+                    f"⚠️ Counter-step {step_num}: empty step text, stopping",
+                    "warning",
+                )
+                break
+
+            steps.append(step_text)
+
+            new_norms = self._extract_cited_articles(step_text)
+            used_norms.extend(new_norms)
+
+            self._log(
+                f"✅ Counter-step {step_num}: {step_text[:80]}... "
+                f"| norms: {', '.join(new_norms) if new_norms else 'none'}"
+            )
+
+            # Last possible step: forced stop
+            if is_last_possible:
+                self._log(f"🏁 Counter-chain stopped at safety cap (step {step_num})")
+                break
+
+        if not steps:
+            self._log("❌ No steps generated in iterative counter-chain", "error")
+            return "", []
+
+        self._log(
+            f"📊 Iterative counter-chain complete: {len(steps)} steps, "
+            f"{len(set(used_norms))} unique norms"
+        )
+
+        raw_response = self._assemble_counter_raw_response(claim, steps, attack_id)
+        return raw_response, steps
+
+    def _parse_step_text(self, response: str) -> str:
+        """Extract the step text from an LLM response.
+
+        Looks for a ``STEP:`` / ``STEP N:`` (or ``PASSO:``) marker and
+        returns everything after it.  Falls back to the full response
+        if no marker is found.
+        """
+        lines = response.strip().split("\n")
+        step_lines: List[str] = []
+        found_step = False
+
+        for line in lines:
+            stripped = line.strip()
+            upper = stripped.upper()
+
+            # Match STEP:, STEP 1:, STEP 12:, PASSO:, PASSO 1: etc.
+            if re.match(r"^(STEP|PASSO)\s*\d*\s*:", upper):
+                content = re.sub(
+                    r"^(?:STEP|PASSO)\s*\d*\s*:\s*",
+                    "",
+                    stripped,
+                    flags=re.IGNORECASE,
+                ).strip()
+                if content:
+                    step_lines.append(content)
+                found_step = True
+                continue
+
+            if found_step and stripped:
+                step_lines.append(stripped)
+
+        step_text = " ".join(step_lines).strip()
+
+        # Fallback: use entire response (skip DECISION / STEP N: prefixes)
+        if not step_text:
+            fallback_lines = []
+            for ln in lines:
+                s = ln.strip()
+                if not s:
+                    continue
+                su = s.upper()
+                if su.startswith("DECISION:") or su.startswith("DECISIONE:"):
+                    continue
+                # Strip any leading STEP N: prefix
+                s = re.sub(
+                    r"^(?:STEP|PASSO)\s*\d*\s*:\s*",
+                    "",
+                    s,
+                    flags=re.IGNORECASE,
+                )
+                if s:
+                    fallback_lines.append(s)
+            step_text = " ".join(fallback_lines).strip()
+
+        return step_text
+
+    def _evaluate_should_continue(
+        self,
+        claim: str,
+        domain: str,
+        steps: List[str],
+        used_norms: List[str],
+        knowledge_base: str,
+        statutes_list: str,
+        role: str = "counter",
+    ) -> bool:
+        """Dedicated evaluation call: should the chain continue?
+
+        A lightweight LLM call that inspects the current chain and
+        decides whether an additional step would meaningfully
+        strengthen the argument.
+
+        Returns ``True`` to continue, ``False`` to conclude.
+        """
+        prev_context = "\n".join(
+            f"  Step {i + 1}: {s[:120]}..." for i, s in enumerate(steps)
+        )
+        used_text = ", ".join(sorted(set(used_norms))) if used_norms else "none"
+        n_steps = len(steps)
+
+        role_desc = "supporting" if role == "support" else "counter-"
+
+        eval_prompt = f"""You are a senior Italian jurist evaluating whether a legal argument needs more steps.
+
+A {role_desc}argument for the claim below has {n_steps} steps so far.
+
+CLAIM: "{claim}"
+DOMAIN: {domain}
+
+Steps so far (truncated):
+{prev_context}
+
+Norms already cited: {used_text}
+
+EVALUATION GUIDELINES:
+- A well-constructed legal argument typically needs 5-8 distinct steps covering
+  different legal aspects (e.g. liability basis, damages, causation, defences,
+  procedural requirements).
+- With only {n_steps} step(s), consider whether major legal aspects remain unaddressed.
+- Answer CONTINUE if the argument has NOT yet covered its core legal aspects
+  (at least 4-5 genuinely DISTINCT legal points).
+- Answer CONCLUDE if:
+  (a) the argument already covers at least 4-5 distinct legal aspects, OR
+  (b) recent steps are REPEATING or REPHRASING norms/concepts from earlier steps, OR
+  (c) adding another step would not introduce a genuinely new legal dimension.
+
+YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
+
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
+            answer = (resp.content or "").strip().upper()
+        except Exception as e:
+            self._log(
+                f"⚠️ Evaluation call failed: {e}; defaulting to CONTINUE",
+                "warning",
+            )
+            return True
+
+        # Robust parsing
+        if "CONCLUD" in answer:
+            should_continue = False
+        elif "CONTINU" in answer:
+            should_continue = True
+        else:
+            # Ambiguous → default to CONCLUDE after enough steps
+            should_continue = n_steps < 5
+            self._log(
+                f"⚠️ Evaluator ambiguous: '{answer[:50]}'; "
+                f"defaulting to {'CONTINUE' if should_continue else 'CONCLUDE'}",
+                "warning",
+            )
+
+        self._log(
+            f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'} "
+            f"(raw: '{answer[:40]}')"
+        )
+        return should_continue
+
+    def _assemble_counter_raw_response(
+        self,
+        claim: str,
+        steps: List[str],
+        attack_id: str,
+    ) -> str:
+        """Assemble counter-argument raw response from iterative steps."""
+        chain_section = "**Catena di ragionamento**:\n"
+        for i, step in enumerate(steps, 1):
+            chain_section += f"{i}. {step}\n"
+
+        premise_steps = steps[:-1] if len(steps) > 1 else steps
+        conclusion_step = steps[-1] if steps else ""
+
+        premise_text = " ".join(premise_steps)
+        norms = self._extract_cited_articles(" ".join(steps))
+        norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
+
+        raw = (
+            f"**Premessa Alternativa**: {premise_text}\n\n"
+            f"**Norma**:\n{norms_text}\n\n"
+            f"**Nesso Causale Alternativo**: Applicando la strategia di attacco "
+            f'"{attack_id}", la catena di ragionamento dimostra come le norme '
+            f"citate indeboliscano il fondamento giuridico della pretesa, "
+            f"evidenziando le carenze nel nesso causale prospettato.\n\n"
+            f"**Conclusione Contraria**: {conclusion_step}\n\n"
+            f"{chain_section}"
+        )
+        return raw
 
     def _build_counter_reasoning_prompt_with_context(
         self,

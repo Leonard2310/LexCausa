@@ -396,6 +396,16 @@ class Settings(BaseSettings):
         alias="CHAIN_MAX_RETRIES",
         description="Maximum generation attempts for reasoning / counter-reasoning chains.",
     )
+    chain_max_steps: int = Field(
+        default=10,
+        alias="CHAIN_MAX_STEPS",
+        description="Safety cap: maximum reasoning steps per iterative chain (LLM decides when to stop).",
+    )
+    chain_min_steps: int = Field(
+        default=3,
+        alias="CHAIN_MIN_STEPS",
+        description="Minimum reasoning steps before the LLM is allowed to conclude.",
+    )
 
     # =========================================================================
     # Text Truncation (prompt context limits)

@@ -294,18 +294,8 @@ class Reasoner(BaseAgent):
             f"📝 Principle tests for prompt:\n{principle_text[:500] if len(principle_text) > 500 else principle_text}"
         )
 
-        input_prompt = self._build_reasoning_prompt_with_context(
-            claim,
-            routing_decision,
-            anchor_text,
-            principle_text,
-            knowledge_base,
-            allowed_statutes,
-            allowed_precedents,
-        )
-
         # ----------------------------------------------------------
-        # Phase 3 generation with retry for valid reasoning chain
+        # Phase 3: iterative step-by-step chain generation
         # ----------------------------------------------------------
         MAX_CHAIN_RETRIES = settings.chain_max_retries
         output = None
@@ -313,7 +303,15 @@ class Reasoner(BaseAgent):
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
             self._log(f"🔄 Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
 
-            raw_output, _ = self._invoke_reasoner(input_prompt)
+            raw_output, iterative_chain = self._generate_chain_iteratively(
+                claim=claim,
+                routing_decision=routing_decision,
+                anchor_text=anchor_text,
+                principle_text=principle_text,
+                knowledge_base=knowledge_base,
+                allowed_statutes=allowed_statutes,
+                allowed_precedents=allowed_precedents,
+            )
 
             output = ReasonerOutput(
                 claim=claim,
@@ -333,7 +331,12 @@ class Reasoner(BaseAgent):
                 raw_response=raw_output,
             )
 
-            output.reasoning_chain = self._extract_reasoning_chain(raw_output)
+            # Use iterative chain directly; fall back to extraction if empty
+            output.reasoning_chain = (
+                iterative_chain
+                if iterative_chain
+                else self._extract_reasoning_chain(raw_output)
+            )
             output.arguments = self._extract_arguments(raw_output)
             output.reasoning_chain = self._sanitize_reasoning_chain(
                 output.reasoning_chain, pre_retrieved_precedents
@@ -826,6 +829,348 @@ No punctuation. No new lines. No extra spaces.
             f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept"
         )
         return relevant_precedents
+
+    def _generate_chain_iteratively(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        anchor_text: str,
+        principle_text: str,
+        knowledge_base: str,
+        allowed_statutes: list[str],
+        allowed_precedents: list[str],
+    ) -> tuple[str, list[str]]:
+        """Generate the reasoning chain step-by-step with dedicated LLM calls.
+
+        Each iteration produces ONE substantive reasoning step.  The LLM
+        receives full context of prior steps and autonomously decides
+        whether to continue or conclude.  ``chain_max_steps`` acts only
+        as a safety cap.
+
+        Returns
+        -------
+        (raw_response, reasoning_chain)
+            The assembled raw text and the list of individual step texts.
+        """
+        MAX_STEPS = settings.chain_max_steps
+        MIN_STEPS = settings.chain_min_steps
+        steps: list[str] = []
+        used_norms: list[str] = []
+
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- No precedents available"
+        )
+
+        for step_num in range(1, MAX_STEPS + 1):
+            is_last_possible = step_num == MAX_STEPS
+            can_conclude = step_num >= MIN_STEPS
+
+            # --- EVALUATION PHASE (separate LLM call) ---
+            if can_conclude and not is_last_possible and steps:
+                should_continue = self._evaluate_should_continue(
+                    claim=claim,
+                    domain=routing_decision.domain,
+                    steps=steps,
+                    used_norms=used_norms,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    role="support",
+                )
+                if not should_continue:
+                    self._log(
+                        f"🏁 Chain concluded at step {step_num - 1} "
+                        f"by evaluator (before generating step {step_num})"
+                    )
+                    break
+
+            # Build context of previous steps
+            if steps:
+                prev_context = "\n".join(
+                    f"  Step {i + 1}: {s}" for i, s in enumerate(steps)
+                )
+                used_norms_text = ", ".join(used_norms) if used_norms else "none"
+            else:
+                prev_context = "  (No previous steps — you are at step 1.)"
+                used_norms_text = "none"
+
+            # ---- Per-step prompt (English, response in Italian) ----
+            last_step_notice = (
+                "\nTHIS IS THE LAST ALLOWED STEP. "
+                "You MUST conclude the argument now."
+                if is_last_possible
+                else ""
+            )
+            step_prompt = f"""You are an expert Italian jurist. You are building a SUPPORTING argument STEP BY STEP for the following legal claim.
+
+CLAIM:
+"{claim}"
+
+DOMAIN: {routing_decision.domain}
+
+ANCHOR NORMS (structural constraints):
+{anchor_text}
+
+PRINCIPLE TESTS (evaluation criteria):
+{principle_text}
+
+=== KNOWLEDGE BASE (use ONLY these sources) ===
+{knowledge_base}
+=== END KNOWLEDGE BASE ===
+
+ALLOWED STATUTE REFERENCES (do not cite others):
+{statutes_list}
+
+ALLOWED PRECEDENT REFERENCES (do not cite others):
+{precedents_list}
+
+--- CURRENT ARGUMENT STATE ---
+Steps completed so far:
+{prev_context}
+
+Norms already used: {used_norms_text}
+Current step: {step_num} (safety cap: {MAX_STEPS})
+
+--- INSTRUCTIONS FOR STEP {step_num} ---
+Generate EXACTLY ONE reasoning step (step {step_num}).
+
+REQUIREMENTS for this step:
+1. SUBSTANCE: Do NOT just cite an article. You must:
+   - Identify which legal aspect of the claim you are addressing in this step
+   - Cite the relevant norm(s) from the knowledge base (e.g. Art. XX c.p./c.c.)
+   - Explain IN DETAIL how the norm applies to the specific facts of the claim
+   - Draw a SUBSTANTIVE INTERMEDIATE CONCLUSION that advances the argument
+2. CONTINUITY: The step must logically connect to the previous ones (if any)
+3. Do NOT repeat norms already used in previous steps, unless needed for a genuinely different aspect
+4. Prefer norms from the ALLOWED STATUTES list that have NOT been used yet, if pertinent
+{last_step_notice}
+
+RESPONSE FORMAT:
+STEP: [Your reasoning step, with citation and detailed explanation]
+
+CRITICAL RULES:
+- Your ENTIRE STEP text must be written in Italian.
+- The step must be at least 2-3 substantive sentences (NOT just "Art. X stabilisce Y").
+- Cite at least one specific article (e.g. Art. 2043 c.c.).
+- Do NOT invent sources not present in the knowledge base.
+"""
+
+            self._log(f"🔗 Generating step {step_num}/{MAX_STEPS}...")
+
+            try:
+                resp = self._resilient_llm_invoke([HumanMessage(content=step_prompt)])
+                step_response = (resp.content or "").strip()
+            except Exception as e:
+                self._log(f"⚠️ Step {step_num} generation failed: {e}", "warning")
+                break
+
+            step_text = self._parse_step_text(step_response)
+
+            if not step_text:
+                self._log(f"⚠️ Step {step_num}: empty step text, stopping", "warning")
+                break
+
+            steps.append(step_text)
+
+            new_norms = self._extract_cited_articles(step_text)
+            used_norms.extend(new_norms)
+
+            self._log(
+                f"✅ Step {step_num}: {step_text[:80]}... "
+                f"| norms: {', '.join(new_norms) if new_norms else 'none'}"
+            )
+
+            # Last possible step: forced stop
+            if is_last_possible:
+                self._log(f"🏁 Chain stopped at safety cap (step {step_num})")
+                break
+
+        if not steps:
+            self._log("❌ No steps generated in iterative chain", "error")
+            return "", []
+
+        self._log(
+            f"📊 Iterative chain complete: {len(steps)} steps, "
+            f"{len(set(used_norms))} unique norms"
+        )
+
+        raw_response = self._assemble_raw_response(claim, steps)
+        return raw_response, steps
+
+    def _parse_step_text(self, response: str) -> str:
+        """Extract the step text from an LLM response.
+
+        Looks for a ``STEP:`` / ``STEP N:`` (or ``PASSO:``) marker and
+        returns everything after it.  Falls back to the full response
+        if no marker is found.
+        """
+        lines = response.strip().split("\n")
+        step_lines: list[str] = []
+        found_step = False
+
+        for line in lines:
+            stripped = line.strip()
+            upper = stripped.upper()
+
+            # Match STEP:, STEP 1:, STEP 12:, PASSO:, PASSO 1: etc.
+            if re.match(r"^(STEP|PASSO)\s*\d*\s*:", upper):
+                content = re.sub(
+                    r"^(?:STEP|PASSO)\s*\d*\s*:\s*",
+                    "",
+                    stripped,
+                    flags=re.IGNORECASE,
+                ).strip()
+                if content:
+                    step_lines.append(content)
+                found_step = True
+                continue
+
+            if found_step and stripped:
+                step_lines.append(stripped)
+
+        step_text = " ".join(step_lines).strip()
+
+        # Fallback: use entire response (skip DECISION / STEP N: prefixes)
+        if not step_text:
+            fallback_lines = []
+            for ln in lines:
+                s = ln.strip()
+                if not s:
+                    continue
+                su = s.upper()
+                if su.startswith("DECISION:") or su.startswith("DECISIONE:"):
+                    continue
+                # Strip any leading STEP N: prefix
+                s = re.sub(
+                    r"^(?:STEP|PASSO)\s*\d*\s*:\s*",
+                    "",
+                    s,
+                    flags=re.IGNORECASE,
+                )
+                if s:
+                    fallback_lines.append(s)
+            step_text = " ".join(fallback_lines).strip()
+
+        return step_text
+
+    def _evaluate_should_continue(
+        self,
+        claim: str,
+        domain: str,
+        steps: list[str],
+        used_norms: list[str],
+        knowledge_base: str,
+        statutes_list: str,
+        role: str = "support",
+    ) -> bool:
+        """Dedicated evaluation call: should the chain continue?
+
+        A lightweight LLM call that inspects the current chain and
+        decides whether an additional step would meaningfully
+        strengthen the argument.
+
+        Returns ``True`` to continue, ``False`` to conclude.
+        """
+        prev_context = "\n".join(
+            f"  Step {i + 1}: {s[:120]}..." for i, s in enumerate(steps)
+        )
+        used_text = ", ".join(sorted(set(used_norms))) if used_norms else "none"
+        n_steps = len(steps)
+
+        role_desc = "supporting" if role == "support" else "counter-"
+
+        eval_prompt = f"""You are a senior Italian jurist evaluating whether a legal argument needs more steps.
+
+A {role_desc}argument for the claim below has {n_steps} steps so far.
+
+CLAIM: "{claim}"
+DOMAIN: {domain}
+
+Steps so far (truncated):
+{prev_context}
+
+Norms already cited: {used_text}
+
+EVALUATION GUIDELINES:
+- A well-constructed legal argument typically needs 5-8 distinct steps covering
+  different legal aspects (e.g. liability basis, damages, causation, defences,
+  procedural requirements).
+- With only {n_steps} step(s), consider whether major legal aspects remain unaddressed.
+- Answer CONTINUE if the argument has NOT yet covered its core legal aspects
+  (at least 4-5 genuinely DISTINCT legal points).
+- Answer CONCLUDE if:
+  (a) the argument already covers at least 4-5 distinct legal aspects, OR
+  (b) recent steps are REPEATING or REPHRASING norms/concepts from earlier steps, OR
+  (c) adding another step would not introduce a genuinely new legal dimension.
+
+YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
+
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
+            answer = (resp.content or "").strip().upper()
+        except Exception as e:
+            self._log(
+                f"⚠️ Evaluation call failed: {e}; defaulting to CONTINUE",
+                "warning",
+            )
+            return True
+
+        # Robust parsing
+        if "CONCLUD" in answer:
+            should_continue = False
+        elif "CONTINU" in answer:
+            should_continue = True
+        else:
+            # Ambiguous → default to CONCLUDE after enough steps
+            should_continue = n_steps < 5
+            self._log(
+                f"⚠️ Evaluator ambiguous: '{answer[:50]}'; "
+                f"defaulting to {'CONTINUE' if should_continue else 'CONCLUDE'}",
+                "warning",
+            )
+
+        self._log(
+            f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'} "
+            f"(raw: '{answer[:40]}')"
+        )
+        return should_continue
+
+    def _assemble_raw_response(
+        self,
+        claim: str,
+        steps: list[str],
+    ) -> str:
+        """Assemble a complete raw response from iterative steps.
+
+        Produces the same format expected by ``_extract_arguments`` and
+        ``_extract_reasoning_chain``, so ``AspicFormatter`` works
+        without changes.
+        """
+        chain_section = "**Catena di ragionamento**:\n"
+        for i, step in enumerate(steps, 1):
+            chain_section += f"{i}. {step}\n"
+
+        premise_steps = steps[:-1] if len(steps) > 1 else steps
+        conclusion_step = steps[-1] if steps else ""
+
+        premise_text = " ".join(premise_steps)
+        norms = self._extract_cited_articles(" ".join(steps))
+        norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
+
+        raw = (
+            f"**Premessa**: {premise_text}\n\n"
+            f"**Norma**:\n{norms_text}\n\n"
+            f"**Nesso Causale**: La connessione tra le norme citate e la pretesa "
+            f"emerge dalla catena di ragionamento sottostante, dove ciascun passo "
+            f"costruisce logicamente sul precedente per dimostrare il fondamento "
+            f"giuridico della domanda.\n\n"
+            f"**Conclusione**: {conclusion_step}\n\n"
+            f"{chain_section}"
+        )
+        return raw
 
     def _build_reasoning_prompt_with_context(
         self,

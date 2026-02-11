@@ -23,6 +23,19 @@ from config import settings
 
 logger = logging.getLogger("lexcausa.groq_client")
 
+
+class AllKeysRateLimitedError(Exception):
+    """Raised when every available API key is rate-limited."""
+
+    def __init__(self, n_keys: int, model: str):
+        self.n_keys = n_keys
+        self.model = model
+        super().__init__(
+            f"All {n_keys} Groq API keys are rate-limited for model '{model}'. "
+            f"Wait a few minutes or add more GROQ_API_KEY_V* entries to .env."
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level state (shared across all callers in the same process)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,7 +85,7 @@ def _rotate_key() -> tuple[str, int]:
     keys = settings.groq_api_keys
     if not keys:
         raise ValueError(
-            "No Groq API keys configured. Set GROQ_API_KEY_V1/V2/V3 in .env"
+            "No Groq API keys configured. Set GROQ_API_KEY_V1 (and optionally V2, V3, …) in .env"
         )
     with _key_lock:
         _current_key_index = (_current_key_index + 1) % len(keys)
@@ -84,7 +97,7 @@ def _current_key() -> str:
     keys = settings.groq_api_keys
     if not keys:
         raise ValueError(
-            "No Groq API keys configured. Set GROQ_API_KEY_V1/V2/V3 in .env"
+            "No Groq API keys configured. Set GROQ_API_KEY_V1 (and optionally V2, V3, …) in .env"
         )
     with _key_lock:
         idx = _current_key_index % len(keys)
@@ -165,16 +178,29 @@ def _resilient_loop(
     Strategy:
     - On *model-down* → skip remaining retries/keys for this model, jump to
       fallback model immediately.
-    - On *rate-limit* → rotate API key, keep the same model.
+    - On *rate-limit* → rotate API key, keep the same model.  If **every**
+      key is rate-limited, raise ``AllKeysRateLimitedError`` immediately
+      instead of looping forever.
     - On other transient errors → retry with exponential backoff, then rotate key.
     """
     retries = max_retries or settings.groq_max_retries
     models = list(settings.groq_models)  # copy so we can iterate safely
     keys = settings.groq_api_keys
+    n_keys = len(keys)
     base_delay = settings.groq_retry_base_delay
 
     if not keys:
-        raise ValueError("No Groq API keys configured.")
+        raise ValueError(
+            "No Groq API keys configured. "
+            "Set GROQ_API_KEY_V1 (and optionally V2, V3, …) in .env"
+        )
+
+    logger.info(
+        "🔑 [%s] %d API key(s) available, %d model(s) configured",
+        label,
+        n_keys,
+        len(models),
+    )
 
     last_exc: Optional[Exception] = None
     model_idx = 0
@@ -198,10 +224,13 @@ def _resilient_loop(
 
     while model_idx < len(models):
         model = models[model_idx]
+        # Track which keys have been rate-limited for THIS model
+        rate_limited_keys: set[int] = set()
         keys_tried = 0
 
-        while keys_tried < len(keys):
+        while keys_tried < n_keys:
             key = _current_key()
+            cur_idx = _current_key_index
 
             for attempt in range(1, retries + 1):
                 try:
@@ -230,28 +259,42 @@ def _resilient_loop(
                                 models[model_idx],
                             )
                         # break out of both the attempt and keys loops
-                        keys_tried = len(keys)  # exit keys loop after break
+                        keys_tried = n_keys  # exit keys loop after break
                         break  # exit attempt loop
 
                     # ── Rate limit → rotate key immediately ──────────────
                     if _is_rate_limit(exc):
+                        rate_limited_keys.add(cur_idx)
                         logger.warning(
-                            "🔄 [%s] Rate limit hit (key_idx=%d), rotating API key: %s",
+                            "🔄 [%s] Rate limit hit (key %d/%d), "
+                            "rotating API key: %s",
                             label,
-                            _current_key_index,
+                            cur_idx + 1,
+                            n_keys,
                             exc,
                         )
+                        # Check if ALL keys are now rate-limited
+                        if len(rate_limited_keys) >= n_keys:
+                            logger.error(
+                                "🚫 [%s] All %d API keys are rate-limited "
+                                "for model '%s'. Stopping.",
+                                label,
+                                n_keys,
+                                model,
+                            )
+                            raise AllKeysRateLimitedError(n_keys, model) from exc
                         _rotate_key()
                         keys_tried += 1
                         break  # exit attempt loop, go to next key
 
                     # ── Other transient error → backoff + retry ──────────
                     logger.warning(
-                        "⚠️ [%s] Transient error (model=%s, key_idx=%d, "
+                        "⚠️ [%s] Transient error (model=%s, key %d/%d, "
                         "attempt=%d/%d): %s",
                         label,
                         model,
-                        _current_key_index,
+                        cur_idx + 1,
+                        n_keys,
                         attempt,
                         retries,
                         exc,
@@ -262,9 +305,10 @@ def _resilient_loop(
             else:
                 # All retry attempts exhausted for this key (no break) → rotate key
                 logger.warning(
-                    "🔄 [%s] Retries exhausted for key_idx=%d, rotating key",
+                    "🔄 [%s] Retries exhausted for key %d/%d, rotating key",
                     label,
-                    _current_key_index,
+                    _current_key_index + 1,
+                    n_keys,
                 )
                 _rotate_key()
                 keys_tried += 1
@@ -277,10 +321,11 @@ def _resilient_loop(
         if model_idx >= len(models):
             break
         # If all keys exhausted normally, move to next model
-        if keys_tried >= len(keys) and model == models[model_idx]:
+        if keys_tried >= n_keys and model == models[model_idx]:
             logger.warning(
-                "🔀 [%s] All keys exhausted for model %s, trying fallback",
+                "🔀 [%s] All %d keys exhausted for model %s, trying fallback",
                 label,
+                n_keys,
                 model,
             )
             model_idx += 1

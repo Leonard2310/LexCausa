@@ -150,6 +150,40 @@ class BaseAgent(ABC):
         )
         print(f"{emoji} [{self.__class__.__name__}] {message}")
 
+    # ------------------------------------------------------------------
+    # Step repetition detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_repetitive_step(
+        new_step: str,
+        existing_steps: list[str],
+        threshold: float = 0.70,
+    ) -> bool:
+        """Return ``True`` if *new_step* is too similar to any existing step.
+
+        Uses **word-level Jaccard similarity**: if the fraction of shared
+        words between the candidate and any earlier step exceeds
+        *threshold* the step is considered a repetition.
+
+        A threshold of 0.70 catches near-identical paraphrases while
+        allowing steps that share some legal vocabulary but discuss
+        genuinely different aspects.
+        """
+        new_words = set(new_step.lower().split())
+        if not new_words:
+            return False
+        for prev in existing_steps:
+            prev_words = set(prev.lower().split())
+            if not prev_words:
+                continue
+            intersection = new_words & prev_words
+            union = new_words | prev_words
+            jaccard = len(intersection) / len(union) if union else 0.0
+            if jaccard >= threshold:
+                return True
+        return False
+
     def _extract_reasoning_chain(self, response: str) -> list[str]:
         """Extract reasoning chain from response with improved pattern matching."""
         chain = []

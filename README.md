@@ -137,7 +137,8 @@ NEO4J_PASSWORD=your_password_here
 # Groq Cloud API (up to 3 keys for rotation)
 GROQ_API_KEY_V1=your_groq_api_key_here
 GROQ_API_KEY_V2=your_second_key_here
-GROQ_API_KEY_V3=your_third_key_here
+...
+GROQ_API_KEY_VN=your_third_key_here
 GROQ_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 GROQ_FALLBACK_MODEL=meta-llama/llama-4-maverick-17b-128e-instruct
 

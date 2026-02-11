@@ -944,8 +944,11 @@ REQUIREMENTS for this step:
    - Explain IN DETAIL how the norm applies to the specific facts of the claim
    - Draw a SUBSTANTIVE INTERMEDIATE CONCLUSION that advances the argument
 2. CONTINUITY: The step must logically connect to the previous ones (if any)
-3. Do NOT repeat norms already used in previous steps, unless needed for a genuinely different aspect
+3. NO REPETITION: You MUST NOT repeat arguments from earlier steps. Each step must address
+   a GENUINELY DIFFERENT legal aspect. If you find yourself discussing the same norm or the
+   same legal concept as a previous step, STOP — you have nothing new to add.
 4. Prefer norms from the ALLOWED STATUTES list that have NOT been used yet, if pertinent
+5. Do NOT re-discuss norms already cited: {used_norms_text}
 {last_step_notice}
 
 RESPONSE FORMAT:
@@ -971,6 +974,14 @@ CRITICAL RULES:
 
             if not step_text:
                 self._log(f"⚠️ Step {step_num}: empty step text, stopping", "warning")
+                break
+
+            # --- REPETITION DETECTION (programmatic) ---
+            if steps and self._is_repetitive_step(step_text, steps):
+                self._log(
+                    f"🔁 Step {step_num}: too similar to a previous step, "
+                    f"stopping chain (repetition detected)"
+                )
                 break
 
             steps.append(step_text)
@@ -1075,21 +1086,23 @@ CRITICAL RULES:
         Returns ``True`` to continue, ``False`` to conclude.
         """
         prev_context = "\n".join(
-            f"  Step {i + 1}: {s[:120]}..." for i, s in enumerate(steps)
+            f"  Step {i + 1}: {s[:300]}..." for i, s in enumerate(steps)
         )
         used_text = ", ".join(sorted(set(used_norms))) if used_norms else "none"
         n_steps = len(steps)
+        n_unique_norms = len(set(used_norms)) if used_norms else 0
 
         role_desc = "supporting" if role == "support" else "counter-"
 
         eval_prompt = f"""You are a senior Italian jurist evaluating whether a legal argument needs more steps.
 
 A {role_desc}argument for the claim below has {n_steps} steps so far.
+It cites {n_unique_norms} unique norms out of {len(used_norms)} total citations.
 
 CLAIM: "{claim}"
 DOMAIN: {domain}
 
-Steps so far (truncated):
+Steps so far:
 {prev_context}
 
 Norms already cited: {used_text}
@@ -1099,11 +1112,22 @@ EVALUATION GUIDELINES:
   different legal aspects (e.g. liability basis, damages, causation, defences,
   procedural requirements).
 - With only {n_steps} step(s), consider whether major legal aspects remain unaddressed.
-- Answer CONTINUE if the argument has NOT yet covered its core legal aspects
-  (at least 4-5 genuinely DISTINCT legal points).
-- Answer CONCLUDE if:
-  (a) the argument already covers at least 4-5 distinct legal aspects, OR
-  (b) recent steps are REPEATING or REPHRASING norms/concepts from earlier steps, OR
+
+CRITICAL — REPETITION DETECTION:
+- Read the steps above carefully. If two or more steps make the SAME legal point
+  (e.g. "proportionality of defence", "possibility of flight", "use of a knife vs fist")
+  even with slightly different wording, they are REPETITIONS.
+- If {n_unique_norms} unique norms < {n_steps} steps, the argument is likely REPEATING itself.
+- If the last 2-3 steps cite the SAME articles as earlier steps, answer CONCLUDE.
+
+DECISION RULES:
+- Answer CONTINUE only if ALL of these are true:
+  (1) fewer than 4 genuinely DISTINCT legal aspects have been covered, AND
+  (2) recent steps are NOT repeating earlier points, AND
+  (3) there is a clearly identifiable NEW legal dimension to add.
+- Answer CONCLUDE if ANY of these is true:
+  (a) the argument covers 4+ distinct legal aspects, OR
+  (b) recent steps REPEAT or REPHRASE norms/concepts from earlier steps, OR
   (c) adding another step would not introduce a genuinely new legal dimension.
 
 YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""

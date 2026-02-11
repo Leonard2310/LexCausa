@@ -12,11 +12,12 @@ Usage:
     groq_api_key = settings.groq_api_key
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Find project root and load .env
@@ -54,8 +55,7 @@ class Settings(BaseSettings):
     # Groq Cloud Configuration
     # =========================================================================
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY_V1")
-    groq_api_key_v2: str = Field(default="", alias="GROQ_API_KEY_V2")
-    groq_api_key_v3: str = Field(default="", alias="GROQ_API_KEY_V3")
+    _groq_api_keys: list[str] = []  # populated dynamically by validator
     groq_model: str = Field(
         default="meta-llama/llama-4-scout-17b-16e-instruct", alias="GROQ_MODEL"
     )
@@ -585,14 +585,33 @@ class Settings(BaseSettings):
     # =========================================================================
     # Paths
     # =========================================================================
+    @model_validator(mode="after")
+    def _discover_groq_api_keys(self) -> "Settings":
+        """Scan environment for all GROQ_API_KEY_V* variables.
+
+        Discovers keys dynamically (V1, V2, …, V99) so adding more
+        keys to .env is all that's needed — no code changes required.
+        """
+        keys: list[str] = []
+        # Start with the primary key (V1) that Pydantic already loaded
+        if self.groq_api_key:
+            keys.append(self.groq_api_key)
+        # Discover V2, V3, … VN
+        idx = 2
+        while True:
+            val = os.environ.get(f"GROQ_API_KEY_V{idx}", "")
+            if not val:
+                break
+            if val not in keys:  # avoid duplicates
+                keys.append(val)
+            idx += 1
+        object.__setattr__(self, "_groq_api_keys", keys)
+        return self
+
     @property
     def groq_api_keys(self) -> list[str]:
-        """Get all available Groq API keys (non-empty)."""
-        return [
-            k
-            for k in [self.groq_api_key, self.groq_api_key_v2, self.groq_api_key_v3]
-            if k
-        ]
+        """Get all available Groq API keys (non-empty, dynamically discovered)."""
+        return list(self._groq_api_keys)
 
     @property
     def groq_models(self) -> list[str]:
@@ -628,8 +647,8 @@ class Settings(BaseSettings):
         """Validate configuration and return status."""
         issues = []
 
-        if not self.groq_api_key:
-            issues.append("GROQ_API_KEY not set")
+        if not self.groq_api_keys:
+            issues.append("No GROQ_API_KEY_V* keys found in environment")
 
         if not self.taxonomy_path.exists():
             issues.append(f"Taxonomy file not found: {self.taxonomy_path}")

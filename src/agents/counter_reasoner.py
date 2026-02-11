@@ -223,7 +223,10 @@ Select the most useful attack among the following ids and return ONLY the chosen
     def _expand_with_cross_references(self, statutes: List[dict]) -> List[dict]:
         """
         Add statutes referenced inside article text (one hop) to avoid missing rinvii.
+        Also adds articles that reference the current articles (reverse lookup from KB).
         """
+        from .tools.neo4j_tools import _search_statutes_fallback
+        
         try:
             import re
         except Exception:
@@ -236,20 +239,40 @@ Select the most useful attack among the following ids and return ONLY the chosen
 
         for s in statutes:
             text = s.get("testo") or ""
+            source = s.get("source", "codice_civile")
+            articolo = str(s.get("articolo", "")).replace("art", "").strip()
+            
             refs = set(pattern.findall(text))
             for token in re.findall(r"\b(\d{2,4})\b", text):
                 if "/" in token:
                     continue
                 refs.add(token)
 
+            # Dynamic lookup from KB: find articles that mention this one
+            # Uses existing fulltext search function
+            try:
+                reverse_results = _search_statutes_fallback(
+                    query=f"art. {articolo}",
+                    codice=source,
+                    libro=None,
+                    limit=5,
+                )
+                for r in reverse_results:
+                    if not r.get("error") and r.get("articolo"):
+                        ref_art = str(r["articolo"]).replace("art", "").strip()
+                        if ref_art != articolo:  # Exclude self
+                            refs.add(ref_art)
+            except Exception:
+                pass  # Fallback search failed, continue with forward refs only
+
             added_refs: List[str] = []
             for ref in refs:
-                key = (ref, s.get("source"))
+                key = (ref, source)
                 if key in seen:
                     continue
                 seen.add(key)
                 result = get_statute_by_article_tool.invoke(
-                    {"articolo": ref, "codice": s.get("source", "codice_civile")}
+                    {"articolo": ref, "codice": source}
                 )
                 if result and not result.get("error") and result.get("articolo"):
                     extra.append(result)
@@ -658,13 +681,16 @@ Select the most useful attack among the following ids and return ONLY the chosen
             # ---- Per-step prompt (English, response in Italian) ----
             last_step_notice = (
                 "\nTHIS IS THE LAST ALLOWED STEP. "
-                "You MUST conclude the counter-argument forcefully."
+                "You MUST conclude with a STRONG statement AGAINST the claim. "
+                "Your conclusion must clearly state why the claim FAILS or is LEGALLY UNFOUNDED."
                 if is_last_possible
                 else ""
             )
-            step_prompt = f"""You are an expert Italian jurist. You are building a COUNTER-ARGUMENT STEP BY STEP to dismantle the following legal claim.
+            step_prompt = f"""You are an expert Italian jurist acting as PROSECUTOR/OPPOSING COUNSEL. You are building a COUNTER-ARGUMENT STEP BY STEP to DISMANTLE and REJECT the following legal claim.
 
-CLAIM TO ATTACK:
+YOUR ROLE: You MUST argue AGAINST the claim. Every step must weaken, contradict, or refute the claim's legal basis. You are NOT defending the claimant - you are ATTACKING their position.
+
+CLAIM TO ATTACK (you must argue this claim is LEGALLY UNFOUNDED):
 "{claim}"
 
 ATTACK STRATEGY: {attack_id}
@@ -692,32 +718,39 @@ Norms already used: {used_norms_text}
 Current step: {step_num} (safety cap: {MAX_STEPS})
 
 --- INSTRUCTIONS FOR STEP {step_num} ---
-Generate EXACTLY ONE counter-reasoning step (step {step_num}).
+Generate EXACTLY ONE ATOMIC counter-reasoning step (step {step_num}).
+
+ATOMIC STEP RULES:
+- This step is ONE SMALL PIECE of a multi-step counter-argument chain. Do NOT try to give a complete rebuttal.
+- Focus on EXACTLY ONE weak point, one norm violation, or one factual gap. Do NOT cover multiple issues.
+- 2-4 sentences MAXIMUM. Be concise and precise.
+- Do NOT repeat or summarize the claim. The claim is already known.
+- Do NOT restate conclusions from previous steps. Build on them.
 
 REQUIREMENTS for this step:
-1. SUBSTANCE: Do NOT just cite an article. You must:
-   - Identify which WEAK POINT of the claim you are attacking in this step
-   - Cite the relevant norm(s) from the knowledge base (e.g. Art. XX c.p./c.c.)
-   - Explain IN DETAIL why the norm weakens, contradicts, or limits the claim
-   - Draw a SUBSTANTIVE INTERMEDIATE CONCLUSION that advances the counter-argument
-2. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
-3. CONTINUITY: The step must logically connect to the previous ones
-4. NO REPETITION: You MUST NOT repeat arguments from earlier steps. Each step must attack
-   a GENUINELY DIFFERENT weak point. If you find yourself discussing the same norm, the same
-   proportionality issue, or the same legal concept as a previous step, STOP — you have
-   nothing new to add. Already discussed: {used_norms_text}
-5. EXPLICIT CONTRADICTION: Each step must make clear WHY it contradicts the opposing thesis
+1. ONE ATTACK POINT ONLY: Pick exactly ONE of the following for this step:
+   - Show how ONE specific norm contradicts or limits the claim, OR
+   - Expose ONE unmet legal prerequisite or condition, OR
+   - Draw ONE narrow conclusion showing a single flaw in the claim
+2. CITE exactly one norm (e.g. Art. XX c.p./c.c.) from the knowledge base
+3. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
+4. CONNECT to the previous step: your step must start from where the last step ended.
+   If step N-1 exposed flaw X, step N should use X to attack further.
+5. NO REPETITION: Do NOT re-discuss norms already cited: {used_norms_text}
+6. ADVERSARIAL STANCE: ALWAYS argue AGAINST the claim. Never concede validity.
 {last_step_notice}
 
 RESPONSE FORMAT:
-STEP: [Your counter-reasoning step]
+STEP: [Your atomic counter-reasoning step in Italian — max 4 sentences]
 
 CRITICAL RULES:
 - Your ENTIRE STEP text must be written in Italian.
-- The step must be at least 2-3 substantive sentences.
-- Cite at least one specific article (e.g. Art. 52 c.p.).
+- MAX 4 sentences. If you need more, you are covering too much — split it.
+- Cite exactly one specific article (e.g. Art. 52 c.p.).
 - Do NOT mention the Reasoner. Produce a standalone counter-argument.
 - Do NOT invent sources not present in the knowledge base.
+- NEVER argue in favor of the claim. You are the OPPOSITION.
+- Do NOT write a complete rebuttal. Write ONE building block of the counter-argument.
 """
 
             self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
@@ -781,6 +814,9 @@ CRITICAL RULES:
         Looks for a ``STEP:`` / ``STEP N:`` (or ``PASSO:``) marker and
         returns everything after it.  Falls back to the full response
         if no marker is found.
+        
+        Also removes any leading numeric prefixes (e.g., "3 Per valutare...")
+        that the LLM may have included.
         """
         lines = response.strip().split("\n")
         step_lines: List[str] = []
@@ -829,6 +865,10 @@ CRITICAL RULES:
                     fallback_lines.append(s)
             step_text = " ".join(fallback_lines).strip()
 
+        # P6 FIX: Remove leading numeric prefixes like "3 Per valutare..."
+        # This handles cases where LLM responds with just "3 Per valutare" without STEP:
+        step_text = re.sub(r"^\d+\s+", "", step_text)
+        
         return step_text
 
     def _evaluate_should_continue(
@@ -932,7 +972,10 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         steps: List[str],
         attack_id: str,
     ) -> str:
-        """Assemble counter-argument raw response from iterative steps."""
+        """Assemble counter-argument raw response from iterative steps.
+        
+        Ensures the conclusion is framed as OPPOSING the claim, not supporting it.
+        """
         chain_section = "**Catena di ragionamento**:\n"
         for i, step in enumerate(steps, 1):
             chain_section += f"{i}. {step}\n"
@@ -944,14 +987,41 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
 
+        # Build attack-specific causal link description
+        attack_descriptions_it = {
+            "but_for_fails": "il nesso causale controfattuale fallisce: l'evento si sarebbe verificato comunque",
+            "no_covering_law_or_low_support": "manca una legge di copertura o il supporto probabilistico è insufficiente",
+            "alternative_causal_path": "esiste un percorso causale alternativo plausibile",
+            "duty_to_act_missing_for_omission": "per l'omissione, manca l'obbligo giuridico di agire",
+            "abnormal_or_atypical_chain": "la catena causale è anormale/atipica e interrompe l'imputabilità",
+            "sole_sufficient_cause": "una causa sopravvenuta era da sola sufficiente e interrompe il nesso",
+            "intervening_cause_breaks_chain": "un fattore autonomo sopravvenuto interrompe la catena",
+            "force_majeure_filter": "caso fortuito/forza maggiore esclude l'imputabilità",
+            "damage_is_indirect": "il danno è indiretto o mediato rispetto al fatto base",
+            "damage_not_foreseeable": "il danno non era prevedibile ex ante",
+            "creditor_contributed": "il creditore ha concorso a causare l'evento/danno",
+            "creditor_failed_to_mitigate": "il creditore non ha mitigato il danno evitabile",
+            "quantification_uncertain": "la quantificazione del danno è incerta o speculativa",
+            "event_was_avoidable": "l'evento era evitabile con l'ordinaria diligenza",
+            "event_was_foreseeable": "l'evento era prevedibile e non fortuito",
+            "risk_was_assumed_or_controllable": "il rischio era assunto o controllabile",
+        }
+        attack_desc_it = attack_descriptions_it.get(
+            attack_id, 
+            "le norme citate indeboliscono il fondamento giuridico della pretesa"
+        )
+
+        # Ensure the conclusion opposes the claim
+        conclusion_prefix = "Pertanto, la pretesa deve essere RIGETTATA poiché "
+        
         raw = (
             f"**Premessa Alternativa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale Alternativo**: Applicando la strategia di attacco "
-            f'"{attack_id}", la catena di ragionamento dimostra come le norme '
-            f"citate indeboliscano il fondamento giuridico della pretesa, "
-            f"evidenziando le carenze nel nesso causale prospettato.\n\n"
-            f"**Conclusione Contraria**: {conclusion_step}\n\n"
+            f"**Nesso Causale Alternativo**: L'analisi giuridica dimostra che "
+            f"{attack_desc_it}. La catena argomentativa evidenzia come "
+            f"le norme applicabili al caso non supportino la pretesa del ricorrente, "
+            f"ma anzi ne rivelino l'infondatezza giuridica.\n\n"
+            f"**Conclusione Contraria**: {conclusion_prefix}{conclusion_step}\n\n"
             f"{chain_section}"
         )
         return raw

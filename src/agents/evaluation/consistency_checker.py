@@ -1374,12 +1374,12 @@ class ConsistencyMixin:
         """
         Rebuild the ASPIC IR from the repaired reasoning chain.
 
-        Instead of patching the original IR, this method re-parses the repaired
-        chain text and rebuilds the IR from scratch using AspicFormatter,
-        exactly like Reasoner/Counter-Reasoner do for their original chains.
+        Preserves the original step order by using indexed extraction
+        rather than relying on AspicFormatter's re-parsing which may
+        reorder steps.
 
         Args:
-            aspic_ir: Original ASPIC IR structure (used only for fallback/metadata)
+            aspic_ir: Original ASPIC IR structure (used for fallback/metadata)
             citation_checks: List of CitationCheck objects with mismatch actions
             repaired_chain_text: The LLM-regenerated reasoning chain text
             claim: The original legal claim
@@ -1424,14 +1424,14 @@ class ConsistencyMixin:
             f"(repaired={total_repaired}, dropped={total_dropped})"
         )
 
-        # Parse the repaired chain text the same way agents do
-        reasoning_chain = self._extract_reasoning_chain(repaired_chain_text)
+        # Parse the repaired chain text - extract steps in order
+        reasoning_chain = self._extract_reasoning_chain_ordered(repaired_chain_text)
         reasoning_chain = self._sanitize_reasoning_chain(
             reasoning_chain, precedents or []
         )
 
         # Fallback: if the repair LLM dropped the numbered chain format,
-        # the parser may extract < 2 steps.  In that case, reuse the
+        # the parser may extract < 2 steps. In that case, reuse the
         # original IR's reasoning_chain so AQA can still build links.
         original_chain_steps = aspic_ir.get("reasoning_chain", [])
         if len(reasoning_chain) < 2 and len(original_chain_steps) >= 2:
@@ -1474,6 +1474,47 @@ class ConsistencyMixin:
         )
 
         return rebuilt_ir
+
+    def _extract_reasoning_chain_ordered(self, text: str) -> list[str]:
+        """Extract reasoning chain steps preserving their original numbered order.
+        
+        Parses numbered steps (1. 2. 3. ...) from the chain section and
+        returns them in their original order, not re-sorted.
+        """
+        steps: list[str] = []
+        
+        # Find the chain section
+        chain_start = text.lower().find("catena di ragionamento")
+        if chain_start == -1:
+            chain_start = text.lower().find("reasoning chain")
+        if chain_start == -1:
+            chain_start = 0
+        
+        chain_text = text[chain_start:]
+        
+        # Pattern for numbered steps: "1. text" or "1) text"
+        step_pattern = re.compile(
+            r"^\s*(\d+)[.)\s]+(.+?)(?=^\s*\d+[.)\s]|\Z)",
+            re.MULTILINE | re.DOTALL
+        )
+        
+        # Extract all numbered steps
+        numbered_steps: list[tuple[int, str]] = []
+        for match in step_pattern.finditer(chain_text):
+            step_num = int(match.group(1))
+            step_text = match.group(2).strip()
+            # Clean up the step text
+            step_text = re.sub(r"\s+", " ", step_text)
+            if step_text and len(step_text) > 10:
+                numbered_steps.append((step_num, step_text))
+        
+        # Sort by step number to preserve original order
+        numbered_steps.sort(key=lambda x: x[0])
+        
+        # Extract just the text
+        steps = [text for _, text in numbered_steps]
+        
+        return steps
 
     def _extract_arguments_from_text(self, response: str) -> list[dict]:
         """

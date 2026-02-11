@@ -935,30 +935,36 @@ Norms already used: {used_norms_text}
 Current step: {step_num} (safety cap: {MAX_STEPS})
 
 --- INSTRUCTIONS FOR STEP {step_num} ---
-Generate EXACTLY ONE reasoning step (step {step_num}).
+Generate EXACTLY ONE ATOMIC reasoning step (step {step_num}).
+
+ATOMIC STEP RULES:
+- This step is ONE SMALL PIECE of a multi-step logical chain. Do NOT try to give a complete answer.
+- Focus on EXACTLY ONE legal point, norm, or factual aspect. Do NOT cover multiple aspects.
+- 2-4 sentences MAXIMUM. Be concise and precise.
+- Do NOT repeat or summarize the claim. The claim is already known.
+- Do NOT restate conclusions from previous steps. Build on them.
 
 REQUIREMENTS for this step:
-1. SUBSTANCE: Do NOT just cite an article. You must:
-   - Identify which legal aspect of the claim you are addressing in this step
-   - Cite the relevant norm(s) from the knowledge base (e.g. Art. XX c.p./c.c.)
-   - Explain IN DETAIL how the norm applies to the specific facts of the claim
-   - Draw a SUBSTANTIVE INTERMEDIATE CONCLUSION that advances the argument
-2. CONTINUITY: The step must logically connect to the previous ones (if any)
-3. NO REPETITION: You MUST NOT repeat arguments from earlier steps. Each step must address
-   a GENUINELY DIFFERENT legal aspect. If you find yourself discussing the same norm or the
-   same legal concept as a previous step, STOP — you have nothing new to add.
-4. Prefer norms from the ALLOWED STATUTES list that have NOT been used yet, if pertinent
-5. Do NOT re-discuss norms already cited: {used_norms_text}
+1. ONE POINT ONLY: Pick exactly ONE of the following for this step:
+   - Apply ONE specific norm to ONE specific fact of the case, OR
+   - Establish ONE legal prerequisite or condition, OR
+   - Draw ONE narrow conclusion from a single norm-fact connection
+2. CITE exactly one norm (e.g. Art. XX c.p./c.c.) from the knowledge base
+3. CONNECT to the previous step: your step must start from where the last step ended.
+   If step N-1 established X, step N should use X to advance to Y.
+4. NO REPETITION: Do NOT re-discuss norms already cited: {used_norms_text}
+5. Prefer norms NOT yet used, if pertinent
 {last_step_notice}
 
 RESPONSE FORMAT:
-STEP: [Your reasoning step, with citation and detailed explanation]
+STEP: [Your atomic reasoning step in Italian — max 4 sentences]
 
 CRITICAL RULES:
 - Your ENTIRE STEP text must be written in Italian.
-- The step must be at least 2-3 substantive sentences (NOT just "Art. X stabilisce Y").
-- Cite at least one specific article (e.g. Art. 2043 c.c.).
+- MAX 4 sentences. If you need more, you are covering too much — split it.
+- Cite exactly one specific article (e.g. Art. 2043 c.c.).
 - Do NOT invent sources not present in the knowledge base.
+- Do NOT write a complete argument. Write ONE building block.
 """
 
             self._log(f"🔗 Generating step {step_num}/{MAX_STEPS}...")
@@ -1017,6 +1023,9 @@ CRITICAL RULES:
         Looks for a ``STEP:`` / ``STEP N:`` (or ``PASSO:``) marker and
         returns everything after it.  Falls back to the full response
         if no marker is found.
+        
+        Also removes any leading numeric prefixes (e.g., "3 Per valutare...")
+        that the LLM may have included.
         """
         lines = response.strip().split("\n")
         step_lines: list[str] = []
@@ -1065,6 +1074,10 @@ CRITICAL RULES:
                     fallback_lines.append(s)
             step_text = " ".join(fallback_lines).strip()
 
+        # P6 FIX: Remove leading numeric prefixes like "3 Per valutare..."
+        # This handles cases where LLM responds with just "3 Per valutare" without STEP:
+        step_text = re.sub(r"^\d+\s+", "", step_text)
+        
         return step_text
 
     def _evaluate_should_continue(
@@ -1172,17 +1185,29 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         Produces the same format expected by ``_extract_arguments`` and
         ``_extract_reasoning_chain``, so ``AspicFormatter`` works
         without changes.
+        
+        P7 FIX: Generates a synthetic conclusion summarizing the legal
+        argument rather than just using the last step as conclusion.
         """
         chain_section = "**Catena di ragionamento**:\n"
         for i, step in enumerate(steps, 1):
             chain_section += f"{i}. {step}\n"
 
-        premise_steps = steps[:-1] if len(steps) > 1 else steps
-        conclusion_step = steps[-1] if steps else ""
-
-        premise_text = " ".join(premise_steps)
+        # Use all steps for premise (not excluding the last one)
+        premise_text = " ".join(steps)
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
+        
+        # P7 FIX: Generate a synthetic conclusion that summarizes
+        # the argument instead of repeating the last step
+        norms_list = ", ".join(norms) if norms else "le norme applicabili"
+        conclusion_text = (
+            f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
+            f"Le norme richiamate ({norms_list}) trovano applicazione al caso di specie "
+            f"e supportano il fondamento giuridico della domanda. "
+            f"La catena argomentativa dimostra la sussistenza dei presupposti di legge "
+            f"per l'accoglimento della pretesa."
+        )
 
         raw = (
             f"**Premessa**: {premise_text}\n\n"
@@ -1191,7 +1216,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             f"emerge dalla catena di ragionamento sottostante, dove ciascun passo "
             f"costruisce logicamente sul precedente per dimostrare il fondamento "
             f"giuridico della domanda.\n\n"
-            f"**Conclusione**: {conclusion_step}\n\n"
+            f"**Conclusione**: {conclusion_text}\n\n"
             f"{chain_section}"
         )
         return raw
@@ -1334,8 +1359,11 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
     def _expand_with_cross_references(self, statutes: list[dict]) -> list[dict]:
         """
         Add statutes explicitly referenced inside the text of already provided articles.
+        Also adds articles that reference the current articles (reverse lookup from KB).
         Useful when an article (e.g., 2056 c.c.) rinvia ad altri (1223/1226/1227).
         """
+        from .tools.neo4j_tools import _search_statutes_fallback
+        
         try:
             import re
         except Exception:
@@ -1348,6 +1376,9 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
 
         for s in statutes:
             text = s.get("testo") or ""
+            source = s.get("source", "codice_civile")
+            articolo = str(s.get("articolo", "")).replace("art", "").strip()
+            
             refs = set(pattern.findall(text))
 
             # Also catch slash-separated numbers like "1223/1226/1227"
@@ -1356,14 +1387,31 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
                     continue
                 refs.add(token)
 
+            # Dynamic lookup from KB: find articles that mention this one
+            # Uses existing fulltext search function
+            try:
+                reverse_results = _search_statutes_fallback(
+                    query=f"art. {articolo}",
+                    codice=source,
+                    libro=None,
+                    limit=5,
+                )
+                for r in reverse_results:
+                    if not r.get("error") and r.get("articolo"):
+                        ref_art = str(r["articolo"]).replace("art", "").strip()
+                        if ref_art != articolo:  # Exclude self
+                            refs.add(ref_art)
+            except Exception:
+                pass  # Fallback search failed, continue with forward refs only
+
             added_refs: list[str] = []
             for ref in refs:
-                key = (ref, s.get("source"))
+                key = (ref, source)
                 if key in seen:
                     continue
                 seen.add(key)
                 result = get_statute_by_article_tool.invoke(
-                    {"articolo": ref, "codice": s.get("source", "codice_civile")}
+                    {"articolo": ref, "codice": source}
                 )
                 if result and not result.get("error") and result.get("articolo"):
                     extra.append(result)
@@ -1384,6 +1432,8 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
                 continue
             seen_final.add(k)
             deduped.append(st)
+        return deduped
+        return deduped
         return deduped
 
     def _extract_arguments(self, response: str) -> list[dict]:

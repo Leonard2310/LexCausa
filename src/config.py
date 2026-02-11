@@ -221,36 +221,23 @@ class Settings(BaseSettings):
         alias="AQA_ATTACK_TYPE_MULTIPLIERS",
         description="Damage multipliers by attack type.",
     )
-    aqa_nli_min_contradiction_score: float = Field(
-        default=0.65,
-        alias="AQA_NLI_MIN_CONTRADICTION_SCORE",
-        description="Minimum NLI contradiction probability to bypass strength ratio. "
-        "If the NLI model returns contradiction with score >= this threshold, "
-        "the attack proceeds regardless of strength ratio.",
-    )
     aqa_strength_ratio_by_type: dict = Field(
         default_factory=lambda: {
             "contradiction": 0.0,
-            "exception": 0.75,
-            "derogation": 0.8,
-            "extinction": 0.65,
-            "factual_impediment": 0.9,
+            "exception": 0.0,
+            "derogation": 0.0,
+            "extinction": 0.0,
+            "factual_impediment": 0.5,
             "general_opposition": 0.95,
         },
         alias="AQA_STRENGTH_RATIO_BY_TYPE",
         description="Per-attack-type strength ratio thresholds. "
-        "An attack of a given type needs raw_attack >= ratio * target_base. "
-        "Set to 0.0 to always allow that type (e.g. NLI-confirmed contradictions).",
+        "An attack of a given type needs attacker_base >= ratio * target_base. "
+        "Types classified by the LLM as specific (contradiction, exception, "
+        "derogation, extinction) have ratio=0.0, so they always pass. "
+        "Only general_opposition and factual_impediment are gated.",
     )
 
-    aqa_nli_min_entailment_score: float = Field(
-        default=0.55,
-        alias="AQA_NLI_MIN_ENTAILMENT_SCORE",
-        description="Minimum NLI entailment probability to bypass strength ratio. "
-        "If the NLI model returns entailment with score >= this threshold, "
-        "the attack proceeds regardless of strength ratio.",
-    )
-    
     aqa_severity_book_map: dict = Field(
         default_factory=lambda: {
             "persone_famiglia": "I_civile",
@@ -289,11 +276,6 @@ class Settings(BaseSettings):
         default="all-mpnet-base-v2",
         alias="AQA_EMBEDDING_MODEL",
         description="Sentence-transformers model for overlap embeddings.",
-    )
-    aqa_nli_model: str = Field(
-        default="MoritzLaurer/DeBERTa-v3-base-mnli",
-        alias="AQA_NLI_MODEL",
-        description="NLI model for semantics entailment.",
     )
     aqa_argument_quality_model: str = Field(
         default="",
@@ -359,6 +341,235 @@ class Settings(BaseSettings):
         },
         alias="AQA_SEVERITY_MAP_CIVILE",
         description="Mapping from libro token to severity category (Codice Civile).",
+    )
+
+    # =========================================================================
+    # Classifier LLM Defaults (task-specific overrides)
+    # =========================================================================
+    classifier_temperature: float = Field(
+        default=0.0,
+        alias="CLASSIFIER_TEMPERATURE",
+        description="Temperature for classification tasks (stance, causality, attack-type). "
+        "Deterministic by default.",
+    )
+    classifier_max_tokens: int = Field(
+        default=50,
+        alias="CLASSIFIER_MAX_TOKENS",
+        description="Max tokens for short classification responses.",
+    )
+    nli_max_tokens: int = Field(
+        default=64,
+        alias="NLI_MAX_TOKENS",
+        description="Max tokens for NLI / contradiction detection LLM calls.",
+    )
+    repair_max_tokens: int = Field(
+        default=2048,
+        alias="REPAIR_MAX_TOKENS",
+        description="Max tokens for chain repair / rewrite LLM calls.",
+    )
+    attack_type_max_tokens: int = Field(
+        default=256,
+        alias="ATTACK_TYPE_MAX_TOKENS",
+        description="Max tokens for attack-type classification LLM calls.",
+    )
+    taxonomy_max_tokens: int = Field(
+        default=20,
+        alias="TAXONOMY_MAX_TOKENS",
+        description="Max tokens for causality taxonomy classification LLM calls.",
+    )
+    taxonomy_filter_max_tokens: int = Field(
+        default=10,
+        alias="TAXONOMY_FILTER_MAX_TOKENS",
+        description="Max tokens for taxonomy norm relevance filter LLM calls.",
+    )
+
+    # =========================================================================
+    # Resilience / Retry
+    # =========================================================================
+    model_down_ttl: float = Field(
+        default=300.0,
+        alias="MODEL_DOWN_TTL",
+        description="Seconds to wait before retrying a model marked as down.",
+    )
+    chain_max_retries: int = Field(
+        default=5,
+        alias="CHAIN_MAX_RETRIES",
+        description="Maximum generation attempts for reasoning / counter-reasoning chains.",
+    )
+
+    # =========================================================================
+    # Text Truncation (prompt context limits)
+    # =========================================================================
+    truncation_statute_text: int = Field(
+        default=800,
+        alias="TRUNCATION_STATUTE_TEXT",
+        description="Max chars of statute text sent to classifier prompts.",
+    )
+    truncation_summary: int = Field(
+        default=600,
+        alias="TRUNCATION_SUMMARY",
+        description="Max chars of summary / precedent text for prompts.",
+    )
+    truncation_nli_text: int = Field(
+        default=600,
+        alias="TRUNCATION_NLI_TEXT",
+        description="Max chars per passage for NLI / attack-type prompts.",
+    )
+    truncation_chain_text: int = Field(
+        default=3000,
+        alias="TRUNCATION_CHAIN_TEXT",
+        description="Max chars of full chain text for repair prompts.",
+    )
+    truncation_context: int = Field(
+        default=500,
+        alias="TRUNCATION_CONTEXT",
+        description="Max chars of contextual snippets in prompts.",
+    )
+    truncation_tool_testo: int = Field(
+        default=500,
+        alias="TRUNCATION_TOOL_TESTO",
+        description="Max chars of statute text returned by search tools (neo4j_tools).",
+    )
+    truncation_tool_summary: int = Field(
+        default=500,
+        alias="TRUNCATION_TOOL_SUMMARY",
+        description="Max chars of precedent summary returned by search tools.",
+    )
+    truncation_tool_excerpt: int = Field(
+        default=300,
+        alias="TRUNCATION_TOOL_EXCERPT",
+        description="Max chars of precedent chunk_text excerpt returned by search tools.",
+    )
+    truncation_prompt_testo: int = Field(
+        default=500,
+        alias="TRUNCATION_PROMPT_TESTO",
+        description="Max chars of statute text in base agent prompt formatting.",
+    )
+    truncation_prompt_summary: int = Field(
+        default=300,
+        alias="TRUNCATION_PROMPT_SUMMARY",
+        description="Max chars of precedent summary in base agent prompt formatting.",
+    )
+    claim_classifier_max_tokens: int = Field(
+        default=64,
+        alias="CLAIM_CLASSIFIER_MAX_TOKENS",
+        description="Max completion tokens for claim classifier LLM calls.",
+    )
+
+    # =========================================================================
+    # AQA Scoring Weights & Thresholds (extended)
+    # =========================================================================
+    aqa_position_weight_foundational: float = Field(
+        default=1.5,
+        alias="AQA_POSITION_WEIGHT_FOUNDATIONAL",
+        description="Position weight for foundational premises (premessa, presupposto, principio).",
+    )
+    aqa_position_weight_severe: float = Field(
+        default=1.3,
+        alias="AQA_POSITION_WEIGHT_SEVERE",
+        description="Position weight for severe norm categories (delitti, contravvenzioni, tutela_diritti).",
+    )
+    aqa_position_weight_default: float = Field(
+        default=1.0,
+        alias="AQA_POSITION_WEIGHT_DEFAULT",
+        description="Default position weight for other links.",
+    )
+    aqa_max_age: float = Field(
+        default=50.0,
+        alias="AQA_MAX_AGE",
+        description="Maximum precedent age (years) for recency scoring. Older = 0 recency.",
+    )
+    aqa_default_confidence: float = Field(
+        default=0.7,
+        alias="AQA_DEFAULT_CONFIDENCE",
+        description="Default confidence when stance confidence is missing from precedent metadata.",
+    )
+    aqa_precedent_sim_threshold: float = Field(
+        default=0.5,
+        alias="AQA_PRECEDENT_SIM_THRESHOLD",
+        description="Minimum similarity score for matching a precedent to a link.",
+    )
+    aqa_dominant_attacks_limit: int = Field(
+        default=10,
+        alias="AQA_DOMINANT_ATTACKS_LIMIT",
+        description="Max number of dominant attacks to include in AQA report.",
+    )
+    aqa_bindingness_map: dict = Field(
+        default_factory=lambda: {
+            "cassazione": 1.0,
+            "appello": 0.7,
+            "tribunale": 0.4,
+            "other": 0.0,
+        },
+        alias="AQA_BINDINGNESS_MAP",
+        description="Bindingness score by court level (substring match).",
+    )
+
+    # =========================================================================
+    # Readability & Coherence Weights
+    # =========================================================================
+    readability_structure_weight: float = Field(
+        default=0.5,
+        alias="READABILITY_STRUCTURE_WEIGHT",
+        description="Weight of structure score in argument quality.",
+    )
+    readability_quality_weight: float = Field(
+        default=0.5,
+        alias="READABILITY_QUALITY_WEIGHT",
+        description="Weight of quality score in argument quality.",
+    )
+    coherence_base_weight: float = Field(
+        default=0.7,
+        alias="COHERENCE_BASE_WEIGHT",
+        description="Weight for base similarity in coherence scoring.",
+    )
+    coherence_chain_weight: float = Field(
+        default=0.3,
+        alias="COHERENCE_CHAIN_WEIGHT",
+        description="Weight for inter-sentence similarity chain in coherence scoring.",
+    )
+
+    # =========================================================================
+    # Consistency Checker Thresholds
+    # =========================================================================
+    cc_text_match_threshold: float = Field(
+        default=0.8,
+        alias="CC_TEXT_MATCH_THRESHOLD",
+        description="Minimum cosine similarity for a cited text to be considered matching the DB text.",
+    )
+    cc_consistency_existence_weight: float = Field(
+        default=0.7,
+        alias="CC_CONSISTENCY_EXISTENCE_WEIGHT",
+        description="Weight for citation existence in the consistency score.",
+    )
+    cc_consistency_text_weight: float = Field(
+        default=0.3,
+        alias="CC_CONSISTENCY_TEXT_WEIGHT",
+        description="Weight for text match in the consistency score.",
+    )
+    cc_core_threshold: int = Field(
+        default=2,
+        alias="CC_CORE_THRESHOLD",
+        description="Minimum number of core indicators for an article to be classified as CORE.",
+    )
+    cc_conclusion_bonus: int = Field(
+        default=2,
+        alias="CC_CONCLUSION_BONUS",
+        description="Extra core-indicator points when article is cited in the conclusion.",
+    )
+    cc_occurrence_threshold: int = Field(
+        default=3,
+        alias="CC_OCCURRENCE_THRESHOLD",
+        description="Number of text occurrences that adds a core indicator point.",
+    )
+
+    # =========================================================================
+    # API Metadata
+    # =========================================================================
+    api_version: str = Field(
+        default="0.2.0",
+        alias="API_VERSION",
+        description="API version string returned by /health.",
     )
 
     # =========================================================================

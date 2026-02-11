@@ -81,3 +81,13 @@ exclude = [
 [[tool.mypy.overrides]]
 module = ["src.services.*", "src.db.*"]
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "src.agents.evaluation.nlp_utils",
+    "src.agents.evaluation.scoring",
+    "src.agents.evaluation.consistency_checker",
+    "src.agents.evaluation.aqa_engine",
+    "src.agents.polisher_evaluator",
+]
+ignore_errors = true

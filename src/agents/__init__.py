@@ -9,7 +9,7 @@ Questo modulo contiene gli agenti LangChain per il ragionamento legale:
 
 from .base import AgentConfig, BaseAgent, ReasoningResult
 from .counter_reasoner import CounterArgument, CounterReasoner, CounterReasonerOutput
-from .polisher_evaluator import ArgumentStatus, EvaluationResult, PolisherEvaluator
+from .polisher_evaluator import EvaluationResult, PolisherEvaluator
 from .reasoner import Reasoner, ReasonerOutput
 from .router import Router, RoutingDecision
 
@@ -31,5 +31,4 @@ __all__ = [
     # Polisher-Evaluator
     "PolisherEvaluator",
     "EvaluationResult",
-    "ArgumentStatus",
 ]

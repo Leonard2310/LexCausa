@@ -1,0 +1,1377 @@
+"""
+Consistency checking and repair for reasoning chains.
+
+Verifies that citations in the reasoning chain match the knowledge base,
+handles mismatches (repair or drop), and regenerates chains via LLM.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from config import settings  # noqa: E402
+from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
+
+from ..aspic_formatter import AspicFormatter  # noqa: E402
+from ..tools.neo4j_tools import get_driver  # noqa: E402
+from .models import CitationCheck, ConsistencyReport, MismatchAction  # noqa: E402
+
+
+class ConsistencyMixin:
+    """Mixin providing consistency-checking methods to the evaluator."""
+
+    def _verify_statute_in_neo4j(
+        self, article_num: str, domain: str, citation_str: str = ""
+    ) -> tuple[bool, str]:
+        """
+        Verify if an article exists in Neo4j and return its text.
+
+        Args:
+            article_num: The article number (e.g., "1223")
+            domain: Legal domain ("CIVILE", "PENALE", or "ENTRAMBI")
+            citation_str: Original citation string (e.g., "Art. 52 c.p.") used
+                          to disambiguate codice when domain is ENTRAMBI.
+
+        Returns:
+            Tuple of (exists: bool, text: str). Text is empty if not found.
+        """
+        driver = get_driver()
+
+        # When domain is ENTRAMBI, try to determine the correct codice
+        # from the citation string (e.g. "c.p." → penale, "c.c." → civile)
+        if domain == "ENTRAMBI" and citation_str:
+            citation_lower = citation_str.lower()
+            if "c.p" in citation_lower or (
+                "cod" in citation_lower and "pen" in citation_lower
+            ):
+                self._log(
+                    f"      🔍 ENTRAMBI → detected c.p. in '{citation_str}', searching PENALE"
+                )
+                return self._verify_statute_in_neo4j(
+                    article_num, "PENALE", citation_str
+                )
+            elif "c.c" in citation_lower or (
+                "cod" in citation_lower and "civ" in citation_lower
+            ):
+                self._log(
+                    f"      🔍 ENTRAMBI → detected c.c. in '{citation_str}', searching CIVILE"
+                )
+                return self._verify_statute_in_neo4j(
+                    article_num, "CIVILE", citation_str
+                )
+
+        # Determine codice based on domain
+        if domain == "CIVILE":
+            # Per CIVILE, l'articolo è salvato come "art1223"
+            articolo_normalized = f"art{article_num}"
+            codice = "codice_civile"
+        elif domain == "PENALE":
+            # Per PENALE, l'articolo è salvato come "1223" (senza prefisso)
+            articolo_normalized = article_num
+            codice = "codice_penale"
+        else:
+            # ENTRAMBI without citation hint: try both codici
+            found, text = self._verify_statute_in_neo4j(
+                article_num, "PENALE", citation_str
+            )
+            if found:
+                return found, text
+            return self._verify_statute_in_neo4j(article_num, "CIVILE", citation_str)
+
+        query = """
+            MATCH (s:Statute)
+            WHERE s.articolo = $articolo AND s.source = $codice
+            RETURN s.articolo AS articolo, s.testo AS testo, s.titolo AS titolo
+            LIMIT 1
+        """
+
+        try:
+            with driver.session() as session:
+                result = session.run(
+                    query,
+                    parameters={"articolo": articolo_normalized, "codice": codice},
+                )
+                record = result.single()
+                if record:
+                    testo = record.get("testo", "") or ""
+                    titolo = record.get("titolo", "") or ""
+                    if testo:
+                        self._log(
+                            f"      🗄️ Neo4j: Art. {article_num} found - '{titolo[:50]}...'"
+                        )
+                        self._log(f"      📄 DB text preview: '{testo[:100]}...'")
+                    else:
+                        self._log(
+                            f"      🗄️ Neo4j: Art. {article_num} found but NO TEXT in DB"
+                        )
+                    return True, testo
+                return False, ""
+        except Exception as e:
+            self._log(f"⚠️ Neo4j query failed: {e}", "warning")
+            return False, ""
+
+    def _extract_cited_text_for_article(
+        self, full_text: str, article_num: str, aspic_ir: dict | None = None
+    ) -> str:
+        """
+        Extract the text cited in the reasoning chain for a specific article.
+
+        Searches for patterns like:
+        - "L'Art. 1223 c.c. stabilisce che [testo fino al punto]"
+        - "Art. 1223 c.c. - [testo fino al punto]"
+        - "Secondo l'Art. 1223 c.c., [testo]"
+
+        Args:
+            full_text: The full reasoning chain text (raw_response)
+            article_num: The article number to find
+            aspic_ir: Optional ASPIC IR (not used in this version)
+
+        Returns:
+            Extracted text associated with the article, or empty string if not found.
+        """
+        # Pattern 0: block with Norma + Testo lines
+        block_pattern = (
+            rf"Norma.*?Art(?:icolo)?\.?\s*{article_num}.*?\n"
+            rf".*?Testo\s*:\s*\"([^\"]{{20,}})\""
+        )
+        match = re.search(block_pattern, full_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            extracted = match.group(1).strip()
+            extracted = re.sub(r"\s+", " ", extracted)
+            if len(extracted) >= 20:
+                self._log("      🎯 Found 'Norma + Testo' block pattern")
+                return extracted
+
+        # Pattern 1: "L'Art. 1223 c.c. stabilisce/prevede/limita che..."
+        # Captures the verb + "che" + text until period
+        pattern1 = rf"[Ll][''']?Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\s+(?:stabilisce|prevede|limita|dispone|sancisce|afferma)\s+(?:che\s+)?(.+?)(?:\.|$)"
+        match = re.search(pattern1, full_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            extracted = match.group(1).strip()
+            extracted = re.sub(r"\s+", " ", extracted)
+            if len(extracted) >= 20:
+                self._log(
+                    "      🎯 Found 'Art. "
+                    + str(article_num)
+                    + " stabilisce/prevede...' pattern"
+                )
+                return extracted
+
+        # Pattern 2: "Art. 1223 c.c. - [testo]"
+        pattern2 = rf"Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\s*[\-:]\s*(.+?)(?:\.|$)"
+        match = re.search(pattern2, full_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            extracted = match.group(1).strip()
+            extracted = re.sub(r"\s+", " ", extracted)
+            # Avoid if it contains other article references (means it's a list)
+            if not re.search(r"Art(?:icolo)?\.?\s*\d{3,4}", extracted, re.IGNORECASE):
+                if len(extracted) >= 20:
+                    self._log(
+                        "      🎯 Found 'Art. " + str(article_num) + " - ...' pattern"
+                    )
+                    return extracted
+
+        # Pattern 3: "Secondo l'Art. 1223 c.c., [testo]"
+        pattern3 = rf"[Ss]econdo\s+[Ll][''']?Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?,?\s+(.+?)(?:\.|$)"
+        match = re.search(pattern3, full_text, re.IGNORECASE | re.DOTALL)
+        if match:
+            extracted = match.group(1).strip()
+            extracted = re.sub(r"\s+", " ", extracted)
+            if len(extracted) >= 20:
+                self._log(
+                    "      🎯 Found 'Secondo l'Art. "
+                    + str(article_num)
+                    + "...' pattern"
+                )
+                return extracted
+
+        # Pattern 4: "(Art. 1223 c.c.)" in parentheses after text - capture text before
+        pattern4 = rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\)"
+        match = re.search(pattern4, full_text, re.IGNORECASE)
+        if match:
+            extracted = match.group(1).strip()
+            # Take last sentence before the article reference
+            sentences = extracted.split(".")
+            if sentences:
+                last_sentence = sentences[-1].strip()
+                if len(last_sentence) >= 20:
+                    self._log(
+                        "      🎯 Found text before '(Art. "
+                        + str(article_num)
+                        + ")' pattern"
+                    )
+                    return last_sentence
+
+        self._log("      ⚠️ No text found for Art. " + str(article_num))
+        return ""
+
+    def _extract_text_from_aspic_ir(self, aspic_ir: dict, article_num: str) -> str:
+        """
+        Extract the text associated with an article from ASPIC IR structure.
+
+        Searches in:
+        1. arguments[].premises[] where type="norm" and citations include the article
+        2. reasoning_chain[] steps that cite the article
+        3. sources.statutes for the article title
+
+        Args:
+            aspic_ir: ASPIC IR structured output
+            article_num: The article number to find
+
+        Returns:
+            The text associated with the article from the IR structure.
+        """
+        if not aspic_ir:
+            self._log("      ⚠️ ASPIC IR is empty or None")
+            return ""
+
+        self._log("      🔍 Searching ASPIC IR for Art. {article_num}")
+
+        # Helper to check if an article is in citations
+        def article_in_citations(citations: dict, art_num: str) -> bool:
+            for statute in citations.get("statutes", []):
+                if str(statute.get("articolo", "")).strip() == art_num:
+                    return True
+            return False
+
+        # Helper to extract text specific to an article from a larger text block
+        def extract_article_specific_text(full_text: str, art_num: str) -> str:
+            """Extract the portion of text that refers specifically to this article."""
+            clean_text = full_text.replace("**", "")
+            # Pattern to find text associated with specific article
+            patterns = [
+                # Testo: "..."
+                r"testo\s*:\s*\"([^\"]{20,})\"",
+                # Testo: ... (no quotes)
+                r"testo\s*:\s*([^.]+(?:\.[^.]+)?)",
+                # Art. 1223: text or Art. 1223 - text
+                rf"art(?:icolo)?\.?\s*{art_num}[^:.\n]*[:.-]\s*([^.]+(?:\.[^.]+)?)",
+                # Art. 1223 c.c. che prevede/stabilisce che...
+                rf"art(?:icolo)?\.?\s*{art_num}[^,]*(?:che\s+)?(?:prevede|stabilisce|dispone|sancisce)\s+(?:che\s+)?([^.]+(?:\.[^.]+)?)",
+                # art. 1223 (testo tra parentesi)
+                rf"art(?:icolo)?\.?\s*{art_num}[^(]*\(([^)]+)\)",
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, clean_text, re.IGNORECASE)
+                if match:
+                    extracted = match.group(1).strip()
+                    if len(extracted) >= 20:
+                        return extracted
+            return ""
+
+        # Search in arguments -> premises with type="norm"
+        for arg in aspic_ir.get("arguments", []):
+            for premise in arg.get("premises", []):
+                if premise.get("type") != "norm":
+                    continue
+                citations = premise.get("citations", {})
+                if article_in_citations(citations, article_num):
+                    full_text = premise.get("text", "").strip()
+                    if full_text:
+                        # Count how many articles are cited in this block
+                        num_statutes = len(citations.get("statutes", []))
+                        self._log(
+                            "      📋 Found norm block with {} statute(s)".format(
+                                num_statutes
+                            )
+                        )
+
+                        if num_statutes == 1:
+                            specific_text = extract_article_specific_text(
+                                full_text, article_num
+                            )
+                            if specific_text:
+                                self._log(
+                                    "      ✅ Extracted testo from single-article block"
+                                )
+                                return specific_text
+                            # Only this article, return full text
+                            self._log("      ✅ Single article block - using full text")
+                            return full_text
+                        else:
+                            # Multiple articles, try to extract specific portion
+                            specific_text = extract_article_specific_text(
+                                full_text, article_num
+                            )
+                            if specific_text:
+                                self._log(
+                                    "      ✅ Extracted specific text for Art. {}".format(
+                                        article_num
+                                    )
+                                )
+                                return specific_text
+                            # If can't extract specific, still return full text with warning
+                            self._log(
+                                "      ⚠️ Multi-article block, returning full text"
+                            )
+                            return full_text
+
+        # Search in reasoning_chain steps - look for step that mentions ONLY this article
+        for step in aspic_ir.get("reasoning_chain", []):
+            citations = step.get("citations", {})
+            statutes = citations.get("statutes", [])
+
+            # Check if this step cites the article
+            if any(str(s.get("articolo", "")).strip() == article_num for s in statutes):
+                text = step.get("text", "").strip()
+                if text and len(text) >= 15:
+                    # If only this article is cited, return full step text
+                    if len(statutes) == 1:
+                        self._log("      ✅ Found in reasoning chain (single article)")
+                        return text
+                    else:
+                        # Try to extract specific portion
+                        specific_text = extract_article_specific_text(text, article_num)
+                        if specific_text:
+                            self._log("      ✅ Extracted from reasoning chain step")
+                            return specific_text
+
+        # Fallback: get title from sources
+        for statute in aspic_ir.get("sources", {}).get("statutes", []):
+            if str(statute.get("articolo", "")).strip() == article_num:
+                title = statute.get("title", "").strip()
+                if title:
+                    self._log(
+                        "      📚 Using title from sources: " + title[:50] + "..."
+                    )
+                    return f"[Titolo] {title}"
+
+        self._log("      ❌ No text found in ASPIC IR for Art. " + str(article_num))
+        return ""
+
+    def _compute_text_similarity(self, cited_text: str, db_text: str) -> float:
+        """
+        Compute similarity between cited text and database text.
+
+        Uses a simple approach: check if key phrases from cited text appear in db_text.
+
+        Args:
+            cited_text: Text extracted from reasoning chain
+            db_text: Text from database
+
+        Returns:
+            Similarity score from 0.0 to 1.0
+        """
+        if not cited_text or not db_text:
+            return 0.0
+
+        # Normalize both texts
+        cited_lower = cited_text.lower().strip()
+        db_lower = db_text.lower().strip()
+
+        # Check direct substring match
+        if cited_lower in db_lower:
+            return 1.0
+
+        # Extract meaningful words (>3 chars)
+        cited_words = set(w for w in re.findall(r"\b\w{4,}\b", cited_lower))
+        db_words = set(w for w in re.findall(r"\b\w{4,}\b", db_lower))
+
+        if not cited_words:
+            return 0.0
+
+        # Calculate Jaccard-like similarity
+        common_words = cited_words & db_words
+        similarity = len(common_words) / len(cited_words)
+
+        return min(similarity, 1.0)
+
+    def _verify_mismatch_with_llm(
+        self,
+        article_num: str,
+        cited_text: str,
+        db_text: str,
+    ) -> bool:
+        """
+        Use LLM to verify if the cited text is logically different from DB text.
+
+        Args:
+            article_num: Article number for context
+            cited_text: Text extracted from reasoning chain
+            db_text: Official text from database
+
+        Returns:
+            True if LLM confirms the texts are logically different (mismatch).
+        """
+        try:
+            llm = get_chat_groq(
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.repair_max_tokens,
+            )
+
+            system_prompt = """You are an expert in Italian law. Your task is to determine whether two normative texts are LOGICALLY EQUIVALENT or DIFFERENT.
+
+    Two texts are EQUIVALENT if:
+    - They express the same legal concept, even with different wording
+    - One is a faithful paraphrase of the other
+    - They don't add or omit substantial normative elements
+
+    Two texts are DIFFERENT if:
+    - They add requirements not present in the original
+    - They omit essential elements
+    - They change the legal meaning
+    - They introduce concepts not contained in the original
+
+    Respond ONLY with one of these words: EQUIVALENTI or DIVERSI (in Italian)"""
+
+            user_prompt = f"""Article {article_num}
+
+    CITED TEXT (from reasoning):
+    "{cited_text}"
+
+    OFFICIAL TEXT (from database):
+    "{db_text}"
+
+    Are the two texts EQUIVALENTI or DIVERSI? (Answer in Italian)"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+
+            response = resilient_chat_call(llm, messages)
+            answer = response.content.strip().upper()
+
+            is_different = "DIVERSI" in answer
+            self._log(
+                f"      🤖 LLM mismatch verification: {'DIVERSI ⚠️' if is_different else 'EQUIVALENTI ✅'}"
+            )
+            return is_different
+
+        except Exception as e:
+            self._log(f"      ⚠️ LLM verification failed: {e}", "warning")
+            # In case of error, assume mismatch to be conservative
+            return True
+
+    def _check_pertinence_with_llm(
+        self,
+        article_num: str,
+        cited_text: str,
+        full_text: str,
+    ) -> bool:
+        """
+        Use LLM to check if a peripheral norm is still logically pertinent
+        to the reasoning chain, even if not core.
+
+        A norm is PERTINENT if it contributes meaningfully to the legal
+        reasoning — e.g., it provides context, reinforces a conclusion,
+        or integrates the normative framework. It should be kept and repaired.
+
+        A norm is NOT PERTINENT if it is tangential, redundant, or does not
+        add value to the argument. It can safely be dropped.
+
+        Args:
+            article_num: Article number
+            cited_text: Text cited in the reasoning chain for this article
+            full_text: Full reasoning chain text
+
+        Returns:
+            True if the norm is pertinent (should be repaired),
+            False if not pertinent (can be dropped).
+        """
+        try:
+            llm = get_chat_groq(
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.repair_max_tokens,
+            )
+
+            system_prompt = """You are an expert in Italian law. Your task is to assess whether a legal norm cited in a reasoning chain is PERTINENT or NOT_PERTINENT to the argumentative logic.
+
+    A norm is PERTINENT if:
+    - It contributes meaningfully to the legal reasoning (e.g., establishes liability, defines scope, sets conditions)
+    - It reinforces or integrates the legal conclusion
+    - It provides necessary normative context for the argument's thesis
+    - It completes the regulatory framework by filling a logical gap
+    - It is causally or logically connected to other steps in the chain
+
+    A norm is NOT_PERTINENT if:
+    - It is tangential to the main line of reasoning
+    - It is redundant with respect to other norms already cited that cover the same concept
+    - It adds no argumentative value to the reasoning chain
+    - It has no logical or causal link to the conclusion
+
+    Respond ONLY with one of these words: PERTINENT or NOT_PERTINENT"""
+
+            user_prompt = f"""COMPLETE REASONING CHAIN:
+    \"\"\"
+    {full_text[:settings.truncation_chain_text]}
+    \"\"\"
+
+    NORM TO EVALUATE: Art. {article_num}
+    CITED TEXT: "{cited_text}"
+
+    Is this norm PERTINENT or NOT_PERTINENT to the argumentative logic of the reasoning chain?"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+
+            response = resilient_chat_call(llm, messages)
+            answer = response.content.strip().upper()
+
+            is_pertinent = (
+                "NOT_PERTINENT" not in answer and "NOT PERTINENT" not in answer
+            )
+            self._log(
+                f"      🤖 LLM pertinence check Art. {article_num}: "
+                f"{'PERTINENTE ✅' if is_pertinent else 'NON PERTINENTE 🗑️'}"
+            )
+            return is_pertinent
+
+        except Exception as e:
+            self._log(f"      ⚠️ LLM pertinence check failed: {e}", "warning")
+            # In case of error, assume pertinent to be conservative (repair > drop)
+            return True
+
+    def _is_article_core(
+        self,
+        article_num: str,
+        aspic_ir: dict | None,
+        full_text: str,
+    ) -> bool:
+        """
+        Determine if an article is CORE (essential) or PERIPHERAL to the argument.
+
+        An article is CORE if:
+        - It's the only normative support for a conclusion
+        - It appears in the main norm/rule of an argument
+        - It's cited multiple times in the reasoning chain
+        - It's in the conclusion's citations
+
+        Args:
+            article_num: Article number to check
+            aspic_ir: ASPIC IR structure
+            full_text: Full text of reasoning chain
+
+        Returns:
+            True if the article is core, False if peripheral.
+        """
+        core_indicators = 0
+
+        # Check ASPIC IR for core indicators
+        if aspic_ir:
+            for arg in aspic_ir.get("arguments", []):
+                # Check premises with type="norm"
+                norm_premises = [
+                    p for p in arg.get("premises", []) if p.get("type") == "norm"
+                ]
+
+                for premise in norm_premises:
+                    citations = premise.get("citations", {})
+                    statutes = citations.get("statutes", [])
+
+                    # Article is in a norm premise
+                    article_cited = any(
+                        str(s.get("articolo", "")).strip() == article_num
+                        for s in statutes
+                    )
+
+                    if article_cited:
+                        # If it's the ONLY statute in a norm premise → definitely core
+                        if len(statutes) == 1:
+                            self._log(
+                                f"      🎯 Art. {article_num} is CORE: only statute in norm premise"
+                            )
+                            return True
+                        core_indicators += 1
+
+                # Check conclusion citations
+                conclusion = arg.get("conclusion", {})
+                if conclusion:
+                    conclusion_citations = conclusion.get("citations", {})
+                    for s in conclusion_citations.get("statutes", []):
+                        if str(s.get("articolo", "")).strip() == article_num:
+                            core_indicators += (
+                                settings.cc_conclusion_bonus
+                            )  # In conclusion = more important
+                            self._log(
+                                f"      🎯 Art. {article_num} cited in conclusion"
+                            )
+
+        # Count occurrences in full text
+        pattern = rf"art(?:icolo)?\.?\s*{article_num}"
+        occurrences = len(re.findall(pattern, full_text, re.IGNORECASE))
+        if occurrences >= settings.cc_occurrence_threshold:
+            core_indicators += 1
+            self._log(
+                f"      📊 Art. {article_num} appears {occurrences} times in text"
+            )
+
+        # Threshold: configurable via settings.cc_core_threshold
+        is_core = core_indicators >= settings.cc_core_threshold
+        self._log(
+            f"      {'🎯 CORE' if is_core else '📎 PERIPHERAL'}: Art. {article_num} (indicators: {core_indicators})"
+        )
+        return is_core
+
+    def _repair_with_db_constraint(
+        self,
+        article_num: str,
+        db_text: str,
+        original_context: str,
+    ) -> tuple[bool, str]:
+        """
+        Attempt to repair the normative citation using the official DB text.
+
+        The LLM must rewrite the norm/causal link using ONLY the DB text,
+        and include a verbatim quote from the DB.
+
+        Args:
+            article_num: Article number
+            db_text: Official text from database
+            original_context: Original context where the article was used
+
+        Returns:
+            Tuple of (success: bool, repaired_text: str).
+            Success is True only if the repaired text contains a verbatim DB quote.
+        """
+        try:
+            llm = get_chat_groq(
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.repair_max_tokens,
+            )
+
+            system_prompt = """You are an expert in Italian law. You must rewrite a normative passage using EXCLUSIVELY the official text of the provided article.
+
+    MANDATORY RULES:
+    1. You must include a VERBATIM QUOTE (exact copy) of at least 15 consecutive words from the official text
+    2. The quote must be enclosed in «» (guillemets/angle quotes)
+    3. You cannot add concepts not present in the official text
+    4. The result must be legally correct and coherent
+
+    OUTPUT: Write ONLY the rewritten text in Italian, without explanations."""
+
+            user_prompt = f"""ARTICLE: Art. {article_num}
+
+    OFFICIAL TEXT TO USE:
+    "{db_text}"
+
+    ORIGINAL CONTEXT (to correct):
+    "{original_context[:settings.truncation_context]}"
+
+    Rewrite the normative passage in Italian using only the official text, including a verbatim quote enclosed in «»."""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+
+            response = resilient_chat_call(llm, messages)
+            repaired_text = response.content.strip()
+
+            # Validate: check if there's a verbatim quote from DB
+            # Extract text between «»
+            quote_match = re.search(r"«([^»]+)»", repaired_text)
+            if quote_match:
+                quote = quote_match.group(1).lower().strip()
+                db_lower = db_text.lower()
+
+                # Check if quote is a substring of DB text
+                if quote in db_lower and len(quote) >= 15:
+                    self._log(
+                        f"      ✅ Repair SUCCESS: verbatim quote found ({len(quote)} chars)"
+                    )
+                    return True, repaired_text
+                else:
+                    self._log(
+                        "      ❌ Repair FAILED: quote not found in DB or too short"
+                    )
+                    return False, ""
+            else:
+                self._log("      ❌ Repair FAILED: no «» quote in response")
+                return False, ""
+
+        except Exception as e:
+            self._log(f"      ⚠️ Repair failed with error: {e}", "warning")
+            return False, ""
+
+    def _handle_norm_mismatch(
+        self,
+        check: CitationCheck,
+        article_num: str,
+        cited_text: str,
+        db_text: str,
+        aspic_ir: dict | None,
+        full_text: str,
+        report: ConsistencyReport,
+    ) -> None:
+        """
+        Handle a normative mismatch by verifying with LLM and taking appropriate action.
+
+        Flow:
+        1. Verify mismatch with LLM
+        2. If confirmed, classify as core/peripheral
+        3. If core: attempt repair with DB constraint
+        4. If peripheral: check pertinence with LLM
+           4a. If pertinent: attempt repair (keep useful norms)
+           4b. If not pertinent: drop the citation
+        5. If repair fails (core or peripheral): drop the citation
+
+        Args:
+            check: CitationCheck object to update
+            article_num: Article number
+            cited_text: Cited text from reasoning
+            db_text: Official DB text
+            aspic_ir: ASPIC IR structure
+            full_text: Full reasoning text
+            report: ConsistencyReport to update
+        """
+        self._log(f"      🔧 Handling mismatch for Art. {article_num}...")
+
+        # Step 1: Verify mismatch with LLM
+        llm_confirmed = self._verify_mismatch_with_llm(article_num, cited_text, db_text)
+        check.llm_mismatch_confirmed = llm_confirmed
+
+        if not llm_confirmed:
+            # LLM says they're equivalent → treat as match despite low similarity
+            self._log("      ✅ LLM says texts are equivalent - treating as match")
+            check.mismatch_action = MismatchAction.MATCH.value
+            check.text_match = True
+            check.llm_validated = True  # Mark as LLM-rescued
+            report.text_matches += 1
+            report.text_mismatches -= 1  # Correct the earlier increment
+            return
+
+        # Step 2: Classify as core or peripheral
+        is_core = self._is_article_core(article_num, aspic_ir, full_text)
+        check.is_core = is_core
+
+        if is_core:
+            # Step 3: Attempt repair
+            self._log("      🔄 Attempting repair for CORE article...")
+            success, repaired_text = self._repair_with_db_constraint(
+                article_num, db_text, cited_text
+            )
+
+            if success:
+                check.mismatch_action = MismatchAction.REPAIRED.value
+                check.repaired_text = repaired_text
+                check.repair_success = True
+                check.details += " [REPAIRED with DB text]"
+                report.repaired_citations += 1
+                self._log(f"      ✅ Art. {article_num} REPAIRED successfully")
+            else:
+                check.mismatch_action = MismatchAction.REPAIR_FAILED.value
+                check.repair_success = False
+                check.details += " [REPAIR FAILED - citation unreliable]"
+                report.dropped_citations += 1
+                report.issues.append(
+                    f"Art. {article_num}: CORE citation repair failed - argument may be invalid"
+                )
+                self._log(
+                    f"      ❌ Art. {article_num} repair FAILED - marked as unreliable"
+                )
+        else:
+            # Peripheral: check if it's still pertinent to the reasoning
+            self._log(
+                f"      🔍 Art. {article_num} is PERIPHERAL - checking pertinence..."
+            )
+            is_pertinent = self._check_pertinence_with_llm(
+                article_num, cited_text, full_text
+            )
+
+            if is_pertinent:
+                # Pertinent peripheral norm → attempt repair (keep it)
+                self._log(
+                    f"      🔄 Art. {article_num} is PERTINENT - attempting repair..."
+                )
+                success, repaired_text = self._repair_with_db_constraint(
+                    article_num, db_text, cited_text
+                )
+
+                if success:
+                    check.mismatch_action = MismatchAction.REPAIRED.value
+                    check.repaired_text = repaired_text
+                    check.repair_success = True
+                    check.details += " [REPAIRED - pertinent peripheral citation]"
+                    report.repaired_citations += 1
+                    self._log(
+                        f"      ✅ Art. {article_num} REPAIRED (pertinent peripheral)"
+                    )
+                else:
+                    # Repair failed even for pertinent norm → drop
+                    check.mismatch_action = MismatchAction.REPAIR_FAILED.value
+                    check.repair_success = False
+                    check.details += (
+                        " [REPAIR FAILED - pertinent peripheral, repair unsuccessful]"
+                    )
+                    report.dropped_citations += 1
+                    report.issues.append(
+                        f"Art. {article_num}: pertinent peripheral citation repair failed"
+                    )
+                    self._log(
+                        f"      ❌ Art. {article_num} repair FAILED (pertinent peripheral)"
+                    )
+            else:
+                # Not pertinent → safe to drop
+                check.mismatch_action = MismatchAction.DROPPED.value
+                check.details += " [DROPPED - non-pertinent peripheral citation]"
+                report.dropped_citations += 1
+                self._log(
+                    f"      🗑️ Art. {article_num} DROPPED (non-pertinent peripheral)"
+                )
+
+    def _check_consistency(
+        self,
+        agent: str,
+        reasoning_chain: list[str],
+        raw_response: str,
+        domain: str,
+        aspic_ir: dict | None = None,
+    ) -> ConsistencyReport:
+        """
+        Check the consistency of a reasoning chain by verifying citations in Neo4j.
+
+        Performs two checks:
+        1. Existence check: Does the article exist in Neo4j?
+        2. Text verification: Does the cited text match the actual article text?
+
+        Args:
+            agent: Name of the agent ("reasoner" or "counter_reasoner")
+            reasoning_chain: List of reasoning steps
+            raw_response: Raw LLM response text
+            domain: Legal domain ("CIVILE", "PENALE", or "ENTRAMBI")
+            aspic_ir: ASPIC IR structured output for text extraction
+
+        Returns:
+            ConsistencyReport with verification results.
+        """
+        report = ConsistencyReport(agent=agent)
+
+        # Combine chain and raw response for extraction
+        full_text = "\n".join(reasoning_chain) + "\n" + raw_response
+
+        # Extract statute citations from the text
+        statute_citations = self._extract_statute_citations(full_text)
+        self._log(
+            f"📜 [{agent}] Found {len(statute_citations)} statute citations to verify"
+        )
+
+        # Track already verified articles to avoid duplicates
+        verified_articles: set[str] = set()
+
+        for citation in statute_citations:
+            # Extract article number from citation (e.g., "Art. 1223 c.c." -> "1223")
+            match = re.search(r"(\d{1,4})", citation)
+            if not match:
+                continue
+
+            article_num = match.group(1)
+
+            # Skip if already verified
+            if article_num in verified_articles:
+                self._log(f"   ⏭️ Art. {article_num} already verified, skipping")
+                continue
+            verified_articles.add(article_num)
+
+            # Verify existence in Neo4j and get text
+            found, db_text = self._verify_statute_in_neo4j(
+                article_num, domain, citation
+            )
+
+            # Initialize check object
+            check = CitationCheck(
+                citation=citation,
+                found_in_kb=found,
+                source_type="statute",
+            )
+
+            if found:
+                report.valid_citations += 1
+                self._log(f"   ✅ Art. {article_num} -> EXISTS in Neo4j")
+
+                # Extract cited text from the reasoning chain / raw response
+                cited_text = self._extract_cited_text_for_article(
+                    full_text, article_num, aspic_ir
+                )
+
+                if cited_text:
+                    self._log(f"      📖 Cited text extracted: '{cited_text[:80]}...'")
+
+                if cited_text and db_text:
+                    # Perform text verification
+                    similarity = self._compute_text_similarity(cited_text, db_text)
+                    text_match = similarity >= settings.cc_text_match_threshold
+
+                    check.text_verified = True
+                    check.text_match = text_match
+                    check.text_similarity = similarity
+                    check.cited_text = cited_text
+                    check.db_text_preview = db_text
+
+                    if text_match:
+                        report.text_matches += 1
+                        check.mismatch_action = MismatchAction.MATCH.value
+                        check.details = f"Verified in Neo4j ({domain}), text match: {similarity:.0%}"
+                        self._log(
+                            f"      📝 Text similarity: {similarity:.0%} ✅ MATCH"
+                        )
+                    else:
+                        report.text_mismatches += 1
+                        check.details = f"Verified in Neo4j ({domain}), text mismatch: {similarity:.0%}"
+                        self._log(
+                            f"      📝 Text similarity: {similarity:.0%} ⚠️ MISMATCH"
+                        )
+                        report.issues.append(
+                            f"Art. {article_num}: cited text differs from DB (similarity: {similarity:.0%})"
+                        )
+
+                        # Handle mismatch: LLM verification + repair/drop
+                        self._handle_norm_mismatch(
+                            check=check,
+                            article_num=article_num,
+                            cited_text=cited_text,
+                            db_text=db_text,
+                            aspic_ir=aspic_ir,
+                            full_text=full_text,
+                            report=report,
+                        )
+                elif not cited_text and db_text:
+                    # Article exists in DB but no text was cited in the response.
+                    # Treat as mismatch → repair by injecting DB text.
+                    self._log(
+                        f"      ⚠️ Art. {article_num}: no text cited but DB text available → forcing repair"
+                    )
+                    check.text_verified = True
+                    check.text_match = False
+                    check.text_similarity = 0.0
+                    check.cited_text = ""
+                    check.db_text_preview = db_text
+                    check.is_core = (
+                        True  # no text at all → treat as core (must be repaired)
+                    )
+                    check.mismatch_action = MismatchAction.REPAIRED.value
+                    check.repaired_text = db_text
+                    check.repair_success = True
+                    check.details = f"Verified in Neo4j ({domain}), no text cited → repaired with DB text"
+                    report.text_mismatches += 1
+                    report.repaired_citations += 1
+                    report.issues.append(
+                        f"Art. {article_num}: no text cited in response, repaired with DB text"
+                    )
+                else:
+                    check.details = f"Verified in Neo4j ({domain}), no text available for verification"
+                    self._log("      📝 No cited text and no DB text for verification")
+            else:
+                report.invalid_citations += 1
+                check.details = f"Not found in Neo4j ({domain})"
+                report.issues.append(f"Art. {article_num} not found in {domain} codice")
+                self._log(f"   ❌ Art. {article_num} -> NOT FOUND in Neo4j")
+
+            report.citation_checks.append(check)
+            report.total_citations += 1
+
+        # Calculate consistency score
+        # Weighted: 70% existence + 30% text match (among verified texts)
+        if report.total_citations > 0:
+            existence_score = report.valid_citations / report.total_citations
+        else:
+            existence_score = 1.0
+
+        total_text_verified = report.text_matches + report.text_mismatches
+        if total_text_verified > 0:
+            text_score = report.text_matches / total_text_verified
+        else:
+            text_score = 1.0  # No text verified = no penalty
+
+        report.consistency_score = (
+            settings.cc_consistency_existence_weight * existence_score
+            + settings.cc_consistency_text_weight * text_score
+        )
+
+        return report
+
+    def _extract_statute_citations(self, text: str) -> list[str]:
+        """Extract statute citations from text."""
+        citations = []
+        seen = set()
+
+        for match in self.STATUTE_PATTERN.finditer(text):
+            article_num = match.group(1)
+            code_part = match.group(2) or ""
+
+            # Determine code
+            if code_part:
+                code = (
+                    "c.c."
+                    if "c" in code_part.lower() and "p" not in code_part.lower()
+                    else "c.p."
+                )
+            else:
+                code = ""
+
+            citation = f"Art. {article_num} {code}".strip()
+            if citation.lower() not in seen:
+                seen.add(citation.lower())
+                citations.append(citation)
+
+        return citations
+
+    def _extract_precedent_citations(self, text: str) -> list[str]:
+        """Extract precedent/case law citations from text."""
+        citations = []
+        seen = set()
+
+        for match in self.PRECEDENT_PATTERN.finditer(text):
+            # Get whichever group matched
+            num = match.group(1) or match.group(3) or ""
+            year = match.group(2) or match.group(4) or ""
+
+            if num:
+                citation = f"n. {num}"
+                if year:
+                    citation += f"/{year}"
+                if citation.lower() not in seen:
+                    seen.add(citation.lower())
+                    citations.append(citation)
+
+        return citations
+
+    def _generate_consistency_summary(
+        self,
+        reasoner_report: ConsistencyReport,
+        counter_report: ConsistencyReport,
+    ) -> str:
+        """Generate a human-readable summary of the consistency analysis."""
+        lines = []
+
+        lines.append("## Analisi di Consistenza\n")
+
+        # Reasoner summary
+        lines.append("### Reasoner")
+        lines.append(
+            f"- Citazioni valide: {reasoner_report.valid_citations}/{reasoner_report.total_citations}"
+        )
+        lines.append(
+            f"- Testo verificato: {reasoner_report.text_matches} match / {reasoner_report.text_matches + reasoner_report.text_mismatches} verificati"
+        )
+        if reasoner_report.repaired_citations > 0:
+            lines.append(f"- Citazioni riparate: {reasoner_report.repaired_citations}")
+        if reasoner_report.dropped_citations > 0:
+            lines.append(f"- Citazioni scartate: {reasoner_report.dropped_citations}")
+        lines.append(f"- Score di consistenza: {reasoner_report.consistency_score:.2%}")
+        if reasoner_report.issues:
+            lines.append(f"- Problemi: {len(reasoner_report.issues)}")
+
+        lines.append("")
+
+        # Counter-Reasoner summary
+        lines.append("### Counter-Reasoner")
+        lines.append(
+            f"- Citazioni valide: {counter_report.valid_citations}/{counter_report.total_citations}"
+        )
+        lines.append(
+            f"- Testo verificato: {counter_report.text_matches} match / {counter_report.text_matches + counter_report.text_mismatches} verificati"
+        )
+        if counter_report.repaired_citations > 0:
+            lines.append(f"- Citazioni riparate: {counter_report.repaired_citations}")
+        if counter_report.dropped_citations > 0:
+            lines.append(f"- Citazioni scartate: {counter_report.dropped_citations}")
+        lines.append(f"- Score di consistenza: {counter_report.consistency_score:.2%}")
+        if counter_report.issues:
+            lines.append(f"- Problemi: {len(counter_report.issues)}")
+
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def _regenerate_reasoning_chain_with_llm(
+        self,
+        original_chain: str,
+        citation_checks: list[CitationCheck],
+        agent_name: str,
+    ) -> str:
+        """
+        Regenerate the reasoning chain using LLM to integrate repairs and handle dropped citations.
+
+        If no citations were repaired or dropped, returns the original chain unchanged.
+
+        Args:
+            original_chain: The original reasoning chain text
+            citation_checks: List of CitationCheck objects with mismatch actions
+            agent_name: Name of the agent ("reasoner" or "counter_reasoner")
+
+        Returns:
+            The regenerated (or original if no changes needed) reasoning chain.
+        """
+        # Collect repaired and dropped citations
+        repaired = []
+        dropped = []
+
+        for check in citation_checks:
+            if check.mismatch_action == MismatchAction.REPAIRED.value:
+                repaired.append(
+                    {
+                        "citation": check.citation,
+                        "original_text": check.cited_text,
+                        "repaired_text": check.repaired_text,
+                    }
+                )
+            elif check.mismatch_action in (
+                MismatchAction.DROPPED.value,
+                MismatchAction.REPAIR_FAILED.value,
+            ):
+                dropped.append(
+                    {
+                        "citation": check.citation,
+                        "original_text": check.cited_text,
+                        "reason": (
+                            "peripheral citation"
+                            if check.mismatch_action == MismatchAction.DROPPED.value
+                            else "repair failed"
+                        ),
+                    }
+                )
+
+        # If no changes needed, return original
+        if not repaired and not dropped:
+            self._log(f"   ✅ [{agent_name}] No repairs needed - chain unchanged")
+            return original_chain
+
+        self._log(
+            f"   🔄 [{agent_name}] Regenerating chain: {len(repaired)} repaired, {len(dropped)} dropped"
+        )
+
+        try:
+            llm = get_chat_groq(
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.repair_max_tokens,
+            )
+
+            system_prompt = """You are an expert in Italian law. Your task is to rewrite a legal reasoning chain to integrate corrections.
+
+    You will receive:
+    1. The ORIGINAL reasoning chain
+    2. A list of REPAIRED citations (with the corrected normative text to use)
+    3. A list of DROPPED citations (citations that should be removed or reformulated without them)
+
+    RULES:
+    1. Integrate the repaired texts naturally into the reasoning
+    2. For dropped citations, reformulate the argument to work without them, or mark them as "[Citation removed - unreliable source]"
+    3. Maintain the logical flow and coherence of the argument
+    4. Keep the same structure and style
+    5. Write the output in Italian
+    6. Do not add new legal concepts not present in the original
+
+    OUTPUT: Write ONLY the revised reasoning chain in Italian, without explanations or meta-commentary."""
+
+            # Build the user prompt
+            repaired_info = ""
+            if repaired:
+                repaired_info = "\n\nREPAIRED CITATIONS (use these corrected texts):\n"
+                for r in repaired:
+                    repaired_info += f"- {r['citation']}:\n  Original: \"{r['original_text'][:200]}...\"\n  Corrected: \"{r['repaired_text']}\"\n"
+
+            dropped_info = ""
+            if dropped:
+                dropped_info = (
+                    "\n\nDROPPED CITATIONS (remove or reformulate without these):\n"
+                )
+                for d in dropped:
+                    dropped_info += f"- {d['citation']}: \"{d['original_text'][:100]}...\" (Reason: {d['reason']})\n"
+
+            user_prompt = f"""ORIGINAL REASONING CHAIN:
+    \"\"\"
+    {original_chain[:settings.truncation_chain_text]}
+    \"\"\"
+    {repaired_info}{dropped_info}
+
+    Rewrite the reasoning chain in Italian, integrating the corrections and handling the dropped citations appropriately."""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]
+
+            response = resilient_chat_call(llm, messages)
+            regenerated = response.content.strip()
+
+            self._log(
+                f"   ✅ [{agent_name}] Chain regenerated successfully ({len(regenerated)} chars)"
+            )
+            return regenerated
+
+        except Exception as e:
+            self._log(f"   ⚠️ [{agent_name}] Chain regeneration failed: {e}", "warning")
+            # Return original with annotations on failure
+            return original_chain
+
+    def _repair_aspic_ir(
+        self,
+        aspic_ir: dict,
+        citation_checks: list[CitationCheck],
+        repaired_chain_text: str = "",
+        claim: str = "",
+        role: str = "support",
+        statutes: list[dict] | None = None,
+        precedents: list[dict] | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """
+        Rebuild the ASPIC IR from the repaired reasoning chain.
+
+        Instead of patching the original IR, this method re-parses the repaired
+        chain text and rebuilds the IR from scratch using AspicFormatter,
+        exactly like Reasoner/Counter-Reasoner do for their original chains.
+
+        Args:
+            aspic_ir: Original ASPIC IR structure (used only for fallback/metadata)
+            citation_checks: List of CitationCheck objects with mismatch actions
+            repaired_chain_text: The LLM-regenerated reasoning chain text
+            claim: The original legal claim
+            role: "support" or "counter"
+            statutes: Relevant statutes for the formatter
+            precedents: Relevant precedents for the formatter
+            metadata: Additional metadata (causal_type_id, theory_id, etc.)
+
+        Returns:
+            Rebuilt ASPIC IR structure from the repaired chain, or empty dict
+            if no repairs were needed.
+        """
+        if not aspic_ir:
+            return {}
+
+        # Count repairs and drops
+        total_repaired = sum(
+            1
+            for c in citation_checks
+            if c.mismatch_action == MismatchAction.REPAIRED.value
+        )
+        total_dropped = sum(
+            1
+            for c in citation_checks
+            if c.mismatch_action
+            in (MismatchAction.DROPPED.value, MismatchAction.REPAIR_FAILED.value)
+        )
+
+        # If no changes were needed, return empty (signals "use original")
+        if total_repaired == 0 and total_dropped == 0:
+            return {}
+
+        # If no repaired text available, fall back to original
+        if not repaired_chain_text:
+            self._log(
+                f"   ⚠️ [{role}] No repaired chain text available, skipping IR rebuild"
+            )
+            return {}
+
+        self._log(
+            f"   🔄 [{role.upper()}] Rebuilding ASPIC IR from repaired chain "
+            f"(repaired={total_repaired}, dropped={total_dropped})"
+        )
+
+        # Parse the repaired chain text the same way agents do
+        reasoning_chain = self._extract_reasoning_chain(repaired_chain_text)
+        reasoning_chain = self._sanitize_reasoning_chain(
+            reasoning_chain, precedents or []
+        )
+        arguments = self._extract_arguments_from_text(repaired_chain_text)
+
+        # Build new IR using AspicFormatter (same as Reasoner/Counter-Reasoner)
+        formatter = AspicFormatter(
+            role=role,
+            statutes=statutes or [],
+            precedents=precedents or [],
+        )
+        rebuilt_ir = formatter.format(
+            claim=claim or aspic_ir.get("claim", ""),
+            raw_response=repaired_chain_text,
+            reasoning_chain=reasoning_chain,
+            arguments=arguments,
+            metadata=metadata or aspic_ir.get("metadata", {}),
+        )
+
+        # Add repair metadata
+        rebuilt_ir["_repair_metadata"] = {
+            "total_repaired": total_repaired,
+            "total_dropped": total_dropped,
+        }
+
+        self._log(
+            f"   ✅ [{role.upper()}] ASPIC IR rebuilt: "
+            f"{len(rebuilt_ir.get('arguments', []))} arguments, "
+            f"{len(rebuilt_ir.get('reasoning_chain', []))} chain steps"
+        )
+
+        return rebuilt_ir
+
+    def _extract_arguments_from_text(self, response: str) -> list[dict]:
+        """
+        Extract argument blocks from raw response text.
+
+        Reuses the same logic as Reasoner._extract_arguments and
+        CounterReasoner._extract_arguments to parse structured blocks.
+        """
+        arguments = []
+        current_arg: dict[str, str] = {}
+        current_section = None
+
+        section_markers = {
+            "premessa": "premise",
+            "premessa alternativa": "premise",
+            "norma": "norm",
+            "nesso causale": "link",
+            "nesso causale alternativo": "link",
+            "causal link": "link",
+            "conclusione": "conclusion",
+            "conclusione contraria": "conclusion",
+        }
+
+        for line in response.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Remove markdown bold markers
+            clean = line.replace("**", "").strip()
+            lower_clean = clean.lower()
+
+            # Check for section headers
+            matched_section = None
+            for marker, section_key in section_markers.items():
+                if lower_clean.startswith(marker):
+                    matched_section = section_key
+                    # Extract content after the marker
+                    content = clean[len(marker) :].lstrip(" :.-").strip()
+                    break
+
+            if matched_section:
+                if matched_section == "premise" and current_arg.get("conclusion"):
+                    # New argument block
+                    if current_arg:
+                        arguments.append(current_arg)
+                    current_arg = {}
+
+                current_section = matched_section
+                if content:
+                    current_arg[current_section] = content
+                continue
+
+            # Check for chain/reasoning section → stop parsing arguments
+            if any(
+                kw in lower_clean
+                for kw in [
+                    "ragionamento",
+                    "chain of reasoning",
+                    "catena di ragionamento",
+                ]
+            ):
+                break
+
+            # Continuation of current section
+            if current_section and line:
+                existing = current_arg.get(current_section, "")
+                current_arg[current_section] = (
+                    (existing + " " + line).strip() if existing else line
+                )
+
+        if current_arg:
+            arguments.append(current_arg)
+
+        return arguments

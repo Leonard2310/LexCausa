@@ -378,78 +378,12 @@ def classify_stance_for_agents(
     return support_statutes, against_statutes, support_precedents, against_precedents
 
 
-def get_warrant_causality(causality_type: str) -> dict:
-    """
-    Estrae il warrant dalla tassonomia per un dato tipo di causalità.
-
-    Args:
-        causality_type: Il tipo di causalità (es. "Materiale", "Giuridica", "Concause / Sopravvenute")
-
-    Returns:
-        Dict contenente:
-        - warrant: dict con denominazione e todo_nli
-        - attacking_causalities: lista delle causalità che possono attaccare questa
-    """
-    taxonomy = load_taxonomy()
-
-    for entry in taxonomy.get("tassonomia_causalita", []):
-        if entry.get("tipo_causalita") == causality_type:
-            warrant = entry.get("warrant", {})
-
-            # Il warrant contiene la "denominazione" che indica quale tipo di causalità può attaccare
-            # Esempio: "Causalità Necessaria" può essere attaccata da "Causalità Sufficiente"
-            attacking_causalities = []
-
-            # Logica per determinare le causalità attaccanti basata sul warrant
-            warrant_denominazione = warrant.get("denominazione", "")
-
-            if "Necessaria" in warrant_denominazione:
-                # La causalità necessaria può essere attaccata da cause sufficienti
-                attacking_causalities.append("Concause / Sopravvenute")
-            elif "Sufficiente Indipendente" in warrant_denominazione:
-                # La causalità sufficiente indipendente può essere attaccata da cause necessarie
-                attacking_causalities.append("Materiale")
-            elif "Sufficiente (non da sola)" in warrant_denominazione:
-                # Le concause possono essere attaccate da entrambe
-                attacking_causalities.extend(["Materiale", "Giuridica"])
-
-            return {"warrant": warrant, "attacking_causalities": attacking_causalities}
-
-    return {"warrant": {}, "attacking_causalities": []}
-
-
-def get_causality_details(causality_type: str) -> dict:
-    """
-    Recupera tutti i dettagli di una causalità dalla tassonomia.
-
-    Args:
-        causality_type: Il tipo di causalità
-
-    Returns:
-        Dict con descrizione, norme core, norme accessorie, ecc.
-    """
-    taxonomy = load_taxonomy()
-
-    for entry in taxonomy.get("tassonomia_causalita", []):
-        if entry.get("tipo_causalita") == causality_type:
-            return {
-                "tipo": entry.get("tipo_causalita"),
-                "warrant": entry.get("warrant", {}),
-                "descrizione": entry.get("descrizione_ruolo", ""),
-                "principio": entry.get("principio_test_applicato", ""),
-                "limiti": entry.get("limiti_criticita", ""),
-                "norme_core": entry.get("norme_core", []),
-                "norme_accessorie": entry.get("norme_accessorie", []),
-                "note": entry.get("note", {}),
-            }
-
-    return {}
-
-
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
-    return jsonify({"status": "ok", "service": "LexCausa API", "version": "0.2.0"})
+    return jsonify(
+        {"status": "ok", "service": "LexCausa API", "version": settings.api_version}
+    )
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -478,7 +412,6 @@ def get_settings():
                 "aqa_damage_factor": settings.aqa_damage_factor,
                 "aqa_allow_factual_attacks": settings.aqa_allow_factual_attacks,
                 "aqa_allow_cross_codice": settings.aqa_allow_cross_codice,
-                "aqa_nli_min_contradiction_score": settings.aqa_nli_min_contradiction_score,
                 "aqa_strength_ratio_by_type": settings.aqa_strength_ratio_by_type,
             },
         }
@@ -688,9 +621,6 @@ def pipeline():
         fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
         fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
         fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
-        fe_aqa_nli_min_contradiction_score = fe_settings.get(
-            "aqa_nli_min_contradiction_score"
-        )
         fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
 
         if not claim:
@@ -827,10 +757,6 @@ def pipeline():
                 settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
             if fe_aqa_allow_cross_codice is not None:
                 settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
-            if fe_aqa_nli_min_contradiction_score is not None:
-                settings.aqa_nli_min_contradiction_score = float(
-                    fe_aqa_nli_min_contradiction_score
-                )
             if fe_aqa_strength_ratio_by_type is not None:
                 settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 

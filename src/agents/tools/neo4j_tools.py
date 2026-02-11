@@ -115,7 +115,11 @@ def search_legal_sources_tool(
                 "statute_id": art.statute_id,
                 "articolo": art.articolo,
                 "titolo": art.titolo,
-                "testo": art.testo[:500] if art.testo else "No text available",
+                "testo": (
+                    art.testo[: settings.truncation_tool_testo]
+                    if art.testo
+                    else "No text available"
+                ),
                 "libro": art.libro,
                 "source": art.source,
                 "score": float(art.score),
@@ -210,7 +214,9 @@ def search_statutes_tool(
                     "articolo": article.articolo,
                     "titolo": article.titolo,
                     "testo": (
-                        article.testo[:500] if article.testo else "No text available"
+                        article.testo[: settings.truncation_tool_testo]
+                        if article.testo
+                        else "No text available"
                     ),
                     "libro": article.libro,
                     "source": article.source,
@@ -269,7 +275,7 @@ def search_statutes_tool(
                         "articolo": record["articolo"] or "",
                         "titolo": record["titolo"] or "No title",
                         "testo": (
-                            record["testo"][:500]
+                            record["testo"][: settings.truncation_tool_testo]
                             if record["testo"]
                             else "No text available"
                         ),
@@ -351,7 +357,7 @@ def _search_statutes_fallback(
                     "articolo": record["articolo"] or "",
                     "titolo": record["titolo"] or "No title",
                     "testo": (
-                        record["testo"][:500]
+                        record["testo"][: settings.truncation_tool_testo]
                         if record["testo"]
                         else "No text available"
                     ),
@@ -529,14 +535,14 @@ def search_precedents_tool(
                     "precedent_id": record["id"] or "",
                     "title": record["title"] or "Untitled precedent",
                     "summary": (
-                        record["summary"][:500]
+                        record["summary"][: settings.truncation_tool_summary]
                         if record["summary"]
                         else "No summary available"
                     ),
                     "materia": record["materia"] or "Unknown",
                     "url": record["url"] or "",
                     "excerpt": (
-                        record["chunk_text"][:300]
+                        record["chunk_text"][: settings.truncation_tool_excerpt]
                         if record["chunk_text"]
                         else "No excerpt available"
                     ),
@@ -611,14 +617,14 @@ def _search_precedents_fallback(
                     "precedent_id": record["id"] or "",
                     "title": record["title"] or "Untitled precedent",
                     "summary": (
-                        record["summary"][:500]
+                        record["summary"][: settings.truncation_tool_summary]
                         if record["summary"]
                         else "No summary available"
                     ),
                     "materia": record["materia"] or "Unknown",
                     "url": record["url"] or "",
                     "excerpt": (
-                        record["chunk_text"][:300]
+                        record["chunk_text"][: settings.truncation_tool_excerpt]
                         if record["chunk_text"]
                         else "No excerpt available"
                     ),

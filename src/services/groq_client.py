@@ -31,7 +31,7 @@ _current_key_index: int = 0
 
 # Model-down cache: remembers which models are down so we don't retry them
 # on every single call.  Maps model_name → timestamp when it was marked down.
-_MODEL_DOWN_TTL: float = 300.0  # 5 minutes before retrying the model
+_MODEL_DOWN_TTL: float = settings.model_down_ttl
 _model_down_cache: dict[str, float] = {}
 _model_lock = threading.Lock()
 

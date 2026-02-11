@@ -8,7 +8,6 @@ Provides common functionality for all agents including:
 - Common extraction methods for tool messages
 """
 
-import json
 import re
 import sys
 from abc import ABC, abstractmethod
@@ -16,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain_core.messages import ToolMessage
 from langchain_groq import ChatGroq
 from neo4j import GraphDatabase
 
@@ -151,68 +149,6 @@ class BaseAgent(ABC):
             level, "•"
         )
         print(f"{emoji} [{self.__class__.__name__}] {message}")
-
-    # =========================================================================
-    # COMMON EXTRACTION METHODS (shared by Reasoner and CounterReasoner)
-    # =========================================================================
-
-    def _extract_statutes_from_messages(self, messages: list) -> list[dict]:
-        """
-        Extract statutes from search_legal_sources or search_statutes tool responses.
-        Filters out error/empty messages.
-        """
-        statutes = []
-        for msg in messages:
-            if isinstance(msg, ToolMessage):
-                try:
-                    data = json.loads(msg.content)
-
-                    # Handle search_legal_sources (primary tool - new format)
-                    if msg.name == "search_legal_sources":
-                        if isinstance(data, dict) and "articles" in data:
-                            for item in data["articles"]:
-                                if isinstance(item, dict) and "statute_id" in item:
-                                    statutes.append(item)
-
-                    # Handle search_statutes (secondary tool - list format)
-                    elif msg.name == "search_statutes":
-                        if isinstance(data, list):
-                            for item in data:
-                                if isinstance(item, dict) and "statute_id" in item:
-                                    statutes.append(item)
-                except Exception:
-                    pass
-        return statutes
-
-    def _extract_precedents_from_messages(self, messages: list) -> list[dict]:
-        """
-        Extract precedents retrieved by search_precedents tool.
-        Filters out error/empty messages.
-        """
-        precedents = []
-        for msg in messages:
-            if isinstance(msg, ToolMessage) and msg.name == "search_precedents":
-                try:
-                    data = json.loads(msg.content)
-                    if isinstance(data, list):
-                        for item in data:
-                            if isinstance(item, dict) and "precedent_id" in item:
-                                precedents.append(item)
-                except Exception:
-                    pass
-        return precedents
-
-    def _extract_causality_from_messages(self, messages: list) -> dict:
-        """
-        Extract the result of the classify_causality tool from LangGraph messages.
-        """
-        for msg in messages:
-            if isinstance(msg, ToolMessage) and msg.name == "classify_causality":
-                try:
-                    return json.loads(msg.content)
-                except Exception:
-                    return {}
-        return {}
 
     def _extract_reasoning_chain(self, response: str) -> list[str]:
         """Extract reasoning chain from response with improved pattern matching."""
@@ -368,7 +304,7 @@ class BaseAgent(ABC):
                 parts.append(f"- Art. {s.get('articolo')} {source}: {s.get('titolo')}")
                 testo = s.get("testo")
                 if testo:
-                    parts.append(f"  {testo[:500]}...")
+                    parts.append(f"  {testo[:settings.truncation_prompt_testo]}...")
             parts.append("")
 
         if precedents:
@@ -378,7 +314,7 @@ class BaseAgent(ABC):
                 parts.append(f"- {title}")
                 summary = p.get("summary")
                 if summary:
-                    parts.append(f"  {summary[:300]}...")
+                    parts.append(f"  {summary[:settings.truncation_prompt_summary]}...")
             parts.append("")
 
         return "\n".join(parts) if parts else "No legal context available."

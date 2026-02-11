@@ -44,7 +44,6 @@ export default function App() {
     aqa_damage_factor: 0.5,
     aqa_allow_factual_attacks: true,
     aqa_allow_cross_codice: true,
-    aqa_nli_min_contradiction_score: 0.65,
   });
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -81,7 +80,6 @@ export default function App() {
           aqa_damage_factor: d.aqa_damage_factor ?? prev.aqa_damage_factor,
           aqa_allow_factual_attacks: d.aqa_allow_factual_attacks ?? prev.aqa_allow_factual_attacks,
           aqa_allow_cross_codice: d.aqa_allow_cross_codice ?? prev.aqa_allow_cross_codice,
-          aqa_nli_min_contradiction_score: d.aqa_nli_min_contradiction_score ?? prev.aqa_nli_min_contradiction_score,
         }));
       })
       .catch((err) => console.warn('Could not load settings:', err));
@@ -201,7 +199,6 @@ export default function App() {
             aqa_damage_factor: pipelineSettings.aqa_damage_factor,
             aqa_allow_factual_attacks: pipelineSettings.aqa_allow_factual_attacks,
             aqa_allow_cross_codice: pipelineSettings.aqa_allow_cross_codice,
-            aqa_nli_min_contradiction_score: pipelineSettings.aqa_nli_min_contradiction_score,
           },
         }),
       });
@@ -493,17 +490,6 @@ export default function App() {
                     step="0.05"
                     value={pipelineSettings.aqa_damage_factor}
                     onChange={(e) => updateSetting('aqa_damage_factor', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>NLI Soglia Contraddizione <strong>{pipelineSettings.aqa_nli_min_contradiction_score.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0.3"
-                    max="1.0"
-                    step="0.05"
-                    value={pipelineSettings.aqa_nli_min_contradiction_score}
-                    onChange={(e) => updateSetting('aqa_nli_min_contradiction_score', parseFloat(e.target.value))}
                   />
                 </label>
               </div>

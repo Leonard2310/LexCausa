@@ -218,7 +218,7 @@ class ClaimClassifier:
                 model=model,
                 messages=messages,
                 temperature=temperature,
-                max_completion_tokens=64,
+                max_completion_tokens=settings.claim_classifier_max_tokens,
                 top_p=1,
                 stream=False,
             )
@@ -240,7 +240,7 @@ class ClaimClassifier:
                 model=model,
                 messages=messages,
                 temperature=temperature,
-                max_completion_tokens=64,
+                max_completion_tokens=settings.claim_classifier_max_tokens,
                 top_p=1,
                 stream=True,
             )

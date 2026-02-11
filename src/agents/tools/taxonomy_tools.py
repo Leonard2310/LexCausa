@@ -120,8 +120,8 @@ def classify_causality_tool(claim: str, context: Optional[str] = None) -> dict:
     response = client.chat.completions.create(
         model=settings.groq_model,
         messages=messages,  # type: ignore[arg-type]
-        temperature=0.2,
-        max_tokens=20,
+        temperature=settings.classifier_temperature,
+        max_tokens=settings.taxonomy_max_tokens,
     )
 
     # Parse response
@@ -269,8 +269,8 @@ Rispondi con un solo token: YES o NO."""
             resp = client.chat.completions.create(
                 model=settings.groq_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=10,
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.taxonomy_filter_max_tokens,
             )
             answer = (resp.choices[0].message.content or "").strip().upper()
         except Exception:

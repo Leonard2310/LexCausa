@@ -27,6 +27,7 @@ from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
 
 # System prompt for the Reasoner (with pre-retrieved context)
@@ -306,7 +307,7 @@ class Reasoner(BaseAgent):
         # ----------------------------------------------------------
         # Phase 3 generation with retry for valid reasoning chain
         # ----------------------------------------------------------
-        MAX_CHAIN_RETRIES = 5
+        MAX_CHAIN_RETRIES = settings.chain_max_retries
         output = None
 
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
@@ -375,6 +376,7 @@ class Reasoner(BaseAgent):
                         "error",
                     )
 
+        assert output is not None, "ReasonerOutput was never assigned"  # guard for mypy
         self._log(f"✅ Generated {len(output.arguments)} arguments", "success")
         return output
 

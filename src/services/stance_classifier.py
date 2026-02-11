@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
 
 
@@ -59,8 +60,8 @@ class StanceClassifier:
         """Lazy initialization of LLM with resilient key management."""
         if self._llm is None:
             self._llm = get_chat_groq(
-                temperature=0.0,  # Deterministic for classification
-                max_tokens=50,
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.classifier_max_tokens,
             )
         return self._llm
 
@@ -77,7 +78,7 @@ class StanceClassifier:
         """
         article_num = statute.get("articolo", "N/A")
         title = statute.get("titolo", "")
-        text = statute.get("testo", "")[:800]  # Truncate for token limits
+        text = statute.get("testo", "")[: settings.truncation_statute_text]
         source = "c.c." if statute.get("source") == "codice_civile" else "c.p."
 
         prompt = self._build_statute_prompt(claim, article_num, source, title, text)
@@ -107,7 +108,7 @@ class StanceClassifier:
             StanceResult with stance and confidence
         """
         title = precedent.get("title", "Untitled")
-        summary = precedent.get("summary", "")[:600]
+        summary = precedent.get("summary", "")[: settings.truncation_summary]
 
         prompt = self._build_precedent_prompt(claim, title, summary)
 

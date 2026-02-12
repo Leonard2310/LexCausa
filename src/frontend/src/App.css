@@ -1140,3 +1140,206 @@
   font-style: italic;
   font-size: 0.7rem;
 }
+
+/* ====================================================================
+   Attack Text Details
+   ==================================================================== */
+
+.attack-text-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.attack-text-summary {
+  font-size: 0.82rem;
+  color: #6b7280;
+  margin-bottom: 0.25rem;
+}
+
+.attack-text-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.attack-text-card:hover {
+  border-color: #d1d5db;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.attack-text-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  flex-wrap: wrap;
+}
+
+.attack-text-sides {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  flex-shrink: 0;
+}
+
+.attack-arrow {
+  margin: 0 0.15rem;
+  font-size: 0.9rem;
+}
+
+.attack-text-meta-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: #6b7280;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.atk-val {
+  font-weight: 600;
+  color: #dc2626;
+}
+
+.atk-overlap {
+  color: #4b5563;
+}
+
+.atk-type {
+  text-transform: capitalize;
+  padding: 0.1rem 0.35rem;
+  background: #f3f4f6;
+  border-radius: 3px;
+  color: #374151;
+}
+
+.atk-nli-badge {
+  padding: 0.1rem 0.35rem;
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 3px;
+  font-weight: 500;
+  font-size: 0.68rem;
+}
+
+.attack-expand-icon {
+  transition: transform 0.2s;
+  font-size: 0.75rem;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.attack-expand-icon.open {
+  transform: rotate(90deg);
+}
+
+/* Role Tags */
+.atk-role-tag {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.08rem 0.35rem;
+  border-radius: 3px;
+  vertical-align: middle;
+  letter-spacing: 0.03em;
+}
+
+.atk-role-pro {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.atk-role-contra {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* Expanded body */
+.attack-text-body {
+  border-top: 1px solid #e5e7eb;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  cursor: default;
+}
+
+.attack-text-block {
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.attack-text-block-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 0.5rem;
+}
+
+.attacker-block {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+
+.target-block {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+
+.attack-text-segment {
+  margin-bottom: 0.5rem;
+}
+
+.attack-text-segment:last-child {
+  margin-bottom: 0;
+}
+
+.segment-label {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.15rem;
+}
+
+.attack-text-segment p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.attack-text-missing {
+  font-size: 0.8rem;
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.attack-text-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  padding: 0.5rem 0.75rem;
+  background: #f9fafb;
+  border-radius: 0.375rem;
+  border: 1px solid #e5e7eb;
+  font-size: 0.75rem;
+  color: #4b5563;
+}
+
+.attack-text-meta-row strong {
+  color: #111827;
+}

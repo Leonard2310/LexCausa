@@ -83,9 +83,8 @@ class NLPUtils:
 
             system_prompt = (
                 "You are an expert in Italian law.\n"
-                "You are comparing two reasoning passages from a legal debate. "
-                "Passage A comes from the argument supporting the claim, and "
-                "Passage B comes from the argument attacking the claim.\n"
+                "You are comparing two reasoning passages from opposing sides "
+                "of a legal debate.\n"
                 "Even if they cite the same legal norms, focus on whether their "
                 "CONCLUSIONS and APPLICATIONS of those norms are incompatible.\n\n"
                 "Choose EXACTLY ONE of these labels:\n"

@@ -185,7 +185,12 @@ class AQAEngineMixin:
                 if len(sources) == 1
                 else (list(sources)[0] if sources else "")
             )
-            severity_category = list(severities)[0] if len(severities) == 1 else ""
+            # P3 fix: prefer the most specific (non-generale) category
+            if severities:
+                specific = [s for s in severities if "generale" not in s]
+                severity_category = specific[0] if specific else list(severities)[0]
+            else:
+                severity_category = ""
 
             # Log the link
             self._log(
@@ -225,73 +230,7 @@ class AQAEngineMixin:
         )
         return links
 
-    def _get_position_weight(self, link: dict) -> float:
-        """Compute position-based weight for attack damage.
 
-        Links involving foundational premises or severe norms receive
-        higher weight, making them harder to attack (the attacker needs
-        proportionally more excess strength to inflict the same damage).
-
-        Categories:
-        - Foundational premises (premessa, presupposto, principio…) → 1.5
-        - Severe norm categories (delitti, contravvenzioni, tutela_diritti) → 1.3
-        - All other links → 1.0
-
-        Returns:
-            Weight factor (>= 1.0). Higher = more resistance to attacks.
-        """
-        text = self._normalize_text(
-            f"{link.get('premise_text', '')} {link.get('conclusion_text', '')}"
-        ).lower()
-        severity = link.get("severity_category", "").lower()
-
-        # Foundational premise keywords
-        premise_keywords = [
-            "premessa",
-            "presupposto",
-            "fondamento",
-            "principio",
-            "elemento costitutivo",
-            "fatto costitutivo",
-        ]
-        if any(kw in text for kw in premise_keywords):
-            return settings.aqa_position_weight_foundational
-
-        # Severe norm categories
-        severe_categories = {"delitti", "contravvenzioni", "tutela_diritti"}
-        if severity in severe_categories:
-            return settings.aqa_position_weight_severe
-
-        return settings.aqa_position_weight_default
-
-    def _is_double_relevance(self, target: dict, attacker: dict) -> bool:
-        """Check if a double penale-civile relevance exists.
-
-        Returns True when any cited article belongs to the configurable
-        set of crimes that carry automatic civil consequences
-        (e.g. diffamazione 595, lesioni 590, truffa 640 …).
-        """
-        all_text = (
-            f"{target.get('premise_text', '')} {target.get('conclusion_text', '')} "
-            f"{attacker.get('premise_text', '')} {attacker.get('conclusion_text', '')}"
-        )
-        refs = self._extract_statute_refs_from_text(all_text)
-        return any(
-            ref.get("articolo") in self._aqa_double_relevance_crimes for ref in refs
-        )
-
-    def _is_bridge_norm(self, target: dict, attacker: dict) -> bool:
-        """Check for bridge norms that connect penale → civile liability.
-
-        Examples: Art. 185 c.p. (restituzione/risarcimento),
-                  Art. 198 c.p. (azione civile nel processo penale).
-        """
-        all_text = (
-            f"{target.get('text', '')} {target.get('premise_text', '')} "
-            f"{attacker.get('text', '')} {attacker.get('premise_text', '')}"
-        )
-        refs = self._extract_statute_refs_from_text(all_text)
-        return any(ref.get("articolo") in self._aqa_bridge_norms for ref in refs)
 
     def _same_book(self, sev1: str, sev2: str) -> bool:
         """Return True if two severity categories belong to the same libro."""
@@ -462,12 +401,7 @@ class AQAEngineMixin:
             # Same codice → fall through to severity check
             pass
         elif self._aqa_allow_cross_codice:
-            # Check exceptions for cross-codice attacks
-            if self._is_double_relevance(target, attacker):
-                return True, "allowed: double relevance (penale-civile)"
-            if self._is_bridge_norm(target, attacker):
-                return True, "allowed: bridge norm"
-            return False, f"denied: different codice ({t_src} vs {a_src})"
+            return True, f"allowed: cross-codice ({t_src} vs {a_src})"
         else:
             return False, f"denied: different codice ({t_src} vs {a_src})"
 
@@ -521,9 +455,8 @@ class AQAEngineMixin:
 
         Damage formula (only the *excess* counts):
             raw_attack       = overlap x attacker_base_score
-            effective_damage = (raw_attack - target_base) x DAMAGE_FACTOR
-            final_damage     = effective_damage x position_weight
-                               x attack_type_multiplier
+            boosted_attack   = raw_attack x attack_type_multiplier
+            attack_value     = max(0, boosted_attack - target_base) x DAMAGE_FACTOR
         """
         MIN_SEMANTIC_OVERLAP = self._aqa_min_semantic_overlap
         DAMAGE_FACTOR = self._aqa_damage_factor
@@ -542,7 +475,6 @@ class AQAEngineMixin:
                     f"{target.get('premise_text', '')} "
                     f"{target.get('conclusion_text', '')}"
                 )
-                position_weight = self._get_position_weight(target)
 
                 for attacker in attackers:
                     allowed, reason = self._domain_rules_allow(target, attacker)
@@ -660,9 +592,14 @@ class AQAEngineMixin:
                             )
                             continue
 
-                    # ---- Stage 6: Compute damage ----
-                    effective_damage = (raw_attack - target_base) * DAMAGE_FACTOR
-                    attack_value = effective_damage * position_weight * type_multiplier
+                    # ---- Stage 6: Compute damage (excess formula) ----
+                    # Only the EXCESS of the boosted attack over the target's
+                    # own quality counts as damage.  This ensures that only
+                    # genuinely stronger attacks inflict damage, and only
+                    # proportional to the surplus.
+                    boosted_attack = raw_attack * type_multiplier
+                    excess = max(0.0, boosted_attack - target_base)
+                    attack_value = excess * DAMAGE_FACTOR
 
                     bypass_tag = " [NLI-bypass]" if nli_bypass else ""
                     target["attacks_received"].append(
@@ -672,8 +609,6 @@ class AQAEngineMixin:
                             "overlap": round(overlap, 4),
                             "attacker_base_score": round(attacker_base, 4),
                             "attack_value": round(attack_value, 4),
-                            "effective_damage": round(effective_damage, 4),
-                            "position_weight": round(position_weight, 4),
                             "attack_type": attack_type,
                             "type_multiplier": round(type_multiplier, 2),
                             "nli_label": nli_label,
@@ -691,12 +626,32 @@ class AQAEngineMixin:
         # PRO attacks CONTRA
         _apply_attacks(contra_links, pro_links, attacker_role="support")
 
-        # Sort attacks by value (descending) for readability
+        # Sort attacks by value (descending) and apply top-K limiting
+        top_k = self._aqa_attack_top_k
         for link in pro_links + contra_links:
             link["attacks_received"] = sorted(
                 link.get("attacks_received", []),
                 key=lambda x: x.get("attack_value", 0.0),
                 reverse=True,
+            )
+            # Only the top-K active attacks contribute to attacks_sum
+            active_attacks = [
+                a for a in link["attacks_received"]
+                if not a.get("filtered", False) and a.get("attack_value", 0.0) > 0
+            ]
+            if len(active_attacks) > top_k:
+                for overflow in active_attacks[top_k:]:
+                    overflow["reason"] = (
+                        f"capped: top-K overflow (rank > {top_k}), "
+                        f"original={overflow.get('reason', '')}"
+                    )
+                    overflow["filtered"] = True
+                    overflow["filter_stage"] = "top_k"
+            # Recalculate attacks_sum from surviving active attacks only
+            link["attacks_sum"] = sum(
+                a.get("attack_value", 0.0)
+                for a in link["attacks_received"]
+                if not a.get("filtered", False) and a.get("attack_value", 0.0) > 0
             )
 
     def _extract_year(self, text: str) -> int | None:
@@ -1091,9 +1046,27 @@ class AQAEngineMixin:
                         f"({fa.get('attacker_role')}) \u2014 {fa.get('reason')}"
                     )
 
-            if not active and not filtered:
+            zero_damage = [
+                a for a in all_attacks
+                if not a.get("filtered", False) and a.get("attack_value", 0.0) <= 0
+            ]
+            if zero_damage:
                 self._log(
-                    f"   \u2139\ufe0f [{role_tag}] {link_id} " f"no attacks attempted"
+                    f"   \u26a0\ufe0f [{role_tag}] {link_id} "
+                    f"{len(zero_damage)} attack(s) passed filters but zero/negative damage"
+                )
+                for zd in zero_damage:
+                    self._log(
+                        f"      \u21b3 attacker={zd.get('attacker_link_id')} "
+                        f"({zd.get('attacker_role')}) \u2014 "
+                        f"damage={zd.get('attack_value', 0.0):.4f}, "
+                        f"type={zd.get('attack_type')}, "
+                        f"overlap={zd.get('overlap', 0.0):.3f}"
+                    )
+
+            if not active and not filtered and not zero_damage:
+                self._log(
+                    f"   \u2139\ufe0f [{role_tag}] {link_id} no attacks attempted"
                 )
 
         # ==============================================================

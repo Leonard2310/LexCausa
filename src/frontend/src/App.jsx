@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords } from 'lucide-react';
 import './App.css';
 import AspicMetagraph from './AspicMetagraph';
+import AttackTextDetails from './AttackTextDetails';
 
 // Tab types
 const TABS = {
@@ -1167,6 +1168,20 @@ export default function App() {
                         Clicca su un nodo per vedere i dettagli. Scroll per zoomare, trascina per spostare il grafo.
                       </p>
                       <AspicMetagraph aqaReport={aqaReport} />
+                    </div>
+                  )}
+
+                  {/* SEZIONE DETTAGLIO TESTUALE ATTACCHI */}
+                  {aqaReport && aqaReport.enabled && (aqaProLinks.length > 0 || aqaContraLinks.length > 0) && (
+                    <div className="result-section pipeline-section">
+                      <h3 className="section-header">
+                        <Swords size={20} style={{ color: '#ef4444' }} />
+                        7. Dettaglio Testuale Attacchi
+                      </h3>
+                      <p style={{ fontSize: '0.82rem', color: '#6b7280', marginBottom: '0.75rem' }}>
+                        Clicca su un attacco per espandere il testo completo dei link coinvolti.
+                      </p>
+                      <AttackTextDetails aqaReport={aqaReport} />
                     </div>
                   )}
                 </>

@@ -164,7 +164,7 @@ class Settings(BaseSettings):
         description="Top-K cross-attacks to keep per link for explainability.",
     )
     aqa_min_semantic_overlap: float = Field(
-        default=0.5,
+        default=0.3,
         alias="AQA_MIN_SEMANTIC_OVERLAP",
         description="Minimum semantic similarity between two links for an attack to be valid. "
         "Attacks below this threshold are filtered out.",
@@ -189,26 +189,9 @@ class Settings(BaseSettings):
     aqa_allow_cross_codice: bool = Field(
         default=True,
         alias="AQA_ALLOW_CROSS_CODICE",
-        description="Allow cross-codice attacks via double relevance and bridge norms.",
+        description="Allow cross-codice attacks (penale vs civile).",
     )
-    aqa_double_relevance_crimes: list[str] = Field(
-        default_factory=lambda: [
-            "595",
-            "590",
-            "640",
-            "624",
-            "635",
-            "572",
-            "582",
-        ],
-        alias="AQA_DOUBLE_RELEVANCE_CRIMES",
-        description="Article numbers of crimes with automatic civil relevance.",
-    )
-    aqa_bridge_norms: list[str] = Field(
-        default_factory=lambda: ["185", "198"],
-        alias="AQA_BRIDGE_NORMS",
-        description="Article numbers that bridge penale→civile liability.",
-    )
+
     aqa_attack_type_multipliers: dict = Field(
         default_factory=lambda: {
             "contradiction": 1.5,
@@ -228,7 +211,7 @@ class Settings(BaseSettings):
             "derogation": 0.0,
             "extinction": 0.0,
             "factual_impediment": 0.5,
-            "general_opposition": 0.95,
+            "general_opposition": 0.5,
         },
         alias="AQA_STRENGTH_RATIO_BY_TYPE",
         description="Per-attack-type strength ratio thresholds. "
@@ -469,21 +452,7 @@ class Settings(BaseSettings):
     # =========================================================================
     # AQA Scoring Weights & Thresholds (extended)
     # =========================================================================
-    aqa_position_weight_foundational: float = Field(
-        default=1.5,
-        alias="AQA_POSITION_WEIGHT_FOUNDATIONAL",
-        description="Position weight for foundational premises (premessa, presupposto, principio).",
-    )
-    aqa_position_weight_severe: float = Field(
-        default=1.3,
-        alias="AQA_POSITION_WEIGHT_SEVERE",
-        description="Position weight for severe norm categories (delitti, contravvenzioni, tutela_diritti).",
-    )
-    aqa_position_weight_default: float = Field(
-        default=1.0,
-        alias="AQA_POSITION_WEIGHT_DEFAULT",
-        description="Default position weight for other links.",
-    )
+
     aqa_max_age: float = Field(
         default=50.0,
         alias="AQA_MAX_AGE",

@@ -688,9 +688,12 @@ Select the most useful attack among the following ids and return ONLY the chosen
             )
             step_prompt = f"""You are an expert Italian jurist acting as PROSECUTOR/OPPOSING COUNSEL. You are building a COUNTER-ARGUMENT STEP BY STEP to DISMANTLE and REJECT the following legal claim.
 
-YOUR ROLE: You MUST argue AGAINST the claim. Every step must weaken, contradict, or refute the claim's legal basis. You are NOT defending the claimant - you are ATTACKING their position.
+YOUR STANCE: You are the ADVERSARY of the claim. You MUST argue that the claim is LEGALLY UNFOUNDED.
+Every step must provide ONE concrete reason WHY the claim FAILS under Italian law.
+NEVER mention strengths, merits, or valid points of the claim.
+Do NOT balance pros and cons. You are EXCLUSIVELY anti-claim.
 
-CLAIM TO ATTACK (you must argue this claim is LEGALLY UNFOUNDED):
+CLAIM TO ATTACK (you must DEMOLISH this):
 "{claim}"
 
 ATTACK STRATEGY: {attack_id}
@@ -727,17 +730,19 @@ ATOMIC STEP RULES:
 - Do NOT repeat or summarize the claim. The claim is already known.
 - Do NOT restate conclusions from previous steps. Build on them.
 
-REQUIREMENTS for this step:
+ANTI-CLAIM REQUIREMENTS for this step:
 1. ONE ATTACK POINT ONLY: Pick exactly ONE of the following for this step:
-   - Show how ONE specific norm contradicts or limits the claim, OR
-   - Expose ONE unmet legal prerequisite or condition, OR
-   - Draw ONE narrow conclusion showing a single flaw in the claim
-2. CITE exactly one norm (e.g. Art. XX c.p./c.c.) from the knowledge base
+   - Show how ONE specific norm CONTRADICTS or LIMITS the claim, OR
+   - Expose ONE legal prerequisite that is NOT satisfied, OR
+   - Draw ONE narrow conclusion showing the claim FAILS on a specific point
+2. NORM COVERAGE: Try to cite an article NOT yet used ({used_norms_text}).
+   You MAY reuse an already-cited article ONLY if you apply it to a DIFFERENT factual aspect
+   that was NOT discussed in any previous step. Never repeat the same reasoning.
+   If you have nothing new to add (no new aspect, no new norm), respond with STEP: DONE.
 3. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
 4. CONNECT to the previous step: your step must start from where the last step ended.
    If step N-1 exposed flaw X, step N should use X to attack further.
-5. NO REPETITION: Do NOT re-discuss norms already cited: {used_norms_text}
-6. ADVERSARIAL STANCE: ALWAYS argue AGAINST the claim. Never concede validity.
+5. ALWAYS DISFAVOR THE CLAIM: interpret norms and facts in the way most unfavorable to the claimant.
 {last_step_notice}
 
 RESPONSE FORMAT:
@@ -747,10 +752,12 @@ CRITICAL RULES:
 - Your ENTIRE STEP text must be written in Italian.
 - MAX 4 sentences. If you need more, you are covering too much — split it.
 - Cite exactly one specific article (e.g. Art. 52 c.p.).
+- FACTUAL FIDELITY: Use ONLY facts explicitly stated in the CLAIM above. Do NOT add, infer, assume, or invent facts that are not written in the claim. For example, if the claim says ONE strike, do NOT say multiple strikes. If the claim does not mention a detail, do NOT fabricate it.
 - Do NOT mention the Reasoner. Produce a standalone counter-argument.
 - Do NOT invent sources not present in the knowledge base.
 - NEVER argue in favor of the claim. You are the OPPOSITION.
 - Do NOT write a complete rebuttal. Write ONE building block of the counter-argument.
+- NEVER write anything that supports or validates the claim. Every sentence must ATTACK it.
 """
 
             self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
@@ -766,9 +773,9 @@ CRITICAL RULES:
 
             step_text = self._parse_step_text(step_response)
 
-            if not step_text:
+            if not step_text or step_text.strip().upper() == "DONE":
                 self._log(
-                    f"⚠️ Counter-step {step_num}: empty step text, stopping",
+                    f"⚠️ Counter-step {step_num}: no new norm available, stopping",
                     "warning",
                 )
                 break
@@ -911,28 +918,30 @@ Steps so far:
 
 Norms already cited: {used_text}
 
+AVAILABLE STATUTES (not yet used):
+{statutes_list}
+
 EVALUATION GUIDELINES:
-- A well-constructed legal argument typically needs 5-8 distinct steps covering
-  different legal aspects (e.g. liability basis, damages, causation, defences,
-  procedural requirements).
-- With only {n_steps} step(s), consider whether major legal aspects remain unaddressed.
+- A well-constructed legal argument typically needs 3-6 distinct steps covering
+  different legal aspects or applying norms to different facts.
+- With only {n_steps} step(s), consider whether there are still pertinent aspects to cover.
+- Each step should add NEW reasoning: a new norm, or a new application of an existing norm to a different fact.
 
 CRITICAL — REPETITION DETECTION:
-- Read the steps above carefully. If two or more steps make the SAME legal point
-  (e.g. "proportionality of defence", "possibility of flight", "use of a knife vs fist")
-  even with slightly different wording, they are REPETITIONS.
-- If {n_unique_norms} unique norms < {n_steps} steps, the argument is likely REPEATING itself.
-- If the last 2-3 steps cite the SAME articles as earlier steps, answer CONCLUDE.
+- REPETITION = two steps make the SAME legal point about the SAME factual aspect. This is BAD.
+- GOOD COVERAGE = each step addresses a DIFFERENT legal aspect or applies a norm to a DIFFERENT fact.
+- Re-citing an article is OK if applied to a genuinely different aspect of the case.
+- If the last step simply rephrases or restates what a previous step already said, answer CONCLUDE.
 
 DECISION RULES:
-- Answer CONTINUE only if ALL of these are true:
-  (1) fewer than 4 genuinely DISTINCT legal aspects have been covered, AND
-  (2) recent steps are NOT repeating earlier points, AND
-  (3) there is a clearly identifiable NEW legal dimension to add.
+- Answer CONTINUE if ALL of these are true:
+  (1) each step so far addresses a DIFFERENT legal aspect or fact (no repetition), AND
+  (2) there is at least one pertinent unused norm OR a new factual aspect to cover, AND
+  (3) fewer than 6 steps have been generated.
 - Answer CONCLUDE if ANY of these is true:
-  (a) the argument covers 4+ distinct legal aspects, OR
-  (b) recent steps REPEAT or REPHRASE norms/concepts from earlier steps, OR
-  (c) adding another step would not introduce a genuinely new legal dimension.
+  (a) any two steps make the SAME legal point about the SAME fact (repetition), OR
+  (b) all pertinent legal aspects have been covered, OR
+  (c) 6+ steps have already been generated.
 
 YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
 

@@ -91,8 +91,7 @@ class PolisherEvaluator(
         self._aqa_damage_factor = settings.aqa_damage_factor
         self._aqa_allow_factual_attacks = settings.aqa_allow_factual_attacks
         self._aqa_allow_cross_codice = settings.aqa_allow_cross_codice
-        self._aqa_double_relevance_crimes = set(settings.aqa_double_relevance_crimes)
-        self._aqa_bridge_norms = set(settings.aqa_bridge_norms)
+
         self._aqa_attack_type_multipliers = settings.aqa_attack_type_multipliers
         self._aqa_strength_ratio_by_type = settings.aqa_strength_ratio_by_type
         self._aqa_severity_book_map = settings.aqa_severity_book_map

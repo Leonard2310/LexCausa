@@ -510,11 +510,6 @@ Select the most useful attack among the following ids and return ONLY the chosen
 
             # Validate: ASPIC_IR must contain reasoning chain nodes (S1, S2, …)
             if self._has_valid_reasoning_chain(output.aspic_ir):
-                chain_len = len(output.aspic_ir.get("reasoning_chain", []))
-                self._log(
-                    f"✅ Valid reasoning chain ({chain_len} steps) on attempt {attempt}",
-                    "success",
-                )
                 break
             else:
                 self._log(
@@ -532,8 +527,13 @@ Select the most useful attack among the following ids and return ONLY the chosen
         assert (
             output is not None
         ), "CounterReasonerOutput was never assigned"  # guard for mypy
+        chain_len = (
+            len(output.aspic_ir.get("reasoning_chain", [])) if output.aspic_ir else 0
+        )
         self._log(
-            f"✅ Generated {len(output.counter_arguments)} counter-arguments", "success"
+            f"✅ Generated {len(output.counter_arguments)} counter-argument(s), "
+            f"{chain_len} reasoning steps",
+            "success",
         )
         return output
 
@@ -772,9 +772,15 @@ CRITICAL RULES:
             new_norms = self._extract_cited_articles(step_text)
             used_norms.extend(new_norms)
 
+            # Detect precedent mentions in step text
+            prec_mentions = [
+                p for p in allowed_precedents if p.lower() in step_text.lower()
+            ]
+            prec_info = f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
+
             self._log(
                 f"✅ Counter-step {step_num}: {step_text[:80]}... "
-                f"| norms: {', '.join(new_norms) if new_norms else 'none'}"
+                f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
             )
 
             # Last possible step: forced stop
@@ -948,10 +954,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
                 "warning",
             )
 
-        self._log(
-            f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'} "
-            f"(raw: '{answer[:40]}')"
-        )
+        self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
     def _assemble_counter_raw_response(

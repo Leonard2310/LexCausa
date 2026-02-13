@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 from neo4j import GraphDatabase
 
@@ -322,6 +323,140 @@ class BaseAgent(ABC):
             isinstance(step, dict) and step.get("id", "").startswith("S")
             for step in chain
         )
+
+    # ------------------------------------------------------------------
+    # Pre-retrieval filters (shared across agents)
+    # ------------------------------------------------------------------
+
+    def filter_irrelevant_statutes(
+        self, claim: str, statutes: list[dict]
+    ) -> list[dict]:
+        """Filter statutes using LLM one by one.
+
+        Only discard when clearly unrelated; default to keeping on ambiguity.
+        This is a PUBLIC method called from api_server for pre-filtering.
+        """
+        if not statutes:
+            self._log("No statutes to filter", "info")
+            return statutes
+
+        self._log(f"🔍 Filtering relevance: {len(statutes)} statutes initially")
+
+        relevant_statutes = []
+
+        for idx, statute in enumerate(statutes, start=1):
+            article_number = statute.get("articolo", "N/A")
+            article_title = statute.get("titolo", "Untitled")
+            article_desc = statute.get("testo", "Untitled")
+
+            prompt = f"""Legal Claim:
+"{claim}"
+
+Article:
+"{article_number} - {article_title} - {article_desc}"
+
+Instruction:
+Determine whether the main topic of the article is directly mentioned or implied in the claim.
+
+Rules:
+- Do NOT evaluate whether the article fully resolves the issue.
+- Do NOT suggest any additional articles.
+- Do NOT use external knowledge; only consider the claim and this article.
+- Do NOT add explanations or comments.
+- Answer YES in all cases with even indirect connection.
+- Use NO only when the article is clearly about a different domain.
+- If uncertain, answer YES.
+
+Respond with EXACTLY one token: YES or NO.
+No punctuation. No new lines. No extra spaces.
+"""
+
+            try:
+                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                answer = response.content.strip().upper()
+            except Exception as e:
+                self._log(
+                    f"⚠️ LLM call failed for article {article_number}: {e}", "warning"
+                )
+                answer = "YES"
+
+            token = answer.split()[0] if answer else ""
+            keep = token != "NO" and (
+                token == "YES" or "YES" in answer or "NO" not in answer
+            )
+
+            if keep:
+                relevant_statutes.append(statute)
+                self._log(
+                    f"✅ Keeping article [{idx}] {article_number} - {article_title}"
+                )
+            else:
+                self._log(
+                    f"❌ Discarding article [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
+
+        self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
+        return relevant_statutes
+
+    def filter_irrelevant_precedents(
+        self, claim: str, precedents: list[dict]
+    ) -> list[dict]:
+        """Soft-filter precedents: keep by default, discard only when clearly unrelated."""
+        if not precedents:
+            self._log("No precedents to filter", "info")
+            return precedents
+
+        self._log(f"🔍 Filtering relevance: {len(precedents)} precedents initially")
+
+        relevant_precedents = []
+
+        for idx, precedent in enumerate(precedents, start=1):
+            title = precedent.get("title", "Untitled")
+            summary = precedent.get("summary", "")
+
+            prompt = f"""Legal Claim:
+"{claim}"
+
+Precedent:
+"{title}" - "{summary}"
+
+Instruction:
+Decide if this precedent has a meaningful connection to the claim.
+
+Rules:
+- Answer YES unless the precedent is clearly about a completely different legal domain with no connection to the claim.
+- If there is any plausible link to the legal issues in the claim, answer YES.
+- If uncertain, answer YES.
+
+Respond with EXACTLY one token: YES or NO.
+No punctuation. No new lines. No extra spaces.
+"""
+
+            try:
+                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                answer = response.content.strip().upper()
+            except Exception as e:
+                self._log(
+                    f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}", "warning"
+                )
+                answer = "YES"
+
+            token = answer.split()[0] if answer else ""
+            keep = token != "NO" and (
+                token == "YES" or "YES" in answer or "NO" not in answer
+            )
+
+            if keep:
+                relevant_precedents.append(precedent)
+                self._log(f"✅ Keeping precedent [{idx}] {title}")
+            else:
+                self._log(f"❌ Discarding precedent [{idx}] {title}", "warning")
+
+        self._log(
+            f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept"
+        )
+        return relevant_precedents
 
     def _format_context_for_prompt(
         self,

@@ -14,6 +14,31 @@ const TABS = {
 // API base URL - uses proxy in development
 const API_BASE = '/api';
 
+/** Collapsible list: shows first `limit` items, then a "Mostra tutti" button */
+function CollapsibleList({ items, limit = 5, renderItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? items : items.slice(0, limit);
+  return (
+    <ul className="articles-list">
+      {visible.map((item, idx) => renderItem(item, idx))}
+      {items.length > limit && !expanded && (
+        <li className="show-more-btn">
+          <button onClick={() => setExpanded(true)}>
+            Mostra tutti ({items.length - limit} rimanenti)
+          </button>
+        </li>
+      )}
+      {items.length > limit && expanded && (
+        <li className="show-more-btn">
+          <button onClick={() => setExpanded(false)}>
+            Mostra meno
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.SEARCH);
   const [messages, setMessages] = useState([
@@ -37,6 +62,9 @@ export default function App() {
     search_top_k_default: 100,
     search_use_top_n_libri: 3,
     precedents_limit_default: 5,
+    include_precedents: true,
+    chain_min_steps: 3,
+    chain_max_steps: 10,
     aqa_alpha: 0.3,
     aqa_beta: 0.4,
     aqa_gamma: 0.3,
@@ -73,6 +101,9 @@ export default function App() {
           search_top_k_default: d.search_top_k_default ?? prev.search_top_k_default,
           search_use_top_n_libri: d.search_use_top_n_libri ?? prev.search_use_top_n_libri,
           precedents_limit_default: d.precedents_limit_default ?? prev.precedents_limit_default,
+          include_precedents: d.include_precedents ?? prev.include_precedents,
+          chain_min_steps: d.chain_min_steps ?? prev.chain_min_steps,
+          chain_max_steps: d.chain_max_steps ?? prev.chain_max_steps,
           aqa_alpha: d.aqa_alpha ?? prev.aqa_alpha,
           aqa_beta: d.aqa_beta ?? prev.aqa_beta,
           aqa_gamma: d.aqa_gamma ?? prev.aqa_gamma,
@@ -183,7 +214,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           claim,
-          include_precedents: true,
+          include_precedents: pipelineSettings.include_precedents,
           max_statutes: pipelineSettings.search_top_k_default,
           max_precedents: pipelineSettings.precedents_limit_default,
           settings: {
@@ -192,6 +223,8 @@ export default function App() {
             llm_temperature: pipelineSettings.llm_temperature,
             llm_max_tokens: pipelineSettings.llm_max_tokens,
             search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
+            chain_min_steps: pipelineSettings.chain_min_steps,
+            chain_max_steps: pipelineSettings.chain_max_steps,
             aqa_alpha: pipelineSettings.aqa_alpha,
             aqa_beta: pipelineSettings.aqa_beta,
             aqa_gamma: pipelineSettings.aqa_gamma,
@@ -402,9 +435,46 @@ export default function App() {
                   <input
                     type="number"
                     min="0"
-                    max="20"
+                    max="50"
                     value={pipelineSettings.precedents_limit_default}
                     onChange={(e) => updateSetting('precedents_limit_default', parseInt(e.target.value, 10))}
+                  />
+                </label>
+              </div>
+              <div className="settings-row">
+                <label className="settings-toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={pipelineSettings.include_precedents}
+                    onChange={(e) => updateSetting('include_precedents', e.target.checked)}
+                  />
+                  <span>Includi Precedenti</span>
+                </label>
+              </div>
+            </fieldset>
+
+            {/* Chain Steps */}
+            <fieldset className="settings-group">
+              <legend>🔗 Catena di Ragionamento</legend>
+              <div className="settings-row">
+                <label>
+                  <span>Min Steps</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={pipelineSettings.chain_min_steps}
+                    onChange={(e) => updateSetting('chain_min_steps', parseInt(e.target.value, 10))}
+                  />
+                </label>
+                <label>
+                  <span>Max Steps</span>
+                  <input
+                    type="number"
+                    min="3"
+                    max="20"
+                    value={pipelineSettings.chain_max_steps}
+                    onChange={(e) => updateSetting('chain_max_steps', parseInt(e.target.value, 10))}
                   />
                 </label>
               </div>
@@ -619,29 +689,25 @@ export default function App() {
 
                     {pipelineResult.reasoner?.statutes && pipelineResult.reasoner.statutes.length > 0 && (
                       <div className="subsection">
-                        <h4>Articoli Trovati ({pipelineResult.reasoner.statutes.length})</h4>
-                        <ul className="articles-list">
-                          {pipelineResult.reasoner.statutes.map((art, idx) => (
-                            <li key={idx}>
-                              <strong>Art. {art.articolo || art.statute_id}</strong>
-                              {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
-                              {art.titolo && ` - ${art.titolo}`}
-                            </li>
-                          ))}
-                        </ul>
+                        <h4>Articoli Trovati (Reasoner) ({pipelineResult.reasoner.statutes.length})</h4>
+                        <CollapsibleList items={pipelineResult.reasoner.statutes} limit={5} renderItem={(art, idx) => (
+                          <li key={idx}>
+                            <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
+                            {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                            {art.titolo && ` - ${art.titolo}`}
+                          </li>
+                        )} />
                       </div>
                     )}
 
                     {pipelineResult.reasoner?.precedents && pipelineResult.reasoner.precedents.length > 0 && (
                       <div className="subsection">
-                        <h4>Precedenti Trovati ({pipelineResult.reasoner.precedents.length})</h4>
-                        <ul className="precedents-list">
-                          {pipelineResult.reasoner.precedents.map((prec, idx) => (
-                            <li key={idx}>
-                              <strong>{prec.title || `Precedente ${idx + 1}`}</strong>
-                            </li>
-                          ))}
-                        </ul>
+                        <h4>Precedenti Trovati (Reasoner) ({pipelineResult.reasoner.precedents.length})</h4>
+                        <CollapsibleList items={pipelineResult.reasoner.precedents} limit={5} renderItem={(prec, idx) => (
+                          <li key={idx}>
+                            <strong>{idx + 1}. {prec.title || `Precedente ${idx + 1}`}</strong>
+                          </li>
+                        )} />
                       </div>
                     )}
 
@@ -691,29 +757,25 @@ export default function App() {
 
                     {pipelineResult.counter_reasoner?.statutes && pipelineResult.counter_reasoner.statutes.length > 0 && (
                       <div className="subsection">
-                        <h4>Articoli Trovati (Contro-Tesi) ({pipelineResult.counter_reasoner.statutes.length})</h4>
-                        <ul className="articles-list">
-                          {pipelineResult.counter_reasoner.statutes.map((art, idx) => (
-                            <li key={idx}>
-                              <strong>Art. {art.articolo || art.statute_id}</strong>
-                              {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
-                              {art.titolo && ` - ${art.titolo}`}
-                            </li>
-                          ))}
-                        </ul>
+                        <h4>Articoli Trovati (Counter-Reasoner) ({pipelineResult.counter_reasoner.statutes.length})</h4>
+                        <CollapsibleList items={pipelineResult.counter_reasoner.statutes} limit={5} renderItem={(art, idx) => (
+                          <li key={idx}>
+                            <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
+                            {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                            {art.titolo && ` - ${art.titolo}`}
+                          </li>
+                        )} />
                       </div>
                     )}
 
                     {pipelineResult.counter_reasoner?.precedents && pipelineResult.counter_reasoner.precedents.length > 0 && (
                       <div className="subsection">
-                        <h4>Precedenti Trovati (Contro-Tesi) ({pipelineResult.counter_reasoner.precedents.length})</h4>
-                        <ul className="precedents-list">
-                          {pipelineResult.counter_reasoner.precedents.map((prec, idx) => (
-                            <li key={idx}>
-                              <strong>{prec.title || `Precedente ${idx + 1}`}</strong>
-                            </li>
-                          ))}
-                        </ul>
+                        <h4>Precedenti Trovati (Counter-Reasoner) ({pipelineResult.counter_reasoner.precedents.length})</h4>
+                        <CollapsibleList items={pipelineResult.counter_reasoner.precedents} limit={5} renderItem={(prec, idx) => (
+                          <li key={idx}>
+                            <strong>{idx + 1}. {prec.title || `Precedente ${idx + 1}`}</strong>
+                          </li>
+                        )} />
                       </div>
                     )}
 

@@ -360,11 +360,6 @@ class Reasoner(BaseAgent):
 
             # Validate: ASPIC_IR must contain reasoning chain nodes (S1, S2, …)
             if self._has_valid_reasoning_chain(output.aspic_ir):
-                chain_len = len(output.aspic_ir.get("reasoning_chain", []))
-                self._log(
-                    f"✅ Valid reasoning chain ({chain_len} steps) on attempt {attempt}",
-                    "success",
-                )
                 break
             else:
                 self._log(
@@ -380,7 +375,14 @@ class Reasoner(BaseAgent):
                     )
 
         assert output is not None, "ReasonerOutput was never assigned"  # guard for mypy
-        self._log(f"✅ Generated {len(output.arguments)} arguments", "success")
+        chain_len = (
+            len(output.aspic_ir.get("reasoning_chain", [])) if output.aspic_ir else 0
+        )
+        self._log(
+            f"✅ Generated {len(output.arguments)} argument(s), "
+            f"{chain_len} reasoning steps",
+            "success",
+        )
         return output
 
     # ------------------------------------------------------------------
@@ -697,139 +699,6 @@ REASONING CHAIN (for context):
         }
         return anchor_norms, statutes, principle_tests
 
-    def filter_irrelevant_statutes(
-        self, claim: str, statutes: list[dict]
-    ) -> list[dict]:
-        """
-        Filter statutes using LLM one by one.
-        Only discard when clearly unrelated; default to keeping on ambiguity.
-
-        This is a PUBLIC method that can be called from api_server for pre-filtering.
-        """
-        if not statutes:
-            self._log("No statutes to filter", "info")
-            return statutes
-
-        self._log(f"🔍 Filtering relevance: {len(statutes)} statutes initially")
-
-        relevant_statutes = []
-
-        for idx, statute in enumerate(statutes, start=1):
-            article_number = statute.get("articolo", "N/A")
-            article_title = statute.get("titolo", "Untitled")
-            article_desc = statute.get("testo", "Untitled")
-
-            prompt = f"""Legal Claim:
-"{claim}"
-
-Article:
-"{article_number} - {article_title} - {article_desc}"
-
-Instruction:
-Determine whether the main topic of the article is directly mentioned or implied in the claim.
-
-Rules:
-- Do NOT evaluate whether the article fully resolves the issue.
-- Do NOT suggest any additional articles.
-- Do NOT use external knowledge; only consider the claim and this article.
-- Do NOT add explanations or comments.
-- Answer YES in all cases with even indirect connection.
-- Use NO only when the article is clearly about a different domain.
-- If uncertain, answer YES.
-
-Respond with EXACTLY one token: YES or NO.
-No punctuation. No new lines. No extra spaces.
-"""
-
-            try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-                answer = response.content.strip().upper()
-            except Exception as e:
-                self._log(
-                    f"⚠️ LLM call failed for article {article_number}: {e}", "warning"
-                )
-                answer = "YES"
-
-            token = answer.split()[0] if answer else ""
-            keep = token != "NO" and (
-                token == "YES" or "YES" in answer or "NO" not in answer
-            )
-
-            if keep:
-                relevant_statutes.append(statute)
-                self._log(
-                    f"✅ Keeping article [{idx}] {article_number} - {article_title}"
-                )
-            else:
-                self._log(
-                    f"❌ Discarding article [{idx}] {article_number} - {article_title}",
-                    "warning",
-                )
-
-        self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
-        return relevant_statutes
-
-    def filter_irrelevant_precedents(
-        self, claim: str, precedents: list[dict]
-    ) -> list[dict]:
-        """
-        Soft-filter precedents: keep by default, discard only when clearly unrelated.
-        """
-        if not precedents:
-            self._log("No precedents to filter", "info")
-            return precedents
-
-        self._log(f"🔍 Filtering relevance: {len(precedents)} precedents initially")
-
-        relevant_precedents = []
-
-        for idx, precedent in enumerate(precedents, start=1):
-            title = precedent.get("title", "Untitled")
-            summary = precedent.get("summary", "")
-
-            prompt = f"""Legal Claim:
-"{claim}"
-
-Precedent:
-"{title}" - "{summary}"
-
-Instruction:
-Decide if this precedent has a meaningful connection to the claim (employment/licenziamento, retribuzione, TFR, rapporto di lavoro).
-
-Rules:
-- Answer YES unless the precedent is clearly about a different domain (es. societario puro, titoli di credito, marchi, appalti pubblici) with no employment link.
-- If there is any plausible link to employment/termination/worker rights, answer YES.
-- If uncertain, answer YES.
-
-Respond with EXACTLY one token: YES or NO.
-No punctuation. No new lines. No extra spaces.
-"""
-
-            try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-                answer = response.content.strip().upper()
-            except Exception as e:
-                self._log(
-                    f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}", "warning"
-                )
-                answer = "YES"
-
-            token = answer.split()[0] if answer else ""
-            keep = token != "NO" and (
-                token == "YES" or "YES" in answer or "NO" not in answer
-            )
-
-            if keep:
-                relevant_precedents.append(precedent)
-                self._log(f"✅ Keeping precedent [{idx}] {title}")
-            else:
-                self._log(f"❌ Discarding precedent [{idx}] {title}", "warning")
-
-        self._log(
-            f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept"
-        )
-        return relevant_precedents
-
     def _generate_chain_iteratively(
         self,
         claim: str,
@@ -1006,9 +875,15 @@ CRITICAL RULES:
             new_norms = self._extract_cited_articles(step_text)
             used_norms.extend(new_norms)
 
+            # Detect precedent mentions in step text
+            prec_mentions = [
+                p for p in allowed_precedents if p.lower() in step_text.lower()
+            ]
+            prec_info = f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
+
             self._log(
                 f"✅ Step {step_num}: {step_text[:80]}... "
-                f"| norms: {', '.join(new_norms) if new_norms else 'none'}"
+                f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
             )
 
             # Last possible step: forced stop
@@ -1182,10 +1057,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
                 "warning",
             )
 
-        self._log(
-            f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'} "
-            f"(raw: '{answer[:40]}')"
-        )
+        self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
     def _assemble_raw_response(

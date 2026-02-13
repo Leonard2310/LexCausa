@@ -404,6 +404,9 @@ def get_settings():
                 "search_top_k_default": settings.search_top_k_default,
                 "search_use_top_n_libri": settings.search_use_top_n_libri,
                 "precedents_limit_default": settings.precedents_limit_default,
+                "include_precedents": True,
+                "chain_min_steps": settings.chain_min_steps,
+                "chain_max_steps": settings.chain_max_steps,
                 "aqa_alpha": settings.aqa_alpha,
                 "aqa_beta": settings.aqa_beta,
                 "aqa_gamma": settings.aqa_gamma,
@@ -622,6 +625,8 @@ def pipeline():
         fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
         fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
         fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
+        fe_chain_min_steps = fe_settings.get("chain_min_steps")
+        fe_chain_max_steps = fe_settings.get("chain_max_steps")
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
@@ -634,6 +639,12 @@ def pipeline():
 
             if fe_settings:
                 print(f"⚙️  Frontend settings override: {fe_settings}")
+
+            # Apply chain step overrides to global settings
+            if fe_chain_min_steps is not None:
+                settings.chain_min_steps = int(fe_chain_min_steps)
+            if fe_chain_max_steps is not None:
+                settings.chain_max_steps = int(fe_chain_max_steps)
 
             routing_decision = resolve_routing_decision(claim, data)
 

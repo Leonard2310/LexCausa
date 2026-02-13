@@ -328,7 +328,7 @@ function AttackDetailPanel({ link, onClose }) {
 export default function AspicMetagraph({ aqaReport }) {
   const svgRef = useRef(null);
   const [selectedLink, setSelectedLink] = useState(null);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.85);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });

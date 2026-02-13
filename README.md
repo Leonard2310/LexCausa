@@ -1,5 +1,16 @@
 # LexCausa: Framework for Causal-Aware Structured Multi-Step Reasoning in Legal Argument Generation
 
+<p align="center">
+   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python">
+   <img src="https://img.shields.io/badge/Neo4j-Knowledge_Graph-4581C3?logo=neo4j&logoColor=white" alt="Neo4j">
+   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" alt="React">
+   <img src="https://img.shields.io/badge/LLM-Groq_Cloud-F55036?logo=lightning&logoColor=white" alt="Groq">
+   <img src="https://img.shields.io/badge/Framework-LangChain-1C3C3C?logo=langchain&logoColor=white" alt="LangChain">
+   <img src="https://img.shields.io/badge/ASPIC+-Argumentation-8B5CF6" alt="ASPIC+">
+   <img src="https://img.shields.io/badge/License-AGPL--3.0-yellow" alt="License">
+   <img src="https://img.shields.io/badge/Version-0.9.0-brightgreen" alt="Version">
+</p>
+
 > ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering.
 
 **LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (Groq Cloud), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.

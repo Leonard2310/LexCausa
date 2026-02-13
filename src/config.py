@@ -194,12 +194,12 @@ class Settings(BaseSettings):
 
     aqa_attack_type_multipliers: dict = Field(
         default_factory=lambda: {
-            "contradiction": 1.5,
-            "exception": 1.3,
-            "derogation": 1.4,
-            "extinction": 1.6,
-            "factual_impediment": 1.2,
-            "general_opposition": 1.0,
+            "contradiction": 2.0,  # Contraddizione logica totale
+            "exception": 1.7,  # Limita fortemente applicabilità
+            "derogation": 2.2,  # Invalida direttamente la norma citata
+            "extinction": 2.5,  # Estingue completamente l'argomento
+            "factual_impediment": 1.5,  # Impedimento fattuale serio
+            "general_opposition": 1.3,  # Opposizione generica ma rilevante
         },
         alias="AQA_ATTACK_TYPE_MULTIPLIERS",
         description="Damage multipliers by attack type.",
@@ -605,7 +605,12 @@ class Settings(BaseSettings):
     @property
     def statutes_dir(self) -> Path:
         """Get statutes directory."""
-        return self.data_dir / "statuti"
+        return self.data_dir / "statutes"
+
+    @property
+    def precedents_dir(self) -> Path:
+        """Get precedents directory."""
+        return self.data_dir / "precedents"
 
     @property
     def taxonomy_path(self) -> Path:

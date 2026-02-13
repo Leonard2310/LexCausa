@@ -25,8 +25,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Add parent directories to path for imports
+sys.path.insert(0, str(Path(__file__).parent))  # src/db
+sys.path.insert(0, str(Path(__file__).parent.parent))  # src
 
 from dotenv import load_dotenv  # noqa: E402
 from neo4j import GraphDatabase  # noqa: E402
@@ -195,7 +196,7 @@ class DatabaseOrchestrator:
             constraints = [
                 ("statute_unique_id", "Statute", "statute_id"),
                 ("codice_unique_name", "Codice", "name"),
-                ("precedent_unique_id", "Precedent", "chunk_id"),
+                ("precedent_unique_id", "Precedent", "precedent_id"),
             ]
 
             for name, label, prop in constraints:
@@ -265,6 +266,15 @@ class DatabaseOrchestrator:
             """
             )
             print("      ✅ statutes_fulltext_idx")
+
+            session.run(
+                """
+                CREATE FULLTEXT INDEX precedents_fulltext_idx IF NOT EXISTS
+                FOR (n:Precedent)
+                ON EACH [n.title, n.summary]
+            """
+            )
+            print("      ✅ precedents_fulltext_idx")
 
             # -----------------------------------------------------------------
             # STRUTTURA GRAFO (Codice -> Libro)
@@ -437,7 +447,7 @@ class DatabaseOrchestrator:
     # =========================================================================
 
     def load_precedents(self):
-        """Carica precedenti itacasehold con embeddings."""
+        """Carica precedenti itacasehold con summary embeddings."""
         from data_loader import load_itacasehold_with_embeddings
 
         print("\n⚖️ Caricamento precedenti (itacasehold)...")
@@ -446,7 +456,7 @@ class DatabaseOrchestrator:
             metadata, embeddings = load_itacasehold_with_embeddings()
         except FileNotFoundError as e:
             print(f"      ⚠️ {e}")
-            print("      Esegui prima il notebook embeddings_penale_civile.ipynb")
+            print("      Esegui prima lo script per generare gli embeddings")
             return
 
         if len(metadata) != embeddings.shape[0]:
@@ -465,14 +475,10 @@ class DatabaseOrchestrator:
                     global_idx = i + idx
                     records.append(
                         {
-                            "chunk_id": f"prec_chunk_{global_idx}",
-                            "doc_id": meta.get("doc_id", 0),
-                            "chunk_idx": meta.get("chunk_idx", 0),
+                            "precedent_id": f"prec_{global_idx}",
                             "title": str(meta.get("title", ""))[:500],
-                            "summary": str(meta.get("summary", ""))[:2000],
-                            "materia": str(meta.get("materia", "")),
+                            "summary": str(meta.get("summary", ""))[:5000],
                             "url": str(meta.get("url", "")),
-                            "chunk_text": str(meta.get("chunk_text", ""))[:500],
                             "embedding": emb.tolist(),
                             "source": "itacasehold",
                         }
@@ -482,14 +488,10 @@ class DatabaseOrchestrator:
                     """
                     UNWIND $records AS record
                     CREATE (p:Precedent {
-                        chunk_id: record.chunk_id,
-                        doc_id: record.doc_id,
-                        chunk_idx: record.chunk_idx,
+                        precedent_id: record.precedent_id,
                         title: record.title,
                         summary: record.summary,
-                        materia: record.materia,
                         url: record.url,
-                        chunk_text: record.chunk_text,
                         embedding: record.embedding,
                         source: record.source
                     })
@@ -500,7 +502,7 @@ class DatabaseOrchestrator:
                 inserted = min(i + BATCH_SIZE, len(metadata))
                 print(f"      Inseriti: {inserted}/{len(metadata)}", end="\r")
 
-            print(f"      ✅ {len(metadata)} chunk con embeddings")
+            print(f"      ✅ {len(metadata)} precedenti con summary embeddings")
 
         print("\n✅ Precedenti caricati")
 

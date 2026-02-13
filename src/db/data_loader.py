@@ -10,17 +10,12 @@ Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codic
 per il raggruppamento degli articoli per libro di appartenenza.
 """
 
-from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-# Base paths
-DATA_DIR = Path(__file__).parent.parent / "data"
-STATUTI_DIR = DATA_DIR / "statuti"
-EMBEDDINGS_DIR = DATA_DIR / "embeddings"
-DATA_DIR.mkdir(exist_ok=True)
+from config import settings
 
 
 def load_codice_penale() -> pd.DataFrame:
@@ -32,7 +27,7 @@ def load_codice_penale() -> pd.DataFrame:
     - libro: libro di appartenenza con prefisso (CP Libro I, II, III)
     - source: 'codice_penale'
     """
-    csv_path = STATUTI_DIR / "codice_penale.csv"
+    csv_path = settings.statutes_dir / "codice_penale.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Penale CSV not found at {csv_path}")
 
@@ -59,7 +54,7 @@ def load_codice_civile() -> pd.DataFrame:
     - libro: libro di appartenenza con prefisso (CC Libro I, II, etc.)
     - source: 'codice_civile'
     """
-    csv_path = STATUTI_DIR / "codice_civile.csv"
+    csv_path = settings.statutes_dir / "codice_civile.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Civile CSV not found at {csv_path}")
 
@@ -87,7 +82,7 @@ def load_embeddings(source: str) -> Optional[np.ndarray]:
     Returns:
         numpy array of shape (n_articles, embedding_dim) or None if not found
     """
-    embeddings_path = EMBEDDINGS_DIR / f"{source}_embeddings.npy"
+    embeddings_path = settings.embeddings_dir / f"{source}_embeddings.npy"
     if not embeddings_path.exists():
         print(f"⚠️ Embeddings not found at {embeddings_path}")
         return None
@@ -99,41 +94,44 @@ def load_embeddings(source: str) -> Optional[np.ndarray]:
 
 def load_itacasehold_with_embeddings() -> Tuple[list, Optional[np.ndarray]]:
     """
-    Load itacasehold precedenti with corresponding chunk embeddings.
+    Load itacasehold precedents with summary-based embeddings.
+
+    Metadata is loaded from the parquet file (primary source).
+    Embeddings are loaded from the pre-computed .npy file.
 
     Returns:
-        Tuple of (metadata_list, embeddings_array)
-        - metadata_list: List of dicts with doc_id, chunk_idx, title, summary,
-                         materia, url, chunk_text
-        - embeddings: numpy array of shape (n_chunks, 768)
+        Tuple of (records_list, embeddings_array)
+        - records_list: List of dicts with title, summary, url
+        - embeddings: numpy array of shape (n_documents, 768)
     """
-    import pickle
+    parquet_path = settings.precedents_dir / "itacasehold_train.parquet"
+    embeddings_path = settings.embeddings_dir / "itacasehold_embeddings.npy"
 
-    metadata_path = EMBEDDINGS_DIR / "itacasehold_metadata.pkl"
-    embeddings_path = EMBEDDINGS_DIR / "itacasehold_embeddings.npy"
-
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Itacasehold metadata not found at {metadata_path}")
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"Itacasehold parquet not found at {parquet_path}")
     if not embeddings_path.exists():
         raise FileNotFoundError(
             f"Itacasehold embeddings not found at {embeddings_path}"
         )
 
-    with open(metadata_path, "rb") as f:
-        metadata = pickle.load(f)
+    # Carica metadata dal parquet (colonne: url, title, doc, summary, materia, source)
+    df = pd.read_parquet(parquet_path, columns=["title", "summary", "url"])
+    records = df.to_dict(orient="records")
 
     embeddings = np.load(embeddings_path)
 
     print(
-        f"✅ Loaded itacasehold: {len(metadata)} chunks, embeddings {embeddings.shape}"
+        f"✅ Loaded itacasehold: {len(records)} documents, "
+        f"embeddings {embeddings.shape}"
     )
 
-    if len(metadata) != embeddings.shape[0]:
+    if len(records) != embeddings.shape[0]:
         print(
-            f"⚠️ Mismatch: {len(metadata)} metadata vs {embeddings.shape[0]} embeddings"
+            f"⚠️ Mismatch: {len(records)} records vs "
+            f"{embeddings.shape[0]} embeddings"
         )
 
-    return metadata, embeddings
+    return records, embeddings
 
 
 def load_codice_penale_with_embeddings() -> Tuple[pd.DataFrame, Optional[np.ndarray]]:
@@ -185,7 +183,7 @@ def load_precedents(split: str = "train") -> pd.DataFrame:
     df["source"] = f"itacasehold_{split}"
 
     # Save locally for caching
-    cache_path = DATA_DIR / f"itacasehold_{split}.parquet"
+    cache_path = settings.data_dir / f"itacasehold_{split}.parquet"
     df.to_parquet(cache_path, index=False)
     print(
         f"✅ Loaded precedenti ({split}): {len(df)} records "

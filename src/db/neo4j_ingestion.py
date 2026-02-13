@@ -254,21 +254,20 @@ class Neo4jIngestion:
         self, metadata: List[dict], embeddings: np.ndarray
     ):
         """
-        Ingest precedent chunks into Neo4j with embeddings.
+        Ingest precedents into Neo4j with summary-based embeddings.
 
-        Each chunk becomes a PrecedentChunk node with:
-        - chunk_id: unique identifier
-        - doc_id: reference to original document
-        - chunk_idx: index within the document
-        - title, summary, materia, url: from original document
-        - chunk_text: first 500 chars of chunk for preview
-        - embedding: vector for similarity search
+        Each record becomes a Precedent node with:
+        - precedent_id: unique identifier
+        - title: title of the court decision
+        - summary: full summary text (used for embedding)
+        - url: reference URL
+        - embedding: vector for similarity search (generated from summary)
 
         Args:
-            metadata: List of dicts with chunk metadata
-            embeddings: numpy array of shape (n_chunks, 768)
+            metadata: List of dicts with title, summary, url
+            embeddings: numpy array of shape (n_documents, 768)
         """
-        print(f"📤 Ingesting {len(metadata)} precedent chunks with embeddings...")
+        print(f"📤 Ingesting {len(metadata)} precedents with summary embeddings...")
 
         if len(metadata) != embeddings.shape[0]:
             print(
@@ -287,14 +286,10 @@ class Neo4jIngestion:
                     global_idx = i + idx
                     records.append(
                         {
-                            "chunk_id": f"prec_chunk_{global_idx}",
-                            "doc_id": meta.get("doc_id", 0),
-                            "chunk_idx": meta.get("chunk_idx", 0),
+                            "precedent_id": f"prec_{global_idx}",
                             "title": str(meta.get("title", ""))[:500],
-                            "summary": str(meta.get("summary", ""))[:2000],
-                            "materia": str(meta.get("materia", "")),
+                            "summary": str(meta.get("summary", ""))[:5000],
                             "url": str(meta.get("url", "")),
-                            "chunk_text": str(meta.get("chunk_text", ""))[:500],
                             "embedding": emb.tolist(),
                             "source": "itacasehold",
                         }
@@ -304,14 +299,10 @@ class Neo4jIngestion:
                     """
                     UNWIND $records AS record
                     CREATE (p:Precedent {
-                        chunk_id: record.chunk_id,
-                        doc_id: record.doc_id,
-                        chunk_idx: record.chunk_idx,
+                        precedent_id: record.precedent_id,
                         title: record.title,
                         summary: record.summary,
-                        materia: record.materia,
                         url: record.url,
-                        chunk_text: record.chunk_text,
                         embedding: record.embedding,
                         source: record.source
                     })
@@ -325,7 +316,7 @@ class Neo4jIngestion:
                     f"({inserted}/{len(metadata)})"
                 )
 
-        print(f"✅ Ingested {len(metadata)} precedent chunks with embeddings")
+        print(f"✅ Ingested {len(metadata)} precedents with summary embeddings")
 
     def ingest_normativa(self, df: pd.DataFrame):
         """

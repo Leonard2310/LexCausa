@@ -51,6 +51,12 @@ FULLTEXT_INDEXES = [
         "properties": ["titolo", "testo", "full_text"],
         "description": "Indice full-text per ricerca testuale negli statuti",
     },
+    {
+        "name": "precedents_fulltext_idx",
+        "labels": ["Precedent"],
+        "properties": ["title", "summary"],
+        "description": "Indice full-text per ricerca testuale nei precedenti",
+    },
 ]
 
 # Constraint definitions for data integrity
@@ -60,6 +66,12 @@ CONSTRAINTS = [
         "label": "Statute",
         "property": "statute_id",
         "description": "ID univoco per ogni articolo di statuto",
+    },
+    {
+        "name": "precedent_unique_id",
+        "label": "Precedent",
+        "property": "precedent_id",
+        "description": "ID univoco per ogni precedente",
     },
     {
         "name": "libro_unique_name",

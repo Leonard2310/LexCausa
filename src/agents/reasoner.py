@@ -988,7 +988,9 @@ CRITICAL RULES:
             step_text = self._parse_step_text(step_response)
 
             if not step_text or step_text.strip().upper() == "DONE":
-                self._log(f"⚠️ Step {step_num}: no new norm available, stopping", "warning")
+                self._log(
+                    f"⚠️ Step {step_num}: no new norm available, stopping", "warning"
+                )
                 break
 
             # --- REPETITION DETECTION (programmatic) ---
@@ -1032,7 +1034,7 @@ CRITICAL RULES:
         Looks for a ``STEP:`` / ``STEP N:`` (or ``PASSO:``) marker and
         returns everything after it.  Falls back to the full response
         if no marker is found.
-        
+
         Also removes any leading numeric prefixes (e.g., "3 Per valutare...")
         that the LLM may have included.
         """
@@ -1086,7 +1088,7 @@ CRITICAL RULES:
         # P6 FIX: Remove leading numeric prefixes like "3 Per valutare..."
         # This handles cases where LLM responds with just "3 Per valutare" without STEP:
         step_text = re.sub(r"^\d+\s+", "", step_text)
-        
+
         return step_text
 
     def _evaluate_should_continue(
@@ -1196,7 +1198,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         Produces the same format expected by ``_extract_arguments`` and
         ``_extract_reasoning_chain``, so ``AspicFormatter`` works
         without changes.
-        
+
         P7 FIX: Generates a synthetic conclusion summarizing the legal
         argument rather than just using the last step as conclusion.
         """
@@ -1208,7 +1210,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         premise_text = " ".join(steps)
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
-        
+
         # P7 FIX: Generate a synthetic conclusion that summarizes
         # the argument instead of repeating the last step
         norms_list = ", ".join(norms) if norms else "le norme applicabili"
@@ -1369,12 +1371,12 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
 
     def _expand_with_cross_references(self, statutes: list[dict]) -> list[dict]:
         """
-        Add statutes explicitly referenced inside the text of already provided articles.
-        Also adds articles that reference the current articles (reverse lookup from KB).
-        Useful when an article (e.g., 2056 c.c.) rinvia ad altri (1223/1226/1227).
+        Add statutes explicitly referenced inside the text of already-retrieved articles.
+
+        Forward-only: parses each article's text for patterns like
+        "art. 624", "artt. 1223" and fetches the cited article by exact
+        number from the KB via get_statute_by_article_tool.
         """
-        from .tools.neo4j_tools import _search_statutes_fallback
-        
         try:
             import re
         except Exception:
@@ -1383,37 +1385,13 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
         seen = {(s.get("articolo"), s.get("source")) for s in statutes}
         extra: list[dict] = []
 
-        pattern = re.compile(r"art\.?\s*(\d{2,4})", re.IGNORECASE)
+        pattern = re.compile(r"art(?:t)?\.?\s*(\d{2,4})", re.IGNORECASE)
 
         for s in statutes:
             text = s.get("testo") or ""
             source = s.get("source", "codice_civile")
-            articolo = str(s.get("articolo", "")).replace("art", "").strip()
-            
+
             refs = set(pattern.findall(text))
-
-            # Also catch slash-separated numbers like "1223/1226/1227"
-            for token in re.findall(r"\b(\d{2,4})\b", text):
-                if "/" in token:
-                    continue
-                refs.add(token)
-
-            # Dynamic lookup from KB: find articles that mention this one
-            # Uses existing fulltext search function
-            try:
-                reverse_results = _search_statutes_fallback(
-                    query=f"art. {articolo}",
-                    codice=source,
-                    libro=None,
-                    limit=5,
-                )
-                for r in reverse_results:
-                    if not r.get("error") and r.get("articolo"):
-                        ref_art = str(r["articolo"]).replace("art", "").strip()
-                        if ref_art != articolo:  # Exclude self
-                            refs.add(ref_art)
-            except Exception:
-                pass  # Fallback search failed, continue with forward refs only
 
             added_refs: list[str] = []
             for ref in refs:
@@ -1443,8 +1421,6 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
                 continue
             seen_final.add(k)
             deduped.append(st)
-        return deduped
-        return deduped
         return deduped
 
     def _extract_arguments(self, response: str) -> list[dict]:

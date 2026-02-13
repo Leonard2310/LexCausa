@@ -557,8 +557,6 @@ def _build_precedent_graph(
                 "precedent_id": p.get("precedent_id") or title,
                 "title": title,
                 "summary": p.get("summary") or "",
-                "excerpt": p.get("excerpt") or "",
-                "materia": p.get("materia") or "",
                 "url": p.get("url") or "",
                 "score": p.get("score"),
             }
@@ -574,8 +572,6 @@ def _build_precedent_graph(
                 "precedent_id": p.get("precedent_id"),
                 "title": p.get("title"),
                 "summary": p.get("summary"),
-                "excerpt": p.get("excerpt"),
-                "materia": p.get("materia"),
                 "url": p.get("url"),
                 "score": p.get("score"),
             }

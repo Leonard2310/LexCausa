@@ -232,6 +232,7 @@ def search_statutes_tool(
 
         except Exception as e:
             print(f"  ❌ Vector search failed: {str(e)}")
+            print("  ⚠️ Switching to fulltext fallback...")
             return _search_statutes_fallback(query, codice, libro, limit)
     else:
         # Fallback: no libro specified, need to do a broader search
@@ -296,10 +297,13 @@ def search_statutes_tool(
                     )
         except Exception as e:
             print(f"  ❌ Vector search failed: {str(e)}")
+            print("  ⚠️ Switching to fulltext fallback...")
             return _search_statutes_fallback(query, codice, libro, limit)
 
     if not results:
-        print("  ⚠️ No statutes found via vector search, trying fulltext fallback...")
+        print(
+            "  ⚠️ No statutes found via vector search, switching to fulltext fallback..."
+        )
         return _search_statutes_fallback(query, codice, libro, limit)
 
     print(
@@ -315,11 +319,14 @@ def _search_statutes_fallback(
     limit: int = 5,
 ) -> list[dict]:
     """
-    Fallback fulltext search for statutes when vector search fails.
+    Fulltext search for statutes.
+
+    Used both as fallback when vector search fails and as primary method
+    for cross-reference reverse lookups (where fulltext is the correct strategy).
     """
     driver = get_driver()
 
-    print(f"  🔄 [fallback] Fulltext search for: '{query}'")
+    print(f"  🔄 Fulltext search for: '{query}'")
 
     # Build WHERE clause
     where_clauses = []
@@ -372,17 +379,17 @@ def _search_statutes_fallback(
                     "C.C." if result_item["source"] == "codice_civile" else "C.P."
                 )
                 print(
-                    f"  📜 [fallback] Found: Art. {result_item['articolo']} {source_label} (score: {result_item['score']:.2f})"
+                    f"  📜 Found: Art. {result_item['articolo']} {source_label} (score: {result_item['score']:.2f})"
                 )
     except Exception as e:
-        print(f"  ❌ Fulltext fallback also failed: {str(e)}")
+        print(f"  ❌ Fulltext search failed: {str(e)}")
         return [{"error": f"Search failed: {str(e)}", "query": query}]
 
     if not results:
         print(f"  ⚠️ No statutes found for query: '{query}'")
         return [{"message": f"No statutes found for query: '{query}'", "query": query}]
 
-    print(f"  ⚠️ Total statutes found: {len(results)} [FALLBACK - FULLTEXT SEARCH]")
+    print(f"  ✅ Total statutes found: {len(results)} [FULLTEXT SEARCH]")
     return results
 
 
@@ -462,10 +469,6 @@ class SearchPrecedentsInput(BaseModel):
     """Input schema for precedent search."""
 
     query: str = Field(description="Search text to find relevant precedents")
-    materia: Optional[str] = Field(
-        default=None,
-        description="Specific subject (e.g., 'civile', 'penale'). If None, searches all.",
-    )
     limit: int = Field(
         default=settings.precedents_limit_default,
         description="Maximum number of results (defaults to config PRECEDENTS_LIMIT_DEFAULT)",
@@ -475,18 +478,16 @@ class SearchPrecedentsInput(BaseModel):
 @tool("search_precedents", args_schema=SearchPrecedentsInput)
 def search_precedents_tool(
     query: str,
-    materia: Optional[str] = None,
     limit: int = settings.precedents_limit_default,
 ) -> list[dict]:
     """
     Search for legal precedents in the Knowledge Base using semantic vector search.
 
-    Returns relevant court decisions and cases with title, summary, and references.
+    Embeddings are generated from the summary field of each precedent.
+    Returns relevant court decisions with title, summary, and URL.
     Use this function when you need to find precedents supporting an argument.
     """
-    print(
-        f"🔍 [search_precedents] Query: '{query}', materia: {materia}, limit: {limit}"
-    )
+    print(f"🔍 [search_precedents] Query: '{query}', limit: {limit}")
 
     # Use the SAME pipeline for embeddings (consistent with Tab Ricerca)
     pipeline = get_legal_search_pipeline()
@@ -500,12 +501,10 @@ def search_precedents_tool(
     query_cypher = """
         CALL db.index.vector.queryNodes('precedents_idx', $top_k_expanded, $embedding)
         YIELD node, score
-        RETURN node.chunk_id AS id,
+        RETURN node.precedent_id AS id,
                node.title AS title,
                node.summary AS summary,
-               node.materia AS materia,
                node.url AS url,
-               node.chunk_text AS chunk_text,
                score
         ORDER BY score DESC
         LIMIT $limit
@@ -519,18 +518,10 @@ def search_precedents_tool(
                 parameters={
                     "embedding": query_embedding,
                     "limit": limit,
-                    "top_k_expanded": limit * 10,  # Expand for materia filtering
+                    "top_k_expanded": limit * 10,  # Expand for filtering
                 },
             )
             for record in records:
-                # Apply materia filter if specified (post-filter)
-                if (
-                    materia
-                    and record["materia"]
-                    and materia.lower() not in record["materia"].lower()
-                ):
-                    continue
-
                 result_item = {
                     "precedent_id": record["id"] or "",
                     "title": record["title"] or "Untitled precedent",
@@ -539,13 +530,7 @@ def search_precedents_tool(
                         if record["summary"]
                         else "No summary available"
                     ),
-                    "materia": record["materia"] or "Unknown",
                     "url": record["url"] or "",
-                    "excerpt": (
-                        record["chunk_text"][: settings.truncation_tool_excerpt]
-                        if record["chunk_text"]
-                        else "No excerpt available"
-                    ),
                     "score": (
                         float(record["score"]) if record["score"] is not None else 0.0
                     ),
@@ -560,11 +545,11 @@ def search_precedents_tool(
         print(f"  ❌ Vector search failed: {str(e)}")
         # Fallback to text search if vector search fails
         print("  🔄 Falling back to text search...")
-        return _search_precedents_fallback(query, materia, limit)
+        return _search_precedents_fallback(query, limit=limit)
 
     if not results:
         print("  ⚠️ No precedents found via vector search, trying text fallback...")
-        return _search_precedents_fallback(query, materia, limit)
+        return _search_precedents_fallback(query, limit=limit)
 
     print(f"  ✅ Total precedents found: {len(results)} [VECTOR SEARCH]")
     return results
@@ -572,7 +557,6 @@ def search_precedents_tool(
 
 def _search_precedents_fallback(
     query: str,
-    materia: Optional[str] = None,
     limit: int = 5,
 ) -> list[dict]:
     """
@@ -580,27 +564,19 @@ def _search_precedents_fallback(
     """
     driver = get_driver()
 
-    where_clause = ""
-    if materia:
-        where_clause = f"WHERE p.materia = '{materia}'"
-
-    query_cypher = f"""
+    query_cypher = """
         MATCH (p:Precedent)
-        {where_clause}
         WITH p,
              CASE
                 WHEN toLower(p.title) CONTAINS toLower($query) THEN 2.0
                 WHEN toLower(p.summary) CONTAINS toLower($query) THEN 1.5
-                WHEN toLower(p.chunk_text) CONTAINS toLower($query) THEN 1.0
                 ELSE 0.0
              END AS score
         WHERE score > 0
-        RETURN p.chunk_id AS id,
+        RETURN p.precedent_id AS id,
                p.title AS title,
                p.summary AS summary,
-               p.materia AS materia,
                p.url AS url,
-               p.chunk_text AS chunk_text,
                score
         ORDER BY score DESC
         LIMIT $limit
@@ -621,13 +597,7 @@ def _search_precedents_fallback(
                         if record["summary"]
                         else "No summary available"
                     ),
-                    "materia": record["materia"] or "Unknown",
                     "url": record["url"] or "",
-                    "excerpt": (
-                        record["chunk_text"][: settings.truncation_tool_excerpt]
-                        if record["chunk_text"]
-                        else "No excerpt available"
-                    ),
                     "score": record["score"] if record["score"] is not None else 0.0,
                 }
                 results.append(result_item)

@@ -222,11 +222,12 @@ Select the most useful attack among the following ids and return ONLY the chosen
 
     def _expand_with_cross_references(self, statutes: List[dict]) -> List[dict]:
         """
-        Add statutes referenced inside article text (one hop) to avoid missing rinvii.
-        Also adds articles that reference the current articles (reverse lookup from KB).
+        Add statutes explicitly referenced inside the text of already-retrieved articles.
+
+        Forward-only: parses each article's text for patterns like
+        "art. 624", "artt. 1223" and fetches the cited article by exact
+        number from the KB via get_statute_by_article_tool.
         """
-        from .tools.neo4j_tools import _search_statutes_fallback
-        
         try:
             import re
         except Exception:
@@ -235,35 +236,13 @@ Select the most useful attack among the following ids and return ONLY the chosen
         seen = {(s.get("articolo"), s.get("source")) for s in statutes}
         extra: List[dict] = []
 
-        pattern = re.compile(r"art\.?\s*(\d{2,4})", re.IGNORECASE)
+        pattern = re.compile(r"art(?:t)?\.?\s*(\d{2,4})", re.IGNORECASE)
 
         for s in statutes:
             text = s.get("testo") or ""
             source = s.get("source", "codice_civile")
-            articolo = str(s.get("articolo", "")).replace("art", "").strip()
-            
-            refs = set(pattern.findall(text))
-            for token in re.findall(r"\b(\d{2,4})\b", text):
-                if "/" in token:
-                    continue
-                refs.add(token)
 
-            # Dynamic lookup from KB: find articles that mention this one
-            # Uses existing fulltext search function
-            try:
-                reverse_results = _search_statutes_fallback(
-                    query=f"art. {articolo}",
-                    codice=source,
-                    libro=None,
-                    limit=5,
-                )
-                for r in reverse_results:
-                    if not r.get("error") and r.get("articolo"):
-                        ref_art = str(r["articolo"]).replace("art", "").strip()
-                        if ref_art != articolo:  # Exclude self
-                            refs.add(ref_art)
-            except Exception:
-                pass  # Fallback search failed, continue with forward refs only
+            refs = set(pattern.findall(text))
 
             added_refs: List[str] = []
             for ref in refs:
@@ -821,7 +800,7 @@ CRITICAL RULES:
         Looks for a ``STEP:`` / ``STEP N:`` (or ``PASSO:``) marker and
         returns everything after it.  Falls back to the full response
         if no marker is found.
-        
+
         Also removes any leading numeric prefixes (e.g., "3 Per valutare...")
         that the LLM may have included.
         """
@@ -875,7 +854,7 @@ CRITICAL RULES:
         # P6 FIX: Remove leading numeric prefixes like "3 Per valutare..."
         # This handles cases where LLM responds with just "3 Per valutare" without STEP:
         step_text = re.sub(r"^\d+\s+", "", step_text)
-        
+
         return step_text
 
     def _evaluate_should_continue(
@@ -982,7 +961,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         attack_id: str,
     ) -> str:
         """Assemble counter-argument raw response from iterative steps.
-        
+
         Ensures the conclusion is framed as OPPOSING the claim, not supporting it.
         """
         chain_section = "**Catena di ragionamento**:\n"
@@ -1016,13 +995,13 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             "risk_was_assumed_or_controllable": "il rischio era assunto o controllabile",
         }
         attack_desc_it = attack_descriptions_it.get(
-            attack_id, 
-            "le norme citate indeboliscono il fondamento giuridico della pretesa"
+            attack_id,
+            "le norme citate indeboliscono il fondamento giuridico della pretesa",
         )
 
         # Ensure the conclusion opposes the claim
         conclusion_prefix = "Pertanto, la pretesa deve essere RIGETTATA poiché "
-        
+
         raw = (
             f"**Premessa Alternativa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"

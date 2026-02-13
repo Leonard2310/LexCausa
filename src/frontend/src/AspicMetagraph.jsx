@@ -21,6 +21,12 @@ const COLORS = {
   contraBorder: '#ef4444',
   contraText: '#991b1b',
   attackStroke: '#f59e0b',
+  attackProStroke: '#059669',
+  attackProText: '#065f46',
+  attackContraStroke: '#dc2626',
+  attackContraText: '#991b1b',
+  attackCappedStroke: '#9ca3af',
+  attackCappedText: '#6b7280',
   attackText: '#92400e',
   edgePro: '#10b981',
   edgeContra: '#ef4444',
@@ -126,7 +132,7 @@ function ChainNode({ link, x, y, isPro, onClick, isSelected }) {
 }
 
 // ---- curved attack arrow ----
-function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight }) {
+function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight, isCapped }) {
   // Build a quadratic Bezier that curves outward
   const midY = (y1 + y2) / 2;
   const curveOffset = leftToRight ? -60 : 60;
@@ -138,16 +144,32 @@ function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight }) {
   const labelX = cpx + (leftToRight ? -10 : 10);
   const labelY = cpy;
 
+  const strokeColor = isCapped
+    ? COLORS.attackCappedStroke
+    : leftToRight
+      ? COLORS.attackProStroke
+      : COLORS.attackContraStroke;
+  const textColor = isCapped
+    ? COLORS.attackCappedText
+    : leftToRight
+      ? COLORS.attackProText
+      : COLORS.attackContraText;
+  const markerId = isCapped
+    ? 'url(#arrowAttackCapped)'
+    : leftToRight
+      ? 'url(#arrowAttackPro)'
+      : 'url(#arrowAttackContra)';
+
   return (
     <g>
       <path
         d={d}
         fill="none"
-        stroke={COLORS.attackStroke}
-        strokeWidth={1.5 + Math.min(value * 4, 3)}
-        strokeDasharray="6 3"
-        markerEnd="url(#arrowAttack)"
-        opacity={0.85}
+        stroke={strokeColor}
+        strokeWidth={isCapped ? 1 : 1.5 + Math.min(value * 4, 3)}
+        strokeDasharray={isCapped ? '4 4' : '6 3'}
+        markerEnd={markerId}
+        opacity={isCapped ? 0.5 : 0.85}
       />
       <rect
         x={labelX - 30}
@@ -156,16 +178,16 @@ function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight }) {
         height={20}
         rx={4}
         fill="white"
-        stroke={COLORS.attackStroke}
+        stroke={strokeColor}
         strokeWidth={0.8}
-        opacity={0.95}
+        opacity={isCapped ? 0.7 : 0.95}
       />
       <text
         x={labelX}
         y={labelY + 4}
         textAnchor="middle"
         fontSize="10"
-        fill={COLORS.attackText}
+        fill={textColor}
         fontWeight="600"
       >
         {f2(value)} ({pct(overlap)})
@@ -194,9 +216,13 @@ function ChainArrow({ x, y1, y2 }) {
 // ---- Attack detail panel ----
 function AttackDetailPanel({ link, onClose }) {
   if (!link) return null;
-  const attacks = (link.attacks_received || []).filter(
-    (a) => a.attack_value > 0,
+  const activeAttacks = (link.attacks_received || []).filter(
+    (a) => a.attack_value >= 0.01 && a.filter_stage !== 'top_k',
   );
+  const cappedAttacks = (link.attacks_received || []).filter(
+    (a) => a.attack_value >= 0.01 && a.filter_stage === 'top_k',
+  );
+  const attacks = [...activeAttacks, ...cappedAttacks];
   return (
     <div className="metagraph-detail-panel">
       <div className="metagraph-detail-header">
@@ -249,20 +275,35 @@ function AttackDetailPanel({ link, onClose }) {
             <h6 className="metagraph-detail-sub">
               Attacchi ricevuti ({attacks.length})
             </h6>
-            {attacks.map((atk, i) => (
-              <div key={i} className="metagraph-attack-detail">
-                <span>
-                  ← <span className={`role-tag ${atk.attacker_role === 'contra' ? 'role-contra' : 'role-pro'}`}>
-                    {atk.attacker_role === 'contra' ? 'C' : 'P'}
+            {attacks.map((atk, i) => {
+              const boosted = atk.boosted_attack ?? (atk.overlap * atk.attacker_base_score * (atk.type_multiplier || 1));
+              const excess = atk.excess ?? Math.max(0, boosted - (atk.target_base_score ?? 0));
+              const df = atk.damage_factor ?? 0.5;
+              const isCapped = atk.filter_stage === 'top_k';
+              return (
+                <div key={i} className={`metagraph-attack-detail${isCapped ? ' metagraph-attack-capped' : ''}`}>
+                  <span>
+                    ← <span className={`role-tag ${atk.attacker_role === 'contra' ? 'role-contra' : 'role-pro'}`}>
+                      {atk.attacker_role === 'contra' ? 'C' : 'P'}
+                    </span>
+                    {atk.attacker_link_id}
+                    {isCapped && <span className="capped-badge">capped</span>}
                   </span>
-                  {atk.attacker_link_id}
-                </span>
-                <span>
-                  overlap {pct(atk.overlap)} * base_score = val {f2(atk.attack_value)}
-                </span>
-                <span className="metagraph-attack-reason">{atk.reason}</span>
-              </div>
-            ))}
+                  <span className="metagraph-attack-formula">
+                    boosted = {pct(atk.overlap)} × {f2(atk.attacker_base_score)}
+                    {atk.type_multiplier ? ` × ${f2(atk.type_multiplier)}` : ''}
+                    {' '}= {f2(boosted)}
+                  </span>
+                  <span className="metagraph-attack-formula">
+                    excess = max(0, {f2(boosted)} − {f2(atk.target_base_score ?? 0)}) = {f2(excess)}
+                  </span>
+                  <span className="metagraph-attack-formula">
+                    val = {f2(excess)} × {f2(df)} = <strong>{f2(atk.attack_value)}</strong>
+                  </span>
+                  <span className="metagraph-attack-reason">{atk.reason}</span>
+                </div>
+              );
+            })}
           </>
         )}
         {link.precedent_influences?.length > 0 && (
@@ -323,13 +364,15 @@ export default function AspicMetagraph({ aqaReport }) {
         : contraLinks.findIndex((l) => l.link_id === target.link_id);
 
       (target.attacks_received || []).forEach((atk) => {
-        if (atk.attack_value <= 0) return;
+        if (!atk.attack_value || atk.attack_value < 0.01) return;
 
         // Attacker comes from the opposite chain
         const attackerRole = atk.attacker_role || (targetIsPro ? 'contra' : 'support');
         const attackerKey = `${attackerRole}:${atk.attacker_link_id}`;
         const attackerInfo = linkIndex[attackerKey];
         if (!attackerInfo) return;
+
+        const isCapped = atk.filter_stage === 'top_k';
 
         edges.push({
           fromRow: attackerInfo.row,
@@ -339,6 +382,7 @@ export default function AspicMetagraph({ aqaReport }) {
           value: atk.attack_value,
           overlap: atk.overlap,
           leftToRight: attackerInfo.isPro,
+          isCapped,
         });
       });
     });
@@ -406,9 +450,23 @@ export default function AspicMetagraph({ aqaReport }) {
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
-            style={{ background: COLORS.attackStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
+            style={{ background: COLORS.attackProStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
           />
-          Attacco
+          Attacco PRO
+        </span>
+        <span className="metagraph-legend-item">
+          <span
+            className="metagraph-legend-swatch"
+            style={{ background: COLORS.attackContraStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
+          />
+          Attacco CONTRA
+        </span>
+        <span className="metagraph-legend-item">
+          <span
+            className="metagraph-legend-swatch"
+            style={{ background: COLORS.attackCappedStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center', opacity: 0.5 }}
+          />
+          Attacco capped (top-K)
         </span>
         <span className="metagraph-zoom-info">
           Zoom: {(zoom * 100).toFixed(0)}% · Scroll per zoom, trascina per spostare
@@ -431,9 +489,9 @@ export default function AspicMetagraph({ aqaReport }) {
           onMouseLeave={handleMouseUp}
         >
           <defs>
-            {/* Attack arrowhead */}
+            {/* PRO attack arrowhead (green) */}
             <marker
-              id="arrowAttack"
+              id="arrowAttackPro"
               viewBox="0 0 10 10"
               refX="9"
               refY="5"
@@ -441,7 +499,31 @@ export default function AspicMetagraph({ aqaReport }) {
               markerHeight="7"
               orient="auto-start-reverse"
             >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.attackStroke} />
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.attackProStroke} />
+            </marker>
+            {/* CONTRA attack arrowhead (red) */}
+            <marker
+              id="arrowAttackContra"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.attackContraStroke} />
+            </marker>
+            {/* Capped attack arrowhead (grey) */}
+            <marker
+              id="arrowAttackCapped"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.attackCappedStroke} />
             </marker>
             {/* Chain arrowhead */}
             <marker
@@ -526,6 +608,7 @@ export default function AspicMetagraph({ aqaReport }) {
                   value={edge.value}
                   overlap={edge.overlap}
                   leftToRight={edge.leftToRight}
+                  isCapped={edge.isCapped}
                 />
               );
             })}

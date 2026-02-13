@@ -216,8 +216,8 @@ LexCausa/
 │   │   └── neo4j_schema.py
 │   ├── data/                      # Data files
 │   │   ├── embeddings/           # Pre-computed embeddings (.npy)
-│   │   ├── precedenti/           # ITA-CaseHold precedents
-│   │   └── statuti/              # Civil + Penal Code CSVs
+│   │   ├── precedents/           # ITA-CaseHold precedents
+│   │   └── statutes/              # Civil + Penal Code CSVs
 │   └── frontend/                  # React frontend (Vite + React 18)
 ├── logs/                          # Per-claim pipeline logs (auto-generated)
 ├── compose.yml                    # Docker Compose for Neo4j

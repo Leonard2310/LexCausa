@@ -1477,27 +1477,26 @@ class ConsistencyMixin:
 
     def _extract_reasoning_chain_ordered(self, text: str) -> list[str]:
         """Extract reasoning chain steps preserving their original numbered order.
-        
+
         Parses numbered steps (1. 2. 3. ...) from the chain section and
         returns them in their original order, not re-sorted.
         """
         steps: list[str] = []
-        
+
         # Find the chain section
         chain_start = text.lower().find("catena di ragionamento")
         if chain_start == -1:
             chain_start = text.lower().find("reasoning chain")
         if chain_start == -1:
             chain_start = 0
-        
+
         chain_text = text[chain_start:]
-        
+
         # Pattern for numbered steps: "1. text" or "1) text"
         step_pattern = re.compile(
-            r"^\s*(\d+)[.)\s]+(.+?)(?=^\s*\d+[.)\s]|\Z)",
-            re.MULTILINE | re.DOTALL
+            r"^\s*(\d+)[.)\s]+(.+?)(?=^\s*\d+[.)\s]|\Z)", re.MULTILINE | re.DOTALL
         )
-        
+
         # Extract all numbered steps
         numbered_steps: list[tuple[int, str]] = []
         for match in step_pattern.finditer(chain_text):
@@ -1507,13 +1506,13 @@ class ConsistencyMixin:
             step_text = re.sub(r"\s+", " ", step_text)
             if step_text and len(step_text) > 10:
                 numbered_steps.append((step_num, step_text))
-        
+
         # Sort by step number to preserve original order
         numbered_steps.sort(key=lambda x: x[0])
-        
+
         # Extract just the text
         steps = [text for _, text in numbered_steps]
-        
+
         return steps
 
     def _extract_arguments_from_text(self, response: str) -> list[dict]:

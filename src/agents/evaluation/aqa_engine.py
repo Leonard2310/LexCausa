@@ -230,8 +230,6 @@ class AQAEngineMixin:
         )
         return links
 
-
-
     def _same_book(self, sev1: str, sev2: str) -> bool:
         """Return True if two severity categories belong to the same libro."""
         book1 = self._aqa_severity_book_map.get(sev1, "")
@@ -608,6 +606,10 @@ class AQAEngineMixin:
                             "attacker_role": attacker_role,
                             "overlap": round(overlap, 4),
                             "attacker_base_score": round(attacker_base, 4),
+                            "boosted_attack": round(boosted_attack, 4),
+                            "target_base_score": round(target_base, 4),
+                            "excess": round(excess, 4),
+                            "damage_factor": DAMAGE_FACTOR,
                             "attack_value": round(attack_value, 4),
                             "attack_type": attack_type,
                             "type_multiplier": round(type_multiplier, 2),
@@ -636,8 +638,9 @@ class AQAEngineMixin:
             )
             # Only the top-K active attacks contribute to attacks_sum
             active_attacks = [
-                a for a in link["attacks_received"]
-                if not a.get("filtered", False) and a.get("attack_value", 0.0) > 0
+                a
+                for a in link["attacks_received"]
+                if not a.get("filtered", False) and a.get("attack_value", 0.0) >= 0.01
             ]
             if len(active_attacks) > top_k:
                 for overflow in active_attacks[top_k:]:
@@ -685,7 +688,6 @@ class AQAEngineMixin:
         parts = [
             meta.get("title") or "",
             meta.get("summary") or "",
-            meta.get("excerpt") or "",
         ]
         return self._normalize_text(" ".join(p for p in parts if p))
 
@@ -1047,7 +1049,8 @@ class AQAEngineMixin:
                     )
 
             zero_damage = [
-                a for a in all_attacks
+                a
+                for a in all_attacks
                 if not a.get("filtered", False) and a.get("attack_value", 0.0) <= 0
             ]
             if zero_damage:

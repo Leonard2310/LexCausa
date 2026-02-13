@@ -827,9 +827,14 @@ PRO-CLAIM REQUIREMENTS for this step:
    You MAY reuse an already-cited article ONLY if you apply it to a DIFFERENT factual aspect
    that was NOT discussed in any previous step. Never repeat the same reasoning.
    If you have nothing new to add (no new aspect, no new norm), respond with STEP: DONE.
-3. CONNECT to the previous step: your step must start from where the last step ended.
+3. PRECEDENT CITATION: If a precedent from the ALLOWED PRECEDENT REFERENCES list directly
+   supports your reasoning point, you MUST cite it by including its FULL EXACT TITLE in the step text.
+   For example: "Come confermato dalla giurisprudenza in «Titolo completo del precedente», ..."
+   Do NOT rephrase or shorten the title — copy it exactly as listed.
+   If no precedent is relevant for this step, skip this and cite only the norm.
+4. CONNECT to the previous step: your step must start from where the last step ended.
    If step N-1 established X, step N should use X to advance to Y.
-4. ALWAYS FAVOR THE CLAIM: interpret norms and facts in the way most favorable to the claimant.
+5. ALWAYS FAVOR THE CLAIM: interpret norms and facts in the way most favorable to the claimant.
 {last_step_notice}
 
 RESPONSE FORMAT:
@@ -838,7 +843,7 @@ STEP: [Your atomic reasoning step in Italian — max 4 sentences]
 CRITICAL RULES:
 - Your ENTIRE STEP text must be written in Italian.
 - MAX 4 sentences. If you need more, you are covering too much — split it.
-- Cite exactly one specific article (e.g. Art. 2043 c.c.).
+- Cite exactly one specific article (e.g. Art. 2043 c.c.) and, when relevant, one precedent by its FULL EXACT TITLE from the ALLOWED PRECEDENT REFERENCES list.
 - FACTUAL FIDELITY: Use ONLY facts explicitly stated in the CLAIM above. Do NOT add, infer, assume, or invent facts that are not written in the claim. If the claim says the person struck once, do not say they struck multiple times.
 - Do NOT invent sources not present in the knowledge base.
 - Do NOT write a complete argument. Write ONE building block.

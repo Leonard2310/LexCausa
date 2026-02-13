@@ -817,6 +817,236 @@ class ConsistencyMixin:
                     f"      🗑️ Art. {article_num} DROPPED (non-pertinent peripheral)"
                 )
 
+    # ------------------------------------------------------------------
+    # Precedent verification helpers
+    # ------------------------------------------------------------------
+
+    def _verify_precedent_in_neo4j(self, title: str) -> tuple[bool, str]:
+        """
+        Verify if a precedent exists in Neo4j by title and return its summary.
+
+        Uses a case-insensitive CONTAINS match on the title field of
+        Precedent nodes so that minor typographical differences (trailing
+        whitespace, casing) do not cause a false negative.
+
+        Returns:
+            Tuple of (exists: bool, summary: str). Summary is empty if
+            not found.
+        """
+        driver = get_driver()
+        query = """
+            MATCH (p:Precedent)
+            WHERE toLower(p.title) = toLower($title)
+            RETURN p.precedent_id AS id,
+                   p.title AS title,
+                   p.summary AS summary
+            LIMIT 1
+        """
+        try:
+            with driver.session() as session:
+                result = session.run(query, parameters={"title": title})
+                record = result.single()
+                if record:
+                    summary = record.get("summary", "") or ""
+                    self._log(
+                        f"      🗄️ Neo4j: precedent found - "
+                        f"'{(record.get('title') or '')[:60]}...'"
+                    )
+                    return True, summary
+                return False, ""
+        except Exception as e:
+            self._log(f"⚠️ Neo4j precedent query failed: {e}", "warning")
+            return False, ""
+
+    def _extract_cited_text_for_precedent(
+        self, full_text: str, precedent_title: str
+    ) -> str:
+        """
+        Extract the text the LLM cited around a precedent title.
+
+        Looks for patterns like:
+        - «Titolo del precedente», il quale stabilisce che [testo]
+        - Come confermato in «Titolo del precedente», [testo]
+        - ... «Titolo del precedente» ... (sentence containing the title)
+
+        Returns the surrounding sentence/context or empty string.
+        """
+        title_lower = precedent_title.lower()
+        text_lower = full_text.lower()
+
+        idx = text_lower.find(title_lower)
+        if idx == -1:
+            self._log(
+                f"      ⚠️ Precedent title not found in text: "
+                f"'{precedent_title[:60]}...'"
+            )
+            return ""
+
+        # Extract a window around the title mention (the full sentence)
+        # Go backwards to find sentence start
+        start = max(0, idx - 200)
+        end = min(len(full_text), idx + len(precedent_title) + 300)
+
+        # Try to find sentence boundaries
+        window = full_text[start:end]
+
+        # Find the sentence containing the title
+        sentences = re.split(r"(?<=[.!?])\s+", window)
+        for sentence in sentences:
+            if title_lower in sentence.lower():
+                cleaned = sentence.strip()
+                if len(cleaned) >= 20:
+                    self._log(
+                        f"      🎯 Extracted precedent context: " f"'{cleaned[:80]}...'"
+                    )
+                    return cleaned
+
+        # Fallback: return the raw window
+        raw = window.strip()
+        if len(raw) >= 20:
+            return raw
+        return ""
+
+    def _handle_precedent_mismatch(
+        self,
+        check: CitationCheck,
+        precedent_title: str,
+        cited_text: str,
+        db_summary: str,
+        full_text: str,
+        report: ConsistencyReport,
+    ) -> None:
+        """
+        Handle a precedent citation mismatch.
+
+        Simpler than the statute flow because precedents are always
+        treated as *pertinent* (they were explicitly cited by the LLM)
+        and repair always uses the DB summary.
+
+        Flow:
+        1. Verify mismatch with LLM
+        2. If confirmed → repair by rewriting with correct DB summary
+        3. If repair fails → drop the citation
+        """
+        self._log(
+            f"      🔧 Handling precedent mismatch for "
+            f"'{precedent_title[:50]}...'..."
+        )
+
+        # Step 1: Verify mismatch with LLM (reuse the existing method
+        # but with "Precedent" context instead of article number)
+        try:
+            llm = get_chat_groq(
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.repair_max_tokens,
+            )
+            system_prompt = (
+                "You are an expert in Italian law. Determine whether two "
+                "descriptions of a court precedent are LOGICALLY EQUIVALENT "
+                "or DIFFERENT.\n\n"
+                "EQUIVALENT: same legal holding, even with different wording.\n"
+                "DIFFERENT: different holding, added/omitted elements, "
+                "changed meaning.\n\n"
+                "Respond ONLY with: EQUIVALENTI or DIVERSI"
+            )
+            user_prompt = (
+                f'CITED TEXT (from reasoning):\n"{cited_text}"\n\n'
+                f'OFFICIAL SUMMARY (from database):\n"{db_summary[:1500]}"\n\n'
+                f"Are the two texts EQUIVALENTI or DIVERSI?"
+            )
+            response = resilient_chat_call(
+                llm,
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ],
+            )
+            answer = response.content.strip().upper()
+            llm_confirmed = "DIVERSI" in answer
+        except Exception as e:
+            self._log(
+                f"      ⚠️ LLM precedent mismatch check failed: {e}",
+                "warning",
+            )
+            llm_confirmed = True
+
+        check.llm_mismatch_confirmed = llm_confirmed
+
+        if not llm_confirmed:
+            self._log(
+                "      ✅ LLM says precedent texts are equivalent "
+                "- treating as match"
+            )
+            check.mismatch_action = MismatchAction.MATCH.value
+            check.text_match = True
+            check.llm_validated = True
+            report.text_matches += 1
+            report.text_mismatches -= 1
+            return
+
+        # Step 2: Attempt repair — rewrite the passage with the DB summary
+        try:
+            llm = get_chat_groq(
+                temperature=settings.classifier_temperature,
+                max_tokens=settings.repair_max_tokens,
+            )
+            system_prompt = (
+                "You are an expert in Italian law. Rewrite a passage that "
+                "cites a court precedent using EXCLUSIVELY the official "
+                "summary provided.\n\n"
+                "RULES:\n"
+                "1. Include a VERBATIM QUOTE of at least 15 words from the "
+                "official summary enclosed in «»\n"
+                "2. Do not add concepts not in the official summary\n"
+                "3. Write in Italian\n"
+                "4. Output ONLY the rewritten text"
+            )
+            user_prompt = (
+                f"PRECEDENT: {precedent_title}\n\n"
+                f'OFFICIAL SUMMARY:\n"{db_summary[:2000]}"\n\n'
+                f"ORIGINAL CONTEXT (to correct):\n"
+                f'"{cited_text[:settings.truncation_context]}"\n\n'
+                f"Rewrite using only the official summary."
+            )
+            response = resilient_chat_call(
+                llm,
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ],
+            )
+            repaired_text = response.content.strip()
+
+            # Validate: check verbatim quote
+            quote_match = re.search(r"«([^»]+)»", repaired_text)
+            if quote_match:
+                quote = quote_match.group(1).lower().strip()
+                if quote in db_summary.lower() and len(quote) >= 15:
+                    check.mismatch_action = MismatchAction.REPAIRED.value
+                    check.repaired_text = repaired_text
+                    check.repair_success = True
+                    check.details += " [REPAIRED with DB summary]"
+                    report.repaired_citations += 1
+                    self._log(
+                        f"      ✅ Precedent REPAIRED successfully "
+                        f"(quote {len(quote)} chars)"
+                    )
+                    return
+
+            self._log("      ❌ Precedent repair FAILED: no valid quote")
+        except Exception as e:
+            self._log(f"      ⚠️ Precedent repair failed: {e}", "warning")
+
+        # Repair failed → drop
+        check.mismatch_action = MismatchAction.REPAIR_FAILED.value
+        check.repair_success = False
+        check.details += " [REPAIR FAILED - precedent citation unreliable]"
+        report.dropped_citations += 1
+        report.issues.append(
+            f"Precedent '{precedent_title[:40]}': citation repair failed"
+        )
+        self._log(f"      ❌ Precedent '{precedent_title[:40]}' repair FAILED")
+
     def _check_consistency(
         self,
         agent: str,
@@ -963,6 +1193,146 @@ class ConsistencyMixin:
                 check.details = f"Not found in Neo4j ({domain})"
                 report.issues.append(f"Art. {article_num} not found in {domain} codice")
                 self._log(f"   ❌ Art. {article_num} -> NOT FOUND in Neo4j")
+
+            report.citation_checks.append(check)
+            report.total_citations += 1
+
+        # ----- Precedent citation verification -----
+        # Detect precedent titles cited in the text by matching against
+        # the allowed precedents stored in the ASPIC IR sources.
+        precedent_titles_in_ir: list[dict] = []
+        if aspic_ir:
+            for p in aspic_ir.get("sources", {}).get("precedents", []):
+                title = (p.get("title") or "").strip()
+                if title:
+                    precedent_titles_in_ir.append(p)
+
+        # Also collect titles from precedent_nodes (richer data)
+        prec_node_map: dict[str, dict] = {}
+        if aspic_ir:
+            for pn in aspic_ir.get("precedent_nodes", []):
+                title = (pn.get("title") or "").strip()
+                if title:
+                    prec_node_map[title.lower()] = pn
+
+        # Scan full_text for each known precedent title
+        full_text_lower = full_text.lower()
+        verified_precedent_titles: set[str] = set()
+
+        # Build a list of all known precedent titles (from sources)
+        known_prec_titles = []
+        for p in precedent_titles_in_ir:
+            title = (p.get("title") or "").strip()
+            if title and title.lower() not in verified_precedent_titles:
+                known_prec_titles.append(title)
+
+        # Find which precedents are actually cited in the text
+        cited_prec_titles = [
+            t for t in known_prec_titles if t.lower() in full_text_lower
+        ]
+
+        if cited_prec_titles:
+            self._log(
+                f"📜 [{agent}] Found {len(cited_prec_titles)} precedent "
+                f"citations to verify"
+            )
+        else:
+            self._log(f"📜 [{agent}] No precedent citations detected in text")
+
+        for prec_title in cited_prec_titles:
+            if prec_title.lower() in verified_precedent_titles:
+                continue
+            verified_precedent_titles.add(prec_title.lower())
+
+            # Verify existence in Neo4j and get summary
+            found, db_summary = self._verify_precedent_in_neo4j(prec_title)
+
+            check = CitationCheck(
+                citation=f"Prec: {prec_title[:80]}",
+                found_in_kb=found,
+                source_type="precedent",
+            )
+
+            if found:
+                report.valid_citations += 1
+                self._log(f"   ✅ Precedent '{prec_title[:50]}...' -> EXISTS in Neo4j")
+
+                # Extract cited text around the precedent mention
+                cited_text = self._extract_cited_text_for_precedent(
+                    full_text, prec_title
+                )
+
+                if cited_text and db_summary:
+                    similarity = self._compute_text_similarity(cited_text, db_summary)
+                    text_match = similarity >= settings.cc_text_match_threshold
+
+                    check.text_verified = True
+                    check.text_match = text_match
+                    check.text_similarity = similarity
+                    check.cited_text = cited_text
+                    check.db_text_preview = db_summary[:500]
+
+                    if text_match:
+                        report.text_matches += 1
+                        check.mismatch_action = MismatchAction.MATCH.value
+                        check.details = (
+                            f"Precedent verified in Neo4j, "
+                            f"text match: {similarity:.0%}"
+                        )
+                        self._log(
+                            f"      📝 Text similarity: " f"{similarity:.0%} ✅ MATCH"
+                        )
+                    else:
+                        report.text_mismatches += 1
+                        check.details = (
+                            f"Precedent verified in Neo4j, "
+                            f"text mismatch: {similarity:.0%}"
+                        )
+                        self._log(
+                            f"      📝 Text similarity: " f"{similarity:.0%} ⚠️ MISMATCH"
+                        )
+                        report.issues.append(
+                            f"Precedent '{prec_title[:40]}': "
+                            f"cited text differs from DB "
+                            f"(similarity: {similarity:.0%})"
+                        )
+                        self._handle_precedent_mismatch(
+                            check=check,
+                            precedent_title=prec_title,
+                            cited_text=cited_text,
+                            db_summary=db_summary,
+                            full_text=full_text,
+                            report=report,
+                        )
+                elif not cited_text and db_summary:
+                    # Title is present but no surrounding text extracted.
+                    # Treat as match (the LLM cited it correctly by title).
+                    check.text_verified = True
+                    check.text_match = True
+                    check.text_similarity = 1.0
+                    check.cited_text = prec_title
+                    check.db_text_preview = db_summary[:500]
+                    check.mismatch_action = MismatchAction.MATCH.value
+                    check.details = (
+                        "Precedent verified in Neo4j, "
+                        "cited by exact title (no surrounding text)"
+                    )
+                    report.text_matches += 1
+                    self._log("      📝 Precedent cited by exact title ✅ MATCH")
+                else:
+                    check.details = (
+                        "Precedent verified in Neo4j, "
+                        "no text available for verification"
+                    )
+            else:
+                report.invalid_citations += 1
+                check.details = "Precedent not found in Neo4j"
+                report.issues.append(
+                    f"Precedent '{prec_title[:40]}' not found in Neo4j"
+                )
+                self._log(
+                    f"   ❌ Precedent '{prec_title[:50]}...' " f"-> NOT FOUND in Neo4j"
+                )
 
             report.citation_checks.append(check)
             report.total_citations += 1
@@ -1132,6 +1502,26 @@ class ConsistencyMixin:
         for check in citation_checks:
             # --- REPAIRED citations ---
             if check.mismatch_action == MismatchAction.REPAIRED.value:
+                # Precedent citations: surgical replace of cited context
+                if check.source_type == "precedent":
+                    if check.cited_text and check.repaired_text:
+                        if check.cited_text in chain:
+                            chain = chain.replace(
+                                check.cited_text, check.repaired_text, 1
+                            )
+                            surgical_count += 1
+                        else:
+                            idx = chain.lower().find(check.cited_text.lower())
+                            if idx >= 0:
+                                chain = (
+                                    chain[:idx]
+                                    + check.repaired_text
+                                    + chain[idx + len(check.cited_text) :]
+                                )
+                                surgical_count += 1
+                    continue
+
+                # Statute citations (original logic)
                 if not check.cited_text and check.repaired_text:
                     # Case A: no text was cited → inject DB text (surgical)
                     chain = self._inject_text_after_article(

@@ -718,10 +718,15 @@ ANTI-CLAIM REQUIREMENTS for this step:
    You MAY reuse an already-cited article ONLY if you apply it to a DIFFERENT factual aspect
    that was NOT discussed in any previous step. Never repeat the same reasoning.
    If you have nothing new to add (no new aspect, no new norm), respond with STEP: DONE.
-3. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
-4. CONNECT to the previous step: your step must start from where the last step ended.
+3. PRECEDENT CITATION: If a precedent from the ALLOWED PRECEDENT REFERENCES list directly
+   supports your counter-argument, you MUST cite it by including its FULL EXACT TITLE in the step text.
+   For example: "Come evidenziato dalla giurisprudenza in «Titolo completo del precedente», ..."
+   Do NOT rephrase or shorten the title — copy it exactly as listed.
+   If no precedent is relevant for this step, skip this and cite only the norm.
+4. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
+5. CONNECT to the previous step: your step must start from where the last step ended.
    If step N-1 exposed flaw X, step N should use X to attack further.
-5. ALWAYS DISFAVOR THE CLAIM: interpret norms and facts in the way most unfavorable to the claimant.
+6. ALWAYS DISFAVOR THE CLAIM: interpret norms and facts in the way most unfavorable to the claimant.
 {last_step_notice}
 
 RESPONSE FORMAT:
@@ -730,7 +735,7 @@ STEP: [Your atomic counter-reasoning step in Italian — max 4 sentences]
 CRITICAL RULES:
 - Your ENTIRE STEP text must be written in Italian.
 - MAX 4 sentences. If you need more, you are covering too much — split it.
-- Cite exactly one specific article (e.g. Art. 52 c.p.).
+- Cite exactly one specific article (e.g. Art. 52 c.p.) and, when relevant, one precedent by its FULL EXACT TITLE from the ALLOWED PRECEDENT REFERENCES list.
 - FACTUAL FIDELITY: Use ONLY facts explicitly stated in the CLAIM above. Do NOT add, infer, assume, or invent facts that are not written in the claim. For example, if the claim says ONE strike, do NOT say multiple strikes. If the claim does not mention a detail, do NOT fabricate it.
 - Do NOT mention the Reasoner. Produce a standalone counter-argument.
 - Do NOT invent sources not present in the knowledge base.

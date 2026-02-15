@@ -79,7 +79,7 @@ class AspicFormatter:
 
         sources = _build_sources(self._statute_index, self._precedents)
         precedent_nodes, precedent_links = _build_precedent_graph(
-            chain_steps, arguments_ir, self._precedents
+            chain_steps, arguments_ir, self._precedents, role=self.role
         )
 
         return {
@@ -393,9 +393,44 @@ def _extract_citations(
 
     precedent_refs: list[dict] = []
     lower_text = text.lower()
+    # Strip decorative quotes that the LLM may wrap titles in
+    lower_text_clean = lower_text.replace("\u00ab", "").replace("\u00bb", "")
     for p in precedents:
         title = (p.get("title") or "").strip()
-        if title and title.lower() in lower_text:
+        if not title:
+            continue
+        title_lower = title.lower()
+        matched = False
+
+        # Strategy 1: exact substring match
+        if title_lower in lower_text or title_lower in lower_text_clean:
+            matched = True
+
+        # Strategy 2: prefix match (first 50 chars) for long titles
+        if not matched and len(title_lower) > 30:
+            prefix = title_lower[:50]
+            if prefix in lower_text or prefix in lower_text_clean:
+                matched = True
+
+        # Strategy 3: tokenized fuzzy – 60 % of significant words present
+        if not matched:
+            stop_words = {
+                "di", "del", "della", "delle", "dei", "degli", "in", "a",
+                "da", "con", "su", "per", "tra", "fra", "e", "o", "il",
+                "lo", "la", "i", "gli", "le", "un", "uno", "una", "che",
+                "non", "al", "alla", "alle", "ai", "agli", "nel", "nella",
+                "nelle", "nei", "negli", "sul", "sulla", "sulle", "sui",
+            }
+            words = [
+                w for w in re.split(r"\W+", title_lower)
+                if len(w) > 2 and w not in stop_words
+            ]
+            if words:
+                hits = sum(1 for w in words if w in lower_text)
+                if hits / len(words) >= 0.6:
+                    matched = True
+
+        if matched:
             precedent_refs.append(
                 {
                     "precedent_id": p.get("precedent_id") or title,
@@ -539,10 +574,31 @@ def _build_sources(statute_index: dict, precedents: list[dict]) -> dict:
     }
 
 
+def _effective_link_type(raw_stance: str, role: str) -> str:
+    """Derive the ASPIC link type from the precedent's claim-relative stance
+    and the chain role (support / counter).
+
+    For the *reasoner* (role="support"):
+        support → "supports",  against → "attacks",  neutral → "neutral"
+    For the *counter-reasoner* (role="counter" / "counter_reasoner"):
+        against → "supports" (opposes the claim = supports the counter-chain),
+        support → "attacks",  neutral → "neutral"
+    """
+    raw = (raw_stance or "support").lower()
+    if role in ("counter", "counter_reasoner"):
+        return {"support": "attacks", "against": "supports", "neutral": "neutral"}.get(
+            raw, "supports"
+        )
+    return {"support": "supports", "against": "attacks", "neutral": "neutral"}.get(
+        raw, "supports"
+    )
+
+
 def _build_precedent_graph(
     chain_steps: list[dict],
     arguments: list[dict],
     precedents: list[dict],
+    role: str = "support",
 ) -> tuple[list[dict], list[dict]]:
     if not precedents:
         return [], []
@@ -559,9 +615,19 @@ def _build_precedent_graph(
                 "summary": p.get("summary") or "",
                 "url": p.get("url") or "",
                 "score": p.get("score"),
+                # Stance metadata injected by StanceClassifier
+                "_stance_label": p.get("_stance_label"),
+                "_stance_confidence": p.get("_stance_confidence"),
             }
         )
     summary = _dedup_list(summary, key="precedent_id")
+
+    # Build a lookup so add_links can resolve each precedent's effective stance
+    stance_by_id: dict[str, str] = {
+        p.get("precedent_id", ""): (p.get("_stance_label") or "support")
+        for p in summary
+    }
+
     nodes = []
     id_map = {}
     for idx, p in enumerate(summary, start=1):
@@ -574,6 +640,8 @@ def _build_precedent_graph(
                 "summary": p.get("summary"),
                 "url": p.get("url"),
                 "score": p.get("score"),
+                # Propagate stance metadata for the AQA engine
+                "stance_confidence": p.get("_stance_confidence"),
             }
         )
         id_map[p.get("precedent_id")] = node_id
@@ -591,7 +659,8 @@ def _build_precedent_graph(
             if key in seen_links:
                 continue
             seen_links.add(key)
-            links.append({"from": node_id, "to": target_id, "type": "supports"})
+            link_type = _effective_link_type(stance_by_id.get(prec_id, "support"), role)
+            links.append({"from": node_id, "to": target_id, "type": link_type})
 
     for step in chain_steps:
         add_links(step.get("citations", {}), step.get("id", ""))

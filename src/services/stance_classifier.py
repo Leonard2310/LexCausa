@@ -41,6 +41,15 @@ class StanceResult:
     reasoning: str = ""
 
 
+# Mapping from qualitative confidence labels to numeric values
+# used by the AQA δ-scoring formula.
+CONFIDENCE_TO_FLOAT: dict[str, float] = {
+    "high": 0.9,
+    "medium": 0.7,
+    "low": 0.4,
+}
+
+
 class StanceClassifier:
     """
     Classifies articles and precedents as supporting or opposing a legal claim.
@@ -185,6 +194,13 @@ class StanceClassifier:
         for precedent in precedents:
             result = self.classify_precedent(claim, precedent)
             title = precedent.get("title", "Untitled")[:50]
+
+            # Annotate the precedent dict so downstream components
+            # (ASPIC formatter, AQA engine) can use the stance info.
+            precedent["_stance_label"] = result.stance.value
+            precedent["_stance_confidence"] = CONFIDENCE_TO_FLOAT.get(
+                result.confidence.lower(), 0.5
+            )
 
             if result.stance == Stance.SUPPORT:
                 supporting.append(precedent)

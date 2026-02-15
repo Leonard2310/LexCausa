@@ -402,60 +402,70 @@ No punctuation. No new lines. No extra spaces.
     def filter_irrelevant_precedents(
         self, claim: str, precedents: list[dict]
     ) -> list[dict]:
-        """Soft-filter precedents: keep by default, discard only when clearly unrelated."""
+        """
+        Filtro STRICT: scarta tutto ciò che non è STESSA MATERIA GIURIDICA.
+        """
+        
         if not precedents:
-            self._log("No precedents to filter", "info")
             return precedents
-
-        self._log(f"🔍 Filtering relevance: {len(precedents)} precedents initially")
-
+        
+        self._log(f"🔍 Filtering {len(precedents)} precedents (STRICT mode)")
+        
         relevant_precedents = []
-
+        
         for idx, precedent in enumerate(precedents, start=1):
             title = precedent.get("title", "Untitled")
             summary = precedent.get("summary", "")
+            materia = precedent.get("materia", "")  # Campo materia dal dataset
 
-            prompt = f"""Legal Claim:
-"{claim}"
+            prompt = f"""You are a legal expert evaluating precedent relevance.
 
-Precedent:
-"{title}" - "{summary}"
+    CLAIM:
+    "{claim}"
 
-Instruction:
-Decide if this precedent has a meaningful connection to the claim.
+    PRECEDENT:
+    Title: "{title}"
+    Domain: "{materia}"
+    Summary: "{summary}"
 
-Rules:
-- Answer YES unless the precedent is clearly about a completely different legal domain with no connection to the claim.
-- If there is any plausible link to the legal issues in the claim, answer YES.
-- If uncertain, answer YES.
+    TASK:
+    Determine if this precedent belongs to THE SAME LEGAL DOMAIN as the claim.
 
-Respond with EXACTLY one token: YES or NO.
-No punctuation. No new lines. No extra spaces.
-"""
+    EVALUATION CRITERIA:
+    1. Compare the legal domain of the claim with the precedent's domain
+    2. Answer YES only if they are the SAME domain (e.g., both criminal law, both administrative law, both civil law)
+    3. Answer NO if they are DIFFERENT domains, even if topics seem tangentially related
+    4. Consider these distinct domains:
+    - Criminal law: crimes, offenses, criminal procedure, penalties
+    - Administrative law: public administration, administrative acts, administrative procedure
+    - Civil law: contracts, obligations, torts, property, family law
+    - Labor law: employment relationships, termination, labor disputes
+    - Tax law: taxes, fiscal matters
+    - Commercial/Corporate law: companies, bankruptcy, commercial transactions
+
+    STRICT RULE:
+    Different domains = NO, regardless of any superficial similarity.
+
+    Respond with EXACTLY ONE WORD: YES or NO
+    No explanation. No punctuation. No additional text."""
 
             try:
                 response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
-                self._log(
-                    f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}", "warning"
-                )
-                answer = "YES"
+                self._log(f"⚠️ LLM failed for [{idx}]: {e}", "warning")
+                answer = "NO"  # Default to NO on failure
 
-            token = answer.split()[0] if answer else ""
-            keep = token != "NO" and (
-                token == "YES" or "YES" in answer or "NO" not in answer
-            )
+            # Parsing STRICT: only exact "YES" is accepted
+            keep = answer == "YES"
 
             if keep:
                 relevant_precedents.append(precedent)
-                self._log(f"✅ Keeping precedent [{idx}] {title}")
+                self._log(f"✅ Kept [{idx}] {title}")
             else:
-                self._log(f"❌ Discarding precedent [{idx}] {title}", "warning")
+                self._log(f"❌ Discarded [{idx}] {title}")
 
-        self._log(
-            f"📊 Result: {len(relevant_precedents)}/{len(precedents)} precedents kept"
-        )
+        self._log(f"📊 Kept {len(relevant_precedents)}/{len(precedents)}")
         return relevant_precedents
 
     def _format_context_for_prompt(

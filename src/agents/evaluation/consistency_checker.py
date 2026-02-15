@@ -821,22 +821,55 @@ class ConsistencyMixin:
     # Precedent verification helpers
     # ------------------------------------------------------------------
 
-    def _verify_precedent_in_neo4j(self, title: str) -> tuple[bool, str]:
+    def _verify_precedent_in_neo4j(
+        self, title: str, precedent_id: str | None = None
+    ) -> tuple[bool, str]:
         """
-        Verify if a precedent exists in Neo4j by title and return its summary.
+        Verify if a precedent exists in Neo4j and return its summary.
 
-        Uses a case-insensitive CONTAINS match on the title field of
-        Precedent nodes so that minor typographical differences (trailing
-        whitespace, casing) do not cause a false negative.
+        Prefers lookup by ``precedent_id`` (exact, no whitespace issues).
+        Falls back to a case-insensitive, trim-safe title comparison so
+        that trailing whitespace or casing differences do not cause false
+        negatives.
 
         Returns:
             Tuple of (exists: bool, summary: str). Summary is empty if
             not found.
         """
         driver = get_driver()
-        query = """
+
+        # --- Strategy 1: lookup by precedent_id (most reliable) ---
+        if precedent_id:
+            query_by_id = """
+                MATCH (p:Precedent)
+                WHERE p.precedent_id = $id
+                RETURN p.precedent_id AS id,
+                       p.title AS title,
+                       p.summary AS summary
+                LIMIT 1
+            """
+            try:
+                with driver.session() as session:
+                    result = session.run(
+                        query_by_id, parameters={"id": precedent_id}
+                    )
+                    record = result.single()
+                    if record:
+                        summary = record.get("summary", "") or ""
+                        self._log(
+                            f"      🗄️ Neo4j: precedent found by ID ({precedent_id}) - "
+                            f"'{(record.get('title') or '')[:60]}...'"
+                        )
+                        return True, summary
+            except Exception as e:
+                self._log(
+                    f"⚠️ Neo4j precedent query by ID failed: {e}", "warning"
+                )
+
+        # --- Strategy 2: fallback to title with trim() for whitespace safety ---
+        query_by_title = """
             MATCH (p:Precedent)
-            WHERE toLower(p.title) = toLower($title)
+            WHERE toLower(trim(p.title)) = toLower(trim($title))
             RETURN p.precedent_id AS id,
                    p.title AS title,
                    p.summary AS summary
@@ -844,12 +877,14 @@ class ConsistencyMixin:
         """
         try:
             with driver.session() as session:
-                result = session.run(query, parameters={"title": title})
+                result = session.run(
+                    query_by_title, parameters={"title": title}
+                )
                 record = result.single()
                 if record:
                     summary = record.get("summary", "") or ""
                     self._log(
-                        f"      🗄️ Neo4j: precedent found - "
+                        f"      🗄️ Neo4j: precedent found by title - "
                         f"'{(record.get('title') or '')[:60]}...'"
                     )
                     return True, summary
@@ -1220,11 +1255,23 @@ class ConsistencyMixin:
         verified_precedent_titles: set[str] = set()
 
         # Build a list of all known precedent titles (from sources)
+        # and a title → precedent_id map for reliable Neo4j lookup
         known_prec_titles = []
+        prec_id_by_title: dict[str, str] = {}
         for p in precedent_titles_in_ir:
             title = (p.get("title") or "").strip()
             if title and title.lower() not in verified_precedent_titles:
                 known_prec_titles.append(title)
+                prec_id = (p.get("precedent_id") or "").strip()
+                if prec_id:
+                    prec_id_by_title[title.lower()] = prec_id
+
+        # Enrich map from precedent_nodes (they carry precedent_id too)
+        for pn in prec_node_map.values():
+            title = (pn.get("title") or "").strip().lower()
+            prec_id = (pn.get("precedent_id") or "").strip()
+            if title and prec_id and title not in prec_id_by_title:
+                prec_id_by_title[title] = prec_id
 
         # Find which precedents are actually cited in the text
         cited_prec_titles = [
@@ -1245,7 +1292,11 @@ class ConsistencyMixin:
             verified_precedent_titles.add(prec_title.lower())
 
             # Verify existence in Neo4j and get summary
-            found, db_summary = self._verify_precedent_in_neo4j(prec_title)
+            # Use precedent_id when available for reliable lookup
+            prec_id = prec_id_by_title.get(prec_title.lower())
+            found, db_summary = self._verify_precedent_in_neo4j(
+                prec_title, precedent_id=prec_id
+            )
 
             check = CitationCheck(
                 citation=f"Prec: {prec_title[:80]}",
@@ -1814,11 +1865,14 @@ class ConsistencyMixin:
             f"(repaired={total_repaired}, dropped={total_dropped})"
         )
 
-        # Parse the repaired chain text - extract steps in order
+        # Parse the repaired chain text - extract steps in order.
+        # NOTE: we intentionally do NOT call _sanitize_reasoning_chain here.
+        # That method uses keyword filtering ("precedent"/"precedente") and
+        # removes valid reasoning steps that happen to cite precedents when
+        # the precedents list is empty.  _build_chain_steps inside
+        # AspicFormatter already handles noise/dedup without destroying
+        # legitimate steps.
         reasoning_chain = self._extract_reasoning_chain_ordered(repaired_chain_text)
-        reasoning_chain = self._sanitize_reasoning_chain(
-            reasoning_chain, precedents or []
-        )
 
         # Fallback: if the repair LLM dropped the numbered chain format,
         # the parser may extract < 2 steps. In that case, reuse the

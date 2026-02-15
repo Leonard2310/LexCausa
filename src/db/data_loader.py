@@ -115,7 +115,7 @@ def load_itacasehold_with_embeddings() -> Tuple[list, Optional[np.ndarray]]:
         )
 
     # Carica metadata dal parquet (colonne: url, title, doc, summary, materia, source)
-    df = pd.read_parquet(parquet_path, columns=["title", "summary", "url"])
+    df = pd.read_parquet(parquet_path, columns=["title", "summary", "url","materia"])
     records = df.to_dict(orient="records")
 
     embeddings = np.load(embeddings_path)

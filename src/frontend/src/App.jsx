@@ -1229,7 +1229,11 @@ export default function App() {
                       <p style={{ fontSize: '0.82rem', color: '#6b7280', marginBottom: '0.75rem' }}>
                         Clicca su un nodo per vedere i dettagli. Scroll per zoomare, trascina per spostare il grafo.
                       </p>
-                      <AspicMetagraph aqaReport={aqaReport} />
+                      <AspicMetagraph
+                        aqaReport={aqaReport}
+                        reasonerIr={pipelineResult.evaluation?.repaired_reasoner_aspic_ir}
+                        counterIr={pipelineResult.evaluation?.repaired_counter_aspic_ir}
+                      />
                     </div>
                   )}
 

@@ -478,7 +478,7 @@ class Settings(BaseSettings):
             "cassazione": 1.0,
             "appello": 0.7,
             "tribunale": 0.4,
-            "other": 0.0,
+            "other": 0.3,
         },
         alias="AQA_BINDINGNESS_MAP",
         description="Bindingness score by court level (substring match).",

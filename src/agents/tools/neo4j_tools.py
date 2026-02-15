@@ -468,38 +468,86 @@ def get_statute_by_article_tool(articolo: str, codice: str) -> dict:
 class SearchPrecedentsInput(BaseModel):
     """Input schema for precedent search."""
 
-    query: str = Field(description="Search text to find relevant precedents")
+    query: str = Field(description="The legal claim to extract keywords from")
     limit: int = Field(
         default=settings.precedents_limit_default,
         description="Maximum number of results (defaults to config PRECEDENTS_LIMIT_DEFAULT)",
     )
 
 
-@tool("search_precedents", args_schema=SearchPrecedentsInput)
-def search_precedents_tool(
-    query: str,
-    limit: int = settings.precedents_limit_default,
+def _extract_keywords_from_claim(claim: str) -> list[str]:
+    """Use LLM to extract legal keywords from a claim for precedent search.
+
+    Returns a list of keyword strings suitable for Neo4j fulltext queries.
+    """
+    from services.groq_client import get_chat_groq, resilient_chat_call
+    from langchain_core.messages import HumanMessage
+
+    prompt = f"""Extract the most important legal keywords from this claim.
+Focus on: legal concepts, legal domains, types of offenses/violations,
+key factual elements, and relevant legal categories.
+
+CLAIM:
+"{claim}"
+
+RULES:
+- Extract 5 to 10 keywords or short phrases (max 3 words each).
+- Use Italian legal terminology.
+- One keyword per line.
+- Do NOT add numbering, bullets, or explanations.
+- Do NOT repeat the claim.
+- Output ONLY the keywords, nothing else.
+"""
+
+    try:
+        llm = get_chat_groq(
+            model=settings.groq_model,
+            temperature=0.0,
+            max_tokens=200,
+            api_key=settings.groq_api_key or None,
+        )
+        response = resilient_chat_call(llm, [HumanMessage(content=prompt)])
+        raw = response.content.strip()
+        keywords = [
+            kw.strip().strip("-•*").strip()
+            for kw in raw.split("\n")
+            if kw.strip() and len(kw.strip()) > 1
+        ]
+        # Deduplicate preserving order
+        seen = set()
+        unique = []
+        for kw in keywords:
+            low = kw.lower()
+            if low not in seen:
+                seen.add(low)
+                unique.append(kw)
+        print(f"  🔑 Extracted keywords: {unique}")
+        return unique[:10]
+    except Exception as e:
+        print(f"  ⚠️ Keyword extraction failed: {e}")
+        # Fallback: split claim into meaningful chunks
+        import re
+        words = re.findall(r"\b[a-zA-ZàèéìòùÀÈÉÌÒÙ]{4,}\b", claim)
+        return list(dict.fromkeys(words))[:8]
+
+
+def _search_precedents_by_keywords(
+    keywords: list[str],
+    limit: int = 5,
 ) -> list[dict]:
+    """Search precedents via Neo4j fulltext index using extracted keywords.
+
+    Builds a Lucene OR query from the keywords and queries the
+    ``precedents_fulltext_idx`` index (on ``title`` and ``summary``).
     """
-    Search for legal precedents in the Knowledge Base using semantic vector search.
+    driver = get_driver()
 
-    Embeddings are generated from the summary field of each precedent.
-    Returns relevant court decisions with title, summary, and URL.
-    Use this function when you need to find precedents supporting an argument.
-    """
-    print(f"🔍 [search_precedents] Query: '{query}', limit: {limit}")
+    # Build Lucene query: each keyword OR'd together
+    lucene_query = " OR ".join(keywords)
+    print(f"  🔄 Fulltext search with query: '{lucene_query}'")
 
-    # Use the SAME pipeline for embeddings (consistent with Tab Ricerca)
-    pipeline = get_legal_search_pipeline()
-
-    print("  🧠 Generating embedding for query...")
-    query_embedding = pipeline.embed_text(query)
-    print(f"  ✅ Embedding generated (dim: {len(query_embedding)})")
-
-    # Vector similarity search in Neo4j using pipeline's driver
-    # Use precedents_idx vector index
     query_cypher = """
-        CALL db.index.vector.queryNodes('precedents_idx', $top_k_expanded, $embedding)
+        CALL db.index.fulltext.queryNodes('precedents_fulltext_idx', $query)
         YIELD node, score
         RETURN node.precedent_id AS id,
                node.title AS title,
@@ -512,14 +560,10 @@ def search_precedents_tool(
 
     results = []
     try:
-        with pipeline.driver.session() as session:
+        with driver.session() as session:
             records = session.run(
                 query_cypher,
-                parameters={
-                    "embedding": query_embedding,
-                    "limit": limit,
-                    "top_k_expanded": limit * 10,  # Expand for filtering
-                },
+                parameters={"query": lucene_query, "limit": limit},
             )
             for record in records:
                 result_item = {
@@ -536,86 +580,45 @@ def search_precedents_tool(
                     ),
                 }
                 results.append(result_item)
-                # Debug log each precedent found
                 print(
-                    f"  📋 Found: {result_item['title'][:60]}... (score: {result_item['score']:.4f})"
+                    f"  📋 Found: {result_item['title'][:60]}... "
+                    f"(score: {result_item['score']:.4f})"
                 )
-
     except Exception as e:
-        print(f"  ❌ Vector search failed: {str(e)}")
-        # Fallback to text search if vector search fails
-        print("  🔄 Falling back to text search...")
-        return _search_precedents_fallback(query, limit=limit)
+        print(f"  ❌ Fulltext search failed: {str(e)}")
+        return []
 
-    if not results:
-        print("  ⚠️ No precedents found via vector search, trying text fallback...")
-        return _search_precedents_fallback(query, limit=limit)
-
-    print(f"  ✅ Total precedents found: {len(results)} [VECTOR SEARCH]")
     return results
 
 
-def _search_precedents_fallback(
+@tool("search_precedents", args_schema=SearchPrecedentsInput)
+def search_precedents_tool(
     query: str,
-    limit: int = 5,
+    limit: int = settings.precedents_limit_default,
 ) -> list[dict]:
     """
-    Fallback text search for precedents when vector search fails.
+    Search for legal precedents using keyword extraction + fulltext search.
+
+    1. Extracts legal keywords from the claim via LLM.
+    2. Queries Neo4j fulltext index (precedents_fulltext_idx) with those keywords.
+    3. Returns matching precedents sorted by relevance score.
     """
-    driver = get_driver()
+    print(f"🔍 [search_precedents] Claim: '{query[:80]}...', limit: {limit}")
 
-    query_cypher = """
-        MATCH (p:Precedent)
-        WITH p,
-             CASE
-                WHEN toLower(p.title) CONTAINS toLower($query) THEN 2.0
-                WHEN toLower(p.summary) CONTAINS toLower($query) THEN 1.5
-                ELSE 0.0
-             END AS score
-        WHERE score > 0
-        RETURN p.precedent_id AS id,
-               p.title AS title,
-               p.summary AS summary,
-               p.url AS url,
-               score
-        ORDER BY score DESC
-        LIMIT $limit
-    """
+    # Step 1: Extract keywords from the claim
+    keywords = _extract_keywords_from_claim(query)
+    if not keywords:
+        print("  ⚠️ No keywords extracted, returning empty results")
+        return []
 
-    results = []
-    try:
-        with driver.session() as session:
-            records = session.run(
-                query_cypher, parameters={"query": query, "limit": limit}
-            )
-            for record in records:
-                result_item = {
-                    "precedent_id": record["id"] or "",
-                    "title": record["title"] or "Untitled precedent",
-                    "summary": (
-                        record["summary"][: settings.truncation_tool_summary]
-                        if record["summary"]
-                        else "No summary available"
-                    ),
-                    "url": record["url"] or "",
-                    "score": record["score"] if record["score"] is not None else 0.0,
-                }
-                results.append(result_item)
-                print(
-                    f"  📋 [fallback] Found: {result_item['title'][:60]}... (score: {result_item['score']})"
-                )
-
-    except Exception as e:
-        print(f"  ❌ Fallback search also failed: {str(e)}")
-        return [{"error": f"Search failed: {str(e)}", "query": query}]
+    # Step 2: Fulltext search with keywords
+    results = _search_precedents_by_keywords(keywords, limit=limit)
 
     if not results:
-        print(f"  ⚠️ No precedents found for query: '{query}'")
-        return [
-            {"message": f"No precedents found for query: '{query}'", "query": query}
-        ]
+        print("  ⚠️ No precedents found via keyword search")
+        return []
 
-    print(f"  ⚠️ Total precedents found: {len(results)} [FALLBACK - TEXT SEARCH]")
+    print(f"  ✅ Total precedents found: {len(results)} [KEYWORD + FULLTEXT]")
     return results
 
 

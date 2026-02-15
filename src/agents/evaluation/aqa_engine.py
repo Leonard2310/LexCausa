@@ -712,16 +712,18 @@ class AQAEngineMixin:
         similarity = self._clamp01(self._safe_float(similarity, 0.0))
 
         stance = self._stance_from_link_type(edge.get("type"))
-        if stance == 0:
-            stance = 1
+        # NOTE: do NOT default neutral (0) to 1.
+        # Neutral precedents should produce δ = 0 (no influence).
 
         court = (
             prec_meta.get("court")
             or prec_meta.get("court_level")
             or prec_meta.get("organo")
-            or prec_meta.get("title")
             or ""
         )
+        # If no explicit court field, search title+summary for court keywords
+        if not court:
+            court = f"{prec_meta.get('title', '')} {prec_meta.get('summary', '')}"
         bindingness = prec_meta.get("bindingness")
         if bindingness is None:
             bindingness = self._bindingness_from_court(court)
@@ -744,8 +746,16 @@ class AQAEngineMixin:
             self._safe_float(confidence, settings.aqa_default_confidence)
         )
 
+        prec_id = prec_meta.get("precedent_id") or prec_meta.get("title")
+        delta_preview = bindingness * similarity * recency * stance * confidence
+        self._log(
+            f"       📊 Precedent {prec_id}: bind={bindingness:.2f} "
+            f"sim={similarity:.2f} rec={recency:.2f} stance={stance} "
+            f"conf={confidence:.2f} → δ={delta_preview:.4f} "
+            f"(court='{court[:60]}…' year={year})"
+        )
         return {
-            "precedent_id": prec_meta.get("precedent_id") or prec_meta.get("title"),
+            "precedent_id": prec_id,
             "stance": stance,
             "bindingness": bindingness,
             "similarity": similarity,

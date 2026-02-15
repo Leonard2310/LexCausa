@@ -33,6 +33,10 @@ const COLORS = {
   chainArrow: '#94a3b8',
   neutralBg: '#f3f4f6',
   neutralBorder: '#d1d5db',
+  precBg: '#ede9fe',
+  precBorder: '#7c3aed',
+  precText: '#4c1d95',
+  precEdge: '#8b5cf6',
 };
 
 // ---- layout constants ----
@@ -41,8 +45,12 @@ const NODE_H = 110;
 const V_GAP = 32;
 const COL_GAP = 340;
 const PAD_X = 40;
-const PAD_Y = 50;
+const PAD_Y = 90;
 const CHAIN_ARROW_GAP = 8;
+const PREC_NODE_W = 200;
+const PREC_NODE_H = 70;
+const PREC_GAP_X = 30;
+const PREC_GAP_Y = 24;
 
 // ---- small helpers ----
 const pct = (v) => `${((v ?? 0) * 100).toFixed(0)}%`;
@@ -95,7 +103,7 @@ function ChainNode({ link, x, y, isPro, onClick, isSelected }) {
         base {f2(link.base_score)}
       </text>
       <text x={x + NODE_W / 2 + 10} y={y + 42} fill={text} fontSize="11">
-        Δprec {link.precedent_delta >= 0 ? '+' : ''}{f2(link.precedent_delta)}
+        norms {link.norm_support_details?.citation_count ?? '?'}
       </text>
       {/* metrics row 2 */}
       <text x={x + 10} y={y + 60} fill={text} fontSize="11">
@@ -193,6 +201,76 @@ function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight, isCapped }) 
         {f2(value)} ({pct(overlap)})
       </text>
     </g>
+  );
+}
+
+// ---- PRECEDENT NODE (external, purple) ----
+function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
+  const title = prec.title || prec.precedent_id || 'Precedente';
+  const shortTitle = title.length > 38 ? title.slice(0, 35) + '…' : title;
+  const stanceLabel = prec._stance === 1 ? '✅ support' : prec._stance === -1 ? '❌ against' : '⚖️ neutral';
+
+  return (
+    <g style={{ cursor: 'pointer' }} onClick={() => onClick?.(prec)}>
+      <rect
+        x={x}
+        y={y}
+        width={PREC_NODE_W}
+        height={PREC_NODE_H}
+        rx={12}
+        ry={12}
+        fill={isSelected ? '#faf5ff' : COLORS.precBg}
+        stroke={isSelected ? '#f59e0b' : COLORS.precBorder}
+        strokeWidth={isSelected ? 2.5 : 1.5}
+        strokeDasharray="4 2"
+      />
+      {/* icon */}
+      <text x={x + 10} y={y + 18} fontSize="13">📜</text>
+      {/* title */}
+      <text
+        x={x + 28}
+        y={y + 18}
+        fill={COLORS.precText}
+        fontWeight="700"
+        fontSize="11"
+      >
+        {shortTitle}
+      </text>
+      {/* delta */}
+      <text x={x + 10} y={y + 38} fill={COLORS.precText} fontSize="11" fontWeight="600">
+        Δ {delta >= 0 ? '+' : ''}{f2(delta)}
+      </text>
+      {/* stance */}
+      <text x={x + PREC_NODE_W - 10} y={y + 38} textAnchor="end" fill={COLORS.precText} fontSize="10">
+        {stanceLabel}
+      </text>
+      {/* bindingness + recency */}
+      {prec._bind != null && (
+        <text x={x + 10} y={y + 55} fill="#6b7280" fontSize="9">
+          bind {f2(prec._bind)} · sim {f2(prec._sim)} · rec {f2(prec._rec)} · conf {f2(prec._conf)}
+        </text>
+      )}
+    </g>
+  );
+}
+
+// ---- PRECEDENT EDGE (dashed purple arrow) ----
+function PrecedentEdge({ x1, y1, x2, y2 }) {
+  const midX = (x1 + x2) / 2;
+  const midY = (y1 + y2) / 2;
+  const cpX = midX + (x1 < x2 ? -30 : 30);
+  const cpY = midY - 20;
+  const d = `M ${x1} ${y1} Q ${cpX} ${cpY} ${x2} ${y2}`;
+  return (
+    <path
+      d={d}
+      fill="none"
+      stroke={COLORS.precEdge}
+      strokeWidth={1.5}
+      strokeDasharray="6 3"
+      markerEnd="url(#arrowPrec)"
+      opacity={0.8}
+    />
   );
 }
 
@@ -325,9 +403,10 @@ function AttackDetailPanel({ link, onClose }) {
 }
 
 // ---- MAIN COMPONENT ----
-export default function AspicMetagraph({ aqaReport }) {
+export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
   const svgRef = useRef(null);
   const [selectedLink, setSelectedLink] = useState(null);
+  const [selectedPrec, setSelectedPrec] = useState(null);
   const [zoom, setZoom] = useState(0.85);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -337,6 +416,122 @@ export default function AspicMetagraph({ aqaReport }) {
   const contraLinks = aqaReport?.links?.contra ?? [];
   const chainScores = aqaReport?.chain_scores ?? {};
   const netPlaus = aqaReport?.net_plausibility ?? {};
+
+  // Build precedent nodes with positions and connections
+  const { precNodes, precEdges } = useMemo(() => {
+    const nodes = [];
+    const edges = [];
+    const seen = new Set();
+
+    const processIr = (ir, aLinks, isPro) => {
+      if (!ir) return;
+      const pNodes = ir.precedent_nodes || [];
+      const pLinks = ir.precedent_links || [];
+      if (pNodes.length === 0) return;
+
+      // Build a map from precedent node ID → metadata
+      const pMeta = {};
+      pNodes.forEach((n) => { pMeta[n.id] = n; });
+
+      // Collect delta info from AQA links
+      const deltaByPrecId = {};
+      const influenceByPrecId = {};
+      aLinks.forEach((link) => {
+        (link.precedent_influences || []).forEach((inf) => {
+          const pid = inf.precedent_id;
+          if (pid != null) {
+            deltaByPrecId[pid] = (deltaByPrecId[pid] || 0) + (inf.delta || 0);
+            if (!influenceByPrecId[pid]) influenceByPrecId[pid] = inf;
+          }
+        });
+      });
+
+      // For each precedent node, find which step IDs it links to
+      const precTargets = {};
+      pLinks.forEach((e) => {
+        const from = e.from;
+        if (!precTargets[from]) precTargets[from] = [];
+        precTargets[from].push(e.to);
+      });
+
+      // Build the index of link_id → row for the chain
+      const chainIndex = {};
+      aLinks.forEach((l, i) => { chainIndex[l.conclusion_id] = i; });
+      // Also index by premise step ids
+      aLinks.forEach((l, i) => {
+        (l.premise_ids || []).forEach((pid) => { chainIndex[pid] = i; });
+      });
+
+      // Create a node entry for each unique precedent
+      pNodes.forEach((pn, pidx) => {
+        const precId = pn.precedent_id || pn.id;
+        const dedup = `${isPro ? 'pro' : 'contra'}:${precId}`;
+        if (seen.has(dedup)) return;
+        seen.add(dedup);
+
+        const inf = influenceByPrecId[precId] || {};
+        const totalDelta = deltaByPrecId[precId] || 0;
+        const targets = precTargets[pn.id] || [];
+
+        // Find which chain rows this precedent connects to
+        const targetRows = [];
+        targets.forEach((t) => {
+          // t can be S1, S2, A1.P1, etc.
+          if (chainIndex[t] != null) {
+            targetRows.push(chainIndex[t]);
+          } else {
+            // Try matching step id in link_id like "S1->S2" (premises)
+            aLinks.forEach((l, i) => {
+              if (l.link_id && l.link_id.includes(t)) {
+                targetRows.push(i);
+              }
+            });
+          }
+        });
+        const uniqueRows = [...new Set(targetRows)];
+
+        // Position: outside the chain column
+        const col = isPro ? 0 : 1;
+        const anchorRow = uniqueRows.length > 0 ? Math.min(...uniqueRows) : pidx;
+        const px = isPro
+          ? nodeX(0) - PREC_NODE_W - PREC_GAP_X
+          : nodeX(1) + NODE_W + PREC_GAP_X;
+        const py = nodeY(anchorRow) + pidx * (PREC_NODE_H + PREC_GAP_Y);
+
+        const node = {
+          ...pn,
+          _isPro: isPro,
+          _x: px,
+          _y: py,
+          _delta: totalDelta,
+          _stance: inf.stance ?? 0,
+          _bind: inf.bindingness,
+          _sim: inf.similarity,
+          _rec: inf.recency,
+          _conf: inf.confidence,
+          _targetRows: uniqueRows,
+          _col: col,
+        };
+        nodes.push(node);
+
+        // Create edges to chain nodes
+        uniqueRows.forEach((row) => {
+          edges.push({
+            precX: px + (isPro ? PREC_NODE_W : 0),
+            precY: py + PREC_NODE_H / 2,
+            chainX: isPro ? nodeX(0) : nodeX(1) + NODE_W,
+            chainY: nodeY(row) + NODE_H / 2,
+            isPro,
+          });
+        });
+      });
+    };
+
+    processIr(reasonerIr, proLinks, true);
+    processIr(counterIr, contraLinks, false);
+
+    return { precNodes: nodes, precEdges: edges };
+  }, [reasonerIr, counterIr, proLinks, contraLinks]);
 
   // Build attack edges (only active, cross-chain ones)
   const attackEdges = useMemo(() => {
@@ -389,10 +584,13 @@ export default function AspicMetagraph({ aqaReport }) {
     return edges;
   }, [proLinks, contraLinks]);
 
-  // SVG dimensions
+  // SVG dimensions (account for precedent nodes on sides)
   const maxRows = Math.max(proLinks.length, contraLinks.length, 1);
-  const svgW = PAD_X * 2 + NODE_W * 2 + COL_GAP;
-  const svgH = PAD_Y * 2 + maxRows * (NODE_H + V_GAP) + 80;
+  const precExtraLeft = precNodes.some((p) => p._isPro) ? PREC_NODE_W + PREC_GAP_X + 20 : 0;
+  const precExtraRight = precNodes.some((p) => !p._isPro) ? PREC_NODE_W + PREC_GAP_X + 20 : 0;
+  const svgW = PAD_X * 2 + NODE_W * 2 + COL_GAP + precExtraLeft + precExtraRight;
+  const precMaxY = precNodes.length > 0 ? Math.max(...precNodes.map((p) => p._y + PREC_NODE_H)) : 0;
+  const svgH = PAD_Y * 2 + Math.max(maxRows * (NODE_H + V_GAP), precMaxY - PAD_Y) + 80;
 
   // Zoom handler
   const handleWheel = useCallback((e) => {
@@ -468,6 +666,15 @@ export default function AspicMetagraph({ aqaReport }) {
           />
           Attacco capped (top-K)
         </span>
+        {precNodes.length > 0 && (
+          <span className="metagraph-legend-item">
+            <span
+              className="metagraph-legend-swatch"
+              style={{ background: COLORS.precBg, border: `2px solid ${COLORS.precBorder}` }}
+            />
+            Precedente (Δ)
+          </span>
+        )}
         <span className="metagraph-zoom-info">
           Zoom: {(zoom * 100).toFixed(0)}% · Scroll per zoom, trascina per spostare
         </span>
@@ -536,6 +743,18 @@ export default function AspicMetagraph({ aqaReport }) {
               orient="auto-start-reverse"
             >
               <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.chainArrow} />
+            </marker>
+            {/* Precedent arrowhead (purple) */}
+            <marker
+              id="arrowPrec"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={COLORS.precEdge} />
             </marker>
           </defs>
 
@@ -621,7 +840,7 @@ export default function AspicMetagraph({ aqaReport }) {
                 x={nodeX(0)}
                 y={nodeY(i)}
                 isPro
-                onClick={(l) => setSelectedLink({ ...l, _isPro: true })}
+                onClick={(l) => { setSelectedLink({ ...l, _isPro: true }); setSelectedPrec(null); }}
                 isSelected={selectedLink?.link_id === link.link_id && selectedLink?._isPro === true}
               />
             ))}
@@ -634,8 +853,32 @@ export default function AspicMetagraph({ aqaReport }) {
                 x={nodeX(1)}
                 y={nodeY(i)}
                 isPro={false}
-                onClick={(l) => setSelectedLink({ ...l, _isPro: false })}
+                onClick={(l) => { setSelectedLink({ ...l, _isPro: false }); setSelectedPrec(null); }}
                 isSelected={selectedLink?.link_id === link.link_id && selectedLink?._isPro === false}
+              />
+            ))}
+
+            {/* Precedent edges (behind nodes) */}
+            {precEdges.map((e, i) => (
+              <PrecedentEdge
+                key={`prec-edge-${i}`}
+                x1={e.precX}
+                y1={e.precY}
+                x2={e.chainX}
+                y2={e.chainY}
+              />
+            ))}
+
+            {/* Precedent nodes */}
+            {precNodes.map((prec, i) => (
+              <PrecedentNode
+                key={`prec-${i}`}
+                prec={prec}
+                x={prec._x}
+                y={prec._y}
+                delta={prec._delta}
+                onClick={(p) => { setSelectedPrec(p); setSelectedLink(null); }}
+                isSelected={selectedPrec?.precedent_id === prec.precedent_id && selectedPrec?._isPro === prec._isPro}
               />
             ))}
 
@@ -666,6 +909,82 @@ export default function AspicMetagraph({ aqaReport }) {
           link={selectedLink}
           onClose={() => setSelectedLink(null)}
         />
+      )}
+
+      {/* Detail panel for precedent node */}
+      {selectedPrec && (
+        <div className="metagraph-detail-panel">
+          <div className="metagraph-detail-header">
+            <strong>
+              <span className="role-tag" style={{ background: COLORS.precBg, color: COLORS.precText }}>
+                📜 PREC
+              </span>
+              {selectedPrec.precedent_id || selectedPrec.id}
+            </strong>
+            <button className="metagraph-detail-close" onClick={() => setSelectedPrec(null)}>
+              ✕
+            </button>
+          </div>
+          <div className="metagraph-detail-body">
+            <div className="metagraph-detail-row">
+              <span>Titolo</span>
+              <strong style={{ fontSize: '0.8rem', maxWidth: '300px', textAlign: 'right' }}>{selectedPrec.title || '—'}</strong>
+            </div>
+            <div className="metagraph-detail-row">
+              <span>Δ Delta</span>
+              <strong style={{ color: selectedPrec._delta > 0 ? COLORS.proText : selectedPrec._delta < 0 ? COLORS.contraText : '#6b7280' }}>
+                {selectedPrec._delta >= 0 ? '+' : ''}{f2(selectedPrec._delta)}
+              </strong>
+            </div>
+            <div className="metagraph-detail-row">
+              <span>Stance</span>
+              <strong>{selectedPrec._stance === 1 ? 'Support (+1)' : selectedPrec._stance === -1 ? 'Against (−1)' : 'Neutral (0)'}</strong>
+            </div>
+            <div className="metagraph-detail-row">
+              <span>Bindingness</span>
+              <strong>{f2(selectedPrec._bind)}</strong>
+            </div>
+            <div className="metagraph-detail-row">
+              <span>Similarity</span>
+              <strong>{f2(selectedPrec._sim)}</strong>
+            </div>
+            <div className="metagraph-detail-row">
+              <span>Recency</span>
+              <strong>{f2(selectedPrec._rec)}</strong>
+            </div>
+            <div className="metagraph-detail-row">
+              <span>Confidence</span>
+              <strong>{f2(selectedPrec._conf)}</strong>
+            </div>
+            {selectedPrec.score != null && (
+              <div className="metagraph-detail-row">
+                <span>Search score</span>
+                <strong>{f2(selectedPrec.score)}</strong>
+              </div>
+            )}
+            {selectedPrec.url && (
+              <div className="metagraph-detail-row">
+                <span>URL</span>
+                <a href={selectedPrec.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: '0.75rem', color: '#7c3aed' }}>
+                  Apri ↗
+                </a>
+              </div>
+            )}
+            {selectedPrec.summary && (
+              <>
+                <h6 className="metagraph-detail-sub">Sommario</h6>
+                <p style={{ fontSize: '0.78rem', color: '#374151', lineHeight: 1.4, margin: '4px 0' }}>
+                  {selectedPrec.summary.slice(0, 400)}{selectedPrec.summary.length > 400 ? '…' : ''}
+                </p>
+              </>
+            )}
+            <h6 className="metagraph-detail-sub">Formula Δ</h6>
+            <p style={{ fontSize: '0.78rem', color: '#374151', fontFamily: 'monospace' }}>
+              δ = bind({f2(selectedPrec._bind)}) × sim({f2(selectedPrec._sim)}) × rec({f2(selectedPrec._rec)}) × stance({selectedPrec._stance}) × conf({f2(selectedPrec._conf)})
+              = <strong>{selectedPrec._delta >= 0 ? '+' : ''}{f2(selectedPrec._delta)}</strong>
+            </p>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -208,8 +208,8 @@ class PolisherEvaluator(
             repaired_chain_text=repaired_reasoner_chain,
             claim=claim,
             role="support",
-            statutes=reasoner_output.get("relevant_statutes", []),
-            precedents=reasoner_output.get("relevant_precedents", []),
+            statutes=reasoner_output.get("statutes", reasoner_output.get("relevant_statutes", [])),
+            precedents=reasoner_output.get("precedents", reasoner_output.get("relevant_precedents", [])),
             metadata=reasoner_aspic_ir.get("metadata", {}),
         )
         repaired_counter_aspic = self._repair_aspic_ir(
@@ -218,8 +218,8 @@ class PolisherEvaluator(
             repaired_chain_text=repaired_counter_chain,
             claim=claim,
             role="counter",
-            statutes=counter_reasoner_output.get("relevant_statutes", []),
-            precedents=counter_reasoner_output.get("relevant_precedents", []),
+            statutes=counter_reasoner_output.get("statutes", counter_reasoner_output.get("relevant_statutes", [])),
+            precedents=counter_reasoner_output.get("precedents", counter_reasoner_output.get("relevant_precedents", [])),
             metadata=counter_aspic_ir.get("metadata", {}),
         )
 

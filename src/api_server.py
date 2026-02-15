@@ -9,6 +9,7 @@ Il backend gestisce l'intero flusso: Reasoner  CounterReasoner.
 import json
 import os
 import sys
+import threading
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
@@ -46,6 +47,9 @@ from services.stance_classifier import StanceClassifier  # noqa: E402
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# Prevent concurrent pipeline executions (interleaves logs & shared state)
+_pipeline_lock = threading.Lock()
 
 # ─── Pipeline file logging ──────────────────────────────────────────
 LOG_DIR = Path(project_root) / "logs"
@@ -600,6 +604,10 @@ def pipeline():
     2. CounterReasoner usa la causalità del Reasoner per generare contro-argomenti
     3. Restituisce entrambi i risultati al frontend
     """
+    # Reject concurrent pipeline runs immediately
+    if not _pipeline_lock.acquire(blocking=False):
+        return jsonify({"error": "A pipeline is already running. Please wait."}), 429
+
     try:
         data = request.get_json()
         claim = data.get("claim", "").strip()
@@ -825,6 +833,8 @@ def pipeline():
 
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        _pipeline_lock.release()
 
 
 @app.route("/api/evaluate", methods=["POST"])

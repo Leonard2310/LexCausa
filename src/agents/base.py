@@ -402,71 +402,88 @@ No punctuation. No new lines. No extra spaces.
     def filter_irrelevant_precedents(
         self, claim: str, precedents: list[dict]
     ) -> list[dict]:
+        """Filter precedents by substantive legal relevance to the claim.
+
+        Uses a single LLM call per precedent that evaluates whether the
+        legal question, ratio decidendi, or established principle of the
+        precedent is concretely applicable to the claim — regardless of
+        whether they share the same legal domain.
+
+        On LLM error the precedent is KEPT (same safe-default as statutes).
         """
-        Filtro STRICT: scarta tutto ciò che non è STESSA MATERIA GIURIDICA.
-        """
-        
         if not precedents:
             return precedents
-        
-        self._log(f"🔍 Filtering {len(precedents)} precedents (STRICT mode)")
-        
-        relevant_precedents = []
-        
+
+        self._log(f"🔍 Filtering {len(precedents)} precedents (relevance mode)")
+
+        relevant: list[dict] = []
+
         for idx, precedent in enumerate(precedents, start=1):
             title = precedent.get("title", "Untitled")
             summary = precedent.get("summary", "")
-            materia = precedent.get("materia", "")  # Campo materia dal dataset
+            materia = precedent.get("materia", "")
 
-            prompt = f"""You are a legal expert evaluating precedent relevance.
+            materia_line = f'\nDomain: "{materia}"' if materia else ""
 
-    CLAIM:
-    "{claim}"
+            prompt = f"""You are a senior Italian legal expert.
 
-    PRECEDENT:
-    Title: "{title}"
-    Domain: "{materia}"
-    Summary: "{summary}"
+CLAIM (the legal case under evaluation):
+"{claim}"
 
-    TASK:
-    Determine if this precedent belongs to THE SAME LEGAL DOMAIN as the claim.
+PRECEDENT:
+Title: "{title}"{materia_line}
+Summary: "{summary[:600]}"
 
-    EVALUATION CRITERIA:
-    1. Compare the legal domain of the claim with the precedent's domain
-    2. Answer YES only if they are the SAME domain (e.g., both criminal law, both administrative law, both civil law)
-    3. Answer NO if they are DIFFERENT domains, even if topics seem tangentially related
-    4. Consider these distinct domains:
-    - Criminal law: crimes, offenses, criminal procedure, penalties
-    - Administrative law: public administration, administrative acts, administrative procedure
-    - Civil law: contracts, obligations, torts, property, family law
-    - Labor law: employment relationships, termination, labor disputes
-    - Tax law: taxes, fiscal matters
-    - Commercial/Corporate law: companies, bankruptcy, commercial transactions
+TASK — Decide whether a competent lawyer would cite this precedent
+when arguing the above claim (either to support or to counter it).
 
-    STRICT RULE:
-    Different domains = NO, regardless of any superficial similarity.
+Answer YES when ANY of the following is true:
+1. The precedent addresses the SAME or a closely analogous legal
+   question (e.g. same offence, same cause of action, same defence).
+2. The precedent establishes a legal PRINCIPLE (causation test,
+   evidentiary standard, constitutional interpretation, procedural
+   rule) that directly applies to the claim.
+3. The factual scenario of the precedent is substantially similar to
+   the claim, making the ruling transferable.
 
-    Respond with EXACTLY ONE WORD: YES or NO
-    No explanation. No punctuation. No additional text."""
+Answer NO when:
+- The precedent concerns a completely unrelated area of law with no
+  transferable principle (e.g. tax evasion vs. divorce).
+- The connection is merely superficial (shared keywords but different
+  legal substance).
+
+If uncertain, answer YES.
+
+Respond with EXACTLY one token: YES or NO."""
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = response.content.strip().upper()
             except Exception as e:
-                self._log(f"⚠️ LLM failed for [{idx}]: {e}", "warning")
-                answer = "NO"  # Default to NO on failure
+                self._log(
+                    f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}",
+                    "warning",
+                )
+                answer = "YES"  # safe default: keep on error
 
-            # Parsing STRICT: only exact "YES" is accepted
-            keep = answer == "YES"
+            token = answer.split()[0] if answer else ""
+            keep = token != "NO" and (
+                token == "YES" or "YES" in answer or "NO" not in answer
+            )
 
             if keep:
-                relevant_precedents.append(precedent)
+                relevant.append(precedent)
                 self._log(f"✅ Kept [{idx}] {title}")
             else:
-                self._log(f"❌ Discarded [{idx}] {title}")
+                self._log(f"❌ Discarded [{idx}] {title}", "warning")
 
-        self._log(f"📊 Kept {len(relevant_precedents)}/{len(precedents)}")
-        return relevant_precedents
+        self._log(f"📊 Kept {len(relevant)}/{len(precedents)} precedents")
+        return relevant
+
+
+
 
     def _format_context_for_prompt(
         self,

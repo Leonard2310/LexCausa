@@ -12,7 +12,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
@@ -379,6 +379,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
         pre_retrieved_precedents: List[dict],
         enable_causality: bool = True,
         reasoner_conclusion: str = "",
+        stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> CounterReasonerOutput:
         """
         Execute the counter-reasoning process with pre-retrieved knowledge.
@@ -481,6 +482,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 allowed_statutes=allowed_statutes,
                 allowed_precedents=allowed_precedents,
                 reasoner_conclusion=reasoner_conclusion,
+                stream_callback=stream_callback,
             )
 
             # Build output
@@ -619,6 +621,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
         allowed_statutes: List[str],
         allowed_precedents: List[str],
         reasoner_conclusion: str = "",
+        stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str]]:
         """Generate counter-reasoning chain step-by-step.
 
@@ -782,7 +785,21 @@ CRITICAL RULES:
             self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
 
             try:
-                resp = self._resilient_llm_invoke([HumanMessage(content=step_prompt)])
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=step_prompt)],
+                    stream_callback=(
+                        (
+                            lambda token: self._emit_stream_token(
+                                stream_callback,
+                                phase="counter",
+                                token=token,
+                                step=step_num,
+                            )
+                        )
+                        if stream_callback
+                        else None
+                    ),
+                )
                 step_response = (resp.content or "").strip()
             except Exception as e:
                 self._log(
@@ -839,6 +856,26 @@ CRITICAL RULES:
 
         raw_response = self._assemble_counter_raw_response(claim, steps, attack_id)
         return raw_response, steps
+
+    @staticmethod
+    def _emit_stream_token(
+        stream_callback: Optional[Callable[[dict], None]],
+        *,
+        phase: str,
+        token: str,
+        step: Optional[int] = None,
+    ) -> None:
+        """Emit one token chunk to external streaming callback."""
+        if not stream_callback or not token:
+            return
+        payload: dict[str, str | int] = {"phase": phase, "token": token}
+        if step is not None:
+            payload["step"] = step
+        try:
+            stream_callback(payload)
+        except Exception:
+            # Streaming callback errors must never break counter-generation.
+            pass
 
     def _parse_step_text(self, response: str) -> str:
         """Extract the step text from an LLM response.

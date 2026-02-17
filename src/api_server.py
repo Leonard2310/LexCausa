@@ -15,8 +15,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
+from queue import Queue
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 
 warnings.filterwarnings("ignore")
@@ -104,6 +105,96 @@ def _pipeline_logger(claim: str):
             print(f"⚠️ Errore salvataggio log: {exc}")
 
 
+def _slugify_filename(text: str, max_len: int = 60) -> str:
+    clean = (text or "").strip().replace("\n", " ")
+    safe = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in clean)
+    safe = "_".join(part for part in safe.split("_") if part)
+    return (safe[:max_len] or "claim").strip("_")
+
+
+def _persist_repaired_aspic_files(claim: str, evaluation_payload: dict) -> dict:
+    """Persist repaired ASPIC+ IR JSON files (reasoner/counter) under logs/aspic_repairs."""
+    if not isinstance(evaluation_payload, dict):
+        return {}
+
+    repaired_reasoner = evaluation_payload.get("repaired_reasoner_aspic_ir") or {}
+    repaired_counter = evaluation_payload.get("repaired_counter_aspic_ir") or {}
+
+    if not isinstance(repaired_reasoner, dict):
+        repaired_reasoner = {}
+    if not isinstance(repaired_counter, dict):
+        repaired_counter = {}
+
+    if not repaired_reasoner and not repaired_counter:
+        return {}
+
+    out_dir = LOG_DIR / "aspic_repairs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = _slugify_filename(claim)
+    files: dict[str, dict[str, str]] = {}
+
+    def _write_json(role: str, payload: dict) -> None:
+        filename = f"{ts}_{slug}_{role}_repaired_aspic_ir.json"
+        path = out_dir / filename
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        files[role] = {
+            "absolute_path": str(path),
+            "relative_path": str(path.relative_to(project_root)),
+        }
+
+    try:
+        if repaired_reasoner:
+            _write_json("reasoner", repaired_reasoner)
+        if repaired_counter:
+            _write_json("counter_reasoner", repaired_counter)
+    except Exception as exc:
+        print(f"⚠️ Errore salvataggio ASPIC+ riparato: {exc}")
+        return {}
+
+    if files:
+        print(f"🧩 ASPIC+ riparati salvati: {files}")
+    return files
+
+
+def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
+    """Persist AQA report JSON under logs/aqa_reports."""
+    if not isinstance(evaluation_payload, dict):
+        return {}
+
+    aqa_report = evaluation_payload.get("aqa_report")
+    if not isinstance(aqa_report, dict) or not aqa_report:
+        return {}
+
+    out_dir = LOG_DIR / "aqa_reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = _slugify_filename(claim)
+    filename = f"{ts}_{slug}_aqa_report.json"
+    path = out_dir / filename
+
+    try:
+        path.write_text(
+            json.dumps(aqa_report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        print(f"⚠️ Errore salvataggio report AQA: {exc}")
+        return {}
+
+    payload = {
+        "absolute_path": str(path),
+        "relative_path": str(path.relative_to(project_root)),
+    }
+    print(f"📊 Report AQA salvato: {payload}")
+    return payload
+
+
 # Agenti globali (lazy initialization)
 classifier = None
 reasoner = None
@@ -189,7 +280,9 @@ def prepare_claim_context(
     current_top_k = max_statutes
     articles = pipe.vector_search(embedding, libri_filters, current_top_k)
     statutes = _articles_to_dicts(articles)
+    legal_context = reas._extract_legal_context(claim)
     kept_statutes = reas.filter_irrelevant_statutes(claim, statutes)
+    kept_statutes = reas.filter_applicable_statutes(claim, kept_statutes, legal_context)
     seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
 
     print(
@@ -219,6 +312,7 @@ def prepare_claim_context(
 
         seen_ids.update(s["statute_id"] for s in new_statutes)
         new_kept = reas.filter_irrelevant_statutes(claim, new_statutes)
+        new_kept = reas.filter_applicable_statutes(claim, new_kept, legal_context)
         kept_statutes.extend(new_kept)
 
         print(
@@ -406,6 +500,7 @@ def get_settings():
                 "llm_temperature": settings.llm_temperature,
                 "llm_max_tokens": settings.llm_max_tokens,
                 "search_top_k_default": settings.search_top_k_default,
+                "search_min_kept_statutes": settings.search_min_kept_statutes,
                 "search_use_top_n_libri": settings.search_use_top_n_libri,
                 "precedents_limit_default": settings.precedents_limit_default,
                 "include_precedents": True,
@@ -595,276 +690,352 @@ def counter_reason():
         return jsonify({"error": str(e)}), 500
 
 
+def _sse_event(event: str, payload: dict) -> str:
+    """Encode one Server-Sent Event frame."""
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _run_full_pipeline(
+    data: dict,
+    *,
+    status_callback=None,
+    token_callback=None,
+    progress_callback=None,
+) -> dict:
+    """Execute the full pipeline and optionally emit status/token callbacks."""
+    if not isinstance(data, dict):
+        data = {}
+
+    status_callback = status_callback or (lambda _msg: None)
+    token_callback = token_callback or (lambda _payload: None)
+    progress_callback = progress_callback or (lambda _event, _payload: None)
+
+    def _emit_progress(event_name: str, payload: dict) -> None:
+        try:
+            progress_callback(event_name, payload)
+        except Exception:
+            # Progress streaming must never break pipeline execution.
+            pass
+
+    def _emit_phase(
+        phase: str, status: str, progress: int, detail: str | None = None
+    ) -> None:
+        _emit_progress(
+            "phase",
+            {
+                "phase": phase,
+                "status": status,
+                "progress": max(0, min(100, int(progress))),
+                "detail": detail or "",
+            },
+        )
+
+    claim = (data.get("claim", "") or "").strip()
+    include_precedents = data.get("include_precedents", True)
+    max_statutes = data.get("max_statutes", settings.search_top_k_default)
+    max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+
+    # ── Frontend-configurable settings ────────────────────────────────
+    fe_settings = data.get("settings", {}) or {}
+    fe_temperature = fe_settings.get("llm_temperature")
+    fe_max_tokens = fe_settings.get("llm_max_tokens")
+    # Per-step model selection (primary + fallback derived automatically)
+    fe_reasoner_model = fe_settings.get("reasoner_model")
+    fe_counter_model = fe_settings.get("counter_model")
+    # AQA weights
+    fe_aqa_alpha = fe_settings.get("aqa_alpha")
+    fe_aqa_beta = fe_settings.get("aqa_beta")
+    fe_aqa_gamma = fe_settings.get("aqa_gamma")
+    # AQA attack parameters
+    fe_aqa_min_semantic_overlap = fe_settings.get("aqa_min_semantic_overlap")
+    fe_aqa_min_strength_ratio = fe_settings.get("aqa_min_strength_ratio")
+    fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
+    fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
+    fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
+    fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
+    fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
+    fe_chain_min_steps = fe_settings.get("chain_min_steps")
+    fe_chain_max_steps = fe_settings.get("chain_max_steps")
+    fe_enable_causality = fe_settings.get("enable_causality", True)
+
+    if not claim:
+        raise ValueError('Campo "claim" obbligatorio')
+
+    status_callback("Avvio pipeline completa...")
+    _emit_phase("context_setup", "active", 5, "Routing iniziale")
+
+    with _pipeline_logger(claim):
+        print(f"\n{'='*70}")
+        print("🚀 FULL PIPELINE - START")
+        print(f"{'='*70}")
+        print(f"Claim: {claim[:100]}...")
+
+        if fe_settings:
+            print(f"⚙️  Frontend settings override: {fe_settings}")
+        if not fe_enable_causality:
+            print("🔬 Causality taxonomy DISABLED by frontend settings")
+
+        # Apply chain step overrides to global settings
+        if fe_chain_min_steps is not None:
+            settings.chain_min_steps = int(fe_chain_min_steps)
+        if fe_chain_max_steps is not None:
+            settings.chain_max_steps = int(fe_chain_max_steps)
+        if fe_search_min_kept_statutes is not None:
+            settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
+
+        status_callback("Preparazione contesto giuridico...")
+        _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
+        routing_decision = resolve_routing_decision(claim, data)
+        _emit_phase("context_setup", "active", 32, "Recupero norme e precedenti")
+
+        # Preload context once for both reasoners
+        statutes, precedents = prepare_claim_context(
+            claim=claim,
+            include_precedents=include_precedents,
+            max_statutes=max_statutes,
+            max_precedents=max_precedents,
+        )
+        _emit_phase(
+            "context_setup", "active", 68, "Classificazione NLI supporto/contrasto"
+        )
+
+        # Classify stance using NLI to separate support vs against
+        (
+            support_statutes,
+            against_statutes,
+            support_precedents,
+            against_precedents,
+        ) = classify_stance_for_agents(claim, statutes, precedents)
+
+        # STEP 1: main supportive reasoning
+        print(f"\n{'─'*70}")
+        print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
+        print(f"{'─'*70}")
+        print(
+            f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
+        )
+        _emit_phase("context_setup", "done", 100, "Contesto pronto")
+        _emit_phase("support", "active", 8, "Generazione ragionamento")
+        status_callback("Generazione argomentazione principale in corso...")
+
+        reasoner_config = _build_agent_config(
+            model_override=fe_reasoner_model,
+            temperature=fe_temperature,
+            max_tokens=fe_max_tokens,
+        )
+        reas = Reasoner(config=reasoner_config)
+        reasoner_result = reas.run(
+            claim=claim,
+            routing_decision=routing_decision,
+            pre_retrieved_statutes=support_statutes,
+            pre_retrieved_precedents=support_precedents,
+            enable_causality=fe_enable_causality,
+            stream_callback=token_callback,
+        )
+        _emit_phase("support", "active", 97, "Costruzione ASPIC+ e output finale")
+        _emit_progress("reasoner_result", reasoner_result.to_dict())
+        final_routing_decision = RoutingDecision(
+            claim=claim,
+            domain=routing_decision.domain,
+            causal_type_id=reasoner_result.causal_type_id,
+            theory_id=reasoner_result.theory_id,
+            anchor_norms=reasoner_result.anchor_norms,
+            principle_tests=reasoner_result.principle_tests,
+            additional_causal_types=reasoner_result.causal_type_ids_for_counter,
+        )
+
+        print("✅ Reasoner completed")
+        print(
+            f"   - Domain: {routing_decision.domain} -> Causal type: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
+        )
+        print(f"   - Mismatch status: {reasoner_result.mismatch_status}")
+        print(
+            f"   - Anchor norms: core={len(reasoner_result.anchor_norms.get('core_norms', []))}, accessory={len(reasoner_result.anchor_norms.get('accessory_norms', []))}"
+        )
+        print(f"   - Statutes for reasoning: {len(reasoner_result.relevant_statutes)}")
+        print(f"   - Arguments: {len(reasoner_result.arguments)}")
+        print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
+        _emit_phase("support", "done", 100, "Argomentazione completata")
+        _emit_phase("counter", "active", 8, "Generazione contro-argomentazione")
+
+        # STEP 2: counter reasoning
+        print(f"\n{'─'*70}")
+        print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
+        print(f"{'─'*70}")
+        print(
+            f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
+        )
+        status_callback("Generazione argomentazione contraria in corso...")
+
+        counter_config = _build_agent_config(
+            model_override=fe_counter_model,
+            temperature=fe_temperature,
+            max_tokens=fe_max_tokens,
+        )
+        cr = CounterReasoner(config=counter_config)
+
+        # Opposition consistency is validated by the Polisher gate.
+        reasoner_conclusion = reasoner_result.conclusion or ""
+        if not reasoner_conclusion:
+            print(
+                "ℹ️ Reasoner conclusion unavailable: no fallback applied. "
+                "Opposition check is delegated to Polisher gate."
+            )
+        else:
+            print(
+                "ℹ️ Reasoner conclusion captured for Counter traceability: "
+                f"{reasoner_conclusion[:120]}..."
+            )
+
+        counter_result = cr.run(
+            claim=claim,
+            routing_decision=final_routing_decision,
+            pre_retrieved_statutes=against_statutes,
+            pre_retrieved_precedents=against_precedents,
+            enable_causality=fe_enable_causality,
+            reasoner_conclusion=reasoner_conclusion,
+            stream_callback=token_callback,
+        )
+        _emit_phase("counter", "active", 97, "Costruzione ASPIC+ e output finale")
+        counter_result.reasoner_conclusion_context = reasoner_conclusion
+
+        print("✅ Counter-Reasoner completed")
+        print(
+            f"   - Causal type: {counter_result.causal_type_id} / {counter_result.theory_id}"
+        )
+        print(f"   - Selected attack: {counter_result.selected_attack_id}")
+        print(
+            f"   - Statutes for counter-reasoning: {len(counter_result.relevant_statutes)}"
+        )
+        print(f"   - Counter-arguments: {len(counter_result.counter_arguments)}")
+        print(
+            f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
+        )
+        _emit_phase("counter", "done", 100, "Contro-argomentazione completata")
+        _emit_phase("final_evaluation", "active", 10, "Avvio verifica consistenza")
+
+        # STEP 3: final consistency/evaluation
+        print(f"\n{'─'*70}")
+        print("📊 STEP 3: Polisher-Evaluator (consistency check)...")
+        print(f"{'─'*70}")
+        status_callback("Verifica finale e valutazione in corso...")
+
+        pe = get_polisher_evaluator()
+
+        # Apply AQA weight overrides if provided by frontend
+        if fe_aqa_alpha is not None:
+            settings.aqa_alpha = float(fe_aqa_alpha)
+        if fe_aqa_beta is not None:
+            settings.aqa_beta = float(fe_aqa_beta)
+        if fe_aqa_gamma is not None:
+            settings.aqa_gamma = float(fe_aqa_gamma)
+        # Apply AQA attack parameter overrides
+        if fe_aqa_min_semantic_overlap is not None:
+            settings.aqa_min_semantic_overlap = float(fe_aqa_min_semantic_overlap)
+        if fe_aqa_min_strength_ratio is not None:
+            settings.aqa_min_strength_ratio = float(fe_aqa_min_strength_ratio)
+        if fe_aqa_damage_factor is not None:
+            settings.aqa_damage_factor = float(fe_aqa_damage_factor)
+        if fe_aqa_allow_factual_attacks is not None:
+            settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
+        if fe_aqa_allow_cross_codice is not None:
+            settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
+        if fe_aqa_strength_ratio_by_type is not None:
+            settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
+
+        evaluation_result = pe.run(
+            claim=claim,
+            domain=final_routing_decision.domain,
+            reasoner_output=reasoner_result.to_dict(),
+            counter_reasoner_output=counter_result.to_dict(),
+            progress_callback=_emit_progress,
+        )
+
+        # Apply Polisher counter gate to the returned counter output
+        counter_gate = (
+            (evaluation_result.counter_reasoner_gate or {})
+            if hasattr(evaluation_result, "counter_reasoner_gate")
+            else {}
+        )
+        if counter_gate.get("abstain"):
+            counter_result.abstained = True
+            if not counter_result.abstention_reason:
+                counter_result.abstention_reason = counter_gate.get(
+                    "reason",
+                    "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
+                )
+            print("⚠️ Counter-Reasoner aggiornato dal Polisher gate")
+            print(f"   - Gate label: {counter_gate.get('label')}")
+            print(
+                f"   - Gate reason: {counter_gate.get('reason', counter_result.abstention_reason)}"
+            )
+        _emit_progress("counter_result", counter_result.to_dict())
+
+        # Derive winning_side and confidence from AQA verdict
+        aqa = evaluation_result.aqa_report or {}
+        aqa_verdict = aqa.get("verdict", "uncertain")
+        aqa_net = aqa.get("net_plausibility", {})
+        verdict_map = {
+            "plausible": "support",
+            "implausible": "counter",
+            "uncertain": "undecided",
+        }
+        evaluation_result.winning_side = verdict_map.get(aqa_verdict, "undecided")
+        evaluation_result.confidence = abs(aqa_net.get("final", 0.0))
+        evaluation_payload = evaluation_result.to_dict()
+        repaired_aspic_files = _persist_repaired_aspic_files(claim, evaluation_payload)
+        if repaired_aspic_files:
+            evaluation_payload["repaired_aspic_files"] = repaired_aspic_files
+            _emit_progress(
+                "evaluation_partial",
+                {"repaired_aspic_files": repaired_aspic_files},
+            )
+        aqa_report_file = _persist_aqa_report_file(claim, evaluation_payload)
+        if aqa_report_file:
+            evaluation_payload["aqa_report_file"] = aqa_report_file
+            _emit_progress("evaluation_partial", {"aqa_report_file": aqa_report_file})
+        _emit_progress("evaluation_result", evaluation_payload)
+
+        print("✅ Polisher-Evaluator completed")
+        print(f"   - Winning side: {evaluation_result.winning_side}")
+        print(f"   - Confidence: {evaluation_result.confidence:.2f}")
+        print(
+            f"   - AQA verdict: {aqa_verdict} "
+            f"(pro={aqa_net.get('pro', 0):.2f}, "
+            f"contra={aqa_net.get('contra', 0):.2f}, "
+            f"final={aqa_net.get('final', 0):.2f})"
+        )
+
+        print(f"\n{'='*70}")
+        print("✅ FULL PIPELINE - END")
+        print(f"{'='*70}\n")
+
+    status_callback("Pipeline completata.")
+    _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
+    return {
+        "claim": claim,
+        "routing": routing_decision.to_dict(),
+        "final_routing": final_routing_decision.to_dict(),
+        "reasoner": reasoner_result.to_dict(),
+        "counter_reasoner": counter_result.to_dict(),
+        "evaluation": evaluation_payload,
+    }
+
+
 @app.route("/api/pipeline", methods=["POST"])
 def pipeline():
     """
-    Endpoint per la pipeline completa (Tab Pipeline Completa).
-
-    Gestisce l'intero flusso nel backend:
-    1. Reasoner analizza il claim e produce causalità + argomenti
-    2. CounterReasoner usa la causalità del Reasoner per generare contro-argomenti
-    3. Restituisce entrambi i risultati al frontend
+    Endpoint JSON classico per la pipeline completa.
     """
-    # Reject concurrent pipeline runs immediately
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
 
     try:
-        data = request.get_json()
-        claim = data.get("claim", "").strip()
-        include_precedents = data.get("include_precedents", True)
-        max_statutes = data.get("max_statutes", settings.search_top_k_default)
-        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
-
-        # ── Frontend-configurable settings ────────────────────────────────
-        fe_settings = data.get("settings", {})
-        fe_temperature = fe_settings.get("llm_temperature")
-        fe_max_tokens = fe_settings.get("llm_max_tokens")
-        # Per-step model selection (primary + fallback derived automatically)
-        fe_reasoner_model = fe_settings.get("reasoner_model")
-        fe_counter_model = fe_settings.get("counter_model")
-        # AQA weights
-        fe_aqa_alpha = fe_settings.get("aqa_alpha")
-        fe_aqa_beta = fe_settings.get("aqa_beta")
-        fe_aqa_gamma = fe_settings.get("aqa_gamma")
-        # AQA attack parameters
-        fe_aqa_min_semantic_overlap = fe_settings.get("aqa_min_semantic_overlap")
-        fe_aqa_min_strength_ratio = fe_settings.get("aqa_min_strength_ratio")
-        fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
-        fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
-        fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
-        fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
-        fe_chain_min_steps = fe_settings.get("chain_min_steps")
-        fe_chain_max_steps = fe_settings.get("chain_max_steps")
-        fe_enable_causality = fe_settings.get("enable_causality", True)
-
-        if not claim:
-            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
-
-        with _pipeline_logger(claim):
-            print(f"\n{'='*70}")
-            print("🚀 FULL PIPELINE - START")
-            print(f"{'='*70}")
-            print(f"Claim: {claim[:100]}...")
-
-            if fe_settings:
-                print(f"⚙️  Frontend settings override: {fe_settings}")
-            if not fe_enable_causality:
-                print("🔬 Causality taxonomy DISABLED by frontend settings")
-
-            # Apply chain step overrides to global settings
-            if fe_chain_min_steps is not None:
-                settings.chain_min_steps = int(fe_chain_min_steps)
-            if fe_chain_max_steps is not None:
-                settings.chain_max_steps = int(fe_chain_max_steps)
-
-            routing_decision = resolve_routing_decision(claim, data)
-
-            # Preload context once for both Reasoner and Counter-Reasoner
-            statutes, precedents = prepare_claim_context(
-                claim=claim,
-                include_precedents=include_precedents,
-                max_statutes=max_statutes,
-                max_precedents=max_precedents,
-            )
-
-            # Classify stance using NLI to separate support vs against
-            (
-                support_statutes,
-                against_statutes,
-                support_precedents,
-                against_precedents,
-            ) = classify_stance_for_agents(claim, statutes, precedents)
-
-            # STEP 1: Reasoner (receives SUPPORT articles/precedents)
-            print(f"\n{'─'*70}")
-            print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
-            print(f"{'─'*70}")
-            print(
-                f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
-            )
-
-            # Build per-step agent with optional model/temperature/max_tokens overrides
-            reasoner_config = _build_agent_config(
-                model_override=fe_reasoner_model,
-                temperature=fe_temperature,
-                max_tokens=fe_max_tokens,
-            )
-            reas = Reasoner(config=reasoner_config)
-            reasoner_result = reas.run(
-                claim=claim,
-                routing_decision=routing_decision,
-                pre_retrieved_statutes=support_statutes,
-                pre_retrieved_precedents=support_precedents,
-                enable_causality=fe_enable_causality,
-            )
-            final_routing_decision = RoutingDecision(
-                claim=claim,
-                domain=routing_decision.domain,
-                causal_type_id=reasoner_result.causal_type_id,
-                theory_id=reasoner_result.theory_id,
-                anchor_norms=reasoner_result.anchor_norms,
-                principle_tests=reasoner_result.principle_tests,
-                additional_causal_types=reasoner_result.causal_type_ids_for_counter,
-            )
-
-            print("✅ Reasoner completed")
-            print(
-                f"   - Domain: {routing_decision.domain} -> Causal type: {final_routing_decision.causal_type_id} / {final_routing_decision.theory_id}"
-            )
-            print(f"   - Mismatch status: {reasoner_result.mismatch_status}")
-            print(
-                f"   - Anchor norms: core={len(reasoner_result.anchor_norms.get('core_norms', []))}, accessory={len(reasoner_result.anchor_norms.get('accessory_norms', []))}"
-            )
-            print(
-                f"   - Statutes for reasoning: {len(reasoner_result.relevant_statutes)}"
-            )
-            print(f"   - Arguments: {len(reasoner_result.arguments)}")
-            print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
-
-            # STEP 2: Counter-Reasoner (receives AGAINST articles/precedents)
-            print(f"\n{'─'*70}")
-            print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
-            print(f"{'─'*70}")
-            print(
-                f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
-            )
-
-            counter_config = _build_agent_config(
-                model_override=fe_counter_model,
-                temperature=fe_temperature,
-                max_tokens=fe_max_tokens,
-            )
-            cr = CounterReasoner(config=counter_config)
-
-            # Opposition consistency is validated by the Polisher gate.
-            reasoner_conclusion = reasoner_result.conclusion or ""
-            if not reasoner_conclusion:
-                print(
-                    "ℹ️ Reasoner conclusion unavailable: no fallback applied. "
-                    "Opposition check is delegated to Polisher gate."
-                )
-            else:
-                print(
-                    "ℹ️ Reasoner conclusion captured for Counter traceability: "
-                    f"{reasoner_conclusion[:120]}..."
-                )
-
-            counter_result = cr.run(
-                claim=claim,
-                routing_decision=final_routing_decision,
-                pre_retrieved_statutes=against_statutes,
-                pre_retrieved_precedents=against_precedents,
-                enable_causality=fe_enable_causality,
-                reasoner_conclusion=reasoner_conclusion,
-            )
-            counter_result.reasoner_conclusion_context = reasoner_conclusion
-
-            print("✅ Counter-Reasoner completed")
-            print(
-                f"   - Causal type: {counter_result.causal_type_id} / {counter_result.theory_id}"
-            )
-            print(f"   - Selected attack: {counter_result.selected_attack_id}")
-            print(
-                f"   - Statutes for counter-reasoning: {len(counter_result.relevant_statutes)}"
-            )
-            print(f"   - Counter-arguments: {len(counter_result.counter_arguments)}")
-            print(
-                f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
-            )
-
-            # STEP 3: Polisher-Evaluator (consistency check)
-            print(f"\n{'─'*70}")
-            print("📊 STEP 3: Polisher-Evaluator (consistency check)...")
-            print(f"{'─'*70}")
-
-            pe = get_polisher_evaluator()
-
-            # Apply AQA weight overrides if provided by frontend
-            if fe_aqa_alpha is not None:
-                settings.aqa_alpha = float(fe_aqa_alpha)
-            if fe_aqa_beta is not None:
-                settings.aqa_beta = float(fe_aqa_beta)
-            if fe_aqa_gamma is not None:
-                settings.aqa_gamma = float(fe_aqa_gamma)
-            # Apply AQA attack parameter overrides
-            if fe_aqa_min_semantic_overlap is not None:
-                settings.aqa_min_semantic_overlap = float(fe_aqa_min_semantic_overlap)
-            if fe_aqa_min_strength_ratio is not None:
-                settings.aqa_min_strength_ratio = float(fe_aqa_min_strength_ratio)
-            if fe_aqa_damage_factor is not None:
-                settings.aqa_damage_factor = float(fe_aqa_damage_factor)
-            if fe_aqa_allow_factual_attacks is not None:
-                settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
-            if fe_aqa_allow_cross_codice is not None:
-                settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
-            if fe_aqa_strength_ratio_by_type is not None:
-                settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
-
-            evaluation_result = pe.run(
-                claim=claim,
-                domain=final_routing_decision.domain,
-                reasoner_output=reasoner_result.to_dict(),
-                counter_reasoner_output=counter_result.to_dict(),
-            )
-
-            # Apply Polisher counter gate to the returned counter output
-            counter_gate = (
-                (evaluation_result.counter_reasoner_gate or {})
-                if hasattr(evaluation_result, "counter_reasoner_gate")
-                else {}
-            )
-            if counter_gate.get("abstain"):
-                counter_result.abstained = True
-                if not counter_result.abstention_reason:
-                    counter_result.abstention_reason = counter_gate.get(
-                        "reason",
-                        "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
-                    )
-                print("⚠️ Counter-Reasoner aggiornato dal Polisher gate")
-                print(f"   - Gate label: {counter_gate.get('label')}")
-                print(
-                    f"   - Gate reason: {counter_gate.get('reason', counter_result.abstention_reason)}"
-                )
-
-            # Derive winning_side and confidence from AQA verdict
-            aqa = evaluation_result.aqa_report or {}
-            aqa_verdict = aqa.get("verdict", "uncertain")
-            aqa_net = aqa.get("net_plausibility", {})
-            verdict_map = {
-                "plausible": "support",
-                "implausible": "counter",
-                "uncertain": "undecided",
-            }
-            evaluation_result.winning_side = verdict_map.get(aqa_verdict, "undecided")
-            evaluation_result.confidence = abs(aqa_net.get("final", 0.0))
-
-            print("✅ Polisher-Evaluator completed")
-            print(f"   - Winning side: {evaluation_result.winning_side}")
-            print(f"   - Confidence: {evaluation_result.confidence:.2f}")
-            print(
-                f"   - AQA verdict: {aqa_verdict} "
-                f"(pro={aqa_net.get('pro', 0):.2f}, "
-                f"contra={aqa_net.get('contra', 0):.2f}, "
-                f"final={aqa_net.get('final', 0):.2f})"
-            )
-
-            print(f"\n{'='*70}")
-            print("✅ FULL PIPELINE - END")
-            print(f"{'='*70}\n")
-
-        # Restituisci entrambi i risultati
-        return jsonify(
-            {
-                "claim": claim,
-                "routing": routing_decision.to_dict(),
-                "final_routing": final_routing_decision.to_dict(),
-                "reasoner": reasoner_result.to_dict(),
-                "counter_reasoner": counter_result.to_dict(),
-                "evaluation": evaluation_result.to_dict(),
-            }
-        )
-
+        data = request.get_json(silent=True) or {}
+        result = _run_full_pipeline(data)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         print(f"\n{'='*70}")
         print("❌ PIPELINE ERROR")
@@ -876,6 +1047,77 @@ def pipeline():
         return jsonify({"error": str(e)}), 500
     finally:
         _pipeline_lock.release()
+
+
+@app.route("/api/pipeline/stream", methods=["POST"])
+def pipeline_stream():
+    """
+    Endpoint SSE con streaming token-by-token della pipeline completa.
+    """
+    if not _pipeline_lock.acquire(blocking=False):
+        return jsonify({"error": "A pipeline is already running. Please wait."}), 429
+
+    data = request.get_json(silent=True) or {}
+    event_queue: Queue = Queue()
+    sentinel = object()
+
+    def push_status(message: str) -> None:
+        event_queue.put(("status", {"message": message}))
+
+    def push_token(payload: dict) -> None:
+        event_queue.put(("token", payload))
+
+    def push_progress(event_name: str, payload: dict) -> None:
+        event_queue.put((event_name, payload))
+
+    def push_error(message: str, code: int) -> None:
+        event_queue.put(("error", {"message": message, "code": code}))
+
+    def _worker() -> None:
+        try:
+            result = _run_full_pipeline(
+                data,
+                status_callback=push_status,
+                token_callback=push_token,
+                progress_callback=push_progress,
+            )
+            event_queue.put(("final", result))
+        except ValueError as e:
+            push_error(str(e), 400)
+        except Exception as e:
+            print(f"\n{'='*70}")
+            print("❌ PIPELINE STREAM ERROR")
+            print(f"{'='*70}")
+            print(f"Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            push_error(str(e), 500)
+        finally:
+            event_queue.put(("done", {"ok": True}))
+            event_queue.put(sentinel)
+            _pipeline_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    @stream_with_context
+    def generate():
+        while True:
+            item = event_queue.get()
+            if item is sentinel:
+                break
+            event, payload = item
+            yield _sse_event(event, payload)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.route("/api/evaluate", methods=["POST"])
@@ -902,7 +1144,14 @@ def evaluate():
             counter_reasoner_output=counter_output,
         )
 
-        return jsonify(result.to_dict())
+        payload = result.to_dict()
+        repaired_aspic_files = _persist_repaired_aspic_files(claim, payload)
+        if repaired_aspic_files:
+            payload["repaired_aspic_files"] = repaired_aspic_files
+        aqa_report_file = _persist_aqa_report_file(claim, payload)
+        if aqa_report_file:
+            payload["aqa_report_file"] = aqa_report_file
+        return jsonify(payload)
 
     except Exception as e:
         print(f"❌ Errore evaluation: {e}")
@@ -955,6 +1204,7 @@ if __name__ == "__main__":
     print("  • POST /api/reason          - Ragionamento causale (Tab Ragionamento)")
     print("  • POST /api/counter_reason  - Contro-ragionamento")
     print("  • POST /api/pipeline        - Pipeline completa")
+    print("  • POST /api/pipeline/stream - Pipeline completa (SSE token streaming)")
     print("  • POST /api/evaluate        - Valutazione finale (stub)")
     print()
     print("=" * 70)

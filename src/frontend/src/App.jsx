@@ -14,6 +14,68 @@ const TABS = {
 // API base URL - uses proxy in development
 const API_BASE = '/api';
 
+const TAB_WELCOME_MESSAGES = {
+  [TABS.SEARCH]:
+    'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile e Penale italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.',
+  [TABS.REASON]:
+    'Ciao! Sono LexCausa, il tuo assistente per il ragionamento giuridico. Inserisci un claim e costruirò un percorso argomentativo strutturato, passo dopo passo.',
+  [TABS.PIPELINE]:
+    'Ciao! Sono LexCausa, il tuo assistente per l’analisi completa del caso. Inserisci un claim e riceverai una valutazione strutturata con argomentazioni a favore e contro, più un esito finale.',
+};
+
+const PIPELINE_PHASES = [
+  { key: 'context_setup', label: 'Preparazione contesto' },
+  { key: 'support', label: 'Argomentazione principale' },
+  { key: 'counter', label: 'Argomentazione contraria' },
+  { key: 'final_evaluation', label: 'Verifica finale' },
+];
+
+const createLivePipelineResult = (claim) => ({
+  claim,
+  reasoner: {
+    raw_response: '',
+    statutes: [],
+    precedents: [],
+  },
+  counter_reasoner: {
+    raw_response: '',
+    statutes: [],
+    precedents: [],
+  },
+  evaluation: {},
+  _stream: {
+    phases: {
+      context_setup: 'pending',
+      support: 'pending',
+      counter: 'pending',
+      final_evaluation: 'pending',
+    },
+    phase_progress: {
+      context_setup: 0,
+      support: 0,
+      counter: 0,
+      final_evaluation: 0,
+    },
+    phase_details: {
+      context_setup: '',
+      support: '',
+      counter: '',
+      final_evaluation: '',
+    },
+    support_max_step: 0,
+    counter_max_step: 0,
+    evaluation_checks_processed: 0,
+    evaluation_expected_checks_by_agent: {
+      reasoner: 0,
+      counter_reasoner: 0,
+    },
+    evaluation_live_log: [],
+    support_steps: {},
+    counter_steps: {},
+    support_conclusion_live: '',
+  },
+});
+
 /** Collapsible list: shows first `limit` items, then a "Mostra tutti" button */
 function CollapsibleList({ items, limit = 5, renderItem }) {
   const [expanded, setExpanded] = useState(false);
@@ -40,18 +102,19 @@ function CollapsibleList({ items, limit = 5, renderItem }) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(TABS.SEARCH);
+  const [activeTab, setActiveTab] = useState(TABS.PIPELINE);
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content:
-        'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile e Penale italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.',
+      content: TAB_WELCOME_MESSAGES[TABS.SEARCH],
     },
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [reasoningResult, setReasoningResult] = useState(null);
   const [pipelineResult, setPipelineResult] = useState(null);
+  const [reasonMessages, setReasonMessages] = useState([]);
+  const [pipelineMessages, setPipelineMessages] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [pipelineSettings, setPipelineSettings] = useState({
@@ -60,6 +123,7 @@ export default function App() {
     llm_temperature: 0.3,
     llm_max_tokens: 8192,
     search_top_k_default: 100,
+    search_min_kept_statutes: 10,
     search_use_top_n_libri: 3,
     precedents_limit_default: 5,
     include_precedents: true,
@@ -84,7 +148,7 @@ export default function App() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, reasoningResult, pipelineResult]);
+  }, [messages, reasonMessages, pipelineMessages, reasoningResult, pipelineResult]);
 
   // Load default settings from backend on mount
   useEffect(() => {
@@ -100,6 +164,7 @@ export default function App() {
           llm_temperature: d.llm_temperature ?? prev.llm_temperature,
           llm_max_tokens: d.llm_max_tokens ?? prev.llm_max_tokens,
           search_top_k_default: d.search_top_k_default ?? prev.search_top_k_default,
+          search_min_kept_statutes: d.search_min_kept_statutes ?? prev.search_min_kept_statutes,
           search_use_top_n_libri: d.search_use_top_n_libri ?? prev.search_use_top_n_libri,
           precedents_limit_default: d.precedents_limit_default ?? prev.precedents_limit_default,
           include_precedents: d.include_precedents ?? prev.include_precedents,
@@ -135,7 +200,10 @@ export default function App() {
       const response = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, top_k: 5 }),
+        body: JSON.stringify({
+          message: userMessage,
+          top_k: pipelineSettings.search_top_k_default,
+        }),
       });
 
       if (!response.ok) throw new Error('Errore nella risposta del server');
@@ -175,7 +243,7 @@ export default function App() {
     const claim = input.trim();
     setInput('');
     setIsLoading(true);
-    setReasoningResult(null);
+    setReasonMessages((prev) => [...prev, { role: 'user', content: claim }]);
 
     try {
       const response = await fetch(`${API_BASE}/reason`, {
@@ -192,9 +260,25 @@ export default function App() {
 
       const data = await response.json();
       setReasoningResult(data);
+      setReasonMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content:
+            data.raw_response ||
+            'Ho completato l’analisi del ragionamento. Qui sotto trovi la risposta con i dettagli.',
+        },
+      ]);
     } catch (error) {
       console.error('Errore:', error);
       setReasoningResult({ error: error.message });
+      setReasonMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `Mi dispiace, si è verificato un errore durante il ragionamento: ${error.message}`,
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -206,11 +290,175 @@ export default function App() {
     const claim = input.trim();
     setInput('');
     setIsLoading(true);
-    setPipelineResult(null);
+    setPipelineMessages((prev) => [...prev, { role: 'user', content: claim }]);
+    setPipelineResult(createLivePipelineResult(claim));
+
+    const updateLivePipeline = (mutator) => {
+      setPipelineResult((prev) => {
+        if (!prev || prev.error) return prev;
+        return mutator(prev);
+      });
+    };
+
+    const setPhaseStatus = (phaseKey, phaseValue, detail = null) => {
+      updateLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phases: {
+            ...(prev._stream?.phases || {}),
+            [phaseKey]: phaseValue,
+          },
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            [phaseKey]:
+              detail !== null
+                ? detail
+                : prev._stream?.phase_details?.[phaseKey] || '',
+          },
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            [phaseKey]:
+              phaseValue === 'done'
+                ? 100
+                : phaseValue === 'active'
+                  ? Math.max(8, prev._stream?.phase_progress?.[phaseKey] || 0)
+                  : prev._stream?.phase_progress?.[phaseKey] || 0,
+          },
+        },
+      }));
+    };
+
+    const setPhaseDetail = (phaseKey, detail) => {
+      updateLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            [phaseKey]: detail || '',
+          },
+        },
+      }));
+    };
+
+    const setPhaseProgress = (phaseKey, value) => {
+      updateLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            [phaseKey]: Math.max(0, Math.min(100, value)),
+          },
+        },
+      }));
+    };
+
+    const bumpPhaseProgress = (phaseKey, value) => {
+      updateLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            [phaseKey]: Math.max(
+              prev._stream?.phase_progress?.[phaseKey] || 0,
+              Math.max(0, Math.min(100, value)),
+            ),
+          },
+        },
+      }));
+    };
+
+    const appendEvaluationLiveLog = (message) => {
+      if (!message) return;
+      updateLivePipeline((prev) => {
+        const prevLog = prev._stream?.evaluation_live_log || [];
+        if (prevLog[prevLog.length - 1] === message) {
+          return prev;
+        }
+        const nextLog = [...prevLog, message].slice(-24);
+        return {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            evaluation_live_log: nextLog,
+          },
+        };
+      });
+    };
+
+    const appendPhaseToken = (phase, token, stepNumber = null) => {
+      if (!token) return;
+      updateLivePipeline((prev) => {
+        const next = {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            phase_progress: { ...(prev._stream?.phase_progress || {}) },
+            support_steps: { ...(prev._stream?.support_steps || {}) },
+            counter_steps: { ...(prev._stream?.counter_steps || {}) },
+            support_max_step: prev._stream?.support_max_step || 0,
+            counter_max_step: prev._stream?.counter_max_step || 0,
+            support_conclusion_live: prev._stream?.support_conclusion_live || '',
+          },
+        };
+        if (phase === 'support' || phase === 'support_conclusion') {
+          next.reasoner = {
+            ...(prev.reasoner || {}),
+            raw_response: `${prev.reasoner?.raw_response || ''}${token}`,
+          };
+          if (stepNumber != null && phase === 'support') {
+            const prevStepText = next._stream.support_steps[stepNumber] || '';
+            next._stream.support_steps[stepNumber] = `${prevStepText}${token}`;
+            next._stream.support_max_step = Math.max(
+              next._stream.support_max_step,
+              Number(stepNumber) || 0,
+            );
+            const approxProgress = Math.min(
+              92,
+              Math.max(
+                12,
+                (next._stream.support_max_step / Math.max(1, pipelineSettings.chain_max_steps)) * 92,
+              ),
+            );
+            next._stream.phase_progress.support = approxProgress;
+          } else if (phase === 'support_conclusion') {
+            next._stream.support_conclusion_live = `${next._stream.support_conclusion_live}${token}`;
+            next._stream.phase_progress.support = Math.max(
+              next._stream.phase_progress.support || 0,
+              96,
+            );
+          }
+        } else if (phase === 'counter') {
+          next.counter_reasoner = {
+            ...(prev.counter_reasoner || {}),
+            raw_response: `${prev.counter_reasoner?.raw_response || ''}${token}`,
+          };
+          if (stepNumber != null) {
+            const prevStepText = next._stream.counter_steps[stepNumber] || '';
+            next._stream.counter_steps[stepNumber] = `${prevStepText}${token}`;
+            next._stream.counter_max_step = Math.max(
+              next._stream.counter_max_step,
+              Number(stepNumber) || 0,
+            );
+            const approxProgress = Math.min(
+              92,
+              Math.max(
+                12,
+                (next._stream.counter_max_step / Math.max(1, pipelineSettings.chain_max_steps)) * 92,
+              ),
+            );
+            next._stream.phase_progress.counter = approxProgress;
+          }
+        }
+        return next;
+      });
+    };
 
     try {
-      // Chiama l'endpoint /api/pipeline che gestisce tutto il flusso nel backend
-      const response = await fetch(`${API_BASE}/pipeline`, {
+      const response = await fetch(`${API_BASE}/pipeline/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -223,6 +471,7 @@ export default function App() {
             counter_model: pipelineSettings.counter_model,
             llm_temperature: pipelineSettings.llm_temperature,
             llm_max_tokens: pipelineSettings.llm_max_tokens,
+            search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
             search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
             chain_min_steps: pipelineSettings.chain_min_steps,
             chain_max_steps: pipelineSettings.chain_max_steps,
@@ -239,14 +488,366 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) throw new Error('Errore nella pipeline');
-      const data = await response.json();
+      if (!response.ok) {
+        let errText = 'Errore nella pipeline';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore json parse failures
+        }
+        throw new Error(errText);
+      }
 
-      // Il backend restituisce: { claim, reasoner: {...}, counter_reasoner: {...} }
-      setPipelineResult(data);
+      if (!response.body) {
+        throw new Error('Streaming non disponibile: risposta senza body.');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      const reader = response.body.getReader();
+      let buffer = '';
+      let finalPayload = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const rawEvent of events) {
+          if (!rawEvent.trim()) continue;
+          const lines = rawEvent.split('\n');
+          let eventName = 'message';
+          let dataText = '';
+
+          lines.forEach((line) => {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataText += line.slice(5).trim();
+            }
+          });
+
+          if (!dataText) continue;
+
+          let payload;
+          try {
+            payload = JSON.parse(dataText);
+          } catch (_) {
+            continue;
+          }
+
+          if (eventName === 'phase') {
+            const phaseKey = payload?.phase;
+            const phaseStatus = payload?.status;
+            const phaseProgress = Number(payload?.progress);
+            const phaseDetail = payload?.detail || '';
+            const isKnownPhase = PIPELINE_PHASES.some((phase) => phase.key === phaseKey);
+            if (!isKnownPhase) continue;
+            if (phaseStatus) {
+              setPhaseStatus(phaseKey, phaseStatus, phaseDetail || null);
+            }
+            if (Number.isFinite(phaseProgress)) {
+              setPhaseProgress(phaseKey, phaseProgress);
+            }
+            if (phaseDetail) {
+              setPhaseDetail(phaseKey, phaseDetail);
+            }
+            continue;
+          }
+
+          if (eventName === 'status') {
+            continue;
+          }
+
+          if (eventName === 'token') {
+            const phase = payload.phase || 'generic';
+            if (phase === 'support' || phase === 'support_conclusion') {
+              setPhaseStatus('context_setup', 'done');
+              setPhaseStatus('support', 'active');
+              if (phase === 'support' && payload?.step != null) {
+                setPhaseDetail(
+                  'support',
+                  `Step ${payload.step}/${pipelineSettings.chain_max_steps}`,
+                );
+              } else if (phase === 'support_conclusion') {
+                setPhaseDetail('support', 'Sintesi e formattazione conclusione');
+              }
+            }
+            if (phase === 'counter') {
+              setPhaseStatus('support', 'done');
+              setPhaseStatus('counter', 'active');
+              if (payload?.step != null) {
+                setPhaseDetail(
+                  'counter',
+                  `Step ${payload.step}/${pipelineSettings.chain_max_steps}`,
+                );
+              }
+            }
+            appendPhaseToken(phase, payload.token || '', payload.step ?? null);
+            continue;
+          }
+
+          if (eventName === 'reasoner_result') {
+            setPhaseStatus('support', 'done', 'Argomentazione e ASPIC+ completati');
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              reasoner: payload || {},
+            }));
+            continue;
+          }
+
+          if (eventName === 'counter_result') {
+            setPhaseStatus('counter', 'done', 'Contro-argomentazione e ASPIC+ completati');
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              counter_reasoner: payload || {},
+            }));
+            continue;
+          }
+
+          if (eventName === 'evaluation_result') {
+            setPhaseStatus('final_evaluation', 'done', 'Report finale consolidato');
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              evaluation: payload || {},
+            }));
+            continue;
+          }
+
+          if (eventName === 'evaluation_partial') {
+            setPhaseStatus('final_evaluation', 'active');
+            setPhaseDetail('final_evaluation', 'Aggiornamento valutazione in corso');
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              evaluation: mergeEvaluationPartial(prev?.evaluation, payload || {}),
+            }));
+            continue;
+          }
+
+          if (eventName === 'evaluation_status') {
+            const stage = payload?.stage || '';
+            const stageDetailMap = {
+              start: 'Check KB catena principale',
+              kb_reasoner_done: 'Check KB catena contraria',
+              kb_counter_done: 'Verifica opposizione tra tesi',
+              gate_done: 'Gate opposizione completato',
+              repair_start: 'Riparazione citazioni/catene in corso',
+              repair_done: 'Riparazione completata, avvio AQA',
+              aqa_done: 'AQA completata, preparazione report',
+              done: 'Valutazione completata',
+            };
+            if (stageDetailMap[stage]) {
+              setPhaseDetail('final_evaluation', stageDetailMap[stage]);
+              appendEvaluationLiveLog(`[Valutazione] ${stageDetailMap[stage]}`);
+            }
+            if (stage === 'done') {
+              setPhaseStatus('final_evaluation', 'done');
+              setPhaseProgress('final_evaluation', 100);
+              continue;
+            }
+            setPhaseStatus('final_evaluation', 'active');
+            const stageProgressMap = {
+              start: 12,
+              kb_reasoner_done: 46,
+              kb_counter_done: 72,
+              gate_done: 80,
+              repair_start: 84,
+              repair_done: 92,
+              aqa_done: 98,
+            };
+            if (stageProgressMap[stage] != null) {
+              setPhaseProgress('final_evaluation', stageProgressMap[stage]);
+            }
+            continue;
+          }
+
+          if (eventName === 'evaluation_aqa_progress') {
+            const message = payload?.message || 'AQA in corso';
+            const relativeProgress = Number(payload?.progress);
+            setPhaseStatus('final_evaluation', 'active');
+            setPhaseDetail('final_evaluation', message);
+            appendEvaluationLiveLog(`[AQA] ${message}`);
+            if (Number.isFinite(relativeProgress)) {
+              bumpPhaseProgress('final_evaluation', 78 + relativeProgress * 20);
+            } else {
+              bumpPhaseProgress('final_evaluation', 82);
+            }
+            continue;
+          }
+
+          if (eventName === 'evaluation_citation_check') {
+            setPhaseStatus('final_evaluation', 'active');
+            const totals = payload?.totals || {};
+            const agentLabel = payload?.agent === 'counter_reasoner'
+              ? 'Counter'
+              : 'Reasoner';
+            const processed = Number(totals.processed ?? 0);
+            const expected = Number(totals.expected_total ?? 0);
+            const detail = expected > 0
+              ? `Check KB ${agentLabel}: ${processed}/${expected}`
+              : `Check KB ${agentLabel}: ${processed}`;
+            setPhaseDetail('final_evaluation', detail);
+            appendEvaluationLiveLog(`[KB ${agentLabel}] ${processed}${expected > 0 ? `/${expected}` : ''} citazioni`);
+            setPipelineResult((prev) => {
+              if (!prev) return prev;
+              const agentKey = payload?.agent;
+              const check = payload?.check;
+              if (!agentKey || !check) return prev;
+
+              const prevEval = prev.evaluation || {};
+              const prevReport = prevEval.consistency_report || {};
+              const prevAgentReport = prevReport[agentKey] || {};
+              const prevChecks = prevAgentReport.citation_checks || [];
+              const checkKey = `${check.source_type || 'x'}::${check.citation || ''}`;
+              const existingIdx = prevChecks.findIndex(
+                (c) => `${c.source_type || 'x'}::${c.citation || ''}` === checkKey,
+              );
+              let nextChecks;
+              if (existingIdx >= 0) {
+                nextChecks = [...prevChecks];
+                nextChecks[existingIdx] = check;
+              } else {
+                nextChecks = [...prevChecks, check];
+              }
+              const nextAgentReport = {
+                ...prevAgentReport,
+                citation_checks: nextChecks,
+                total_citations: totals.processed ?? prevAgentReport.total_citations ?? 0,
+                valid_citations: totals.valid ?? prevAgentReport.valid_citations ?? 0,
+                invalid_citations: totals.invalid ?? prevAgentReport.invalid_citations ?? 0,
+                text_matches: totals.text_matches ?? prevAgentReport.text_matches ?? 0,
+                text_mismatches: totals.text_mismatches ?? prevAgentReport.text_mismatches ?? 0,
+                repaired_citations: totals.repaired ?? prevAgentReport.repaired_citations ?? 0,
+                dropped_citations: totals.dropped ?? prevAgentReport.dropped_citations ?? 0,
+              };
+              const nextReport = {
+                ...prevReport,
+                [agentKey]: nextAgentReport,
+              };
+
+              const streamState = prev._stream || {};
+              const expectedByAgent = {
+                ...(streamState.evaluation_expected_checks_by_agent || {}),
+              };
+              const expectedFromPayload = Number(totals.expected_total);
+              if (Number.isFinite(expectedFromPayload) && expectedFromPayload > 0) {
+                expectedByAgent[agentKey] = Math.max(
+                  Number(expectedByAgent[agentKey] || 0),
+                  expectedFromPayload,
+                );
+              }
+
+              const reasonerReport = nextReport.reasoner || {};
+              const counterReport = nextReport.counter_reasoner || {};
+              const reasonerProcessed = Number(
+                reasonerReport.total_citations
+                ?? reasonerReport.citation_checks?.length
+                ?? 0,
+              );
+              const counterProcessed = Number(
+                counterReport.total_citations
+                ?? counterReport.citation_checks?.length
+                ?? 0,
+              );
+              const reasonerExpected = Math.max(
+                Number(expectedByAgent.reasoner || 0),
+                reasonerProcessed,
+              );
+              const counterExpected = Math.max(
+                Number(expectedByAgent.counter_reasoner || 0),
+                counterProcessed,
+              );
+              const currentEvalProgress = Number(streamState.phase_progress?.final_evaluation || 0);
+              let preciseEvalProgress = currentEvalProgress;
+              if (agentKey === 'reasoner') {
+                const ratio = reasonerExpected > 0
+                  ? Math.min(1, reasonerProcessed / reasonerExpected)
+                  : 0;
+                preciseEvalProgress = Math.max(preciseEvalProgress, 14 + ratio * 30);
+              } else if (agentKey === 'counter_reasoner') {
+                const ratio = counterExpected > 0
+                  ? Math.min(1, counterProcessed / counterExpected)
+                  : 0;
+                preciseEvalProgress = Math.max(preciseEvalProgress, 46 + ratio * 24);
+              }
+              preciseEvalProgress = Math.min(90, preciseEvalProgress);
+              const processedCount = reasonerProcessed + counterProcessed;
+
+              return {
+                ...prev,
+                evaluation: {
+                  ...prevEval,
+                  consistency_report: nextReport,
+                },
+                _stream: {
+                  ...streamState,
+                  evaluation_checks_processed: processedCount,
+                  evaluation_expected_checks_by_agent: expectedByAgent,
+                  phase_progress: {
+                    ...(streamState.phase_progress || {}),
+                    final_evaluation: Math.max(
+                      currentEvalProgress,
+                      preciseEvalProgress,
+                    ),
+                  },
+                },
+              };
+            });
+            continue;
+          }
+
+          if (eventName === 'error') {
+            throw new Error(payload.message || 'Errore nella pipeline');
+          }
+
+          if (eventName === 'final') {
+            finalPayload = payload;
+            setPipelineResult((prev) => ({
+              ...payload,
+              _stream: {
+                ...(prev?._stream || {}),
+                phases: {
+                  context_setup: 'done',
+                  support: 'done',
+                  counter: 'done',
+                  final_evaluation: 'done',
+                },
+                phase_details: {
+                  context_setup: 'Completata',
+                  support: 'Completata',
+                  counter: 'Completata',
+                  final_evaluation: 'Completata',
+                },
+                phase_progress: {
+                  context_setup: 100,
+                  support: 100,
+                  counter: 100,
+                  final_evaluation: 100,
+                },
+              },
+            }));
+            continue;
+          }
+        }
+      }
+
+      if (!finalPayload) {
+        throw new Error('Streaming interrotto prima del risultato finale.');
+      }
     } catch (error) {
       console.error('Errore pipeline:', error);
-      setPipelineResult({ error: error.message });
+      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      setPipelineResult(null);
+      setPipelineMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `Pipeline interrotta: ${errorMessage}. Ho eliminato i risultati parziali, puoi riprovare.`,
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -282,6 +883,773 @@ export default function App() {
   };
 
   const aqaReport = pipelineResult?.evaluation?.aqa_report;
+  const normalizeLiveStepText = (value = '') =>
+    value
+      .replace(/\s+/g, ' ')
+      .replace(/^\s*(STEP|PASSO)\s*\d*\s*:\s*/i, '')
+      .trim();
+
+  const mergeEvaluationPartial = (prevEvaluation = {}, partial = {}) => {
+    const merged = { ...(prevEvaluation || {}) };
+    Object.entries(partial || {}).forEach(([key, value]) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        merged[key] = {
+          ...(prevEvaluation?.[key] || {}),
+          ...value,
+        };
+      } else {
+        merged[key] = value;
+      }
+    });
+    return merged;
+  };
+
+  const normalizeSectionText = (value = '') =>
+    (value || '')
+      .replace(/\n{2,}/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+
+  const extractNormCitations = (text = '') => {
+    const citations = [];
+    const seen = new Set();
+    const pattern = /Art\.?\s*\d{1,4}(?:[-/][a-z0-9]+)?\s*(?:c\.\s*[cp]\.)?/gi;
+    const matches = text.match(pattern) || [];
+    matches.forEach((m) => {
+      const normalized = m.replace(/\s+/g, ' ').trim();
+      const key = normalized.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        citations.push(normalized);
+      }
+    });
+    return citations;
+  };
+
+  const parseStructuredResponse = (rawText = '') => {
+    const source = (rawText || '').replace(/\r/g, '').trim();
+    if (!source) {
+      return {
+        premessa: '',
+        nesso: '',
+        conclusione: '',
+        norms: [],
+        chainSteps: [],
+        unstructured: '',
+      };
+    }
+
+    const markerRegex = /\*\*\s*(Premessa Alternativa|Premessa|Norma|Nesso Causale Alternativo|Nesso Causale|Conclusione Contraria|Conclusione|Catena di ragionamento)\s*\*\*\s*:?\s*/gi;
+    const markers = [];
+    let marker;
+    while ((marker = markerRegex.exec(source)) !== null) {
+      markers.push({
+        label: (marker[1] || '').toLowerCase(),
+        start: marker.index,
+        contentStart: markerRegex.lastIndex,
+      });
+    }
+
+    if (markers.length === 0) {
+      return {
+        premessa: '',
+        nesso: '',
+        conclusione: '',
+        norms: extractNormCitations(source),
+        chainSteps: [],
+        unstructured: source,
+      };
+    }
+
+    const sections = {
+      premessa: '',
+      norma: '',
+      nesso: '',
+      conclusione: '',
+      chain: '',
+    };
+    markers.forEach((item, idx) => {
+      const nextStart = idx + 1 < markers.length ? markers[idx + 1].start : source.length;
+      const content = normalizeSectionText(source.slice(item.contentStart, nextStart));
+      if (!content) return;
+      if (item.label.includes('premessa')) {
+        sections.premessa = sections.premessa ? `${sections.premessa}\n${content}` : content;
+      } else if (item.label.includes('norma')) {
+        sections.norma = sections.norma ? `${sections.norma}\n${content}` : content;
+      } else if (item.label.includes('nesso causale')) {
+        sections.nesso = sections.nesso ? `${sections.nesso}\n${content}` : content;
+      } else if (item.label.includes('conclusione')) {
+        sections.conclusione = sections.conclusione ? `${sections.conclusione}\n${content}` : content;
+      } else if (item.label.includes('catena di ragionamento')) {
+        sections.chain = sections.chain ? `${sections.chain}\n${content}` : content;
+      }
+    });
+
+    let norms = [];
+    if (sections.norma) {
+      const normLines = sections.norma
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      norms = normLines
+        .filter((line) => line.startsWith('-') || line.startsWith('•'))
+        .map((line) => line.replace(/^[-•]\s*/, '').trim())
+        .filter(Boolean);
+      if (norms.length === 0) {
+        norms = extractNormCitations(sections.norma);
+      }
+    }
+
+    const chainSteps = [];
+    if (sections.chain) {
+      const stepRegex = /(?:^|\n)\s*\d+\.\s+([\s\S]*?)(?=(?:\n\s*\d+\.|\s*$))/g;
+      let sm;
+      while ((sm = stepRegex.exec(sections.chain)) !== null) {
+        const stepText = normalizeSectionText(sm[1] || '');
+        if (stepText) {
+          chainSteps.push(stepText);
+        }
+      }
+      if (chainSteps.length === 0) {
+        const fallbackLines = sections.chain
+          .split('\n')
+          .map((line) => line.replace(/^\s*\d+\.\s*/, '').trim())
+          .filter(Boolean);
+        fallbackLines.forEach((line) => chainSteps.push(line));
+      }
+    }
+
+    return {
+      premessa: sections.premessa,
+      nesso: sections.nesso,
+      conclusione: sections.conclusione,
+      norms,
+      chainSteps,
+      unstructured: '',
+    };
+  };
+
+  const parseConsistencySummary = (summaryText = '') => {
+    const source = (summaryText || '').replace(/\r/g, '').trim();
+    if (!source) {
+      return { title: 'Riepilogo', sections: [], notes: [] };
+    }
+    const lines = source
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const parsed = {
+      title: 'Riepilogo',
+      sections: [],
+      notes: [],
+    };
+
+    let currentSection = null;
+    lines.forEach((line) => {
+      if (line.startsWith('## ')) {
+        parsed.title = line.replace(/^##\s*/, '').trim() || parsed.title;
+        return;
+      }
+      if (line.startsWith('### ')) {
+        if (currentSection) parsed.sections.push(currentSection);
+        currentSection = {
+          name: line.replace(/^###\s*/, '').trim(),
+          metrics: [],
+          freeText: [],
+        };
+        return;
+      }
+      if (line.startsWith('- ')) {
+        const entry = line.replace(/^-+\s*/, '').trim();
+        const sepIndex = entry.indexOf(':');
+        if (sepIndex > -1) {
+          const label = entry.slice(0, sepIndex).trim();
+          const value = entry.slice(sepIndex + 1).trim();
+          if (currentSection) {
+            currentSection.metrics.push({ label, value });
+          } else {
+            parsed.notes.push({ label, value });
+          }
+        } else if (currentSection) {
+          currentSection.freeText.push(entry);
+        }
+        return;
+      }
+      if (currentSection) {
+        currentSection.freeText.push(line);
+      } else {
+        parsed.notes.push({ label: 'Nota', value: line });
+      }
+    });
+
+    if (currentSection) parsed.sections.push(currentSection);
+    return parsed;
+  };
+
+  const getSummaryMetricClass = (label = '') => {
+    const normalized = label.toLowerCase();
+    if (normalized.includes('problemi')) return 'summary-metric-negative';
+    if (normalized.includes('score')) return 'summary-metric-info';
+    if (normalized.includes('valide')) return 'summary-metric-positive';
+    if (normalized.includes('riparat')) return 'summary-metric-warning';
+    return '';
+  };
+
+  const renderCausalityCard = (title, causality = {}) => {
+    if (!causality || typeof causality !== 'object') return null;
+    const rows = [
+      { label: 'Tipo Causale', value: causality.causal_type_id || 'Non disponibile' },
+      { label: 'Teoria', value: causality.theory_id || 'Non disponibile' },
+      ...(causality.domain ? [{ label: 'Dominio', value: causality.domain }] : []),
+      ...(causality.source ? [{ label: 'Fonte', value: causality.source }] : []),
+    ];
+    return (
+      <div className="causality-card">
+        <div className="causality-card-title">{title}</div>
+        <div className="causality-grid">
+          {rows.map((row) => (
+            <div key={`causality-${title}-${row.label}`} className="causality-item">
+              <span className="causality-label">{row.label}</span>
+              <span className="causality-value">{row.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderAspicCitationPills = (citations = {}, keyPrefix = 'aspic-cit') => {
+    if (!citations || typeof citations !== 'object') return null;
+    const statutes = Array.isArray(citations.statutes) ? citations.statutes : [];
+    const precedents = Array.isArray(citations.precedents) ? citations.precedents : [];
+    const unknown = Array.isArray(citations.unknown_statutes) ? citations.unknown_statutes : [];
+
+    if (statutes.length === 0 && precedents.length === 0 && unknown.length === 0) return null;
+
+    return (
+      <div className="aspic-citations">
+        {statutes.map((item, idx) => (
+          <span
+            key={`${keyPrefix}-statute-${item?.statute_id || item?.label || idx}`}
+            className="aspic-citation-pill aspic-citation-pill-statute"
+          >
+            {item?.label || (item?.articolo ? `Art. ${item.articolo}` : item?.statute_id || `Norma ${idx + 1}`)}
+          </span>
+        ))}
+        {precedents.map((item, idx) => (
+          <span
+            key={`${keyPrefix}-precedent-${item?.id || item?.title || idx}`}
+            className="aspic-citation-pill aspic-citation-pill-precedent"
+          >
+            {item?.title || item?.id || `Precedente ${idx + 1}`}
+          </span>
+        ))}
+        {unknown.map((item, idx) => (
+          <span
+            key={`${keyPrefix}-unknown-${item?.label || item?.article_num || idx}`}
+            className="aspic-citation-pill aspic-citation-pill-unknown"
+          >
+            {item?.label || item?.article_num || `Sconosciuta ${idx + 1}`}
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  const renderAspicKeyValueFields = (obj = {}, keyPrefix = 'aspic-fields', excludedKeys = []) => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    const hidden = new Set(excludedKeys || []);
+    const entries = Object.entries(obj)
+      .filter(([key, value]) => !hidden.has(key) && value !== undefined && value !== null && value !== '');
+    if (entries.length === 0) return null;
+
+    return (
+      <div className="aspic-full-fields">
+        {entries.map(([key, value]) => (
+          <div key={`${keyPrefix}-${key}`} className="aspic-full-field">
+            <span>{key}</span>
+            <strong>{typeof value === 'string' ? value : JSON.stringify(value)}</strong>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderAspicFullView = (aspicData = {}, keyPrefix = 'aspic') => {
+    if (!aspicData || typeof aspicData !== 'object' || Object.keys(aspicData).length === 0) {
+      return <p className="aspic-empty">Nessun contenuto ASPIC+ disponibile.</p>;
+    }
+
+    const chain = Array.isArray(aspicData.reasoning_chain) ? aspicData.reasoning_chain : [];
+    const argumentsList = Array.isArray(aspicData.arguments) ? aspicData.arguments : [];
+    const statutes = Array.isArray(aspicData.sources?.statutes) ? aspicData.sources.statutes : [];
+    const precedents = Array.isArray(aspicData.sources?.precedents) ? aspicData.sources.precedents : [];
+    const precedentNodes = Array.isArray(aspicData.precedent_nodes) ? aspicData.precedent_nodes : [];
+    const precedentLinks = Array.isArray(aspicData.precedent_links) ? aspicData.precedent_links : [];
+    const metadata = (aspicData.metadata && typeof aspicData.metadata === 'object') ? aspicData.metadata : {};
+    const repairMeta = (aspicData._repair_metadata && typeof aspicData._repair_metadata === 'object')
+      ? aspicData._repair_metadata
+      : null;
+    const coveredKeys = new Set([
+      'schema',
+      'role',
+      'claim',
+      'raw_response',
+      'reasoning_chain',
+      'arguments',
+      'sources',
+      'precedent_nodes',
+      'precedent_links',
+      'metadata',
+      '_repair_metadata',
+    ]);
+    const extraEntries = Object.entries(aspicData).filter(([key]) => !coveredKeys.has(key));
+
+    return (
+      <div className="aspic-full">
+        <div className="aspic-full-kpis">
+          <div className="aspic-full-kpi">
+            <span>Schema</span>
+            <strong>{aspicData.schema || 'aspic_ir'}</strong>
+          </div>
+          <div className="aspic-full-kpi">
+            <span>Ruolo</span>
+            <strong>{aspicData.role || '-'}</strong>
+          </div>
+          <div className="aspic-full-kpi">
+            <span>Step Catena</span>
+            <strong>{chain.length}</strong>
+          </div>
+          <div className="aspic-full-kpi">
+            <span>Argomenti</span>
+            <strong>{argumentsList.length}</strong>
+          </div>
+          <div className="aspic-full-kpi">
+            <span>Norme</span>
+            <strong>{statutes.length}</strong>
+          </div>
+          <div className="aspic-full-kpi">
+            <span>Precedenti</span>
+            <strong>{precedents.length}</strong>
+          </div>
+        </div>
+
+        {aspicData.claim && (
+          <div className="aspic-full-section">
+            <h6>Claim</h6>
+            <p className="aspic-full-text">{aspicData.claim}</p>
+          </div>
+        )}
+
+        {aspicData.raw_response && (
+          <div className="aspic-full-section">
+            <h6>Raw Response</h6>
+            <pre className="aspic-full-pre">{aspicData.raw_response}</pre>
+          </div>
+        )}
+
+        {chain.length > 0 && (
+          <div className="aspic-full-section">
+            <h6>Reasoning Chain</h6>
+            <div className="aspic-full-stack">
+              {chain.map((step, idx) => {
+                const stepId = typeof step === 'object' ? (step?.id || `S${idx + 1}`) : `S${idx + 1}`;
+                const stepText = typeof step === 'object' ? (step?.text || '') : String(step || '');
+                const stepCitations = typeof step === 'object' ? step?.citations : null;
+                return (
+                  <div key={`${keyPrefix}-chain-${stepId}-${idx}`} className="aspic-full-card">
+                    <div className="aspic-full-card-head">
+                      <span className="aspic-full-card-id">{stepId}</span>
+                    </div>
+                    <p className="aspic-full-text">{stepText}</p>
+                    {renderAspicCitationPills(stepCitations, `${keyPrefix}-chain-cit-${stepId}-${idx}`)}
+                    {typeof step === 'object' && renderAspicKeyValueFields(
+                      step,
+                      `${keyPrefix}-chain-extra-${stepId}-${idx}`,
+                      ['id', 'text', 'citations'],
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {argumentsList.length > 0 && (
+          <div className="aspic-full-section">
+            <h6>Arguments</h6>
+            <div className="aspic-full-stack">
+              {argumentsList.map((arg, argIdx) => {
+                const premises = Array.isArray(arg?.premises) ? arg.premises : [];
+                return (
+                  <div key={`${keyPrefix}-arg-${arg?.id || argIdx}`} className="aspic-full-card">
+                    <div className="aspic-full-card-head">
+                      <span className="aspic-full-card-id">{arg?.id || `A${argIdx + 1}`}</span>
+                      <span className="aspic-full-badge">{arg?.role || '-'}</span>
+                    </div>
+
+                    {premises.length > 0 && (
+                      <div className="aspic-full-subsection">
+                        <h6>Premesse</h6>
+                        <div className="aspic-full-stack">
+                          {premises.map((prem, premIdx) => (
+                            <div key={`${keyPrefix}-arg-${argIdx}-prem-${prem?.id || premIdx}`} className="aspic-full-subcard">
+                              <div className="aspic-full-card-head">
+                                <span className="aspic-full-card-id">{prem?.id || `P${premIdx + 1}`}</span>
+                                <span className="aspic-full-badge">{prem?.type || 'premise'}</span>
+                              </div>
+                              <p className="aspic-full-text">{prem?.text || ''}</p>
+                              {renderAspicCitationPills(prem?.citations, `${keyPrefix}-arg-${argIdx}-prem-cit-${premIdx}`)}
+                              {renderAspicKeyValueFields(
+                                prem,
+                                `${keyPrefix}-arg-${argIdx}-prem-extra-${premIdx}`,
+                                ['id', 'type', 'text', 'citations'],
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {arg?.rule && (
+                      <div className="aspic-full-subsection">
+                        <h6>Rule</h6>
+                        <div className="aspic-full-subcard">
+                          <div className="aspic-full-card-head">
+                            <span className="aspic-full-card-id">{arg.rule.id || 'R1'}</span>
+                            <span className="aspic-full-badge">{arg.rule.type || 'defeasible'}</span>
+                          </div>
+                          <p className="aspic-full-text">{arg.rule.text || ''}</p>
+                          {renderAspicKeyValueFields(
+                            arg.rule,
+                            `${keyPrefix}-arg-${argIdx}-rule-extra`,
+                            ['id', 'type', 'text'],
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {arg?.conclusion && (
+                      <div className="aspic-full-subsection">
+                        <h6>Conclusion</h6>
+                        <div className="aspic-full-subcard">
+                          <div className="aspic-full-card-head">
+                            <span className="aspic-full-card-id">{arg.conclusion.id || 'C1'}</span>
+                          </div>
+                          <p className="aspic-full-text">{arg.conclusion.text || ''}</p>
+                          {renderAspicCitationPills(arg.conclusion.citations, `${keyPrefix}-arg-${argIdx}-conc-cit`)}
+                          {renderAspicKeyValueFields(
+                            arg.conclusion,
+                            `${keyPrefix}-arg-${argIdx}-conc-extra`,
+                            ['id', 'text', 'citations'],
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {renderAspicKeyValueFields(
+                      arg,
+                      `${keyPrefix}-arg-extra-${argIdx}`,
+                      ['id', 'role', 'premises', 'rule', 'conclusion'],
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {(statutes.length > 0 || precedents.length > 0) && (
+          <div className="aspic-full-section">
+            <h6>Sources</h6>
+            {statutes.length > 0 && (
+              <div className="aspic-full-stack">
+                {statutes.map((st, idx) => (
+                  <div key={`${keyPrefix}-src-statute-${st?.statute_id || st?.label || idx}`} className="aspic-full-subcard">
+                    <div className="aspic-full-card-head">
+                      <span className="aspic-full-card-id">{st?.label || st?.statute_id || `Statuto ${idx + 1}`}</span>
+                    </div>
+                    <p className="aspic-full-text">{st?.title || '-'}</p>
+                    {renderAspicKeyValueFields(st, `${keyPrefix}-src-stat-extra-${idx}`, ['label', 'title'])}
+                  </div>
+                ))}
+              </div>
+            )}
+            {precedents.length > 0 && (
+              <div className="aspic-full-stack">
+                {precedents.map((pr, idx) => (
+                  <div key={`${keyPrefix}-src-prec-${pr?.id || pr?.title || idx}`} className="aspic-full-subcard">
+                    <div className="aspic-full-card-head">
+                      <span className="aspic-full-card-id">{pr?.title || `Precedente ${idx + 1}`}</span>
+                    </div>
+                    <p className="aspic-full-text">{pr?.id || '-'}</p>
+                    {renderAspicKeyValueFields(pr, `${keyPrefix}-src-prec-extra-${idx}`, ['id', 'title'])}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {(precedentNodes.length > 0 || precedentLinks.length > 0) && (
+          <div className="aspic-full-section">
+            <h6>Precedent Graph</h6>
+            <div className="aspic-full-kpis">
+              <div className="aspic-full-kpi">
+                <span>Nodes</span>
+                <strong>{precedentNodes.length}</strong>
+              </div>
+              <div className="aspic-full-kpi">
+                <span>Links</span>
+                <strong>{precedentLinks.length}</strong>
+              </div>
+            </div>
+            {precedentNodes.length > 0 && (
+              <div className="aspic-full-stack">
+                {precedentNodes.map((node, idx) => (
+                  <div key={`${keyPrefix}-prec-node-${node?.id || idx}`} className="aspic-full-subcard">
+                    {renderAspicKeyValueFields(node, `${keyPrefix}-prec-node-fields-${idx}`)}
+                  </div>
+                ))}
+              </div>
+            )}
+            {precedentLinks.length > 0 && (
+              <div className="aspic-full-stack">
+                {precedentLinks.map((link, idx) => (
+                  <div key={`${keyPrefix}-prec-link-${idx}`} className="aspic-full-subcard">
+                    {renderAspicKeyValueFields(link, `${keyPrefix}-prec-link-fields-${idx}`)}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {(Object.keys(metadata).length > 0 || repairMeta) && (
+          <div className="aspic-full-section">
+            <h6>Metadata</h6>
+            <div className="aspic-full-meta-grid">
+              {Object.entries(metadata).map(([k, v]) => (
+                <div key={`${keyPrefix}-meta-${k}`} className="aspic-full-meta-item">
+                  <span>{k}</span>
+                  <strong>{typeof v === 'string' ? v : JSON.stringify(v)}</strong>
+                </div>
+              ))}
+              {repairMeta && Object.entries(repairMeta).map(([k, v]) => (
+                <div key={`${keyPrefix}-repair-${k}`} className="aspic-full-meta-item aspic-full-meta-item-repair">
+                  <span>{k}</span>
+                  <strong>{typeof v === 'string' ? v : JSON.stringify(v)}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {extraEntries.length > 0 && (
+          <div className="aspic-full-section">
+            <h6>Campi Extra</h6>
+            <pre className="aspic-full-pre">{JSON.stringify(Object.fromEntries(extraEntries), null, 2)}</pre>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderAspicOverview = (title, aspicData = {}, compact = false) => {
+    if (!aspicData || typeof aspicData !== 'object' || Object.keys(aspicData).length === 0) {
+      return null;
+    }
+
+    return (
+      <div className={`aspic-overview ${compact ? 'aspic-overview-compact' : ''}`}>
+        <details className="ir-toggle aspic-overview-toggle">
+          <summary className="aspic-overview-summary">{title}</summary>
+          {renderAspicFullView(aspicData, `${title}-full`)}
+        </details>
+      </div>
+    );
+  };
+
+  const formatPrettyFieldLabel = (value = '') =>
+    String(value || '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+
+  const formatPrettyScalar = (value) => {
+    if (value === null || value === undefined || value === '') return '-';
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '-';
+    return String(value);
+  };
+
+  const renderAqaMetricGrid = (metrics = {}, keyPrefix = 'aqa-metric') => {
+    const entries = Object.entries(metrics || {}).filter(([, value]) => value !== undefined && value !== null);
+    if (entries.length === 0) return null;
+    return (
+      <div className="aqa-full-metric-grid">
+        {entries.map(([key, value]) => (
+          <div key={`${keyPrefix}-${key}`} className="aqa-full-metric">
+            <span>{formatPrettyFieldLabel(key)}</span>
+            <strong>{typeof value === 'number' ? value.toFixed(4) : formatPrettyScalar(value)}</strong>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderAqaLinksCompact = (title, links = [], keyPrefix = 'aqa-links') => (
+    <div className="aqa-full-section">
+      <h6>{title}</h6>
+      {links.length === 0 ? (
+        <p className="aqa-tree-empty">Nessun link.</p>
+      ) : (
+        <div className="aqa-link-summary-list">
+          {links.map((link, idx) => (
+            <div key={`${keyPrefix}-${idx}`} className="aqa-link-summary-row">
+              <div className="aqa-link-summary-main">
+                <strong>{link.link_id || `Link ${idx + 1}`}</strong>
+                <span className={`role-tag ${link.role === 'counter' ? 'role-contra' : 'role-pro'}`}>
+                  {link.role === 'counter' ? 'C' : 'P'}
+                </span>
+              </div>
+              <div className="aqa-link-summary-metrics">
+                <span>Nesso {(link.nesso_plausibility ?? 0).toFixed(3)}</span>
+                <span>Base {(link.base_score ?? 0).toFixed(3)}</span>
+                <span>Norm {(link.norm_support ?? 0).toFixed(3)}</span>
+                <span>Cog {(link.cogency ?? 0).toFixed(3)}</span>
+                <span>Sem {(link.semantics ?? 0).toFixed(3)}</span>
+                <span>Att {(link.attacks_sum ?? 0).toFixed(3)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderAqaFullView = (aqaData = {}) => {
+    if (!aqaData || typeof aqaData !== 'object' || Object.keys(aqaData).length === 0) {
+      return <p className="aqa-tree-empty">Nessun dettaglio AQA disponibile.</p>;
+    }
+
+    const proLinksCount = Array.isArray(aqaData.links?.pro) ? aqaData.links.pro.length : 0;
+    const contraLinksCount = Array.isArray(aqaData.links?.contra) ? aqaData.links.contra.length : 0;
+    const proLinks = Array.isArray(aqaData.links?.pro) ? aqaData.links.pro : [];
+    const contraLinks = Array.isArray(aqaData.links?.contra) ? aqaData.links.contra : [];
+    const weakestLinks = Array.isArray(aqaData.notes?.weakest_links) ? aqaData.notes.weakest_links : [];
+    const dominantAttacks = Array.isArray(aqaData.notes?.dominant_attacks) ? aqaData.notes.dominant_attacks : [];
+    const precedentSwings = Array.isArray(aqaData.notes?.precedent_swings) ? aqaData.notes.precedent_swings : [];
+    const verdict = aqaData.verdict || '-';
+    const finalScore = aqaData.net_plausibility?.final;
+
+    return (
+      <div className="aqa-full-view">
+        <div className="aqa-full-kpis">
+          <div className="aqa-full-kpi">
+            <span>Verdetto</span>
+            <strong>{verdict}</strong>
+          </div>
+          <div className="aqa-full-kpi">
+            <span>Score Finale</span>
+            <strong>{typeof finalScore === 'number' ? finalScore.toFixed(4) : '-'}</strong>
+          </div>
+          <div className="aqa-full-kpi">
+            <span>Link Pro</span>
+            <strong>{proLinksCount}</strong>
+          </div>
+          <div className="aqa-full-kpi">
+            <span>Link Contro</span>
+            <strong>{contraLinksCount}</strong>
+          </div>
+        </div>
+
+        <div className="aqa-full-section">
+          <h6>Pesi AQA</h6>
+          {renderAqaMetricGrid(aqaData.weights || {}, 'aqa-weights')}
+        </div>
+
+        <div className="aqa-full-section">
+          <h6>Plausibilità Netta</h6>
+          {renderAqaMetricGrid(aqaData.net_plausibility || {}, 'aqa-net')}
+        </div>
+
+        {aqaData.chain_scores && (
+          <div className="aqa-full-section">
+            <h6>Score Catene</h6>
+            <div className="aqa-chain-grid">
+              <div className="aqa-chain-card">
+                <h6>Pro</h6>
+                {renderAqaMetricGrid(aqaData.chain_scores.pro || {}, 'aqa-chain-pro')}
+              </div>
+              <div className="aqa-chain-card">
+                <h6>Contro</h6>
+                {renderAqaMetricGrid(aqaData.chain_scores.contra || {}, 'aqa-chain-contra')}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {renderAqaLinksCompact('Link Pro (sintesi)', proLinks, 'aqa-pro')}
+        {renderAqaLinksCompact('Link Contro (sintesi)', contraLinks, 'aqa-contra')}
+
+        <div className="aqa-full-section">
+          <h6>Note Tecniche</h6>
+          <div className="aqa-full-metric-grid">
+            <div className="aqa-full-metric">
+              <span>Attacchi Abilitati</span>
+              <strong>{formatPrettyScalar(aqaData.notes?.attacks_enabled)}</strong>
+            </div>
+            <div className="aqa-full-metric">
+              <span>Weakest Links</span>
+              <strong>{weakestLinks.length}</strong>
+            </div>
+            <div className="aqa-full-metric">
+              <span>Dominant Attacks</span>
+              <strong>{dominantAttacks.length}</strong>
+            </div>
+            <div className="aqa-full-metric">
+              <span>Precedent Swings</span>
+              <strong>{precedentSwings.length}</strong>
+            </div>
+          </div>
+          {weakestLinks.length > 0 && (
+            <ul className="aqa-compact-list">
+              {weakestLinks.slice(0, 8).map((item, idx) => (
+                <li key={`aqa-weak-${idx}`}>
+                  {item.link_id || `Link ${idx + 1}`} - nesso {(item.nesso_plausibility ?? 0).toFixed(3)}
+                </li>
+              ))}
+            </ul>
+          )}
+          {dominantAttacks.length > 0 && (
+            <ul className="aqa-compact-list">
+              {dominantAttacks.slice(0, 8).map((attack, idx) => (
+                <li key={`aqa-attack-${idx}`}>
+                  {(attack.attacker || '?')} → {(attack.target || '?')} ({(attack.value ?? 0).toFixed(3)})
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const liveSupportSteps = Object.entries(pipelineResult?._stream?.support_steps || {})
+    .map(([k, v]) => [Number(k), normalizeLiveStepText(v)])
+    .filter(([_, text]) => Boolean(text))
+    .sort((a, b) => a[0] - b[0]);
+
+  const liveCounterSteps = Object.entries(pipelineResult?._stream?.counter_steps || {})
+    .map(([k, v]) => [Number(k), normalizeLiveStepText(v)])
+    .filter(([_, text]) => Boolean(text))
+    .sort((a, b) => a[0] - b[0]);
+  const liveSupportStepTexts = liveSupportSteps.map(([, stepText]) => stepText);
+  const liveCounterStepTexts = liveCounterSteps.map(([, stepText]) => stepText);
+
+  const liveCounterPhaseActive = pipelineResult?._stream?.phases?.counter === 'active';
+
   const aqaProScore = aqaReport?.net_plausibility?.pro ?? 0;
   const aqaContraScore = aqaReport?.net_plausibility?.contra ?? 0;
   const aqaFinalScore = aqaReport?.net_plausibility?.final ?? 0;
@@ -298,6 +1666,98 @@ export default function App() {
     : aqaVerdict === 'implausible'
       ? 'aqa-verdict-negative'
       : 'aqa-verdict-uncertain';
+
+  const reasonerParsedResponse = parseStructuredResponse(pipelineResult?.reasoner?.raw_response || '');
+  const counterParsedResponse = parseStructuredResponse(pipelineResult?.counter_reasoner?.raw_response || '');
+  const repairedReasonerParsedResponse = parseStructuredResponse(
+    pipelineResult?.evaluation?.repaired_reasoner_chain || '',
+  );
+  const repairedCounterParsedResponse = parseStructuredResponse(
+    pipelineResult?.evaluation?.repaired_counter_chain || '',
+  );
+  const parsedSummary = parseConsistencySummary(pipelineResult?.evaluation?.summary || '');
+  const reasonerLiveConclusion = normalizeSectionText(pipelineResult?._stream?.support_conclusion_live || '');
+  const reasonerRepairStats = pipelineResult?.evaluation?.consistency_report?.reasoner || {};
+  const counterRepairStats = pipelineResult?.evaluation?.consistency_report?.counter_reasoner || {};
+  const hasReasonerRepairs = Number(reasonerRepairStats.repaired_citations || 0) > 0
+    || Number(reasonerRepairStats.dropped_citations || 0) > 0;
+  const hasCounterRepairs = Number(counterRepairStats.repaired_citations || 0) > 0
+    || Number(counterRepairStats.dropped_citations || 0) > 0;
+  const hasAnyRepairs = hasReasonerRepairs || hasCounterRepairs;
+  const pipelineActivePhase = PIPELINE_PHASES.find(
+    (phase) => pipelineResult?._stream?.phases?.[phase.key] === 'active',
+  )?.key || null;
+  const pipelineActiveDetail = pipelineActivePhase
+    ? (pipelineResult?._stream?.phase_details?.[pipelineActivePhase] || '')
+    : '';
+
+  const renderStructuredResponse = ({
+    parsed,
+    liveSteps = [],
+    liveConclusion = '',
+    liveMode = false,
+    variant = 'default',
+  }) => {
+    const chainSteps = parsed.chainSteps?.length > 0
+      ? parsed.chainSteps
+      : liveSteps;
+    const norms = parsed.norms?.length > 0
+      ? parsed.norms
+      : extractNormCitations(
+        `${parsed.premessa || ''} ${parsed.nesso || ''} ${parsed.conclusione || ''} ${chainSteps.join(' ')}`,
+      );
+    return (
+      <div className={`structured-response ${variant === 'repaired' ? 'repaired-chain' : ''}`}>
+        {parsed.premessa && (
+          <div className="structured-block">
+            <h5>Premessa</h5>
+            <p>{parsed.premessa}</p>
+          </div>
+        )}
+        {norms.length > 0 && (
+          <div className="structured-block">
+            <h5>Norme Richiamate</h5>
+            <ul className="structured-list">
+              {norms.map((norm, idx) => (
+                <li key={`norm-${idx}`}>{norm}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {parsed.nesso && (
+          <div className="structured-block">
+            <h5>Nesso Causale</h5>
+            <p>{parsed.nesso}</p>
+          </div>
+        )}
+        {(parsed.conclusione || liveConclusion) && (
+          <div className="structured-block">
+            <h5>Conclusione</h5>
+            <p>{parsed.conclusione || liveConclusion}</p>
+          </div>
+        )}
+        {chainSteps.length > 0 && (
+          <div className="structured-block">
+            <h5>Catena di Ragionamento</h5>
+            <ol className="live-steps-list">
+              {chainSteps.map((stepText, idx) => (
+                <li key={`chain-step-${idx}`}>{stepText}</li>
+              ))}
+            </ol>
+          </div>
+        )}
+        {!parsed.premessa && !parsed.nesso && !parsed.conclusione && norms.length === 0 && chainSteps.length === 0 && parsed.unstructured && (
+          <div className="raw-response">{parsed.unstructured}</div>
+        )}
+        {liveMode && (
+          <div className="structured-live-tag">
+            <Loader2 size={14} className="loading-spinner" />
+            <span>Aggiornamento live in corso...</span>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="chatbot-container">
@@ -317,11 +1777,11 @@ export default function App() {
       {/* Tabs */}
       <div className="tabs-container">
         <button
-          className={`tab-button ${activeTab === TABS.SEARCH ? 'tab-active' : ''}`}
-          onClick={() => setActiveTab(TABS.SEARCH)}
+          className={`tab-button ${activeTab === TABS.PIPELINE ? 'tab-active' : ''}`}
+          onClick={() => setActiveTab(TABS.PIPELINE)}
         >
-          <Search size={16} />
-          <span>Ricerca</span>
+          <FileText size={16} />
+          <span>Pipeline Completa</span>
         </button>
         <button
           className={`tab-button ${activeTab === TABS.REASON ? 'tab-active' : ''}`}
@@ -331,11 +1791,11 @@ export default function App() {
           <span>Ragionamento</span>
         </button>
         <button
-          className={`tab-button ${activeTab === TABS.PIPELINE ? 'tab-active' : ''}`}
-          onClick={() => setActiveTab(TABS.PIPELINE)}
+          className={`tab-button ${activeTab === TABS.SEARCH ? 'tab-active' : ''}`}
+          onClick={() => setActiveTab(TABS.SEARCH)}
         >
-          <FileText size={16} />
-          <span>Pipeline Completa</span>
+          <Search size={16} />
+          <span>Ricerca</span>
         </button>
       </div>
 
@@ -420,6 +1880,17 @@ export default function App() {
                     step="10"
                     value={pipelineSettings.search_top_k_default}
                     onChange={(e) => updateSetting('search_top_k_default', parseInt(e.target.value, 10))}
+                  />
+                </label>
+                <label>
+                  <span>Min Statuti Mantenuti</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="300"
+                    step="1"
+                    value={pipelineSettings.search_min_kept_statutes}
+                    onChange={(e) => updateSetting('search_min_kept_statutes', parseInt(e.target.value, 10))}
                   />
                 </label>
                 <label>
@@ -607,11 +2078,65 @@ export default function App() {
       {/* Content Area */}
       <div className="messages-area">
         <div className="messages-container">
+          {activeTab !== TABS.SEARCH && (
+            <div className="message message-assistant">
+              <div className="message-avatar assistant-avatar">
+                <Bot size={20} />
+              </div>
+              <div className="message-bubble bubble-assistant">
+                <p className="message-text">{TAB_WELCOME_MESSAGES[activeTab]}</p>
+              </div>
+            </div>
+          )}
+
+          {isLoading && activeTab === TABS.PIPELINE && (
+            <div className="pipeline-working-indicator pipeline-working-indicator-top">
+              <Loader2 size={16} className="loading-spinner" />
+              <span>{pipelineActiveDetail || 'Pipeline in esecuzione...'}</span>
+            </div>
+          )}
+
           {activeTab === TABS.SEARCH && (
             <>
               {messages.map((msg, idx) => (
                 <div
                   key={idx}
+                  className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
+                >
+                  <div className={`message-avatar ${msg.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>
+                    {msg.role === 'user' ? <User size={20} /> : <Bot size={20} />}
+                  </div>
+                  <div className={`message-bubble ${msg.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
+                    <p className="message-text">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {activeTab === TABS.REASON && (
+            <>
+              {reasonMessages.map((msg, idx) => (
+                <div
+                  key={`reason-msg-${idx}`}
+                  className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
+                >
+                  <div className={`message-avatar ${msg.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>
+                    {msg.role === 'user' ? <User size={20} /> : <Bot size={20} />}
+                  </div>
+                  <div className={`message-bubble ${msg.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
+                    <p className="message-text">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {activeTab === TABS.PIPELINE && (
+            <>
+              {pipelineMessages.map((msg, idx) => (
+                <div
+                  key={`pipeline-msg-${idx}`}
                   className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
                 >
                   <div className={`message-avatar ${msg.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>
@@ -644,20 +2169,13 @@ export default function App() {
                   {reasoningResult.causality && (
                     <div className="result-section">
                       <h4>Classificazione Causalità</h4>
-                      <pre className="code-block">
-                        {JSON.stringify(reasoningResult.causality, null, 2)}
-                      </pre>
+                      {renderCausalityCard('Mappatura Causale', reasoningResult.causality)}
                     </div>
                   )}
 
                   {reasoningResult.aspic_ir && (
                     <div className="result-section">
-                      <details className="ir-toggle">
-                        <summary>ASPIC+ IR</summary>
-                        <pre className="code-block">
-                          {JSON.stringify(reasoningResult.aspic_ir, null, 2)}
-                        </pre>
-                      </details>
+                      {renderAspicOverview('ASPIC+ IR', reasoningResult.aspic_ir)}
                     </div>
                   )}
 
@@ -688,6 +2206,56 @@ export default function App() {
                     <p>{pipelineResult.claim}</p>
                   </div>
 
+                  {pipelineResult._stream && (
+                    <div className="result-section stream-progress-section">
+                      <h4>Avanzamento Live</h4>
+                      <div className="stream-phase-grid">
+                        {PIPELINE_PHASES.map((phase) => {
+                          const phaseStatus = pipelineResult._stream?.phases?.[phase.key] || 'pending';
+                          const phaseProgress = pipelineResult._stream?.phase_progress?.[phase.key] ?? 0;
+                          const phaseDetail = pipelineResult._stream?.phase_details?.[phase.key] || '';
+                          const phaseLabel = phaseStatus === 'active'
+                            ? `In corso (${Math.round(phaseProgress)}%)`
+                            : phaseStatus === 'done'
+                              ? 'Completata'
+                              : phaseStatus === 'error'
+                                ? 'Errore'
+                                : 'In attesa';
+                          return (
+                            <div key={phase.key} className={`stream-phase-item ${phaseStatus === 'active' ? 'active-phase' : ''}`}>
+                              <div className="stream-phase-head">
+                                <span>{phase.label}</span>
+                                <span className={`stream-phase-badge status-${phaseStatus}`}>
+                                  {phaseStatus === 'active' && <Loader2 size={12} className="loading-spinner" />}
+                                  {phaseLabel}
+                                </span>
+                              </div>
+                              {phaseDetail && (
+                                <div className="stream-phase-detail">{phaseDetail}</div>
+                              )}
+                              <div className="stream-phase-track">
+                                <div
+                                  className={`stream-phase-fill status-${phaseStatus}`}
+                                  style={{ width: `${Math.max(phaseStatus === 'pending' ? 4 : 0, phaseProgress)}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {pipelineResult._stream?.evaluation_live_log?.length > 0 && (
+                        <div className="stream-live-log">
+                          <h5>Dettaglio Valutazione Live</h5>
+                          <ul>
+                            {pipelineResult._stream.evaluation_live_log.map((item, idx) => (
+                              <li key={`eval-live-log-${idx}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* SEZIONE REASONER */}
                   <div className="result-section pipeline-section">
                     <h3 className="section-header">
@@ -698,9 +2266,7 @@ export default function App() {
                     {pipelineResult.reasoner?.causality && (
                       <div className="subsection">
                         <h4>Classificazione Causalità</h4>
-                        <pre className="code-block">
-                          {JSON.stringify(pipelineResult.reasoner.causality, null, 2)}
-                        </pre>
+                        {renderCausalityCard('Mappatura Causale', pipelineResult.reasoner.causality)}
                       </div>
                     )}
 
@@ -730,19 +2296,28 @@ export default function App() {
 
                     {pipelineResult.reasoner?.aspic_ir && (
                       <div className="subsection">
-                        <details className="ir-toggle">
-                          <summary>ASPIC+ IR (Reasoner)</summary>
-                          <pre className="code-block">
-                            {JSON.stringify(pipelineResult.reasoner.aspic_ir, null, 2)}
-                          </pre>
-                        </details>
+                        {renderAspicOverview('ASPIC+ IR (Reasoner)', pipelineResult.reasoner.aspic_ir, true)}
+                      </div>
+                    )}
+                    {pipelineResult._stream?.phases?.support === 'active' && !pipelineResult.reasoner?.aspic_ir && (
+                      <div className="subsection">
+                        <h4>ASPIC+ IR (Reasoner)</h4>
+                        <div className="structured-live-tag">
+                          <Loader2 size={14} className="loading-spinner" />
+                          <span>Costruzione ASPIC+ in corso...</span>
+                        </div>
                       </div>
                     )}
 
-                    {pipelineResult.reasoner?.raw_response && (
+                    {(pipelineResult.reasoner?.raw_response || liveSupportSteps.length > 0 || reasonerLiveConclusion) && (
                       <div className="subsection">
                         <h4>Risposta Completa</h4>
-                        <div className="raw-response">{pipelineResult.reasoner.raw_response}</div>
+                        {renderStructuredResponse({
+                          parsed: reasonerParsedResponse,
+                          liveSteps: liveSupportStepTexts,
+                          liveConclusion: reasonerLiveConclusion,
+                          liveMode: pipelineResult._stream?.phases?.support === 'active',
+                        })}
                       </div>
                     )}
                   </div>
@@ -790,9 +2365,7 @@ export default function App() {
                     {pipelineResult.counter_reasoner?.reasoner_causality && (
                       <div className="subsection">
                         <h4>Causalità del Reasoner (da Attaccare)</h4>
-                        <pre className="code-block">
-                          {JSON.stringify(pipelineResult.counter_reasoner.reasoner_causality, null, 2)}
-                        </pre>
+                        {renderCausalityCard('Target Causale da Attaccare', pipelineResult.counter_reasoner.reasoner_causality)}
                       </div>
                     )}
 
@@ -831,19 +2404,27 @@ export default function App() {
 
                     {pipelineResult.counter_reasoner?.aspic_ir && (
                       <div className="subsection">
-                        <details className="ir-toggle">
-                          <summary>ASPIC+ IR (Counter-Reasoner)</summary>
-                          <pre className="code-block">
-                            {JSON.stringify(pipelineResult.counter_reasoner.aspic_ir, null, 2)}
-                          </pre>
-                        </details>
+                        {renderAspicOverview('ASPIC+ IR (Counter-Reasoner)', pipelineResult.counter_reasoner.aspic_ir, true)}
+                      </div>
+                    )}
+                    {pipelineResult._stream?.phases?.counter === 'active' && !pipelineResult.counter_reasoner?.aspic_ir && (
+                      <div className="subsection">
+                        <h4>ASPIC+ IR (Counter-Reasoner)</h4>
+                        <div className="structured-live-tag">
+                          <Loader2 size={14} className="loading-spinner" />
+                          <span>Costruzione ASPIC+ in corso...</span>
+                        </div>
                       </div>
                     )}
 
-                    {pipelineResult.counter_reasoner?.raw_response && (
+                    {(pipelineResult.counter_reasoner?.raw_response || liveCounterSteps.length > 0) && (
                       <div className="subsection">
                         <h4>Risposta Completa</h4>
-                        <div className="raw-response">{pipelineResult.counter_reasoner.raw_response}</div>
+                        {renderStructuredResponse({
+                          parsed: counterParsedResponse,
+                          liveSteps: liveCounterStepTexts,
+                          liveMode: liveCounterPhaseActive,
+                        })}
                       </div>
                     )}
                   </div>
@@ -860,14 +2441,14 @@ export default function App() {
                       {pipelineResult.evaluation.consistency_report.reasoner && (
                         <div className="subsection">
                           <h4>
-                            Reasoner - Score: {(pipelineResult.evaluation.consistency_report.reasoner.consistency_score * 100).toFixed(0)}%
+                            Reasoner - Score: {(((pipelineResult.evaluation.consistency_report.reasoner.consistency_score ?? 0) * 100)).toFixed(0)}%
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
-                              ✅ Valide: {pipelineResult.evaluation.consistency_report.reasoner.valid_citations}/{pipelineResult.evaluation.consistency_report.reasoner.total_citations}
+                              ✅ Valide: {(pipelineResult.evaluation.consistency_report.reasoner.valid_citations ?? 0)}/{(pipelineResult.evaluation.consistency_report.reasoner.total_citations ?? 0)}
                             </span>
                             <span className="stat-item stat-text">
-                              📝 Testo match: {pipelineResult.evaluation.consistency_report.reasoner.text_matches}/{pipelineResult.evaluation.consistency_report.reasoner.text_matches + pipelineResult.evaluation.consistency_report.reasoner.text_mismatches}
+                              📝 Testo match: {(pipelineResult.evaluation.consistency_report.reasoner.text_matches ?? 0)}/{((pipelineResult.evaluation.consistency_report.reasoner.text_matches ?? 0) + (pipelineResult.evaluation.consistency_report.reasoner.text_mismatches ?? 0))}
                             </span>
                           </div>
 
@@ -930,14 +2511,14 @@ export default function App() {
                       {pipelineResult.evaluation.consistency_report.counter_reasoner && (
                         <div className="subsection">
                           <h4>
-                            Counter-Reasoner - Score: {(pipelineResult.evaluation.consistency_report.counter_reasoner.consistency_score * 100).toFixed(0)}%
+                            Counter-Reasoner - Score: {(((pipelineResult.evaluation.consistency_report.counter_reasoner.consistency_score ?? 0) * 100)).toFixed(0)}%
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
-                              ✅ Valide: {pipelineResult.evaluation.consistency_report.counter_reasoner.valid_citations}/{pipelineResult.evaluation.consistency_report.counter_reasoner.total_citations}
+                              ✅ Valide: {(pipelineResult.evaluation.consistency_report.counter_reasoner.valid_citations ?? 0)}/{(pipelineResult.evaluation.consistency_report.counter_reasoner.total_citations ?? 0)}
                             </span>
                             <span className="stat-item stat-text">
-                              📝 Testo match: {pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches}/{pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches + pipelineResult.evaluation.consistency_report.counter_reasoner.text_mismatches}
+                              📝 Testo match: {(pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches ?? 0)}/{((pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches ?? 0) + (pipelineResult.evaluation.consistency_report.counter_reasoner.text_mismatches ?? 0))}
                             </span>
                           </div>
 
@@ -999,15 +2580,46 @@ export default function App() {
                       {/* Summary */}
                       {pipelineResult.evaluation.summary && (
                         <div className="subsection">
-                          <h4>Riepilogo</h4>
-                          <div className="raw-response">{pipelineResult.evaluation.summary}</div>
+                          <h4>{parsedSummary.title || 'Riepilogo'}</h4>
+                          <div className="summary-cards-grid">
+                            {parsedSummary.sections.map((section, idx) => (
+                              <div key={`summary-section-${idx}`} className="summary-card">
+                                <div className="summary-card-title">{section.name}</div>
+                                {section.metrics.length > 0 && (
+                                  <div className="summary-metrics">
+                                    {section.metrics.map((metric, mIdx) => (
+                                      <div
+                                        key={`summary-metric-${idx}-${mIdx}`}
+                                        className={`summary-metric ${getSummaryMetricClass(metric.label)}`}
+                                      >
+                                        <span className="summary-metric-label">{metric.label}</span>
+                                        <span className="summary-metric-value">{metric.value}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {section.freeText.length > 0 && (
+                                  <ul className="summary-notes-list">
+                                    {section.freeText.map((note, nIdx) => (
+                                      <li key={`summary-note-${idx}-${nIdx}`}>{note}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            ))}
+                            {parsedSummary.sections.length === 0 && (
+                              <div className="summary-card">
+                                <div className="raw-response">{pipelineResult.evaluation.summary}</div>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
                   )}
 
                   {/* SEZIONE CATENE RIPARATE */}
-                  {pipelineResult.evaluation && (pipelineResult.evaluation.repaired_reasoner_chain || pipelineResult.evaluation.repaired_counter_chain) && (
+                  {pipelineResult.evaluation && hasAnyRepairs && (
                     <div className="result-section pipeline-section">
                       <h3 className="section-header">
                         <Wrench size={20} style={{ color: '#f59e0b' }} />
@@ -1015,47 +2627,61 @@ export default function App() {
                       </h3>
 
                       {/* Repaired Reasoner Chain */}
-                      {pipelineResult.evaluation.repaired_reasoner_chain && (
+                      {hasReasonerRepairs && pipelineResult.evaluation.repaired_reasoner_chain && (
                         <div className="subsection">
-                          <h4>
-                            <CheckCircle2 size={16} style={{ color: '#10b981' }} />
+                          <h4 className="subsection-title-with-icon">
+                            <CheckCircle2 size={20} style={{ color: '#10b981' }} />
                             Reasoner - Catena Riparata
                           </h4>
-                          <div className="raw-response repaired-chain">
-                            {pipelineResult.evaluation.repaired_reasoner_chain}
-                          </div>
+                          {renderStructuredResponse({
+                            parsed: repairedReasonerParsedResponse,
+                            variant: 'repaired',
+                          })}
 
                           {/* Show repaired ASPIC IR if available */}
                           {pipelineResult.evaluation.repaired_reasoner_aspic_ir && Object.keys(pipelineResult.evaluation.repaired_reasoner_aspic_ir).length > 0 && (
-                            <details className="ir-toggle">
-                              <summary>ASPIC+ IR Riparato (Reasoner)</summary>
-                              <pre className="code-block">
-                                {JSON.stringify(pipelineResult.evaluation.repaired_reasoner_aspic_ir, null, 2)}
-                              </pre>
-                            </details>
+                            <>
+                              {renderAspicOverview(
+                                'ASPIC+ IR Riparato (Reasoner)',
+                                pipelineResult.evaluation.repaired_reasoner_aspic_ir,
+                                true,
+                              )}
+                              {pipelineResult.evaluation?.repaired_aspic_files?.reasoner?.relative_path && (
+                                <p className="aspic-file-path">
+                                  File JSON: <code>{pipelineResult.evaluation.repaired_aspic_files.reasoner.relative_path}</code>
+                                </p>
+                              )}
+                            </>
                           )}
                         </div>
                       )}
 
                       {/* Repaired Counter-Reasoner Chain */}
-                      {pipelineResult.evaluation.repaired_counter_chain && (
+                      {hasCounterRepairs && pipelineResult.evaluation.repaired_counter_chain && (
                         <div className="subsection">
-                          <h4>
-                            <XCircle size={16} style={{ color: '#ef4444' }} />
+                          <h4 className="subsection-title-with-icon">
+                            <XCircle size={20} style={{ color: '#ef4444' }} />
                             Counter-Reasoner - Catena Riparata
                           </h4>
-                          <div className="raw-response repaired-chain">
-                            {pipelineResult.evaluation.repaired_counter_chain}
-                          </div>
+                          {renderStructuredResponse({
+                            parsed: repairedCounterParsedResponse,
+                            variant: 'repaired',
+                          })}
 
                           {/* Show repaired ASPIC IR if available */}
                           {pipelineResult.evaluation.repaired_counter_aspic_ir && Object.keys(pipelineResult.evaluation.repaired_counter_aspic_ir).length > 0 && (
-                            <details className="ir-toggle">
-                              <summary>ASPIC+ IR Riparato (Counter-Reasoner)</summary>
-                              <pre className="code-block">
-                                {JSON.stringify(pipelineResult.evaluation.repaired_counter_aspic_ir, null, 2)}
-                              </pre>
-                            </details>
+                            <>
+                              {renderAspicOverview(
+                                'ASPIC+ IR Riparato (Counter-Reasoner)',
+                                pipelineResult.evaluation.repaired_counter_aspic_ir,
+                                true,
+                              )}
+                              {pipelineResult.evaluation?.repaired_aspic_files?.counter_reasoner?.relative_path && (
+                                <p className="aspic-file-path">
+                                  File JSON: <code>{pipelineResult.evaluation.repaired_aspic_files.counter_reasoner.relative_path}</code>
+                                </p>
+                              )}
+                            </>
                           )}
                         </div>
                       )}
@@ -1256,12 +2882,15 @@ export default function App() {
                             </div>
                           )}
 
-                          <details className="ir-toggle">
-                            <summary>Dettagli AQA (JSON)</summary>
-                            <pre className="code-block">
-                              {JSON.stringify(aqaReport, null, 2)}
-                            </pre>
+                          <details className="ir-toggle aqa-full-toggle">
+                            <summary>Dettagli AQA completi</summary>
+                            {renderAqaFullView(aqaReport)}
                           </details>
+                          {pipelineResult.evaluation?.aqa_report_file?.relative_path && (
+                            <p className="aqa-file-path">
+                              File JSON: <code>{pipelineResult.evaluation.aqa_report_file.relative_path}</code>
+                            </p>
+                          )}
                         </>
                       ) : (
                         <div className="aqa-disabled">AQA disabilitata</div>
@@ -1305,31 +2934,27 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === TABS.REASON && !reasoningResult && !isLoading && (
+          {activeTab === TABS.REASON && !reasoningResult && reasonMessages.length === 0 && !isLoading && (
             <div className="empty-state">
               <Brain size={48} className="empty-icon" />
               <p>Inserisci un claim legale per analizzare la catena causale</p>
             </div>
           )}
 
-          {activeTab === TABS.PIPELINE && !pipelineResult && !isLoading && (
+          {activeTab === TABS.PIPELINE && !pipelineResult && pipelineMessages.length === 0 && !isLoading && (
             <div className="empty-state">
               <FileText size={48} className="empty-icon" />
               <p>Inserisci un claim per eseguire la pipeline completa: Reasoner → Counter-Reasoner</p>
             </div>
           )}
 
-          {isLoading && (
+          {isLoading && activeTab !== TABS.PIPELINE && (
             <div className="message message-assistant">
               <div className="message-avatar assistant-avatar">
                 <Loader2 size={20} className="loading-spinner" />
               </div>
               <div className="message-bubble bubble-assistant">
-                <p>
-                  {activeTab === TABS.PIPELINE
-                    ? 'Esecuzione pipeline completa (Reasoner + Counter-Reasoner)...'
-                    : 'Elaborazione in corso...'}
-                </p>
+                <p>Elaborazione in corso...</p>
               </div>
             </div>
           )}

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from langchain_core.tools import tool
-from neo4j import GraphDatabase
+from neo4j import Driver, GraphDatabase
 from pydantic import BaseModel, Field
 
 # Add parent to path for config import
@@ -23,14 +23,14 @@ from config import settings  # noqa: E402
 from services.legal_search import LegalSearchPipeline  # noqa: E402
 
 # Singleton driver for tools (only used for direct Neo4j queries like get_statute_by_article)
-_driver: Optional[GraphDatabase.driver] = None
+_driver: Optional[Driver] = None
 
 # Singleton LegalSearchPipeline (the SAME one that works in Tab Ricerca!)
 _legal_search_pipeline: Optional[LegalSearchPipeline] = None
 _pipeline_lock = threading.Lock()
 
 
-def get_driver():
+def get_driver() -> Driver:
     """Get or create Neo4j driver for direct queries."""
     global _driver
     if _driver is None:
@@ -560,7 +560,7 @@ def _search_precedents_by_keywords(
         LIMIT $limit
     """
 
-    results = []
+    results: list[dict[str, str | float]] = []
     try:
         with driver.session() as session:
             records = session.run(
@@ -568,14 +568,24 @@ def _search_precedents_by_keywords(
                 parameters={"query": lucene_query, "limit": limit},
             )
             for record in records:
+                title = str(record["title"] or "Untitled precedent")
+                summary_val = record["summary"]
+                if isinstance(summary_val, str):
+                    summary = (
+                        summary_val[: settings.truncation_tool_summary]
+                        if summary_val
+                        else "No summary available"
+                    )
+                else:
+                    summary = (
+                        str(summary_val)[: settings.truncation_tool_summary]
+                        if summary_val is not None
+                        else "No summary available"
+                    )
                 result_item = {
                     "precedent_id": record["id"] or "",
-                    "title": record["title"] or "Untitled precedent",
-                    "summary": (
-                        record["summary"][: settings.truncation_tool_summary]
-                        if record["summary"]
-                        else "No summary available"
-                    ),
+                    "title": title,
+                    "summary": summary,
                     "url": record["url"] or "",
                     "score": (
                         float(record["score"]) if record["score"] is not None else 0.0
@@ -583,7 +593,7 @@ def _search_precedents_by_keywords(
                 }
                 results.append(result_item)
                 print(
-                    f"  📋 Found: {result_item['title'][:60]}... "
+                    f"  📋 Found: {title[:60]}... "
                     f"(score: {result_item['score']:.4f})"
                 )
     except Exception as e:

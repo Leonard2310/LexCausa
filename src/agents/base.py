@@ -22,7 +22,11 @@ from neo4j import GraphDatabase
 # Add parent to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
-from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
+from services.groq_client import (  # noqa: E402
+    get_chat_groq,
+    resilient_chat_call,
+    resilient_chat_stream,
+)
 
 
 @dataclass
@@ -112,6 +116,14 @@ class BaseAgent(ABC):
 
     def _resilient_llm_invoke(self, messages, **kwargs):
         """Invoke LLM with automatic retry, key rotation, and model fallback."""
+        stream_callback = kwargs.pop("stream_callback", None)
+        if stream_callback is not None:
+            return resilient_chat_stream(
+                self.llm,
+                messages,
+                on_token=stream_callback,
+                **kwargs,
+            )
         return resilient_chat_call(self.llm, messages, **kwargs)
 
     @property
@@ -398,6 +410,116 @@ No punctuation. No new lines. No extra spaces.
 
         self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
         return relevant_statutes
+
+    def _extract_legal_context(self, claim: str) -> str:
+        """Extract a short legal context label used by applicability filtering.
+
+        Returns a compact line containing domain/party relationship/procedural
+        posture so statute applicability can be evaluated more strictly.
+        """
+        prompt = f"""You are a legal triage assistant.
+
+Given this claim:
+"{claim}"
+
+Extract a compact legal context string (max 20 words) including:
+- legal domain (criminal/civil/administrative/labour/commercial/etc.)
+- party relationship (private-private, citizen-state, company-shareholders, etc.)
+- procedural posture (investigation/trial/enforcement/contract dispute/etc.)
+
+If uncertain, provide the most plausible generic context.
+
+Respond with EXACTLY one short line and no extra text."""
+
+        try:
+            response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            context = (response.content or "").strip().replace("\n", " ")
+            context = re.sub(r"\s+", " ", context)
+            if context:
+                self._log(f"🧭 Legal context extracted: {context[:120]}")
+                return context[:200]
+        except Exception as e:
+            self._log(f"⚠️ Legal context extraction failed: {e}", "warning")
+
+        fallback = "General legal dispute context"
+        self._log(f"🧭 Legal context fallback: {fallback}")
+        return fallback
+
+    def filter_applicable_statutes(
+        self, claim: str, statutes: list[dict], legal_context: str
+    ) -> list[dict]:
+        """Second-stage filter: keep statutes that are legally applicable.
+
+        This is called after topical relevance filtering and removes statutes
+        that are related by keywords but inapplicable to the case posture.
+        """
+        if not statutes:
+            return statutes
+
+        self._log(f"🎯 Checking applicability: {len(statutes)} statutes")
+        applicable_statutes: list[dict] = []
+
+        for idx, statute in enumerate(statutes, start=1):
+            article_number = statute.get("articolo", "N/A")
+            article_title = statute.get("titolo", "Untitled")
+            article_text = statute.get("testo", "") or ""
+
+            prompt = f"""Legal Situation:
+"{claim}"
+
+Legal Context: {legal_context}
+
+Statute:
+"{article_number} - {article_title}"
+"{article_text[:500]}"
+
+Question:
+Does this statute APPLY to the legal situation described?
+
+Evaluation Criteria:
+1. Subject Scope: Does the statute apply to the TYPE of parties involved?
+2. Substantive Scope: Does the statute regulate the LEGAL ISSUE at stake?
+3. Temporal Scope: Is the statute relevant to the PROCEDURAL PHASE?
+
+Rules:
+- Answer YES only if the statute directly regulates THIS situation.
+- Answer NO if it applies to a different:
+  * relationship type
+  * legal domain
+  * offense class
+  * procedural phase
+- If uncertain but potentially on-point, answer YES.
+
+Respond with EXACTLY one token: YES or NO."""
+
+            try:
+                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                answer = (response.content or "").strip().upper()
+            except Exception as e:
+                self._log(
+                    f"⚠️ Applicability check failed for {article_number}: {e}",
+                    "warning",
+                )
+                answer = "YES"  # safe default: keep on error
+
+            token = answer.split()[0] if answer else ""
+            keep = token != "NO" and (
+                token == "YES" or "YES" in answer or "NO" not in answer
+            )
+
+            if keep:
+                applicable_statutes.append(statute)
+                self._log(f"✅ APPLICABLE [{idx}] {article_number} - {article_title}")
+            else:
+                self._log(
+                    f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
+
+        self._log(
+            f"📊 Applicability result: {len(applicable_statutes)}/{len(statutes)} kept"
+        )
+        return applicable_statutes
 
     def filter_irrelevant_precedents(
         self, claim: str, precedents: list[dict]

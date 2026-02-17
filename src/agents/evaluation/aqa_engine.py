@@ -14,6 +14,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -429,7 +430,10 @@ class AQAEngineMixin:
         return False, f"denied: severity mismatch ({t_sev} vs {a_sev})"
 
     def _compute_cross_attacks(
-        self, pro_links: list[dict], contra_links: list[dict]
+        self,
+        pro_links: list[dict],
+        contra_links: list[dict],
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> None:
         """Bidirectional cross-attacks between PRO and CONTRA links (ASPIC+).
 
@@ -465,9 +469,13 @@ class AQAEngineMixin:
             link["attacks_sum"] = 0.0
 
         def _apply_attacks(
-            targets: list[dict], attackers: list[dict], attacker_role: str
+            targets: list[dict],
+            attackers: list[dict],
+            attacker_role: str,
+            attack_direction: str,
         ) -> None:
-            for target in targets:
+            total_targets = max(1, len(targets))
+            for target_idx, target in enumerate(targets, start=1):
                 target_base = target.get("base_score", 0.0)
                 target_text = (
                     f"{target.get('premise_text', '')} "
@@ -623,10 +631,38 @@ class AQAEngineMixin:
                     if attack_value > 0:
                         target["attacks_sum"] += attack_value
 
+                if progress_callback:
+                    try:
+                        progress_callback(
+                            {
+                                "stage": "attacks_progress",
+                                "message": (
+                                    f"Attacchi {attack_direction}: "
+                                    f"{target_idx}/{total_targets}"
+                                ),
+                                "direction": attack_direction,
+                                "current_target": target_idx,
+                                "total_targets": total_targets,
+                                "target_link_id": target.get("link_id"),
+                            }
+                        )
+                    except Exception:
+                        pass
+
         # CONTRA attacks PRO
-        _apply_attacks(pro_links, contra_links, attacker_role="contra")
+        _apply_attacks(
+            pro_links,
+            contra_links,
+            attacker_role="contra",
+            attack_direction="counter->support",
+        )
         # PRO attacks CONTRA
-        _apply_attacks(contra_links, pro_links, attacker_role="support")
+        _apply_attacks(
+            contra_links,
+            pro_links,
+            attacker_role="support",
+            attack_direction="support->counter",
+        )
 
         # Sort attacks by value (descending) and apply top-K limiting
         top_k = self._aqa_attack_top_k
@@ -912,12 +948,34 @@ class AQAEngineMixin:
             return bmap.get("tribunale", 0.4)
         return bmap.get("other", 0.0)
 
-    def _run_aqa_phase(self, reasoner_ir: dict, counter_ir: dict, domain: str) -> dict:
+    def _run_aqa_phase(
+        self,
+        reasoner_ir: dict,
+        counter_ir: dict,
+        domain: str,
+        progress_callback: Optional[Callable[[dict], None]] = None,
+    ) -> dict:
+        def _emit(
+            stage: str, message: str, progress: float | None = None, **extra
+        ) -> None:
+            if not progress_callback:
+                return
+            payload = {"stage": stage, "message": message}
+            if progress is not None:
+                payload["progress"] = max(0.0, min(1.0, float(progress)))
+            if extra:
+                payload.update(extra)
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
+
         if not self._aqa_enabled:
             self._log("🧪 AQA disabled - skipping scoring")
             return {"enabled": False}
         self._log("🧪 Starting AQA scoring on REPAIRED reasoning chains...")
         self._log(f"🧠 AQA domain: {domain}")
+        _emit("start", "AQA avviata: costruzione link", 0.02)
 
         # Check if we're using repaired IRs
         reasoner_repaired = bool(reasoner_ir.get("_repair_metadata"))
@@ -935,8 +993,17 @@ class AQAEngineMixin:
         self._log(
             f"🔗 AQA links collected: pro={len(pro_links)} contra={len(contra_links)}"
         )
+        _emit(
+            "links_collected",
+            f"Link ASPIC+ raccolti: pro={len(pro_links)}, contro={len(contra_links)}",
+            0.12,
+            pro_links=len(pro_links),
+            contra_links=len(contra_links),
+            total_links=total_links,
+        )
         self._populate_precedent_influences(reasoner_ir, pro_links)
         self._populate_precedent_influences(counter_ir, contra_links)
+        _emit("precedents_linked", "Allineamento precedenti completato", 0.2)
 
         for idx, link in enumerate(pro_links + contra_links, start=1):
             link_id = link.get("link_id") or f"L{idx}"
@@ -1014,12 +1081,43 @@ class AQAEngineMixin:
             link["semantics_details"] = semantics_details
             link["norm_support_details"] = norm_details_link
             link["base_score"] = base
+            if total_links > 0:
+                _emit(
+                    "link_scored",
+                    f"Scoring link {idx}/{total_links}",
+                    0.2 + (idx / total_links) * 0.4,
+                    current=idx,
+                    total=total_links,
+                    link_id=link_id,
+                    role=role.lower(),
+                )
 
         # ==============================================================
         # Cross-attacks (ASPIC+ bidirectional)
         # ==============================================================
         self._log("⚔️ Computing bidirectional cross-attacks (ASPIC+)...")
-        self._compute_cross_attacks(pro_links, contra_links)
+        _emit("attacks_start", "Calcolo attacchi bidirezionali in corso", 0.64)
+        self._compute_cross_attacks(
+            pro_links,
+            contra_links,
+            progress_callback=lambda payload: _emit(
+                payload.get("stage", "attacks_progress"),
+                payload.get("message", "Calcolo attacchi"),
+                0.64
+                + (
+                    (
+                        payload.get("current_target", 0)
+                        / max(1, payload.get("total_targets", 1))
+                    )
+                    * 0.18
+                ),
+                direction=payload.get("direction"),
+                current_target=payload.get("current_target"),
+                total_targets=payload.get("total_targets"),
+                target_link_id=payload.get("target_link_id"),
+            ),
+        )
+        _emit("attacks_done", "Calcolo attacchi completato", 0.84)
 
         # Log attack summaries (active + filtered breakdown)
         for link in pro_links + contra_links:
@@ -1106,6 +1204,16 @@ class AQAEngineMixin:
             )
             if influences:
                 self._log(f"      📚 Precedent influences: {len(influences)}")
+            if total_links > 0:
+                _emit(
+                    "aggregation_progress",
+                    f"Aggregazione finale link {idx}/{total_links}",
+                    0.84 + (idx / total_links) * 0.12,
+                    current=idx,
+                    total=total_links,
+                    link_id=link_id,
+                    role=role.lower(),
+                )
 
         # ==============================================================
         # Chain-level aggregation
@@ -1177,6 +1285,7 @@ class AQAEngineMixin:
             f"{verdict} (pos≥{self._aqa_verdict_pos:.2f}, "
             f"neg≤{self._aqa_verdict_neg:.2f})"
         )
+        _emit("done", f"AQA completata: verdetto {verdict}", 1.0, verdict=verdict)
 
         weakest = sorted(
             pro_links + contra_links,

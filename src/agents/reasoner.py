@@ -14,7 +14,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
@@ -154,6 +154,7 @@ class Reasoner(BaseAgent):
         pre_retrieved_statutes: list[dict],
         pre_retrieved_precedents: list[dict],
         enable_causality: bool = True,
+        stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> ReasonerOutput:
         """
         Two-phase reasoning:
@@ -329,11 +330,14 @@ class Reasoner(BaseAgent):
                 knowledge_base=knowledge_base,
                 allowed_statutes=allowed_statutes,
                 allowed_precedents=allowed_precedents,
+                stream_callback=stream_callback,
             )
 
             # Generate dynamic LLM conclusion from chain
             conclusion = (
-                self._generate_conclusion(claim, iterative_chain)
+                self._generate_conclusion(
+                    claim, iterative_chain, stream_callback=stream_callback
+                )
                 if iterative_chain
                 else ""
             )
@@ -738,6 +742,7 @@ REASONING CHAIN (for context):
         knowledge_base: str,
         allowed_statutes: list[str],
         allowed_precedents: list[str],
+        stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, list[str]]:
         """Generate the reasoning chain step-by-step with dedicated LLM calls.
 
@@ -883,7 +888,21 @@ CRITICAL RULES:
             self._log(f"🔗 Generating step {step_num}/{MAX_STEPS}...")
 
             try:
-                resp = self._resilient_llm_invoke([HumanMessage(content=step_prompt)])
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=step_prompt)],
+                    stream_callback=(
+                        (
+                            lambda token: self._emit_stream_token(
+                                stream_callback,
+                                phase="support",
+                                token=token,
+                                step=step_num,
+                            )
+                        )
+                        if stream_callback
+                        else None
+                    ),
+                )
                 step_response = (resp.content or "").strip()
             except Exception as e:
                 self._log(f"⚠️ Step {step_num} generation failed: {e}", "warning")
@@ -937,6 +956,26 @@ CRITICAL RULES:
 
         raw_response = self._assemble_raw_response(claim, steps)
         return raw_response, steps
+
+    @staticmethod
+    def _emit_stream_token(
+        stream_callback: Optional[Callable[[dict], None]],
+        *,
+        phase: str,
+        token: str,
+        step: Optional[int] = None,
+    ) -> None:
+        """Emit one token chunk to external streaming callback."""
+        if not stream_callback or not token:
+            return
+        payload: dict[str, str | int] = {"phase": phase, "token": token}
+        if step is not None:
+            payload["step"] = step
+        try:
+            stream_callback(payload)
+        except Exception:
+            # Streaming callback errors must never break reasoning generation.
+            pass
 
     def _parse_step_text(self, response: str) -> str:
         """Extract the step text from an LLM response.
@@ -1095,7 +1134,12 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
-    def _generate_conclusion(self, claim: str, steps: list[str]) -> str:
+    def _generate_conclusion(
+        self,
+        claim: str,
+        steps: list[str],
+        stream_callback: Optional[Callable[[dict], None]] = None,
+    ) -> str:
         """Generate a dynamic conclusion via LLM based on the reasoning chain.
 
         Returns a concise 2-4 sentence conclusion synthesizing the legal
@@ -1126,10 +1170,23 @@ INSTRUCTIONS:
 - Be direct and assertive in the final verdict.
 - Your ENTIRE response must be written in Italian.
 
-CONCLUSION:"""
+        CONCLUSION:"""
 
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                stream_callback=(
+                    (
+                        lambda token: self._emit_stream_token(
+                            stream_callback,
+                            phase="support_conclusion",
+                            token=token,
+                        )
+                    )
+                    if stream_callback
+                    else None
+                ),
+            )
             conclusion = (resp.content or "").strip()
             # Clean up any echoed prefix
             conclusion = re.sub(

@@ -14,9 +14,10 @@ Error-handling strategy:
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from groq import Groq
+from langchain_core.messages import AIMessage
 from langchain_groq import ChatGroq
 
 from config import settings
@@ -438,6 +439,69 @@ def resilient_chat_call(
         return llm.invoke(messages, **invoke_kwargs)
 
     return _resilient_loop(_execute, max_retries=max_retries, label="ChatGroq")
+
+
+def _chunk_to_text(chunk) -> str:
+    """Extract text payload from a LangChain stream chunk."""
+    if chunk is None:
+        return ""
+
+    content = getattr(chunk, "content", None)
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                txt = item.get("text") or item.get("content") or ""
+                if txt:
+                    parts.append(str(txt))
+        return "".join(parts)
+    return str(content)
+
+
+def resilient_chat_stream(
+    llm_or_factory,
+    messages,
+    *,
+    on_token: Optional[Callable[[str], None]] = None,
+    max_retries: Optional[int] = None,
+    **stream_kwargs,
+):
+    """
+    Execute a LangChain ChatGroq .stream() with retry/key-rotation/fallback.
+
+    Emits token chunks via ``on_token`` and returns an AIMessage with full text.
+    """
+    ref_llm = llm_or_factory  # used to read temperature / max_tokens
+
+    def _execute(key: str, model: str):
+        if callable(ref_llm) and not isinstance(ref_llm, ChatGroq):
+            llm = ref_llm(key, model)
+        else:
+            llm = ChatGroq(
+                api_key=key,
+                model=model,
+                temperature=getattr(ref_llm, "temperature", settings.llm_temperature),
+                max_tokens=getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
+            )
+
+        pieces: list[str] = []
+        for chunk in llm.stream(messages, **stream_kwargs):
+            text = _chunk_to_text(chunk)
+            if not text:
+                continue
+            pieces.append(text)
+            if on_token is not None:
+                on_token(text)
+        return AIMessage(content="".join(pieces))
+
+    return _resilient_loop(_execute, max_retries=max_retries, label="ChatGroqStream")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

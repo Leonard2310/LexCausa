@@ -21,7 +21,7 @@ The implementation is split across several mixin modules under
 """
 
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from langchain_core.messages import HumanMessage
 
@@ -125,8 +125,28 @@ class PolisherEvaluator(
         **kwargs: Any,
     ) -> EvaluationResult:
         """Evaluate the dialectical exchange and produce final output."""
+        progress_callback: Optional[Callable[[str, dict], None]] = kwargs.get(
+            "progress_callback"
+        )
+
+        def _emit(event_name: str, payload: dict) -> None:
+            if not progress_callback:
+                return
+            try:
+                progress_callback(event_name, payload)
+            except Exception:
+                # Progress callbacks must not break evaluation flow.
+                pass
+
         self._log("Starting consistency evaluation...")
         self._log(f"Domain: {domain}")
+        _emit(
+            "evaluation_status",
+            {
+                "stage": "start",
+                "message": "Avvio verifica consistenza su knowledge base",
+            },
+        )
 
         # Refresh AQA parameters (supports frontend overrides)
         self._aqa_alpha = settings.aqa_alpha
@@ -152,6 +172,20 @@ class PolisherEvaluator(
             raw_response=reasoner_raw,
             domain=domain,
             aspic_ir=reasoner_aspic_ir,
+            progress_callback=lambda payload: _emit(
+                "evaluation_citation_check", payload
+            ),
+        )
+        _emit(
+            "evaluation_status",
+            {
+                "stage": "kb_reasoner_done",
+                "message": "Controllo KB della catena principale completato",
+            },
+        )
+        _emit(
+            "evaluation_partial",
+            {"consistency_report": {"reasoner": reasoner_report.to_dict()}},
         )
 
         counter_chain = counter_reasoner_output.get("reasoning_chain", [])
@@ -163,6 +197,25 @@ class PolisherEvaluator(
             raw_response=counter_raw,
             domain=domain,
             aspic_ir=counter_aspic_ir,
+            progress_callback=lambda payload: _emit(
+                "evaluation_citation_check", payload
+            ),
+        )
+        _emit(
+            "evaluation_status",
+            {
+                "stage": "kb_counter_done",
+                "message": "Controllo KB della catena contraria completato",
+            },
+        )
+        _emit(
+            "evaluation_partial",
+            {
+                "consistency_report": {
+                    "reasoner": reasoner_report.to_dict(),
+                    "counter_reasoner": counter_report.to_dict(),
+                }
+            },
         )
 
         self._log(
@@ -194,9 +247,24 @@ class PolisherEvaluator(
                 "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
             )
             self._log("⚠️ Counter gate attivato: Counter-Reasoner marcato come astenuto")
+        _emit(
+            "evaluation_partial",
+            {"consistency_report": {"counter_reasoner_gate": counter_gate}},
+        )
+        _emit(
+            "evaluation_status",
+            {"stage": "gate_done", "message": "Controllo opposizione completato"},
+        )
 
         # ----- Repair chains if needed -----
         self._log("Checking if reasoning chains need repair...")
+        _emit(
+            "evaluation_status",
+            {
+                "stage": "repair_start",
+                "message": "Verifica riparazioni citazioni e catene in corso",
+            },
+        )
 
         if (
             reasoner_report.repaired_citations > 0
@@ -262,6 +330,19 @@ class PolisherEvaluator(
                 ),
                 metadata=counter_aspic_ir.get("metadata", {}),
             )
+        _emit(
+            "evaluation_partial",
+            {
+                "repaired_reasoner_chain": repaired_reasoner_chain,
+                "repaired_counter_chain": repaired_counter_chain,
+                "repaired_reasoner_aspic_ir": repaired_reasoner_aspic,
+                "repaired_counter_aspic_ir": repaired_counter_aspic,
+            },
+        )
+        _emit(
+            "evaluation_status",
+            {"stage": "repair_done", "message": "Riparazione catene/ASPIC completata"},
+        )
 
         # Dialectical tree bundle
         reasoner_ir = reasoner_output.get("aspic_ir")
@@ -277,6 +358,7 @@ class PolisherEvaluator(
             }
 
         summary = self._generate_consistency_summary(reasoner_report, counter_report)
+        _emit("evaluation_partial", {"summary": summary})
 
         # ----- AQA Phase -----
         aqa_reasoner_ir = (
@@ -322,9 +404,22 @@ class PolisherEvaluator(
             reasoner_ir=aqa_reasoner_ir,
             counter_ir=aqa_counter_ir,
             domain=domain,
+            progress_callback=lambda payload: _emit("evaluation_aqa_progress", payload),
+        )
+        _emit("evaluation_partial", {"aqa_report": aqa_report})
+        _emit(
+            "evaluation_status",
+            {
+                "stage": "aqa_done",
+                "message": "Analisi attacchi e punteggio AQA completati",
+            },
         )
 
         self._log("Evaluation complete")
+        _emit(
+            "evaluation_status",
+            {"stage": "done", "message": "Valutazione completata"},
+        )
 
         return EvaluationResult(
             claim=claim,

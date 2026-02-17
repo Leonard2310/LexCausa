@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Callable, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -1083,6 +1084,7 @@ class ConsistencyMixin:
         raw_response: str,
         domain: str,
         aspic_ir: dict | None = None,
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> ConsistencyReport:
         """
         Check the consistency of a reasoning chain by verifying citations in Neo4j.
@@ -1103,6 +1105,30 @@ class ConsistencyMixin:
         """
         report = ConsistencyReport(agent=agent)
 
+        def _emit_citation_progress(check_obj: CitationCheck) -> None:
+            if not progress_callback:
+                return
+            try:
+                progress_callback(
+                    {
+                        "agent": agent,
+                        "check": check_obj.to_dict(),
+                        "totals": {
+                            "processed": report.total_citations,
+                            "valid": report.valid_citations,
+                            "invalid": report.invalid_citations,
+                            "text_matches": report.text_matches,
+                            "text_mismatches": report.text_mismatches,
+                            "repaired": report.repaired_citations,
+                            "dropped": report.dropped_citations,
+                            "expected_total": expected_total_checks,
+                        },
+                    }
+                )
+            except Exception:
+                # Progress callback failures must not affect consistency logic.
+                pass
+
         # Combine chain and raw response for extraction
         full_text = "\n".join(reasoning_chain) + "\n" + raw_response
 
@@ -1112,8 +1138,58 @@ class ConsistencyMixin:
             f"📜 [{agent}] Found {len(statute_citations)} statute citations to verify"
         )
 
+        # Prepare precedent candidates early so progress events can expose
+        # an accurate total expected checks count for live progress bars.
+        precedent_titles_in_ir: list[dict] = []
+        if aspic_ir:
+            for p in aspic_ir.get("sources", {}).get("precedents", []):
+                title = (p.get("title") or "").strip()
+                if title:
+                    precedent_titles_in_ir.append(p)
+
+        # Also collect titles from precedent_nodes (richer data)
+        prec_node_map: dict[str, dict] = {}
+        if aspic_ir:
+            for pn in aspic_ir.get("precedent_nodes", []):
+                title = (pn.get("title") or "").strip()
+                if title:
+                    prec_node_map[title.lower()] = pn
+
+        # Build a list of all known precedent titles (from sources)
+        # and a title → precedent_id map for reliable Neo4j lookup
+        known_prec_titles: list[str] = []
+        known_prec_titles_seen: set[str] = set()
+        prec_id_by_title: dict[str, str] = {}
+        for p in precedent_titles_in_ir:
+            title = (p.get("title") or "").strip()
+            title_key = title.lower()
+            if title and title_key not in known_prec_titles_seen:
+                known_prec_titles_seen.add(title_key)
+                known_prec_titles.append(title)
+                prec_id = (p.get("precedent_id") or "").strip()
+                if prec_id:
+                    prec_id_by_title[title_key] = prec_id
+
+        # Enrich map from precedent_nodes (they carry precedent_id too)
+        for pn in prec_node_map.values():
+            title = (pn.get("title") or "").strip().lower()
+            prec_id = (pn.get("precedent_id") or "").strip()
+            if title and prec_id and title not in prec_id_by_title:
+                prec_id_by_title[title] = prec_id
+
+        # Find which precedents are actually cited in the text
+        full_text_lower = full_text.lower()
+        cited_prec_titles = [
+            t for t in known_prec_titles if t.lower() in full_text_lower
+        ]
+        unique_statute_articles = {
+            m.group(1) for c in statute_citations if (m := re.search(r"(\d{1,4})", c))
+        }
+        expected_total_checks = len(unique_statute_articles) + len(cited_prec_titles)
+
         # Track already verified articles to avoid duplicates
         verified_articles: set[str] = set()
+        verified_precedent_titles: set[str] = set()
 
         for citation in statute_citations:
             # Extract article number from citation (e.g., "Art. 1223 c.c." -> "1223")
@@ -1225,52 +1301,10 @@ class ConsistencyMixin:
 
             report.citation_checks.append(check)
             report.total_citations += 1
+            _emit_citation_progress(check)
 
         # ----- Precedent citation verification -----
-        # Detect precedent titles cited in the text by matching against
-        # the allowed precedents stored in the ASPIC IR sources.
-        precedent_titles_in_ir: list[dict] = []
-        if aspic_ir:
-            for p in aspic_ir.get("sources", {}).get("precedents", []):
-                title = (p.get("title") or "").strip()
-                if title:
-                    precedent_titles_in_ir.append(p)
-
-        # Also collect titles from precedent_nodes (richer data)
-        prec_node_map: dict[str, dict] = {}
-        if aspic_ir:
-            for pn in aspic_ir.get("precedent_nodes", []):
-                title = (pn.get("title") or "").strip()
-                if title:
-                    prec_node_map[title.lower()] = pn
-
-        # Scan full_text for each known precedent title
-        full_text_lower = full_text.lower()
-        verified_precedent_titles: set[str] = set()
-
-        # Build a list of all known precedent titles (from sources)
-        # and a title → precedent_id map for reliable Neo4j lookup
-        known_prec_titles = []
-        prec_id_by_title: dict[str, str] = {}
-        for p in precedent_titles_in_ir:
-            title = (p.get("title") or "").strip()
-            if title and title.lower() not in verified_precedent_titles:
-                known_prec_titles.append(title)
-                prec_id = (p.get("precedent_id") or "").strip()
-                if prec_id:
-                    prec_id_by_title[title.lower()] = prec_id
-
-        # Enrich map from precedent_nodes (they carry precedent_id too)
-        for pn in prec_node_map.values():
-            title = (pn.get("title") or "").strip().lower()
-            prec_id = (pn.get("precedent_id") or "").strip()
-            if title and prec_id and title not in prec_id_by_title:
-                prec_id_by_title[title] = prec_id
-
-        # Find which precedents are actually cited in the text
-        cited_prec_titles = [
-            t for t in known_prec_titles if t.lower() in full_text_lower
-        ]
+        # `cited_prec_titles` and `prec_id_by_title` are precomputed above.
 
         if cited_prec_titles:
             self._log(
@@ -1381,6 +1415,7 @@ class ConsistencyMixin:
 
             report.citation_checks.append(check)
             report.total_citations += 1
+            _emit_citation_progress(check)
 
         # Calculate consistency score
         # Weighted: 70% existence + 30% text match (among verified texts)

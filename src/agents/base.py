@@ -457,9 +457,7 @@ If uncertain, answer YES.
 Respond with EXACTLY one token: YES or NO."""
 
             try:
-                response = self._resilient_llm_invoke(
-                    [HumanMessage(content=prompt)]
-                )
+                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(
@@ -481,9 +479,6 @@ Respond with EXACTLY one token: YES or NO."""
 
         self._log(f"📊 Kept {len(relevant)}/{len(precedents)} precedents")
         return relevant
-
-
-
 
     def _format_context_for_prompt(
         self,

@@ -348,6 +348,72 @@ These have sensible defaults and can be overridden in `.env` or via the frontend
 | `MODEL_DOWN_TTL` | `300.0` | Seconds before retrying a down model |
 
 
+## 🌐 Public Demo (Cloudflare Tunnel)
+
+For a quick public URL without deploying to a cloud server, use `scripts/start_public_demo.sh`.
+
+### Prerequisites
+
+Install `cloudflared` once:
+
+```bash
+brew install cloudflared
+```
+
+### Run one demo instance
+
+```bash
+bash scripts/start_public_demo.sh
+```
+
+The script starts:
+- Flask API (`src/api_server.py`) on `127.0.0.1:8000`
+- Vite frontend on `127.0.0.1:3000`
+- Cloudflare Quick Tunnel
+
+It prints a temporary public URL like `https://...trycloudflare.com`.
+
+### Run multiple isolated instances
+
+```bash
+# Instance A
+API_PORT=8000 FRONTEND_PORT=3000 INSTANCE_NAME=you bash scripts/start_public_demo.sh
+
+# Instance B (different terminal)
+API_PORT=8001 FRONTEND_PORT=3001 INSTANCE_NAME=colleague bash scripts/start_public_demo.sh
+```
+
+Each terminal gets its own `trycloudflare.com` URL.
+
+### Script arguments
+
+```bash
+bash scripts/start_public_demo.sh --instance colleague --api-port 8001 --frontend-port 3001 --host 127.0.0.1
+```
+
+### Stop
+
+Press `Ctrl+C` in the tunnel terminal.  
+The script stops backend + frontend processes for that instance.
+
+### Troubleshooting
+
+`Port XXXX is already in use`:
+
+```bash
+pkill -f "python.*src/api_server.py" || true
+pkill -f "node .*vite" || true
+pkill -f "cloudflared tunnel --url" || true
+```
+
+`Blocked request. This host (...) is not allowed`:
+- The script already handles this by setting `--http-host-header`.
+- If you run components manually, use:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
+```
+
 
 ## 🧪 Agent & Pipeline Development Status
 

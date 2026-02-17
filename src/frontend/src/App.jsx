@@ -55,8 +55,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [pipelineSettings, setPipelineSettings] = useState({
-    reasoner_model: '',
-    counter_model: '',
+    reasoner_model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
+    counter_model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
     llm_temperature: 0.3,
     llm_max_tokens: 8192,
     search_top_k_default: 100,
@@ -95,8 +95,8 @@ export default function App() {
         const d = data.defaults || {};
         setPipelineSettings((prev) => ({
           ...prev,
-          reasoner_model: d.groq_model || prev.reasoner_model,
-          counter_model: d.groq_model || prev.counter_model,
+          reasoner_model: d.reasoner_model || d.groq_fallback_model || d.groq_model || prev.reasoner_model,
+          counter_model: d.counter_model || d.groq_fallback_model || d.groq_model || prev.counter_model,
           llm_temperature: d.llm_temperature ?? prev.llm_temperature,
           llm_max_tokens: d.llm_max_tokens ?? prev.llm_max_tokens,
           search_top_k_default: d.search_top_k_default ?? prev.search_top_k_default,
@@ -766,10 +766,24 @@ export default function App() {
                           <AlertTriangle size={18} />
                           Astensione del Counter-Reasoner
                         </h4>
+                        {pipelineResult.evaluation?.consistency_report?.counter_reasoner_gate?.abstain && (
+                          <p style={{ margin: '8px 0 0', opacity: 0.95 }}>
+                            Astensione applicata dal Polisher gate
+                            {pipelineResult.evaluation.consistency_report.counter_reasoner_gate.label
+                              ? ` (label: ${pipelineResult.evaluation.consistency_report.counter_reasoner_gate.label})`
+                              : ''}.
+                          </p>
+                        )}
                         <p style={{ margin: '8px 0 0', opacity: 0.9 }}>
                           {pipelineResult.counter_reasoner.abstention_reason || 
                            'Il sistema non ha individuato contro-argomentazioni giuridicamente solide per questo caso.'}
                         </p>
+                        <details className="ir-toggle" style={{ marginTop: '10px' }}>
+                          <summary>Conclusione del Reasoner passata al Counter-Reasoner</summary>
+                          <div className="raw-response" style={{ marginTop: '8px' }}>
+                            {pipelineResult.counter_reasoner.reasoner_conclusion_context || 'Conclusione non disponibile.'}
+                          </div>
+                        </details>
                       </div>
                     )}
 

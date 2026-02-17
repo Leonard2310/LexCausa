@@ -480,8 +480,9 @@ def _extract_keywords_from_claim(claim: str) -> list[str]:
 
     Returns a list of keyword strings suitable for Neo4j fulltext queries.
     """
-    from services.groq_client import get_chat_groq, resilient_chat_call
     from langchain_core.messages import HumanMessage
+
+    from services.groq_client import get_chat_groq, resilient_chat_call
 
     prompt = f"""Extract the most important legal keywords from this claim.
 Focus on: legal concepts, legal domains, types of offenses/violations,
@@ -527,6 +528,7 @@ RULES:
         print(f"  ⚠️ Keyword extraction failed: {e}")
         # Fallback: split claim into meaningful chunks
         import re
+
         words = re.findall(r"\b[a-zA-ZàèéìòùÀÈÉÌÒÙ]{4,}\b", claim)
         return list(dict.fromkeys(words))[:8]
 

@@ -737,10 +737,18 @@ def pipeline():
             )
             cr = CounterReasoner(config=counter_config)
 
-            # Extract Reasoner conclusion so CR knows what to oppose
+            # Opposition consistency is validated by the Polisher gate.
             reasoner_conclusion = reasoner_result.conclusion or ""
-            if not reasoner_conclusion and reasoner_result.reasoning_chain:
-                reasoner_conclusion = reasoner_result.reasoning_chain[-1]
+            if not reasoner_conclusion:
+                print(
+                    "ℹ️ Reasoner conclusion unavailable: no fallback applied. "
+                    "Opposition check is delegated to Polisher gate."
+                )
+            else:
+                print(
+                    "ℹ️ Reasoner conclusion captured for Counter traceability: "
+                    f"{reasoner_conclusion[:120]}..."
+                )
 
             counter_result = cr.run(
                 claim=claim,
@@ -750,6 +758,7 @@ def pipeline():
                 enable_causality=fe_enable_causality,
                 reasoner_conclusion=reasoner_conclusion,
             )
+            counter_result.reasoner_conclusion_context = reasoner_conclusion
 
             print("✅ Counter-Reasoner completed")
             print(
@@ -798,6 +807,25 @@ def pipeline():
                 reasoner_output=reasoner_result.to_dict(),
                 counter_reasoner_output=counter_result.to_dict(),
             )
+
+            # Apply Polisher counter gate to the returned counter output
+            counter_gate = (
+                (evaluation_result.counter_reasoner_gate or {})
+                if hasattr(evaluation_result, "counter_reasoner_gate")
+                else {}
+            )
+            if counter_gate.get("abstain"):
+                counter_result.abstained = True
+                if not counter_result.abstention_reason:
+                    counter_result.abstention_reason = counter_gate.get(
+                        "reason",
+                        "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
+                    )
+                print("⚠️ Counter-Reasoner aggiornato dal Polisher gate")
+                print(f"   - Gate label: {counter_gate.get('label')}")
+                print(
+                    f"   - Gate reason: {counter_gate.get('reason', counter_result.abstention_reason)}"
+                )
 
             # Derive winning_side and confidence from AQA verdict
             aqa = evaluation_result.aqa_report or {}

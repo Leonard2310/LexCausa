@@ -850,9 +850,7 @@ class ConsistencyMixin:
             """
             try:
                 with driver.session() as session:
-                    result = session.run(
-                        query_by_id, parameters={"id": precedent_id}
-                    )
+                    result = session.run(query_by_id, parameters={"id": precedent_id})
                     record = result.single()
                     if record:
                         summary = record.get("summary", "") or ""
@@ -862,9 +860,7 @@ class ConsistencyMixin:
                         )
                         return True, summary
             except Exception as e:
-                self._log(
-                    f"⚠️ Neo4j precedent query by ID failed: {e}", "warning"
-                )
+                self._log(f"⚠️ Neo4j precedent query by ID failed: {e}", "warning")
 
         # --- Strategy 2: fallback to title with trim() for whitespace safety ---
         query_by_title = """
@@ -877,9 +873,7 @@ class ConsistencyMixin:
         """
         try:
             with driver.session() as session:
-                result = session.run(
-                    query_by_title, parameters={"title": title}
-                )
+                result = session.run(query_by_title, parameters={"title": title})
                 record = result.single()
                 if record:
                     summary = record.get("summary", "") or ""

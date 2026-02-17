@@ -200,7 +200,9 @@ class Reasoner(BaseAgent):
         if enable_causality:
             # Phase 1: initial reasoning (no anchor injection)
             base_statutes = self._expand_with_cross_references(pre_retrieved_statutes)
-            kb1 = self._format_context_for_prompt(base_statutes, pre_retrieved_precedents)
+            kb1 = self._format_context_for_prompt(
+                base_statutes, pre_retrieved_precedents
+            )
             allowed_statutes1 = [
                 f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
                 for s in base_statutes
@@ -257,7 +259,9 @@ class Reasoner(BaseAgent):
                 )
                 self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
         else:
-            self._log("🔬 Causality DISABLED — skipping classification and anchor norms")
+            self._log(
+                "🔬 Causality DISABLED — skipping classification and anchor norms"
+            )
             chain_class = {}
             final_causal_id = ""
             final_theory_id = ""

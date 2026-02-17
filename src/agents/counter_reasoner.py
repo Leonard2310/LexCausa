@@ -55,6 +55,7 @@ class CounterReasonerOutput:
     aspic_ir: dict = field(default_factory=dict)
     abstained: bool = False
     abstention_reason: str = ""
+    reasoner_conclusion_context: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +80,7 @@ class CounterReasonerOutput:
             "aspic_ir": self.aspic_ir,
             "abstained": self.abstained,
             "abstention_reason": self.abstention_reason,
+            "reasoner_conclusion_context": self.reasoner_conclusion_context,
         }
 
 
@@ -423,7 +425,9 @@ Select the most useful attack among the following ids and return ONLY the chosen
                     "info",
                 )
         else:
-            self._log("🔬 Causality DISABLED — skipping attack selection and anchor norms")
+            self._log(
+                "🔬 Causality DISABLED — skipping attack selection and anchor norms"
+            )
             attack_selection = AttackSelection(pool=[], attack_id="", description="")
             anchor_statutes = []
 
@@ -542,89 +546,6 @@ Select the most useful attack among the following ids and return ONLY the chosen
             output is not None
         ), "CounterReasonerOutput was never assigned"  # guard for mypy
 
-        # ----------------------------------------------------------
-        # Agreement detection: ensure CR opposes the Reasoner
-        # ----------------------------------------------------------
-        if reasoner_conclusion and output.reasoning_chain:
-            agrees = self._check_agreement_with_reasoner(
-                reasoner_conclusion, output.reasoning_chain
-            )
-            if agrees:
-                self._log(
-                    "🔄 CR agrees with Reasoner — retrying with reinforced prompt…",
-                    "warning",
-                )
-                # Retry once with a reinforced opposition directive
-                reinforced_conclusion = (
-                    f"⚠️ YOUR PREVIOUS ATTEMPT AGREED WITH THE REASONER. "
-                    f"THIS IS WRONG. The Reasoner concluded: \"{reasoner_conclusion}\". "
-                    f"You MUST reach the OPPOSITE conclusion. "
-                    f"If the Reasoner says guilty → you say NOT guilty. "
-                    f"If the Reasoner says liable → you say NOT liable. "
-                    f"If the Reasoner says founded → you say UNFOUNDED."
-                )
-                raw_retry, chain_retry = self._generate_counter_chain_iteratively(
-                    claim=claim,
-                    routing_decision=routing_decision,
-                    attack_selection=attack_selection,
-                    knowledge_base=knowledge_base,
-                    allowed_statutes=allowed_statutes,
-                    allowed_precedents=allowed_precedents,
-                    reasoner_conclusion=reinforced_conclusion,
-                )
-                if chain_retry:
-                    still_agrees = self._check_agreement_with_reasoner(
-                        reasoner_conclusion, chain_retry
-                    )
-                    if not still_agrees:
-                        # Retry succeeded — rebuild output
-                        self._log("✅ Retry succeeded: CR now opposes Reasoner")
-                        output.raw_response = raw_retry
-                        output.reasoning_chain = chain_retry
-                        output.counter_arguments = self._extract_arguments(raw_retry)
-                        output.reasoning_chain = self._sanitize_reasoning_chain(
-                            output.reasoning_chain, pre_retrieved_precedents
-                        )
-                        formatter = AspicFormatter(
-                            role="counter",
-                            statutes=deduped_statutes,
-                            precedents=pre_retrieved_precedents,
-                        )
-                        output.aspic_ir = formatter.format(
-                            claim=claim,
-                            raw_response=raw_retry,
-                            reasoning_chain=output.reasoning_chain,
-                            arguments=output.counter_arguments,
-                            metadata={
-                                "selected_attack_id": attack_selection.attack_id,
-                                "causal_type_id": routing_decision.causal_type_id,
-                                "theory_id": routing_decision.theory_id,
-                            },
-                        )
-                    else:
-                        # Still agrees after retry — abstain
-                        self._log(
-                            "⚠️ CR still agrees after retry — abstaining",
-                            "warning",
-                        )
-                        output.abstained = True
-                        output.abstention_reason = (
-                            "Il Counter-Reasoner non è riuscito a produrre "
-                            "una contro-argomentazione che si opponga effettivamente "
-                            "alla conclusione del Reasoner. Il sistema si astiene "
-                            "per evitare di presentare argomentazioni fuorvianti."
-                        )
-                else:
-                    # Retry produced no chain — abstain
-                    self._log(
-                        "⚠️ Retry produced empty chain — abstaining", "warning"
-                    )
-                    output.abstained = True
-                    output.abstention_reason = (
-                        "Il Counter-Reasoner non è riuscito a generare una "
-                        "catena argomentativa valida nel tentativo di opposizione."
-                    )
-
         chain_len = (
             len(output.aspic_ir.get("reasoning_chain", [])) if output.aspic_ir else 0
         )
@@ -634,48 +555,6 @@ Select the most useful attack among the following ids and return ONLY the chosen
             "success",
         )
         return output
-
-    def _check_agreement_with_reasoner(
-        self,
-        reasoner_conclusion: str,
-        counter_chain: List[str],
-    ) -> bool:
-        """Check if counter-reasoner conclusion agrees with Reasoner.
-
-        Returns ``True`` if the CR *agrees* (= bug), ``False`` if it
-        properly opposes.
-        """
-        if not reasoner_conclusion or not counter_chain:
-            return False  # Cannot assess — assume OK
-
-        cr_conclusion = counter_chain[-1] if counter_chain else ""
-        prompt = f"""You must determine whether two legal conclusions AGREE or DISAGREE.
-
-CONCLUSION A (Reasoner):
-"{reasoner_conclusion}"
-
-CONCLUSION B (Counter-Reasoner):
-"{cr_conclusion}"
-
-RULES:
-- AGREE means both conclusions reach the SAME verdict (e.g. both say guilty, or both say liable, or both say the claim is founded).
-- DISAGREE means they reach OPPOSITE verdicts (e.g. one says guilty, the other says not guilty).
-- Focus on the FINAL VERDICT, not on intermediate reasoning.
-
-Answer with EXACTLY one word: AGREE or DISAGREE."""
-
-        try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            answer = (resp.content or "").strip().upper()
-        except Exception as e:
-            self._log(f"⚠️ Agreement check failed: {e}", "warning")
-            return False  # Assume OK on failure
-
-        if "AGREE" in answer and "DISAGREE" not in answer:
-            self._log("🚨 Agreement detected: CR agrees with Reasoner!", "warning")
-            return True
-        self._log("✅ CR properly opposes Reasoner")
-        return False
 
     def _extract_failed_generation(self, exc: Exception) -> str:
         """Extract the valid response from a Groq tool_use_failed error."""

@@ -23,6 +23,8 @@ The implementation is split across several mixin modules under
 import re
 from typing import Any, Optional
 
+from langchain_core.messages import HumanMessage
+
 from config import settings
 
 from .base import AgentConfig, BaseAgent
@@ -174,6 +176,25 @@ class PolisherEvaluator(
             f"{counter_report.total_citations} valid)"
         )
 
+        # ----- Counter opposition gate (post-check with both chains) -----
+        counter_gate = self._evaluate_counter_opposition_gate(
+            claim=claim,
+            reasoner_chain=reasoner_chain,
+            counter_chain=counter_chain,
+            counter_already_abstained=bool(counter_reasoner_output.get("abstained")),
+            counter_abstention_reason=counter_reasoner_output.get(
+                "abstention_reason", ""
+            ),
+        )
+        if counter_gate.get("abstain"):
+            counter_reasoner_output = dict(counter_reasoner_output)
+            counter_reasoner_output["abstained"] = True
+            counter_reasoner_output["abstention_reason"] = counter_gate.get(
+                "reason",
+                "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
+            )
+            self._log("⚠️ Counter gate attivato: Counter-Reasoner marcato come astenuto")
+
         # ----- Repair chains if needed -----
         self._log("Checking if reasoning chains need repair...")
 
@@ -189,7 +210,12 @@ class PolisherEvaluator(
         else:
             repaired_reasoner_chain = reasoner_raw
 
-        if (
+        if counter_gate.get("abstain"):
+            repaired_counter_chain = counter_raw
+            self._log(
+                "⛔ Counter chain repair skipped: counter marcato come astenuto dal gate"
+            )
+        elif (
             counter_report.repaired_citations > 0
             or counter_report.dropped_citations > 0
         ):
@@ -208,20 +234,34 @@ class PolisherEvaluator(
             repaired_chain_text=repaired_reasoner_chain,
             claim=claim,
             role="support",
-            statutes=reasoner_output.get("statutes", reasoner_output.get("relevant_statutes", [])),
-            precedents=reasoner_output.get("precedents", reasoner_output.get("relevant_precedents", [])),
+            statutes=reasoner_output.get(
+                "statutes", reasoner_output.get("relevant_statutes", [])
+            ),
+            precedents=reasoner_output.get(
+                "precedents", reasoner_output.get("relevant_precedents", [])
+            ),
             metadata=reasoner_aspic_ir.get("metadata", {}),
         )
-        repaired_counter_aspic = self._repair_aspic_ir(
-            aspic_ir=counter_aspic_ir,
-            citation_checks=counter_report.citation_checks,
-            repaired_chain_text=repaired_counter_chain,
-            claim=claim,
-            role="counter",
-            statutes=counter_reasoner_output.get("statutes", counter_reasoner_output.get("relevant_statutes", [])),
-            precedents=counter_reasoner_output.get("precedents", counter_reasoner_output.get("relevant_precedents", [])),
-            metadata=counter_aspic_ir.get("metadata", {}),
-        )
+        if counter_gate.get("abstain"):
+            repaired_counter_aspic = {}
+            self._log(
+                "⛔ Counter ASPIC repair skipped: nessun materiale contro da consolidare"
+            )
+        else:
+            repaired_counter_aspic = self._repair_aspic_ir(
+                aspic_ir=counter_aspic_ir,
+                citation_checks=counter_report.citation_checks,
+                repaired_chain_text=repaired_counter_chain,
+                claim=claim,
+                role="counter",
+                statutes=counter_reasoner_output.get(
+                    "statutes", counter_reasoner_output.get("relevant_statutes", [])
+                ),
+                precedents=counter_reasoner_output.get(
+                    "precedents", counter_reasoner_output.get("relevant_precedents", [])
+                ),
+                metadata=counter_aspic_ir.get("metadata", {}),
+            )
 
         # Dialectical tree bundle
         reasoner_ir = reasoner_output.get("aspic_ir")
@@ -244,11 +284,17 @@ class PolisherEvaluator(
             if repaired_reasoner_aspic
             else (reasoner_aspic_ir or {})
         )
-        aqa_counter_ir = (
-            repaired_counter_aspic
-            if repaired_counter_aspic
-            else (counter_aspic_ir or {})
-        )
+        if counter_gate.get("abstain"):
+            aqa_counter_ir = {}
+            self._log(
+                "⛔ Counter escluso da AQA: gate di opposizione ha marcato astensione"
+            )
+        else:
+            aqa_counter_ir = (
+                repaired_counter_aspic
+                if repaired_counter_aspic
+                else (counter_aspic_ir or {})
+            )
 
         if repaired_reasoner_aspic:
             r_meta = repaired_reasoner_aspic.get("_repair_metadata", {})
@@ -260,7 +306,9 @@ class PolisherEvaluator(
         else:
             self._log("AQA using ORIGINAL Reasoner IR (no repairs needed)")
 
-        if repaired_counter_aspic:
+        if counter_gate.get("abstain"):
+            self._log("AQA Counter IR skipped (counter abstained by Polisher gate)")
+        elif repaired_counter_aspic:
             c_meta = repaired_counter_aspic.get("_repair_metadata", {})
             self._log(
                 f"AQA using REPAIRED Counter IR "
@@ -285,6 +333,7 @@ class PolisherEvaluator(
             consistency_report={
                 "reasoner": reasoner_report.to_dict(),
                 "counter_reasoner": counter_report.to_dict(),
+                "counter_reasoner_gate": counter_gate,
             },
             aqa_report=aqa_report,
             summary=summary,
@@ -294,4 +343,157 @@ class PolisherEvaluator(
             repaired_counter_chain=repaired_counter_chain,
             repaired_reasoner_aspic_ir=repaired_reasoner_aspic,
             repaired_counter_aspic_ir=repaired_counter_aspic,
+            counter_reasoner_gate=counter_gate,
         )
+
+    def _substantive_chain_steps(self, chain: list[str]) -> list[str]:
+        """Remove placeholder/meta steps that are not legal reasoning content."""
+        placeholder_prefixes = (
+            "precedents:",
+            "catena di ragionamento non disponibile",
+        )
+        steps: list[str] = []
+        for step in chain or []:
+            cleaned = (step or "").strip()
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if lowered.startswith(placeholder_prefixes):
+                continue
+            steps.append(cleaned)
+        return steps
+
+    def _evaluate_counter_opposition_gate(
+        self,
+        claim: str,
+        reasoner_chain: list[str],
+        counter_chain: list[str],
+        counter_already_abstained: bool,
+        counter_abstention_reason: str,
+    ) -> dict:
+        """Verify that the counter chain is materially opposite to the reasoner.
+
+        If not, mark counter as abstained with an explicit reason.
+        """
+        gate = {
+            "checked": True,
+            "abstain": False,
+            "label": "OPPOSING",
+            "reason": "",
+            "reasoner_steps": 0,
+            "counter_steps": 0,
+        }
+
+        if counter_already_abstained:
+            gate.update(
+                {
+                    "abstain": True,
+                    "label": "ALREADY_ABSTAINED",
+                    "reason": counter_abstention_reason
+                    or "Counter-Reasoner già astenuto prima del controllo del Polisher.",
+                }
+            )
+            self._log(
+                "ℹ️ Counter gate: salto verifica opposizione (counter già astenuto)"
+            )
+            return gate
+
+        reasoner_steps = self._substantive_chain_steps(reasoner_chain)
+        counter_steps = self._substantive_chain_steps(counter_chain)
+        gate["reasoner_steps"] = len(reasoner_steps)
+        gate["counter_steps"] = len(counter_steps)
+
+        self._log(
+            "🧪 Counter gate input: "
+            f"reasoner_steps={len(reasoner_steps)}, counter_steps={len(counter_steps)}"
+        )
+        if reasoner_steps:
+            self._log(f"   ↳ Reasoner last step: {reasoner_steps[-1][:120]}")
+        if counter_steps:
+            self._log(f"   ↳ Counter last step: {counter_steps[-1][:120]}")
+
+        if len(counter_steps) < 2:
+            gate.update(
+                {
+                    "abstain": True,
+                    "label": "INSUFFICIENT_MATERIAL",
+                    "reason": (
+                        "Il Counter-Reasoner non ha abbastanza materiale per "
+                        "argomentare contro in modo autonomo e consistente."
+                    ),
+                }
+            )
+            self._log("⚠️ Counter gate: materiale contro insufficiente")
+            return gate
+
+        if not reasoner_steps:
+            gate.update(
+                {
+                    "abstain": False,
+                    "label": "SKIPPED_NO_REASONER_CHAIN",
+                    "reason": "Verifica opposizione non eseguita: chain del Reasoner assente.",
+                }
+            )
+            self._log("⚠️ Counter gate: impossibile confrontare, chain reasoner assente")
+            return gate
+
+        prompt = f"""You are a legal dialectical verifier.
+Compare two reasoning chains on the same claim and determine whether the COUNTER chain reaches a genuinely opposite legal outcome from the REASONER chain.
+
+CLAIM:
+\"\"\"{claim}\"\"\"
+
+REASONER CHAIN:
+{chr(10).join(f"{i+1}. {s}" for i, s in enumerate(reasoner_steps))}
+
+COUNTER CHAIN:
+{chr(10).join(f"{i+1}. {s}" for i, s in enumerate(counter_steps))}
+
+Respond with EXACTLY ONE label:
+- OPPOSING (the COUNTER chain reaches the opposite outcome)
+- AGREEING (the COUNTER chain supports or converges with the REASONER)
+- UNCLEAR (the COUNTER chain is not clearly opposite)
+"""
+
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            verdict = (resp.content or "").strip().upper()
+            self._log(f"🧪 Counter gate LLM verdict raw: {verdict[:120]}")
+        except Exception as e:
+            self._log(f"⚠️ Counter gate LLM error: {e}", "warning")
+            gate.update(
+                {
+                    "abstain": True,
+                    "label": "CHECK_FAILED",
+                    "reason": (
+                        "Il Counter-Reasoner non ha abbastanza materiale verificabile "
+                        "per argomentare contro."
+                    ),
+                }
+            )
+            return gate
+
+        if re.search(r"\bOPPOSING\b", verdict):
+            self._log("✅ Counter gate: opposizione confermata")
+            return gate
+
+        label = "UNCLEAR"
+        if re.search(r"\bAGREEING\b", verdict):
+            label = "AGREEING"
+        elif re.search(r"\bUNCLEAR\b", verdict):
+            label = "UNCLEAR"
+
+        gate.update(
+            {
+                "abstain": True,
+                "label": label,
+                "reason": (
+                    "Il Counter-Reasoner non ha abbastanza materiale per "
+                    "argomentare contro in modo effettivamente opposto al Reasoner."
+                ),
+            }
+        )
+        self._log(
+            f"⚠️ Counter gate: opposizione non sufficiente (label={label}) -> astensione"
+        )
+        return gate

@@ -119,6 +119,7 @@ class EvaluationResult:
     repaired_counter_chain: str = ""
     repaired_reasoner_aspic_ir: dict = field(default_factory=dict)
     repaired_counter_aspic_ir: dict = field(default_factory=dict)
+    counter_reasoner_gate: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -134,4 +135,5 @@ class EvaluationResult:
             "repaired_counter_chain": self.repaired_counter_chain,
             "repaired_reasoner_aspic_ir": self.repaired_reasoner_aspic_ir,
             "repaired_counter_aspic_ir": self.repaired_counter_aspic_ir,
+            "counter_reasoner_gate": self.counter_reasoner_gate,
         }

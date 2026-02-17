@@ -415,14 +415,51 @@ def _extract_citations(
         # Strategy 3: tokenized fuzzy – 60 % of significant words present
         if not matched:
             stop_words = {
-                "di", "del", "della", "delle", "dei", "degli", "in", "a",
-                "da", "con", "su", "per", "tra", "fra", "e", "o", "il",
-                "lo", "la", "i", "gli", "le", "un", "uno", "una", "che",
-                "non", "al", "alla", "alle", "ai", "agli", "nel", "nella",
-                "nelle", "nei", "negli", "sul", "sulla", "sulle", "sui",
+                "di",
+                "del",
+                "della",
+                "delle",
+                "dei",
+                "degli",
+                "in",
+                "a",
+                "da",
+                "con",
+                "su",
+                "per",
+                "tra",
+                "fra",
+                "e",
+                "o",
+                "il",
+                "lo",
+                "la",
+                "i",
+                "gli",
+                "le",
+                "un",
+                "uno",
+                "una",
+                "che",
+                "non",
+                "al",
+                "alla",
+                "alle",
+                "ai",
+                "agli",
+                "nel",
+                "nella",
+                "nelle",
+                "nei",
+                "negli",
+                "sul",
+                "sulla",
+                "sulle",
+                "sui",
             }
             words = [
-                w for w in re.split(r"\W+", title_lower)
+                w
+                for w in re.split(r"\W+", title_lower)
                 if len(w) > 2 and w not in stop_words
             ]
             if words:

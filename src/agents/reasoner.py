@@ -67,6 +67,7 @@ class ReasonerOutput:
     arguments: list[dict] = field(default_factory=list)
     reasoning_chain: list[str] = field(default_factory=list)
     raw_response: str = ""
+    conclusion: str = ""
     aspic_ir: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -84,6 +85,7 @@ class ReasonerOutput:
             "arguments": self.arguments,
             "reasoning_chain": self.reasoning_chain,
             "raw_response": self.raw_response,
+            "conclusion": self.conclusion,
             "aspic_ir": self.aspic_ir,
         }
 
@@ -151,6 +153,7 @@ class Reasoner(BaseAgent):
         routing_decision: RoutingDecision,
         pre_retrieved_statutes: list[dict],
         pre_retrieved_precedents: list[dict],
+        enable_causality: bool = True,
     ) -> ReasonerOutput:
         """
         Two-phase reasoning:
@@ -190,67 +193,78 @@ class Reasoner(BaseAgent):
                 raw_response="Analysis not completed: no statutory or case sources available.",
             )
 
-        # Phase 1: initial reasoning (no anchor injection)
-        base_statutes = self._expand_with_cross_references(pre_retrieved_statutes)
-        kb1 = self._format_context_for_prompt(base_statutes, pre_retrieved_precedents)
-        allowed_statutes1 = [
-            f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
-            for s in base_statutes
-        ]
-        allowed_precedents1 = [
-            p.get("title", "Untitled") for p in pre_retrieved_precedents
-        ]
-
-        input_prompt1 = self._build_reasoning_prompt_with_context(
-            claim,
-            routing_decision,
-            anchor_text="-",
-            principle_text="-",
-            knowledge_base=kb1,
-            allowed_statutes=allowed_statutes1,
-            allowed_precedents=allowed_precedents1,
-        )
-
-        raw_output1, _ = self._invoke_reasoner(input_prompt1)
-        reasoning_chain1 = self._extract_reasoning_chain(raw_output1)
-
-        # Phase 2: classify causality on reasoning chain filtered by domain
+        # ── Causality-dependent phases ──────────────────────────────────
         domain = routing_decision.domain
         self._log(f"🔬 Router domain: {domain}")
 
-        chain_class = self._classify_causality_from_reasoning(
-            claim, reasoning_chain1, raw_output1, domain
-        )
+        if enable_causality:
+            # Phase 1: initial reasoning (no anchor injection)
+            base_statutes = self._expand_with_cross_references(pre_retrieved_statutes)
+            kb1 = self._format_context_for_prompt(base_statutes, pre_retrieved_precedents)
+            allowed_statutes1 = [
+                f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+                for s in base_statutes
+            ]
+            allowed_precedents1 = [
+                p.get("title", "Untitled") for p in pre_retrieved_precedents
+            ]
 
-        # DEBUG: log chain classification results
-        self._log(
-            f"🔬 Chain classification: causal_type_id={chain_class.get('causal_type_id')}, theory_id={chain_class.get('theory_id')}"
-        )
-
-        final_causal_id = chain_class.get("causal_type_id") or ""
-        final_theory_id = chain_class.get("theory_id") or ""
-
-        # Validate and get anchor norms for the classified causal type
-        if final_causal_id:
-            final_causal_id, final_theory_id = config_loader.validate_ids(
-                final_causal_id, final_theory_id
+            input_prompt1 = self._build_reasoning_prompt_with_context(
+                claim,
+                routing_decision,
+                anchor_text="-",
+                principle_text="-",
+                knowledge_base=kb1,
+                allowed_statutes=allowed_statutes1,
+                allowed_precedents=allowed_precedents1,
             )
 
-        causal_types_for_counter: list[str] = (
-            [final_causal_id] if final_causal_id else []
-        )
-        anchor_norms: dict = {}
-        anchor_statutes: list[dict] = []
-        principle_tests: list[dict] = []
+            raw_output1, _ = self._invoke_reasoner(input_prompt1)
+            reasoning_chain1 = self._extract_reasoning_chain(raw_output1)
 
-        if final_causal_id:
-            anchor_norms, anchor_statutes, principle_tests = (
-                self._filtered_anchor_norms_for_types([final_causal_id], claim)
+            # Phase 2: classify causality on reasoning chain filtered by domain
+            chain_class = self._classify_causality_from_reasoning(
+                claim, reasoning_chain1, raw_output1, domain
             )
+
+            # DEBUG: log chain classification results
             self._log(
-                f"📋 Anchor norms retrieved: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+                f"🔬 Chain classification: causal_type_id={chain_class.get('causal_type_id')}, theory_id={chain_class.get('theory_id')}"
             )
-            self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
+
+            final_causal_id = chain_class.get("causal_type_id") or ""
+            final_theory_id = chain_class.get("theory_id") or ""
+
+            # Validate and get anchor norms for the classified causal type
+            if final_causal_id:
+                final_causal_id, final_theory_id = config_loader.validate_ids(
+                    final_causal_id, final_theory_id
+                )
+
+            causal_types_for_counter: list[str] = (
+                [final_causal_id] if final_causal_id else []
+            )
+            anchor_norms: dict = {}
+            anchor_statutes: list[dict] = []
+            principle_tests: list[dict] = []
+
+            if final_causal_id:
+                anchor_norms, anchor_statutes, principle_tests = (
+                    self._filtered_anchor_norms_for_types([final_causal_id], claim)
+                )
+                self._log(
+                    f"📋 Anchor norms retrieved: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+                )
+                self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
+        else:
+            self._log("🔬 Causality DISABLED — skipping classification and anchor norms")
+            chain_class = {}
+            final_causal_id = ""
+            final_theory_id = ""
+            causal_types_for_counter = []
+            anchor_norms = {}
+            anchor_statutes = []
+            principle_tests = []
 
         # Phase 3: refine reasoning with anchor norms + cross-ref expansion
         self._log(
@@ -313,6 +327,17 @@ class Reasoner(BaseAgent):
                 allowed_precedents=allowed_precedents,
             )
 
+            # Generate dynamic LLM conclusion from chain
+            conclusion = (
+                self._generate_conclusion(claim, iterative_chain)
+                if iterative_chain
+                else ""
+            )
+            if conclusion:
+                raw_output = self._assemble_raw_response(
+                    claim, iterative_chain, conclusion_text=conclusion
+                )
+
             output = ReasonerOutput(
                 claim=claim,
                 causality_classification={
@@ -329,6 +354,7 @@ class Reasoner(BaseAgent):
                 relevant_statutes=deduped_statutes,
                 relevant_precedents=pre_retrieved_precedents,
                 raw_response=raw_output,
+                conclusion=conclusion,
             )
 
             # Use iterative chain directly; fall back to extraction if empty
@@ -1065,10 +1091,67 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
+    def _generate_conclusion(self, claim: str, steps: list[str]) -> str:
+        """Generate a dynamic conclusion via LLM based on the reasoning chain.
+
+        Returns a concise 2-4 sentence conclusion synthesizing the legal
+        verdict from the chain steps.
+        """
+        if not steps:
+            return ""
+
+        chain_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
+        norms = self._extract_cited_articles(" ".join(steps))
+        norms_text = ", ".join(norms) if norms else "le norme applicabili"
+
+        prompt = f"""You are an expert Italian jurist. Based on the legal reasoning chain below, generate a concise and precise CONCLUSION.
+
+ORIGINAL CLAIM:
+"{claim}"
+
+REASONING CHAIN:
+{chain_text}
+
+CITED NORMS: {norms_text}
+
+INSTRUCTIONS:
+- Write a conclusion of 2-4 sentences in Italian.
+- The conclusion must SYNTHESIZE the result of the legal analysis, not repeat the individual steps.
+- Clearly state whether the claim is legally founded or not and WHY, based on the norms analyzed.
+- Do NOT introduce norms or facts not mentioned in the reasoning chain.
+- Be direct and assertive in the final verdict.
+- Your ENTIRE response must be written in Italian.
+
+CONCLUSION:"""
+
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            conclusion = (resp.content or "").strip()
+            # Clean up any echoed prefix
+            conclusion = re.sub(
+                r"^(?:CONCLUSIONE|CONCLUSION)\s*:\s*",
+                "",
+                conclusion,
+                flags=re.IGNORECASE,
+            ).strip()
+            if conclusion:
+                self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
+                return conclusion
+        except Exception as e:
+            self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
+
+        # Static fallback
+        return (
+            f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
+            f"Le norme richiamate ({norms_text}) trovano applicazione al caso di specie "
+            f"e supportano il fondamento giuridico della domanda."
+        )
+
     def _assemble_raw_response(
         self,
         claim: str,
         steps: list[str],
+        conclusion_text: str = "",
     ) -> str:
         """Assemble a complete raw response from iterative steps.
 
@@ -1076,28 +1159,24 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         ``_extract_reasoning_chain``, so ``AspicFormatter`` works
         without changes.
 
-        P7 FIX: Generates a synthetic conclusion summarizing the legal
-        argument rather than just using the last step as conclusion.
+        If *conclusion_text* is provided (LLM-generated), it is used
+        directly; otherwise a static fallback is emitted.
         """
         chain_section = "**Catena di ragionamento**:\n"
         for i, step in enumerate(steps, 1):
             chain_section += f"{i}. {step}\n"
 
-        # Use all steps for premise (not excluding the last one)
         premise_text = " ".join(steps)
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
 
-        # P7 FIX: Generate a synthetic conclusion that summarizes
-        # the argument instead of repeating the last step
-        norms_list = ", ".join(norms) if norms else "le norme applicabili"
-        conclusion_text = (
-            f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
-            f"Le norme richiamate ({norms_list}) trovano applicazione al caso di specie "
-            f"e supportano il fondamento giuridico della domanda. "
-            f"La catena argomentativa dimostra la sussistenza dei presupposti di legge "
-            f"per l'accoglimento della pretesa."
-        )
+        if not conclusion_text:
+            norms_list = ", ".join(norms) if norms else "le norme applicabili"
+            conclusion_text = (
+                f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
+                f"Le norme richiamate ({norms_list}) trovano applicazione al caso di specie "
+                f"e supportano il fondamento giuridico della domanda."
+            )
 
         raw = (
             f"**Premessa**: {premise_text}\n\n"

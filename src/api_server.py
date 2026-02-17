@@ -420,6 +420,7 @@ def get_settings():
                 "aqa_allow_factual_attacks": settings.aqa_allow_factual_attacks,
                 "aqa_allow_cross_codice": settings.aqa_allow_cross_codice,
                 "aqa_strength_ratio_by_type": settings.aqa_strength_ratio_by_type,
+                "enable_causality": True,
             },
         }
     )
@@ -635,6 +636,7 @@ def pipeline():
         fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
         fe_chain_min_steps = fe_settings.get("chain_min_steps")
         fe_chain_max_steps = fe_settings.get("chain_max_steps")
+        fe_enable_causality = fe_settings.get("enable_causality", True)
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
@@ -647,6 +649,8 @@ def pipeline():
 
             if fe_settings:
                 print(f"⚙️  Frontend settings override: {fe_settings}")
+            if not fe_enable_causality:
+                print("🔬 Causality taxonomy DISABLED by frontend settings")
 
             # Apply chain step overrides to global settings
             if fe_chain_min_steps is not None:
@@ -692,6 +696,7 @@ def pipeline():
                 routing_decision=routing_decision,
                 pre_retrieved_statutes=support_statutes,
                 pre_retrieved_precedents=support_precedents,
+                enable_causality=fe_enable_causality,
             )
             final_routing_decision = RoutingDecision(
                 claim=claim,
@@ -731,11 +736,19 @@ def pipeline():
                 max_tokens=fe_max_tokens,
             )
             cr = CounterReasoner(config=counter_config)
+
+            # Extract Reasoner conclusion so CR knows what to oppose
+            reasoner_conclusion = reasoner_result.conclusion or ""
+            if not reasoner_conclusion and reasoner_result.reasoning_chain:
+                reasoner_conclusion = reasoner_result.reasoning_chain[-1]
+
             counter_result = cr.run(
                 claim=claim,
                 routing_decision=final_routing_decision,
                 pre_retrieved_statutes=against_statutes,
                 pre_retrieved_precedents=against_precedents,
+                enable_causality=fe_enable_causality,
+                reasoner_conclusion=reasoner_conclusion,
             )
 
             print("✅ Counter-Reasoner completed")

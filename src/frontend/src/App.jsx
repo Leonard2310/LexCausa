@@ -73,6 +73,7 @@ export default function App() {
     aqa_damage_factor: 0.5,
     aqa_allow_factual_attacks: true,
     aqa_allow_cross_codice: true,
+    enable_causality: true,
   });
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -233,6 +234,7 @@ export default function App() {
             aqa_damage_factor: pipelineSettings.aqa_damage_factor,
             aqa_allow_factual_attacks: pipelineSettings.aqa_allow_factual_attacks,
             aqa_allow_cross_codice: pipelineSettings.aqa_allow_cross_codice,
+            enable_causality: pipelineSettings.enable_causality,
           },
         }),
       });
@@ -476,6 +478,21 @@ export default function App() {
                     value={pipelineSettings.chain_max_steps}
                     onChange={(e) => updateSetting('chain_max_steps', parseInt(e.target.value, 10))}
                   />
+                </label>
+              </div>
+            </fieldset>
+
+            {/* Causal Taxonomy */}
+            <fieldset className="settings-group">
+              <legend>🧬 Tassonomia Causale</legend>
+              <div className="settings-row">
+                <label className="settings-toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={pipelineSettings.enable_causality}
+                    onChange={(e) => updateSetting('enable_causality', e.target.checked)}
+                  />
+                  <span>Abilita Tassonomia Causale</span>
                 </label>
               </div>
             </fieldset>
@@ -736,6 +753,25 @@ export default function App() {
                       <XCircle size={20} style={{ color: '#ef4444' }} />
                       2. COUNTER-REASONER - Argomenti Contrari
                     </h3>
+
+                    {pipelineResult.counter_reasoner?.abstained && (
+                      <div className="subsection" style={{ 
+                        background: 'rgba(234, 179, 8, 0.1)', 
+                        border: '1px solid rgba(234, 179, 8, 0.3)', 
+                        borderRadius: '8px', 
+                        padding: '16px',
+                        marginBottom: '12px'
+                      }}>
+                        <h4 style={{ color: '#eab308', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <AlertTriangle size={18} />
+                          Astensione del Counter-Reasoner
+                        </h4>
+                        <p style={{ margin: '8px 0 0', opacity: 0.9 }}>
+                          {pipelineResult.counter_reasoner.abstention_reason || 
+                           'Il sistema non ha individuato contro-argomentazioni giuridicamente solide per questo caso.'}
+                        </p>
+                      </div>
+                    )}
 
                     {pipelineResult.counter_reasoner?.reasoner_causality && (
                       <div className="subsection">

@@ -53,6 +53,8 @@ class CounterReasonerOutput:
     reasoning_chain: List[str] = field(default_factory=list)
     raw_response: str = ""
     aspic_ir: dict = field(default_factory=dict)
+    abstained: bool = False
+    abstention_reason: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +77,8 @@ class CounterReasonerOutput:
             "reasoning_chain": self.reasoning_chain,
             "raw_response": self.raw_response,
             "aspic_ir": self.aspic_ir,
+            "abstained": self.abstained,
+            "abstention_reason": self.abstention_reason,
         }
 
 
@@ -371,6 +375,8 @@ Select the most useful attack among the following ids and return ONLY the chosen
         routing_decision: RoutingDecision,
         pre_retrieved_statutes: List[dict],
         pre_retrieved_precedents: List[dict],
+        enable_causality: bool = True,
+        reasoner_conclusion: str = "",
     ) -> CounterReasonerOutput:
         """
         Execute the counter-reasoning process with pre-retrieved knowledge.
@@ -389,32 +395,39 @@ Select the most useful attack among the following ids and return ONLY the chosen
             f"📚 Knowledge base: {len(pre_retrieved_statutes)} statutes, {len(pre_retrieved_precedents)} precedents"
         )
 
-        if not routing_decision or not routing_decision.causal_type_id:
+        if not routing_decision:
+            raise ValueError("routing_decision is required")
+        if enable_causality and not routing_decision.causal_type_id:
             raise ValueError(
-                "routing_decision with causal_type_id/theory_id is required"
+                "routing_decision with causal_type_id/theory_id is required when causality is enabled"
             )
 
-        # Select counter attack from config pools
-        attack_selection = self._select_attack(claim, routing_decision)
-        self._log(
-            f"⚔️ Selected counter attack: {attack_selection.attack_id or 'N/A'} "
-            f"(pool size {len(attack_selection.pool)})"
-        )
-        self._log(f"📝 Attack description: {attack_selection.description or 'N/A'}")
-
-        all_statutes = pre_retrieved_statutes
-        # Add filtered anchor norms for provided causal types (router + additional)
-        anchor_statutes = self._filtered_anchor_statutes_for_types(
-            [routing_decision.causal_type_id]
-            + (routing_decision.additional_causal_types or []),
-            claim,
-        )
-        if anchor_statutes:
+        if enable_causality:
+            # Select counter attack from config pools
+            attack_selection = self._select_attack(claim, routing_decision)
             self._log(
-                f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
-                "info",
+                f"⚔️ Selected counter attack: {attack_selection.attack_id or 'N/A'} "
+                f"(pool size {len(attack_selection.pool)})"
             )
-        all_statutes = all_statutes + anchor_statutes
+            self._log(f"📝 Attack description: {attack_selection.description or 'N/A'}")
+
+            # Add filtered anchor norms for provided causal types (router + additional)
+            anchor_statutes = self._filtered_anchor_statutes_for_types(
+                [routing_decision.causal_type_id]
+                + (routing_decision.additional_causal_types or []),
+                claim,
+            )
+            if anchor_statutes:
+                self._log(
+                    f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
+                    "info",
+                )
+        else:
+            self._log("🔬 Causality DISABLED — skipping attack selection and anchor norms")
+            attack_selection = AttackSelection(pool=[], attack_id="", description="")
+            anchor_statutes = []
+
+        all_statutes = pre_retrieved_statutes + anchor_statutes
         # Deduplicate
         seen_keys = set()
         deduped_statutes = []
@@ -463,6 +476,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 knowledge_base=knowledge_base,
                 allowed_statutes=allowed_statutes,
                 allowed_precedents=allowed_precedents,
+                reasoner_conclusion=reasoner_conclusion,
             )
 
             # Build output
@@ -527,6 +541,90 @@ Select the most useful attack among the following ids and return ONLY the chosen
         assert (
             output is not None
         ), "CounterReasonerOutput was never assigned"  # guard for mypy
+
+        # ----------------------------------------------------------
+        # Agreement detection: ensure CR opposes the Reasoner
+        # ----------------------------------------------------------
+        if reasoner_conclusion and output.reasoning_chain:
+            agrees = self._check_agreement_with_reasoner(
+                reasoner_conclusion, output.reasoning_chain
+            )
+            if agrees:
+                self._log(
+                    "🔄 CR agrees with Reasoner — retrying with reinforced prompt…",
+                    "warning",
+                )
+                # Retry once with a reinforced opposition directive
+                reinforced_conclusion = (
+                    f"⚠️ YOUR PREVIOUS ATTEMPT AGREED WITH THE REASONER. "
+                    f"THIS IS WRONG. The Reasoner concluded: \"{reasoner_conclusion}\". "
+                    f"You MUST reach the OPPOSITE conclusion. "
+                    f"If the Reasoner says guilty → you say NOT guilty. "
+                    f"If the Reasoner says liable → you say NOT liable. "
+                    f"If the Reasoner says founded → you say UNFOUNDED."
+                )
+                raw_retry, chain_retry = self._generate_counter_chain_iteratively(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    attack_selection=attack_selection,
+                    knowledge_base=knowledge_base,
+                    allowed_statutes=allowed_statutes,
+                    allowed_precedents=allowed_precedents,
+                    reasoner_conclusion=reinforced_conclusion,
+                )
+                if chain_retry:
+                    still_agrees = self._check_agreement_with_reasoner(
+                        reasoner_conclusion, chain_retry
+                    )
+                    if not still_agrees:
+                        # Retry succeeded — rebuild output
+                        self._log("✅ Retry succeeded: CR now opposes Reasoner")
+                        output.raw_response = raw_retry
+                        output.reasoning_chain = chain_retry
+                        output.counter_arguments = self._extract_arguments(raw_retry)
+                        output.reasoning_chain = self._sanitize_reasoning_chain(
+                            output.reasoning_chain, pre_retrieved_precedents
+                        )
+                        formatter = AspicFormatter(
+                            role="counter",
+                            statutes=deduped_statutes,
+                            precedents=pre_retrieved_precedents,
+                        )
+                        output.aspic_ir = formatter.format(
+                            claim=claim,
+                            raw_response=raw_retry,
+                            reasoning_chain=output.reasoning_chain,
+                            arguments=output.counter_arguments,
+                            metadata={
+                                "selected_attack_id": attack_selection.attack_id,
+                                "causal_type_id": routing_decision.causal_type_id,
+                                "theory_id": routing_decision.theory_id,
+                            },
+                        )
+                    else:
+                        # Still agrees after retry — abstain
+                        self._log(
+                            "⚠️ CR still agrees after retry — abstaining",
+                            "warning",
+                        )
+                        output.abstained = True
+                        output.abstention_reason = (
+                            "Il Counter-Reasoner non è riuscito a produrre "
+                            "una contro-argomentazione che si opponga effettivamente "
+                            "alla conclusione del Reasoner. Il sistema si astiene "
+                            "per evitare di presentare argomentazioni fuorvianti."
+                        )
+                else:
+                    # Retry produced no chain — abstain
+                    self._log(
+                        "⚠️ Retry produced empty chain — abstaining", "warning"
+                    )
+                    output.abstained = True
+                    output.abstention_reason = (
+                        "Il Counter-Reasoner non è riuscito a generare una "
+                        "catena argomentativa valida nel tentativo di opposizione."
+                    )
+
         chain_len = (
             len(output.aspic_ir.get("reasoning_chain", [])) if output.aspic_ir else 0
         )
@@ -536,6 +634,48 @@ Select the most useful attack among the following ids and return ONLY the chosen
             "success",
         )
         return output
+
+    def _check_agreement_with_reasoner(
+        self,
+        reasoner_conclusion: str,
+        counter_chain: List[str],
+    ) -> bool:
+        """Check if counter-reasoner conclusion agrees with Reasoner.
+
+        Returns ``True`` if the CR *agrees* (= bug), ``False`` if it
+        properly opposes.
+        """
+        if not reasoner_conclusion or not counter_chain:
+            return False  # Cannot assess — assume OK
+
+        cr_conclusion = counter_chain[-1] if counter_chain else ""
+        prompt = f"""You must determine whether two legal conclusions AGREE or DISAGREE.
+
+CONCLUSION A (Reasoner):
+"{reasoner_conclusion}"
+
+CONCLUSION B (Counter-Reasoner):
+"{cr_conclusion}"
+
+RULES:
+- AGREE means both conclusions reach the SAME verdict (e.g. both say guilty, or both say liable, or both say the claim is founded).
+- DISAGREE means they reach OPPOSITE verdicts (e.g. one says guilty, the other says not guilty).
+- Focus on the FINAL VERDICT, not on intermediate reasoning.
+
+Answer with EXACTLY one word: AGREE or DISAGREE."""
+
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+        except Exception as e:
+            self._log(f"⚠️ Agreement check failed: {e}", "warning")
+            return False  # Assume OK on failure
+
+        if "AGREE" in answer and "DISAGREE" not in answer:
+            self._log("🚨 Agreement detected: CR agrees with Reasoner!", "warning")
+            return True
+        self._log("✅ CR properly opposes Reasoner")
+        return False
 
     def _extract_failed_generation(self, exc: Exception) -> str:
         """Extract the valid response from a Groq tool_use_failed error."""
@@ -599,6 +739,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
         knowledge_base: str,
         allowed_statutes: List[str],
         allowed_precedents: List[str],
+        reasoner_conclusion: str = "",
     ) -> tuple[str, List[str]]:
         """Generate counter-reasoning chain step-by-step.
 
@@ -657,6 +798,21 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 prev_context = "  (No previous steps — you are at step 1.)"
                 used_norms_text = "none"
 
+            # ---- Build reasoner conclusion directive ----
+            reasoner_directive = ""
+            if reasoner_conclusion:
+                reasoner_directive = f"""
+REASONER'S CONCLUSION (you MUST argue the OPPOSITE):
+\"{reasoner_conclusion}\"
+
+CRITICAL OPPOSITION RULE:
+- If the Reasoner concludes GUILT/LIABILITY, you MUST argue INNOCENCE/NON-LIABILITY.
+- If the Reasoner concludes INNOCENCE, you MUST argue GUILT/LIABILITY.
+- If the Reasoner concludes the claim is FOUNDED, you MUST argue it is UNFOUNDED.
+- Your final conclusion MUST be the logical OPPOSITE of the Reasoner's conclusion above.
+- NEVER agree with or support the Reasoner's conclusion.
+"""
+
             # ---- Per-step prompt (English, response in Italian) ----
             last_step_notice = (
                 "\nTHIS IS THE LAST ALLOWED STEP. "
@@ -675,7 +831,7 @@ Do NOT balance pros and cons. You are EXCLUSIVELY anti-claim.
 CLAIM TO ATTACK (you must DEMOLISH this):
 "{claim}"
 
-ATTACK STRATEGY: {attack_id}
+{reasoner_directive}ATTACK STRATEGY: {attack_id}
 DESCRIPTION: {attack_desc}
 
 DOMAIN: {routing_decision.domain}
@@ -865,6 +1021,14 @@ CRITICAL RULES:
         # P6 FIX: Remove leading numeric prefixes like "3 Per valutare..."
         # This handles cases where LLM responds with just "3 Per valutare" without STEP:
         step_text = re.sub(r"^\d+\s+", "", step_text)
+
+        # FIX: Strip metadata leakage (prompt context echoed by LLM)
+        step_text = re.sub(
+            r"\s*(?:Norms already used|Current step|New norm):.*$",
+            "",
+            step_text,
+            flags=re.DOTALL,
+        ).strip()
 
         return step_text
 

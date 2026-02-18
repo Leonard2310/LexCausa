@@ -2,7 +2,7 @@
 LangChain Tools for Neo4j Knowledge Base interaction.
 
 Provides tools for agents to search and retrieve:
-- Statutes (Codice Civile, Codice Penale)
+- Statutes (Codice Civile, Codice Penale, Codice Amministrativo L. 241/1990)
 - Precedents (itacasehold)
 
 Uses LegalSearchPipeline for embedding and vector search - the SAME approach as Tab Ricerca.
@@ -28,6 +28,16 @@ _driver: Optional[Driver] = None
 # Singleton LegalSearchPipeline (the SAME one that works in Tab Ricerca!)
 _legal_search_pipeline: Optional[LegalSearchPipeline] = None
 _pipeline_lock = threading.Lock()
+
+
+def _source_short_label(source: object) -> str:
+    source_str = str(source or "")
+    labels = {
+        "codice_civile": "C.C.",
+        "codice_penale": "C.P.",
+        "codice_amministrativo": "L. 241/1990",
+    }
+    return labels.get(source_str, source_str or "COD")
 
 
 def get_driver() -> Driver:
@@ -125,7 +135,7 @@ def search_legal_sources_tool(
                 "score": float(art.score),
             }
         )
-        source_label = "C.C." if art.source == "codice_civile" else "C.P."
+        source_label = _source_short_label(art.source)
         print(
             f"   📜 Found: Art. {art.articolo} {source_label} - {art.titolo[:40]}... (score: {art.score:.4f})"
         )
@@ -134,7 +144,10 @@ def search_legal_sources_tool(
         "classification": {
             "categories": result.classification.categories,
             "descriptions": result.classification.descriptions,
-            "libri": [libro for _, libro in result.classification.libro_mappings],
+            "libri": [
+                libro or "(intero codice, senza libri)"
+                for _, libro in result.classification.libro_mappings
+            ],
             "sources": [source for source, _ in result.classification.libro_mappings],
         },
         "articles": articles,
@@ -156,7 +169,7 @@ class SearchStatutesInput(BaseModel):
     query: str = Field(description="Search text to find relevant articles")
     codice: str = Field(
         default="both",
-        description="Code to search: 'codice_civile', 'codice_penale', or 'both' for all",
+        description="Code to search: 'codice_civile', 'codice_penale', 'codice_amministrativo', or 'both' for all",
     )
     libro: Optional[str] = Field(
         default=None,
@@ -176,7 +189,7 @@ def search_statutes_tool(
     limit: int = settings.search_top_k_default,
 ) -> list[dict]:
     """
-    Search for legal articles in the Italian Civil Code and/or Penal Code using semantic vector search.
+    Search for legal articles in Italian Civil/Penal/Administrative codes using semantic vector search.
 
     Uses the SAME LegalSearchPipeline that powers the Tab Ricerca.
     Returns relevant articles with title, text, and references.
@@ -223,9 +236,7 @@ def search_statutes_tool(
                     "score": float(article.score),
                 }
                 results.append(result_item)
-                source_label = (
-                    "C.C." if result_item["source"] == "codice_civile" else "C.P."
-                )
+                source_label = _source_short_label(result_item["source"])
                 print(
                     f"  📜 Found: Art. {result_item['articolo']} {source_label} - {result_item['titolo'][:40]}... (score: {result_item['score']:.4f})"
                 )
@@ -289,9 +300,7 @@ def search_statutes_tool(
                         ),
                     }
                     results.append(result_item)
-                    source_label = (
-                        "C.C." if result_item["source"] == "codice_civile" else "C.P."
-                    )
+                    source_label = _source_short_label(result_item["source"])
                     print(
                         f"  📜 Found: Art. {result_item['articolo']} {source_label} - {result_item['titolo'][:40]}... (score: {result_item['score']:.4f})"
                     )
@@ -375,9 +384,7 @@ def _search_statutes_fallback(
                     ),
                 }
                 results.append(result_item)
-                source_label = (
-                    "C.C." if result_item["source"] == "codice_civile" else "C.P."
-                )
+                source_label = _source_short_label(result_item["source"])
                 print(
                     f"  📜 Found: Art. {result_item['articolo']} {source_label} (score: {result_item['score']:.2f})"
                 )
@@ -398,7 +405,7 @@ class GetStatuteByArticleInput(BaseModel):
 
     articolo: str = Field(description="Article number (e.g., '2043', '40')")
     codice: str = Field(
-        description="Reference code: 'codice_civile' or 'codice_penale'"
+        description="Reference code: 'codice_civile', 'codice_penale', or 'codice_amministrativo'"
     )
 
 

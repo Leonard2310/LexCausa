@@ -205,7 +205,7 @@ class Reasoner(BaseAgent):
                 base_statutes, pre_retrieved_precedents
             )
             allowed_statutes1 = [
-                f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+                f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
                 for s in base_statutes
             ]
             allowed_precedents1 = [
@@ -293,7 +293,7 @@ class Reasoner(BaseAgent):
             )
 
         allowed_statutes = [
-            f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+            f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
             for s in deduped_statutes
         ]
         allowed_precedents = [
@@ -495,17 +495,25 @@ class Reasoner(BaseAgent):
 
     def _extract_cited_articles(self, text: str) -> list[str]:
         """Extract article references cited in the reasoning chain."""
-        # Pattern per articoli: "Art. 2043 c.c.", "art. 1223 c.p.", "articolo 40 c.p.", etc.
+        # Pattern per articoli: "Art. 2043 c.c.", "art. 1223 c.p.", "art. 10 L. 241/1990", etc.
         pattern = re.compile(
-            r"(?:art(?:icolo)?\.?\s*)(\d{1,4})\s*(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?))",
+            r"(?:art(?:icolo)?\.?\s*)(\d{1,4}(?:[-\s]?[a-z]+)?)\s*"
+            r"(c\.?[cp]\.?|"
+            r"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?)|"
+            r"l(?:egge)?\.?\s*241\s*/?\s*1990|"
+            r"241\s*/?\s*1990)",
             re.IGNORECASE,
         )
         matches = pattern.findall(text)
         articles = []
         for num, code in matches:
-            code_norm = (
-                "c.c." if "c" in code.lower() and "p" not in code.lower() else "c.p."
-            )
+            code_lower = code.lower()
+            if "241" in code_lower or "amm" in code_lower:
+                code_norm = "L. 241/1990"
+            elif "civ" in code_lower or "c.c" in code_lower:
+                code_norm = "c.c."
+            else:
+                code_norm = "c.p."
             articles.append(f"Art. {num} {code_norm}")
         # Deduplica mantenendo ordine
         seen = set()
@@ -528,7 +536,7 @@ class Reasoner(BaseAgent):
         if domain_lower == "entrambi":
             allowed_ids = list(ct_index.keys())
         else:
-            # "civile" or "penale"
+            # Specific domain selected by router (es. civile, penale, amministrativo)
             allowed_ids = [
                 ct_id
                 for ct_id, ct in ct_index.items()
@@ -567,6 +575,7 @@ Allowed causal_type_id values (domain={domain}):
 Classification criteria (based on cited articles):
 - If articles are from codice civile (c.c.) like Art. 2043, 2056, 1223, 1226, 1227 → civil causality types
 - If articles are from codice penale (c.p.) like Art. 40, 41 → criminal causality types
+- If articles are from L. 241/1990 / procedimento amministrativo (e.g. Art. 1, 2, 3, 10-bis, 21-octies) → administrative causality/procedural types
 - Consider the combination of articles to determine the most specific causal type
 
 If uncertain, choose the closest from the allowed list.

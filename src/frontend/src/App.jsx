@@ -16,7 +16,7 @@ const API_BASE = '/api';
 
 const TAB_WELCOME_MESSAGES = {
   [TABS.SEARCH]:
-    'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile e Penale italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.',
+    'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile, Penale e Amministrativo italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.',
   [TABS.REASON]:
     'Ciao! Sono LexCausa, il tuo assistente per il ragionamento giuridico. Inserisci un claim e costruirò un percorso argomentativo strutturato, passo dopo passo.',
   [TABS.PIPELINE]:
@@ -29,6 +29,13 @@ const PIPELINE_PHASES = [
   { key: 'counter', label: 'Argomentazione contraria' },
   { key: 'final_evaluation', label: 'Verifica finale' },
 ];
+
+const sourceShortLabel = (source) => {
+  if (source === 'codice_civile') return 'c.c.';
+  if (source === 'codice_penale') return 'c.p.';
+  if (source === 'codice_amministrativo') return 'L. 241/1990';
+  return source || 'codice';
+};
 
 const createLivePipelineResult = (claim) => ({
   claim,
@@ -2276,7 +2283,7 @@ export default function App() {
                         <CollapsibleList items={pipelineResult.reasoner.statutes} limit={5} renderItem={(art, idx) => (
                           <li key={idx}>
                             <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
-                            {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                            {art.source && ` (${sourceShortLabel(art.source)})`}
                             {art.titolo && ` - ${art.titolo}`}
                           </li>
                         )} />
@@ -2384,7 +2391,7 @@ export default function App() {
                         <CollapsibleList items={pipelineResult.counter_reasoner.statutes} limit={5} renderItem={(art, idx) => (
                           <li key={idx}>
                             <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
-                            {art.source && ` (${art.source === 'codice_civile' ? 'c.c.' : 'c.p.'})`}
+                            {art.source && ` (${sourceShortLabel(art.source)})`}
                             {art.titolo && ` - ${art.titolo}`}
                           </li>
                         )} />

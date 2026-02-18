@@ -35,11 +35,15 @@ class AQAEngineMixin:
             code_part = match.group(2) or ""
             source = ""
             if code_part:
-                source = (
-                    "codice_civile"
-                    if "c" in code_part.lower() and "p" not in code_part.lower()
-                    else "codice_penale"
-                )
+                code_lower = code_part.lower()
+                if "241" in code_lower or "amm" in code_lower:
+                    source = "codice_amministrativo"
+                else:
+                    source = (
+                        "codice_civile"
+                        if "c" in code_lower and "p" not in code_lower
+                        else "codice_penale"
+                    )
             refs.append({"articolo": art, "source": source})
         return refs
 
@@ -52,6 +56,8 @@ class AQAEngineMixin:
                 domain = "PENALE"
             elif source_hint == "codice_civile":
                 domain = "CIVILE"
+            elif source_hint == "codice_amministrativo":
+                domain = "AMMINISTRATIVO"
 
         key = (article_num, domain)
         if key in self._statute_meta_cache:
@@ -63,12 +69,18 @@ class AQAEngineMixin:
         elif domain == "PENALE":
             articolo = article_num
             codice = "codice_penale"
+        elif domain == "AMMINISTRATIVO":
+            articolo = article_num
+            codice = "codice_amministrativo"
         else:
-            # ENTRAMBI without hint: try PENALE first, then CIVILE
+            # ENTRAMBI without hint: try PENALE, then CIVILE, then AMMINISTRATIVO
             meta = self._get_statute_meta(article_num, "PENALE")
             if meta:
                 return meta
             meta = self._get_statute_meta(article_num, "CIVILE")
+            if meta:
+                return meta
+            meta = self._get_statute_meta(article_num, "AMMINISTRATIVO")
             if meta:
                 return meta
             return {}

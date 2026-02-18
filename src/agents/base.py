@@ -636,7 +636,7 @@ Respond with EXACTLY one token: YES or NO."""
         if statutes:
             parts.append("ARTICOLI DI LEGGE:")
             for s in statutes:
-                source = "c.c." if s.get("source") == "codice_civile" else "c.p."
+                source = self._source_short_label(s.get("source", ""))
                 parts.append(f"- Art. {s.get('articolo')} {source}: {s.get('titolo')}")
                 testo = s.get("testo")
                 if testo:
@@ -654,6 +654,15 @@ Respond with EXACTLY one token: YES or NO."""
             parts.append("")
 
         return "\n".join(parts) if parts else "No legal context available."
+
+    @staticmethod
+    def _source_short_label(source: str) -> str:
+        source_map = {
+            "codice_civile": "c.c.",
+            "codice_penale": "c.p.",
+            "codice_amministrativo": "L. 241/1990",
+        }
+        return source_map.get(source, source or "codice")
 
     def _norm_to_statute_dict(self, norm: dict) -> dict:
         """
@@ -676,7 +685,17 @@ Respond with EXACTLY one token: YES or NO."""
             pass
         articolo = articolo_match.group(1) if articolo_match else riferimento
 
-        source = "codice_civile" if "c.c" in riferimento.lower() else "codice_penale"
+        ref_lower = riferimento.lower()
+        if (
+            "241/1990" in ref_lower
+            or "legge 241" in ref_lower
+            or "amministrativ" in ref_lower
+        ):
+            source = "codice_amministrativo"
+        elif "c.c" in ref_lower or "civile" in ref_lower:
+            source = "codice_civile"
+        else:
+            source = "codice_penale"
 
         # Try to fetch actual statute text from database
         try:

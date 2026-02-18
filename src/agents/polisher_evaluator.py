@@ -63,7 +63,8 @@ class PolisherEvaluator(
 
     STATUTE_PATTERN = re.compile(
         r"(?:art(?:icolo)?\.?\s*)(\d{1,4})\s*"
-        r"(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?))?",
+        r"(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativo)?)|"
+        r"l\.?\s*241(?:/1990)?|legge\s*241(?:/1990)?)?",
         re.IGNORECASE,
     )
     PRECEDENT_PATTERN = re.compile(
@@ -119,7 +120,7 @@ class PolisherEvaluator(
     def run(
         self,
         claim: str,
-        domain: str = "CIVILE",
+        domain: str = "ENTRAMBI",
         reasoner_output: dict | None = None,
         counter_reasoner_output: dict | None = None,
         **kwargs: Any,

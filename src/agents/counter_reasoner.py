@@ -122,6 +122,11 @@ ATTACK_DESCRIPTIONS: Dict[str, str] = {
     "creditor_contributed": "The creditor contributed to causing the event/damage.",
     "creditor_failed_to_mitigate": "The creditor failed to mitigate avoidable damage (art. 1227 c.c.).",
     "quantification_uncertain": "Damage quantification is uncertain or speculative.",
+    "competence_or_procedure_regular": "The authority was competent and the procedure was regular.",
+    "motivation_is_sufficient": "The administrative act has sufficient and coherent motivation.",
+    "participation_not_essential_or_not_denied": "Participatory guarantees were respected, or their omission was not decisive.",
+    "silence_rule_not_applicable": "The legal regime on procedural deadlines/silence is not applicable in this case.",
+    "vizio_non_invalidante_21_octies": "Any procedural defect is non-invalidating under art. 21-octies L. 241/1990.",
     "event_was_avoidable": "The event was avoidable with ordinary diligence.",
     "event_was_foreseeable": "The event was foreseeable; it is not fortuitous.",
     "risk_was_assumed_or_controllable": "The risk was assumed or controllable, so not fortuitous.",
@@ -456,7 +461,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
         )
 
         allowed_statutes = [
-            f"Art. {s.get('articolo')} ({'c.c.' if s.get('source') == 'codice_civile' else 'c.p.'})"
+            f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
             for s in deduped_statutes
         ]
         allowed_precedents = [
@@ -1087,6 +1092,11 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             "creditor_contributed": "il creditore ha concorso a causare l'evento/danno",
             "creditor_failed_to_mitigate": "il creditore non ha mitigato il danno evitabile",
             "quantification_uncertain": "la quantificazione del danno è incerta o speculativa",
+            "competence_or_procedure_regular": "l'amministrazione era competente e il procedimento risulta regolare",
+            "motivation_is_sufficient": "la motivazione del provvedimento è sufficiente e coerente",
+            "participation_not_essential_or_not_denied": "le garanzie partecipative sono state rispettate oppure la loro omissione non è stata decisiva",
+            "silence_rule_not_applicable": "la disciplina su termini e silenzio amministrativo non è applicabile al caso concreto",
+            "vizio_non_invalidante_21_octies": "l'eventuale vizio procedimentale non è invalidante ai sensi dell'art. 21-octies L. 241/1990",
             "event_was_avoidable": "l'evento era evitabile con l'ordinaria diligenza",
             "event_was_foreseeable": "l'evento era prevedibile e non fortuito",
             "risk_was_assumed_or_controllable": "il rischio era assunto o controllabile",

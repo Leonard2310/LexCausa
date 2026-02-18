@@ -57,5 +57,5 @@ celerybeat-schedule
 celerybeat.pid
 
 # Dataset files
-src/data/
+src/data/embeddings/
 claims.md

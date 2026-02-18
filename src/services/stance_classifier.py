@@ -88,7 +88,15 @@ class StanceClassifier:
         article_num = statute.get("articolo", "N/A")
         title = statute.get("titolo", "")
         text = statute.get("testo", "")[: settings.truncation_statute_text]
-        source = "c.c." if statute.get("source") == "codice_civile" else "c.p."
+        source_key = statute.get("source")
+        if source_key == "codice_civile":
+            source = "c.c."
+        elif source_key == "codice_penale":
+            source = "c.p."
+        elif source_key == "codice_amministrativo":
+            source = "L. 241/1990"
+        else:
+            source = str(source_key or "codice")
 
         prompt = self._build_statute_prompt(claim, article_num, source, title, text)
 

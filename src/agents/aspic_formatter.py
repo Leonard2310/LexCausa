@@ -28,13 +28,15 @@ _SECTION_ALIASES = [
 
 _ARTICLE_PATTERN = re.compile(
     r"(?:art(?:icolo|icoli)?\.?\s*)(\d{1,4}(?:-[a-z0-9]+)?)\s*"
-    r"(c\.?c\.?|c\.?p\.?|codice\s+civile|codice\s+penale)?",
+    r"(c\.?c\.?|c\.?p\.?|codice\s+civile|codice\s+penale|"
+    r"l\.?\s*241(?:/1990)?|legge\s*241(?:/1990)?|codice\s+amministrativo)?",
     re.IGNORECASE,
 )
 
 _ARTICLE_LIST_PATTERN = re.compile(
     r"articoli?\s+([0-9,\s/\-e]+)\s*"
-    r"(c\.?c\.?|c\.?p\.?|codice\s+civile|codice\s+penale)",
+    r"(c\.?c\.?|c\.?p\.?|codice\s+civile|codice\s+penale|"
+    r"l\.?\s*241(?:/1990)?|legge\s*241(?:/1990)?|codice\s+amministrativo)",
     re.IGNORECASE,
 )
 
@@ -327,6 +329,8 @@ def _statute_label(num: str, source: str) -> str:
         return f"Art. {num} c.c."
     if source == "codice_penale":
         return f"Art. {num} c.p."
+    if source == "codice_amministrativo":
+        return f"Art. {num} L. 241/1990"
     return f"Art. {num}"
 
 
@@ -334,6 +338,8 @@ def _normalize_source_from_code(code: str) -> str:
     if not code:
         return ""
     code = code.lower().strip()
+    if "amm" in code or "241" in code:
+        return "codice_amministrativo"
     if "civ" in code or "c.c" in code:
         return "codice_civile"
     if "pen" in code or "c.p" in code:

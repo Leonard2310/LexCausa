@@ -21,10 +21,11 @@ ROUTER_SYSTEM_PROMPT = """You are a preliminary router for a legal causal reason
 Your only task is to classify the DOMAIN of the claim:
 - "CIVILE" if the claim pertains to civil law (contracts, torts, damages, compensation)
 - "PENALE" if the claim pertains to criminal law (crimes, criminal liability, punishment)
-- "ENTRAMBI" if the claim involves both civil and criminal aspects
+- "AMMINISTRATIVO" if the claim pertains to administrative procedure/public administration acts
+- "ENTRAMBI" if the claim involves multiple domains (civil/criminal/administrative)
 
 Rules:
-- Respond ONLY with compact JSON: {"domain": "CIVILE" | "PENALE" | "ENTRAMBI"}
+- Respond ONLY with compact JSON: {"domain": "CIVILE" | "PENALE" | "AMMINISTRATIVO" | "ENTRAMBI"}
 - Do not add text, comments, or explanations.
 - If uncertain, prefer "ENTRAMBI".
 """
@@ -35,7 +36,7 @@ class RoutingDecision:
     """Structured output of the router - domain classification, with optional causal type from chain."""
 
     claim: str
-    domain: str  # "CIVILE" | "PENALE" | "ENTRAMBI"
+    domain: str  # "CIVILE" | "PENALE" | "AMMINISTRATIVO" | "ENTRAMBI"
     # Fields populated after chain classification by Reasoner
     causal_type_id: str = ""
     theory_id: str = ""
@@ -68,13 +69,13 @@ class Router(BaseAgent):
         self._defaults = config_loader.default_mapping_by_causal(self._config)
 
     def route(self, claim: str) -> RoutingDecision:
-        """Route a claim to a domain classification (CIVILE/PENALE/ENTRAMBI)."""
+        """Route a claim to a domain classification."""
         self._log(f"🔀 Routing claim: {claim[:80]}...")
         candidate = self._route_with_llm(claim)
 
         # Validate domain
         domain = candidate.get("domain", "").upper()
-        if domain not in ("CIVILE", "PENALE", "ENTRAMBI"):
+        if domain not in ("CIVILE", "PENALE", "AMMINISTRATIVO", "ENTRAMBI"):
             domain = "ENTRAMBI"  # fallback
 
         self._log(f"🎯 Router decision -> domain={domain}")
@@ -116,7 +117,8 @@ Claim:
 Domain options:
 - CIVILE: responsabilità civile, risarcimento danni, inadempimento contrattuale, illecito extracontrattuale
 - PENALE: reati, responsabilità penale, nesso causale tra condotta e evento lesivo
-- ENTRAMBI: casi che coinvolgono sia profili civili che penali
+- AMMINISTRATIVO: procedimento amministrativo, accesso agli atti, termini, motivazione, vizi del provvedimento (L. 241/1990)
+- ENTRAMBI: casi che coinvolgono più domini tra civile, penale e amministrativo
 
 Rispondi con JSON compatto."""
 

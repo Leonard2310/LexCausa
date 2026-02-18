@@ -169,6 +169,74 @@
             ]
         },
         {
+            "id": "AMM_PROCEDURAL_LEGITIMACY",
+            "name": "Legittimità procedimentale amministrativa (L. 241/1990)",
+            "domain": "amministrativo",
+            "anchor_norms": {
+                "core_norms": [
+                    {
+                        "ref": "Art. 1 L. 241/1990",
+                        "role": "Principi generali dell'azione amministrativa (economicità, imparzialità, trasparenza)"
+                    },
+                    {
+                        "ref": "Art. 2 L. 241/1990",
+                        "role": "Obbligo di conclusione del procedimento e disciplina del termine/silenzio"
+                    },
+                    {
+                        "ref": "Art. 3 L. 241/1990",
+                        "role": "Obbligo di motivazione del provvedimento amministrativo"
+                    }
+                ],
+                "accessory_norms": [
+                    {
+                        "ref": "Art. 7 L. 241/1990",
+                        "role": "Comunicazione di avvio del procedimento e garanzie partecipative"
+                    },
+                    {
+                        "ref": "Art. 10-bis L. 241/1990",
+                        "role": "Preavviso di rigetto e contraddittorio procedimentale"
+                    },
+                    {
+                        "ref": "Art. 21-octies L. 241/1990",
+                        "role": "Annullabilità del provvedimento e rilevanza invalidante dei vizi procedimentali"
+                    },
+                    {
+                        "ref": "Art. 22 L. 241/1990",
+                        "role": "Diritto di accesso ai documenti amministrativi"
+                    }
+                ]
+            },
+            "principle_tests": [
+                {
+                    "id": "AMM_TERMINI_SILENZIO",
+                    "name": "Termini procedimentali e silenzio",
+                    "description": "Verifica rispetto dei termini di conclusione, inerzia e corretta disciplina del silenzio amministrativo"
+                },
+                {
+                    "id": "AMM_MOTIVAZIONE",
+                    "name": "Adeguatezza della motivazione",
+                    "description": "Controlla esistenza, completezza e coerenza della motivazione rispetto ai fatti e alle norme applicate"
+                },
+                {
+                    "id": "AMM_PARTECIPAZIONE",
+                    "name": "Garanzie partecipative e contraddittorio",
+                    "description": "Verifica effettività della partecipazione procedimentale (avvio, preavviso di rigetto, accesso)"
+                },
+                {
+                    "id": "AMM_INVALIDATING_EFFECT",
+                    "name": "Effetto invalidante del vizio",
+                    "description": "Valuta se il vizio procedimentale è concretamente idoneo a incidere sul contenuto del provvedimento (art. 21-octies)"
+                }
+            ],
+            "counter_attack_catalog": [
+                "competence_or_procedure_regular",
+                "motivation_is_sufficient",
+                "participation_not_essential_or_not_denied",
+                "silence_rule_not_applicable",
+                "vizio_non_invalidante_21_octies"
+            ]
+        },
+        {
             "id": "IMPUTATION_FILTER",
             "name": "Filtro di imputazione: fortuito/forza maggiore",
             "domain": "penale",
@@ -259,6 +327,20 @@
             ]
         },
         {
+            "id": "T_AMM_GARANZIE",
+            "name": "Garanzie procedimentali e validità dell'atto amministrativo",
+            "applicable_causal_types": [
+                "AMM_PROCEDURAL_LEGITIMACY"
+            ],
+            "default_counter_attacks": [
+                "competence_or_procedure_regular",
+                "motivation_is_sufficient",
+                "participation_not_essential_or_not_denied",
+                "silence_rule_not_applicable",
+                "vizio_non_invalidante_21_octies"
+            ]
+        },
+        {
             "id": "T_FORTUITO",
             "name": "Fortuito/forza maggiore (filtro di imputazione)",
             "applicable_causal_types": [
@@ -303,6 +385,17 @@
                 "creditor_contributed",
                 "creditor_failed_to_mitigate",
                 "quantification_uncertain"
+            ]
+        },
+        {
+            "causal_type": "AMM_PROCEDURAL_LEGITIMACY",
+            "reasoner_primary_theory": "T_AMM_GARANZIE",
+            "counter_attack_pool": [
+                "competence_or_procedure_regular",
+                "motivation_is_sufficient",
+                "participation_not_essential_or_not_denied",
+                "silence_rule_not_applicable",
+                "vizio_non_invalidante_21_octies"
             ]
         },
         {
@@ -352,7 +445,7 @@
     },
     "output_contracts": {
         "router_output": {
-            "causal_type_id": "PEN_FACTUAL | PEN_INTERVENING | CIV_REMOTENESS | IMPUTATION_FILTER",
+            "causal_type_id": "PEN_FACTUAL | PEN_INTERVENING | CIV_REMOTENESS | AMM_PROCEDURAL_LEGITIMACY | IMPUTATION_FILTER",
             "theory_id": "one of theories[].id"
         },
         "reasoner_output_minimal": {

@@ -2,7 +2,8 @@
 Legal Claim Classifier using Groq Cloud.
 
 Classifies legal claims into the appropriate book (libro) of the
-Italian Civil Code (Codice Civile) or Penal Code (Codice Penale).
+Italian Civil Code (Codice Civile), Penal Code (Codice Penale),
+or the administrative procedure law (L. 241/1990).
 """
 
 import sys
@@ -32,6 +33,8 @@ TAXONOMY_TO_LIBRO = {
     "CP_L1": ("codice_penale", "CP Libro I"),
     "CP_L2": ("codice_penale", "CP Libro II"),
     "CP_L3": ("codice_penale", "CP Libro III"),
+    # Codice Amministrativo (L. 241/1990): no libri
+    "AMM_L241": ("codice_amministrativo", ""),
 }
 
 TAXONOMY_DESCRIPTIONS = {
@@ -45,6 +48,7 @@ TAXONOMY_DESCRIPTIONS = {
     "CP_L1": "Codice Penale, Libro I: Reati in generale",
     "CP_L2": "Codice Penale, Libro II: Delitti in particolare",
     "CP_L3": "Codice Penale, Libro III: Contravvenzioni",
+    "AMM_L241": "Legge 241/1990: Procedimento amministrativo e accesso",
 }
 
 SYSTEM_PROMPT = """You are a legal-domain routing classifier for Italian law.
@@ -81,6 +85,8 @@ CP_L1   -> Codice Penale, Libro I: Reati in generale
 CP_L2   -> Codice Penale, Libro II: Delitti in particolare
 CP_L3   -> Codice Penale, Libro III: Contravvenzioni
 
+AMM_L241 -> Legge 241/1990: Procedimento amministrativo e accesso
+
 CLAIM
 <<<
 {claim}
@@ -108,6 +114,13 @@ FEW_SHOT_EXAMPLES = [
         "claim": "Ho subito un furto in casa e voglio sporgere denuncia.",
         "response": "CP_L2\nCP_L1\nCC_L3",
     },
+    {
+        "claim": (
+            "Il Comune non risponde alla mia istanza di accesso agli atti "
+            "entro i termini del procedimento."
+        ),
+        "response": "AMM_L241",
+    },
 ]
 
 
@@ -126,8 +139,9 @@ class ClassificationResult:
             zip(self.categories, self.descriptions, self.libro_mappings), 1
         ):
             codice, libro = mapping
+            scope = libro or "N/A (intero codice)"
             lines.append(f"  {i}. {cat} -> {desc}")
-            lines.append(f"     Neo4j: {codice} / {libro}")
+            lines.append(f"     Neo4j: {codice} / {scope}")
         return "\n".join(lines)
 
 

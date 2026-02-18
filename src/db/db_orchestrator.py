@@ -6,7 +6,7 @@ Esegue in ordine tutte le operazioni necessarie per inizializzare il database:
 1. Verifica connessione Neo4j
 2. Pulizia database (opzionale)
 3. Creazione schema (indici, constraint, struttura grafo)
-4. Caricamento statuti (Codice Penale + Civile) con embeddings
+4. Caricamento statuti (Codice Penale + Civile + Amministrativo) con embeddings
 5. Caricamento precedenti (itacasehold) senza embeddings
 
 Uso:
@@ -297,6 +297,12 @@ class DatabaseOrchestrator:
                 SET c.description = 'Codice Civile Italiano'
             """
             )
+            session.run(
+                """
+                MERGE (c:Codice {name: 'Codice Amministrativo'})
+                SET c.description = 'Legge 7 agosto 1990, n. 241'
+            """
+            )
 
             # Libri Codice Penale (prefisso CP per distinguerli)
             libri_penale = [
@@ -342,6 +348,7 @@ class DatabaseOrchestrator:
 
             print("      ✅ Codice Penale (3 libri)")
             print("      ✅ Codice Civile (7 libri)")
+            print("      ✅ Codice Amministrativo (senza libri)")
 
         print("\n✅ Schema creato")
 
@@ -350,13 +357,19 @@ class DatabaseOrchestrator:
     # =========================================================================
 
     def load_statutes(self):
-        """Carica Codice Penale e Civile con embeddings."""
+        """Carica Codice Penale, Civile e Amministrativo con embeddings."""
         from data_loader import (
+            load_codice_amministrativo_with_embeddings,
             load_codice_civile_with_embeddings,
             load_codice_penale_with_embeddings,
         )
 
         print("\n📖 Caricamento statuti...")
+
+        # Replace mode: avoid duplicates on repeated --statutes runs.
+        with self.driver.session() as session:
+            session.run("MATCH (s:Statute) DETACH DELETE s")
+        print("   🧹 Nodi Statute esistenti rimossi")
 
         # Codice Penale
         print("\n   📕 Codice Penale...")
@@ -367,6 +380,11 @@ class DatabaseOrchestrator:
         print("\n   📗 Codice Civile...")
         df_civile, emb_civile = load_codice_civile_with_embeddings()
         self._ingest_statutes(df_civile, "codice_civile", emb_civile)
+
+        # Codice Amministrativo
+        print("\n   📘 Codice Amministrativo (L. 241/1990)...")
+        df_amm, emb_amm = load_codice_amministrativo_with_embeddings()
+        self._ingest_statutes(df_amm, "codice_amministrativo", emb_amm)
 
         print("\n✅ Statuti caricati")
 
@@ -396,16 +414,30 @@ class DatabaseOrchestrator:
                         articolo = str(row.get("article_id", ""))
                         titolo = str(row.get("article_title", ""))
                         testo = str(row.get("article_text", ""))
+                    elif source == "codice_amministrativo":
+                        articolo = str(row.get("numero", ""))
+                        titolo = str(row.get("titolo", ""))
+                        testo = str(row.get("contenuto", ""))
                     else:
                         articolo = str(row.get("articolo", ""))
                         titolo = str(row.get("titolo", ""))
                         testo = str(row.get("testo", ""))
 
-                    libro = (
-                        str(row.get("libro", ""))
-                        or str(row.get("libro_codice_penale", ""))
-                        or str(row.get("libro_codice_civile", ""))
-                    )
+                    def _clean_text(value) -> str:
+                        if value is None:
+                            return ""
+                        as_str = str(value).strip()
+                        return "" if as_str.lower() == "nan" else as_str
+
+                    articolo = _clean_text(articolo)
+                    titolo = _clean_text(titolo)
+                    testo = _clean_text(testo)
+
+                    libro = _clean_text(row.get("libro", ""))
+                    if not libro:
+                        libro = _clean_text(row.get("libro_codice_penale", ""))
+                    if not libro:
+                        libro = _clean_text(row.get("libro_codice_civile", ""))
 
                     records.append(
                         {
@@ -434,8 +466,10 @@ class DatabaseOrchestrator:
                         embedding: record.embedding
                     })
                     WITH s, record
-                    MATCH (l:Libro {name: record.libro, codice: record.source})
-                    MERGE (s)-[:BELONGS_TO]->(l)
+                    FOREACH (_ IN CASE WHEN record.libro <> '' THEN [1] ELSE [] END |
+                        MERGE (l:Libro {name: record.libro, codice: record.source})
+                        MERGE (s)-[:BELONGS_TO]->(l)
+                    )
                 """,
                     records=records,
                 )

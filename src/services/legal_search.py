@@ -4,7 +4,7 @@ Legal Search Pipeline for LexCausa.
 Complete pipeline that:
 1. Classifies a legal claim using Groq Cloud LLM
 2. Generates embedding for the claim using Legal-BERT
-3. Performs vector search in Neo4j filtered by relevant libri
+3. Performs vector search in Neo4j filtered by relevant libri/source
 4. Returns the most relevant articles from Italian law codes
 """
 
@@ -24,6 +24,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
 
 
+def source_human_label(source: str) -> str:
+    source_map = {
+        "codice_civile": "Codice Civile",
+        "codice_penale": "Codice Penale",
+        "codice_amministrativo": "Codice Amministrativo (L. 241/1990)",
+    }
+    return source_map.get(source, source or "Codice")
+
+
 @dataclass
 class ArticleResult:
     """A single article result from vector search."""
@@ -37,15 +46,15 @@ class ArticleResult:
     score: float
 
     def __str__(self) -> str:
-        source_label = (
-            "Codice Civile" if self.source == "codice_civile" else "Codice Penale"
-        )
-        return (
-            f"[{source_label}] Art. {self.articolo} - {self.titolo}\n"
-            f"  Libro: {self.libro}\n"
-            f"  Score: {self.score:.4f}\n"
-            f"  Testo: {self.testo[:200]}..."
-        )
+        source_label = source_human_label(self.source)
+        lines = [
+            f"[{source_label}] Art. {self.articolo} - {self.titolo}",
+            f"  Score: {self.score:.4f}",
+        ]
+        if self.libro:
+            lines.insert(1, f"  Libro: {self.libro}")
+        lines.append(f"  Testo: {self.testo[:200]}...")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -189,32 +198,59 @@ class LegalSearchPipeline:
 
         with self.driver.session() as session:
             for source, libro in libri_filters:
-                # Build query with filters
-                query = """
-                CALL db.index.vector.queryNodes(
-                    'statutes_idx', $top_k_expanded, $embedding
-                )
-                YIELD node, score
-                WHERE node.source = $source AND node.libro = $libro
-                RETURN node.statute_id AS id,
-                       node.articolo AS articolo,
-                       node.titolo AS titolo,
-                       node.testo AS testo,
-                       node.libro AS libro,
-                       node.source AS source,
-                       score
-                ORDER BY score DESC
-                LIMIT $top_k
-                """
+                if not source or source == "unknown":
+                    continue
 
-                result = session.run(
-                    query,
-                    embedding=embedding,
-                    source=source,
-                    libro=libro,
-                    top_k=top_k,
-                    top_k_expanded=top_k * 10,  # Expand for filtering
-                )
+                # For codici without libri (e.g. amministrativo), search by source only.
+                if libro:
+                    query = """
+                    CALL db.index.vector.queryNodes(
+                        'statutes_idx', $top_k_expanded, $embedding
+                    )
+                    YIELD node, score
+                    WHERE node.source = $source AND node.libro = $libro
+                    RETURN node.statute_id AS id,
+                           node.articolo AS articolo,
+                           node.titolo AS titolo,
+                           node.testo AS testo,
+                           node.libro AS libro,
+                           node.source AS source,
+                           score
+                    ORDER BY score DESC
+                    LIMIT $top_k
+                    """
+                    result = session.run(
+                        query,
+                        embedding=embedding,
+                        source=source,
+                        libro=libro,
+                        top_k=top_k,
+                        top_k_expanded=top_k * 10,
+                    )
+                else:
+                    query = """
+                    CALL db.index.vector.queryNodes(
+                        'statutes_idx', $top_k_expanded, $embedding
+                    )
+                    YIELD node, score
+                    WHERE node.source = $source
+                    RETURN node.statute_id AS id,
+                           node.articolo AS articolo,
+                           node.titolo AS titolo,
+                           node.testo AS testo,
+                           node.libro AS libro,
+                           node.source AS source,
+                           score
+                    ORDER BY score DESC
+                    LIMIT $top_k
+                    """
+                    result = session.run(
+                        query,
+                        embedding=embedding,
+                        source=source,
+                        top_k=top_k,
+                        top_k_expanded=top_k * 20,
+                    )
 
                 for record in result:
                     all_results.append(
@@ -238,6 +274,38 @@ class LegalSearchPipeline:
                 unique_results.append(r)
 
         return unique_results[:top_k]
+
+    def build_search_filters(
+        self,
+        classification: ClassificationResult,
+        use_top_n_libri: int = settings.search_use_top_n_libri,
+    ) -> list[tuple[str, str]]:
+        """
+        Convert classifier output to vector-search filters.
+
+        For codici with no libri (e.g. amministrativo), `libro` is empty and
+        vector search runs at source-level only.
+        """
+        selected = classification.libro_mappings[:use_top_n_libri]
+        filters: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for source, libro in selected:
+            source_norm = (source or "").strip()
+            if not source_norm or source_norm == "unknown":
+                continue
+            libro_norm = (libro or "").strip()
+            if source_norm == "codice_amministrativo":
+                libro_norm = ""
+            key = (source_norm, libro_norm)
+            if key in seen:
+                continue
+            seen.add(key)
+            filters.append(key)
+
+        if not filters:
+            return [("codice_civile", ""), ("codice_penale", "")]
+        return filters
 
     def search(
         self,
@@ -266,9 +334,9 @@ class LegalSearchPipeline:
         embedding = self.embed_text(claim)
         print(f"   ✅ Embedding generated (dim: {len(embedding)})")
 
-        # Step 3: Vector search filtered by libri
+        # Step 3: Vector search filtered by libri/source
         print("🔄 Searching in Neo4j...")
-        libri_filters = classification.libro_mappings[:use_top_n_libri]
+        libri_filters = self.build_search_filters(classification, use_top_n_libri)
         articles = self.vector_search(embedding, libri_filters, top_k)
         print(f"   ✅ Found {len(articles)} relevant articles")
 

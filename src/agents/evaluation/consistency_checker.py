@@ -34,7 +34,7 @@ class ConsistencyMixin:
 
         Args:
             article_num: The article number (e.g., "1223")
-            domain: Legal domain ("CIVILE", "PENALE", or "ENTRAMBI")
+            domain: Legal domain ("CIVILE", "PENALE", "AMMINISTRATIVO", or "ENTRAMBI")
             citation_str: Original citation string (e.g., "Art. 52 c.p.") used
                           to disambiguate codice when domain is ENTRAMBI.
 
@@ -42,6 +42,25 @@ class ConsistencyMixin:
             Tuple of (exists: bool, text: str). Text is empty if not found.
         """
         driver = get_driver()
+
+        # If citation explicitly references L. 241/1990 or amministrativo,
+        # force lookup on codice_amministrativo.
+        if citation_str:
+            citation_lower = citation_str.lower()
+            if "241/1990" in citation_lower or "legge 241" in citation_lower:
+                self._log(
+                    f"      🔍 detected L. 241/1990 in '{citation_str}', searching AMMINISTRATIVO"
+                )
+                return self._verify_statute_in_neo4j(
+                    article_num, "AMMINISTRATIVO", citation_str
+                )
+            if "amministrativ" in citation_lower and "codice" in citation_lower:
+                self._log(
+                    f"      🔍 detected codice amministrativo in '{citation_str}', searching AMMINISTRATIVO"
+                )
+                return self._verify_statute_in_neo4j(
+                    article_num, "AMMINISTRATIVO", citation_str
+                )
 
         # When domain is ENTRAMBI, try to determine the correct codice
         # from the citation string (e.g. "c.p." → penale, "c.c." → civile)
@@ -75,14 +94,24 @@ class ConsistencyMixin:
             # Per PENALE, l'articolo è salvato come "1223" (senza prefisso)
             articolo_normalized = article_num
             codice = "codice_penale"
+        elif domain == "AMMINISTRATIVO":
+            articolo_normalized = article_num
+            codice = "codice_amministrativo"
         else:
-            # ENTRAMBI without citation hint: try both codici
+            # ENTRAMBI without citation hint: try all supported codici
             found, text = self._verify_statute_in_neo4j(
                 article_num, "PENALE", citation_str
             )
             if found:
                 return found, text
-            return self._verify_statute_in_neo4j(article_num, "CIVILE", citation_str)
+            found, text = self._verify_statute_in_neo4j(
+                article_num, "CIVILE", citation_str
+            )
+            if found:
+                return found, text
+            return self._verify_statute_in_neo4j(
+                article_num, "AMMINISTRATIVO", citation_str
+            )
 
         query = """
             MATCH (s:Statute)
@@ -963,7 +992,7 @@ class ConsistencyMixin:
             agent: Name of the agent ("reasoner" or "counter_reasoner")
             reasoning_chain: List of reasoning steps
             raw_response: Raw LLM response text
-            domain: Legal domain ("CIVILE", "PENALE", or "ENTRAMBI")
+            domain: Legal domain ("CIVILE", "PENALE", "AMMINISTRATIVO", or "ENTRAMBI")
             aspic_ir: ASPIC IR structured output for text extraction
 
         Returns:
@@ -1314,11 +1343,13 @@ class ConsistencyMixin:
 
             # Determine code
             if code_part:
-                code = (
-                    "c.c."
-                    if "c" in code_part.lower() and "p" not in code_part.lower()
-                    else "c.p."
-                )
+                code_lower = code_part.lower()
+                if "241" in code_lower or "amm" in code_lower:
+                    code = "L. 241/1990"
+                elif "c" in code_lower and "p" not in code_lower:
+                    code = "c.c."
+                else:
+                    code = "c.p."
             else:
                 code = ""
 

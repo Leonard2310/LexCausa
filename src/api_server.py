@@ -250,7 +250,9 @@ def prepare_claim_context(
     # ── Step 1: classify + embed once ──────────────────────────────────
     classification = pipe.classifier.classify(claim)
     embedding = pipe.embed_text(claim)
-    libri_filters = classification.libro_mappings[: settings.search_use_top_n_libri]
+    libri_filters = pipe.build_search_filters(
+        classification, settings.search_use_top_n_libri
+    )
 
     # ── Step 2: initial vector search ──────────────────────────────────
     current_top_k = max_statutes
@@ -1095,7 +1097,7 @@ def evaluate():
     try:
         data = request.get_json()
         claim = data.get("claim", "").strip()
-        domain = data.get("domain", "CIVILE")
+        domain = data.get("domain", "ENTRAMBI")
         reasoner_output = data.get("reasoner_output", {})
         counter_output = data.get("counter_output", {})
 
@@ -1136,19 +1138,44 @@ def format_search_result(result) -> str:
         zip(result.classification.categories, result.classification.descriptions), 1
     ):
         source, libro = result.classification.libro_mappings[i - 1]
-        source_label = "Codice Civile" if "civile" in source else "Codice Penale"
+        if source == "codice_civile":
+            source_label = "Codice Civile"
+            src = "CC"
+        elif source == "codice_penale":
+            source_label = "Codice Penale"
+            src = "CP"
+        elif source == "codice_amministrativo":
+            source_label = "Codice Amministrativo (L. 241/1990)"
+            src = "AMM"
+        else:
+            source_label = source or "Codice"
+            src = "COD"
+
         lines.append(f"**{i}. {cat}**")
         lines.append(f"- {desc}")
-        lines.append(f"- 📚 [{source_label}] {libro}\n")
+        if libro:
+            lines.append(f"- 📚 [{source_label}] {libro}\n")
+        else:
+            lines.append(f"- 📚 [{source_label}] (intero codice, senza libri)\n")
 
     if result.articles:
         lines.append("\n---\n")
         lines.append("## 📖 Articoli Rilevanti\n")
         for i, art in enumerate(result.articles, 1):
-            src = "CC" if "civile" in art.source else "CP"
+            if art.source == "codice_civile":
+                src = "CC"
+            elif art.source == "codice_penale":
+                src = "CP"
+            elif art.source == "codice_amministrativo":
+                src = "AMM"
+            else:
+                src = "COD"
             lines.append(f"### {i}. [{src}] Art. {art.articolo} - {art.titolo}")
             lines.append(f"**Rilevanza:** {art.score:.1%}")
-            lines.append(f"**Libro:** {art.libro}\n")
+            if art.libro:
+                lines.append(f"**Libro:** {art.libro}\n")
+            else:
+                lines.append("**Libro:** N/A (codice senza libri)\n")
             preview = art.testo[:300] + "..." if len(art.testo) > 300 else art.testo
             lines.append(f"{preview}\n")
 

@@ -95,43 +95,38 @@ class ConsistencyMixin:
             with driver.session() as session:
                 for candidate in candidate_domains:
                     if candidate == "CIVILE":
-                        # Per CIVILE, l'articolo è salvato come "art1223"
-                        articolo_normalized = (
-                            article_id if article_id.startswith("art") else f"art{article_id}"
-                        )
                         codice = "codice_civile"
                     elif candidate == "PENALE":
-                        # Per PENALE, l'articolo è salvato come "1223" (senza prefisso)
-                        articolo_normalized = (
-                            article_id[3:] if article_id.startswith("art") else article_id
-                        )
                         codice = "codice_penale"
                     else:  # AMMINISTRATIVO
-                        articolo_normalized = (
-                            article_id[3:] if article_id.startswith("art") else article_id
-                        )
                         codice = "codice_amministrativo"
 
-                    result = session.run(
-                        query,
-                        parameters={"articolo": articolo_normalized, "codice": codice},
-                    )
-                    record = result.single()
-                    if not record:
-                        continue
+                    for articolo_normalized in self._build_lookup_variants(
+                        article_id, candidate
+                    ):
+                        result = session.run(
+                            query,
+                            parameters={
+                                "articolo": articolo_normalized,
+                                "codice": codice,
+                            },
+                        )
+                        record = result.single()
+                        if not record:
+                            continue
 
-                    testo = record.get("testo", "") or ""
-                    titolo = record.get("titolo", "") or ""
-                    if testo:
-                        self._log(
-                            f"      🗄️ Neo4j: Art. {article_id} found - '{titolo[:50]}...'"
-                        )
-                        self._log(f"      📄 DB text preview: '{testo[:100]}...'")
-                    else:
-                        self._log(
-                            f"      🗄️ Neo4j: Art. {article_id} found but NO TEXT in DB"
-                        )
-                    return True, testo
+                        testo = record.get("testo", "") or ""
+                        titolo = record.get("titolo", "") or ""
+                        if testo:
+                            self._log(
+                                f"      Neo4j: Art. {article_id} found - '{titolo[:50]}...'"
+                            )
+                            self._log(f"      DB text preview: '{testo[:100]}...'")
+                        else:
+                            self._log(
+                                f"      Neo4j: Art. {article_id} found but NO TEXT in DB"
+                            )
+                        return True, testo
                 return False, ""
         except Exception as e:
             self._log(f"⚠️ Neo4j query failed: {e}", "warning")
@@ -154,6 +149,24 @@ class ConsistencyMixin:
     def _article_id_to_regex(article_id: str) -> str:
         """Build a regex fragment that accepts both hyphen and space suffixes."""
         return re.escape(article_id).replace(r"\-", r"[-\s]?")
+
+    @staticmethod
+    def _build_lookup_variants(article_id: str, domain: str) -> list[str]:
+        """Build lookup variants for article ids across DB storage formats."""
+        base = article_id[3:] if article_id.startswith("art") else article_id
+        base = (base or "").strip()
+        compact = base.replace("-", "")
+
+        if domain == "CIVILE":
+            variants = [f"art{base}"]
+            if compact and compact != base:
+                variants.append(f"art{compact}")
+        else:
+            variants = [base]
+            if compact and compact != base:
+                variants.append(compact)
+
+        return list(dict.fromkeys(v for v in variants if v))
 
     def _extract_article_id_from_citation(self, citation: str) -> str:
         """Extract full article id from a citation (supports suffixes like -bis/-quinquies)."""

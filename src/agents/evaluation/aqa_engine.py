@@ -81,14 +81,26 @@ class AQAEngineMixin:
             return self._statute_meta_cache[key]
         driver = get_driver()
         if domain == "CIVILE":
-            articolo = article_id if article_id.startswith("art") else f"art{article_id}"
             codice = "codice_civile"
+            lookup_variants = (
+                self._build_lookup_variants(article_id, "CIVILE")
+                if hasattr(self, "_build_lookup_variants")
+                else [article_id if article_id.startswith("art") else f"art{article_id}"]
+            )
         elif domain == "PENALE":
-            articolo = article_id[3:] if article_id.startswith("art") else article_id
             codice = "codice_penale"
+            lookup_variants = (
+                self._build_lookup_variants(article_id, "PENALE")
+                if hasattr(self, "_build_lookup_variants")
+                else [article_id[3:] if article_id.startswith("art") else article_id]
+            )
         elif domain == "AMMINISTRATIVO":
-            articolo = article_id[3:] if article_id.startswith("art") else article_id
             codice = "codice_amministrativo"
+            lookup_variants = (
+                self._build_lookup_variants(article_id, "AMMINISTRATIVO")
+                if hasattr(self, "_build_lookup_variants")
+                else [article_id[3:] if article_id.startswith("art") else article_id]
+            )
         else:
             # ENTRAMBI without hint: try PENALE, then CIVILE, then AMMINISTRATIVO
             meta = self._get_statute_meta(article_id, "PENALE")
@@ -109,10 +121,12 @@ class AQAEngineMixin:
         """
         try:
             with driver.session() as session:
-                record = session.run(
-                    query, {"articolo": articolo, "codice": codice}
-                ).single()
-                if record:
+                for articolo in lookup_variants:
+                    record = session.run(
+                        query, {"articolo": articolo, "codice": codice}
+                    ).single()
+                    if not record:
+                        continue
                     meta = {
                         "libro": record.get("libro"),
                         "source": record.get("source"),

@@ -278,30 +278,6 @@
   color: #374151;
 }
 
-.stream-live-log {
-  margin-top: 0.85rem;
-  border-top: 1px dashed #dbeafe;
-  padding-top: 0.75rem;
-}
-
-.stream-live-log h5 {
-  margin: 0 0 0.45rem;
-  font-size: 0.78rem;
-  color: #1f2937;
-}
-
-.stream-live-log ul {
-  margin: 0;
-  padding-left: 1rem;
-  display: grid;
-  gap: 0.2rem;
-}
-
-.stream-live-log li {
-  font-size: 0.76rem;
-  color: #4b5563;
-}
-
 .structured-response {
   display: grid;
   gap: 0.65rem;
@@ -348,6 +324,17 @@
   gap: 0.4rem;
   font-size: 0.76rem;
   color: #2563eb;
+}
+
+.evaluation-live-status {
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  border-radius: 0.65rem;
+  padding: 0.65rem 0.8rem;
+}
+
+.evaluation-live-status .stream-phase-detail {
+  margin-top: 0.35rem;
 }
 
 .causality-card {
@@ -849,6 +836,10 @@
 
 .pipeline-working-indicator-top {
   margin: 0 0 0.8rem;
+}
+
+.evaluation-working-footer {
+  margin-top: 0.95rem;
 }
 
 .loading-spinner {

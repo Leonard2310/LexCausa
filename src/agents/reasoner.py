@@ -1198,7 +1198,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         return (
             f"{original_prompt}\n\n"
             "YOUR PREVIOUS STEP WAS INVALID because it weakens or contradicts the claim.\n"
-            f"INVALID STEP:\n\"{invalid_step}\"\n\n"
+            f'INVALID STEP:\n"{invalid_step}"\n\n'
             "Rewrite the SAME legal point with STRICT pro-claim stance.\n"
             "Do not add new facts. Do not balance pros and cons.\n\n"
             "RESPONSE FORMAT:\n"
@@ -1267,7 +1267,9 @@ CONCLUSION:"""
         for p in pro_patterns:
             if not re.search(p, text):
                 continue
-            if p == r"\bannullabil" and re.search(r"\bnon\s+(?:e|è)?\s*annullabil", text):
+            if p == r"\bannullabil" and re.search(
+                r"\bnon\s+(?:e|è)?\s*annullabil", text
+            ):
                 continue
             if p in (
                 r"\b(il|lo)\s+atto\b.*\billegittim",

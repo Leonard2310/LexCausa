@@ -258,10 +258,7 @@ class ConsistencyMixin:
         if len(holding) > 450:
             holding = holding[:450].rsplit(" ", 1)[0].rstrip(" ,;:") + "..."
 
-        return (
-            f"Come evidenziato dalla giurisprudenza in «{title}», "
-            f"«{holding}»."
-        )
+        return f"Come evidenziato dalla giurisprudenza in «{title}», " f"«{holding}»."
 
     def _extract_article_id_from_citation(self, citation: str) -> str:
         """Extract full article id from a citation (supports suffixes like -bis/-quinquies)."""
@@ -272,9 +269,7 @@ class ConsistencyMixin:
             r"quinquiesdecies|quaterdecies|terdecies|duodecies|undecies|"
             r"quinquies|septies|quater|sexies|octies|nonies|decies|vicies|ter|bis)"
         )
-        article_pat = (
-            rf"\d{{1,4}}(?:-(?:[a-z0-9]{{2,}})|{suffix}|\s+{suffix})?"
-        )
+        article_pat = rf"\d{{1,4}}(?:-(?:[a-z0-9]{{2,}})|{suffix}|\s+{suffix})?"
         match = re.search(
             rf"Art(?:icolo)?\.?\s*({article_pat})",
             citation,
@@ -388,7 +383,9 @@ class ConsistencyMixin:
                 return extracted
 
         # Pattern 4: "(Art. 1223 c.c.)" in parentheses after text - capture text before
-        pattern4 = rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\)"
+        pattern4 = (
+            rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\)"
+        )
         match = re.search(pattern4, full_text, re.IGNORECASE)
         if match:
             extracted = match.group(1).strip()
@@ -1142,26 +1139,30 @@ class ConsistencyMixin:
                 return
 
             # Fallback acceptance: high semantic overlap even without valid quote.
-            repaired_similarity = self._compute_text_similarity(repaired_text, db_summary)
+            repaired_similarity = self._compute_text_similarity(
+                repaired_text, db_summary
+            )
             if repaired_similarity >= 0.75:
                 check.mismatch_action = MismatchAction.REPAIRED.value
                 check.repaired_text = repaired_text
                 check.repair_success = True
-                check.details += (
-                    f" [REPAIRED with DB summary - semantic overlap {repaired_similarity:.0%}]"
-                )
+                check.details += f" [REPAIRED with DB summary - semantic overlap {repaired_similarity:.0%}]"
                 report.repaired_citations += 1
                 self._log(
                     f"      ✅ Precedent REPAIRED (semantic overlap {repaired_similarity:.0%})"
                 )
                 return
 
-            self._log("      ⚠️ Precedent LLM repair not valid enough, trying DB fallback")
+            self._log(
+                "      ⚠️ Precedent LLM repair not valid enough, trying DB fallback"
+            )
         except Exception as e:
             self._log(f"      ⚠️ Precedent repair failed: {e}", "warning")
 
         # Deterministic fallback using DB summary snippet (prevents noisy false drops).
-        fallback_text = self._build_precedent_fallback_repair(precedent_title, db_summary)
+        fallback_text = self._build_precedent_fallback_repair(
+            precedent_title, db_summary
+        )
         if fallback_text:
             check.mismatch_action = MismatchAction.REPAIRED.value
             check.repaired_text = fallback_text

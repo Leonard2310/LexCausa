@@ -147,10 +147,24 @@ export default function App() {
     enable_causality: true,
   });
   const messagesEndRef = useRef(null);
+  const messagesAreaRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const isNearBottom = () => {
+    const el = messagesAreaRef.current;
+    if (!el) return true;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distanceToBottom <= 120;
+  };
+
+  const scrollToBottom = (behavior = 'smooth') => {
+    if (!shouldAutoScrollRef.current) return;
+    messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  const handleMessagesScroll = () => {
+    shouldAutoScrollRef.current = isNearBottom();
   };
 
   useEffect(() => {
@@ -199,6 +213,7 @@ export default function App() {
 
     const userMessage = input.trim();
     setInput('');
+    shouldAutoScrollRef.current = true;
 
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
@@ -249,6 +264,7 @@ export default function App() {
 
     const claim = input.trim();
     setInput('');
+    shouldAutoScrollRef.current = true;
     setIsLoading(true);
     setReasonMessages((prev) => [...prev, { role: 'user', content: claim }]);
 
@@ -296,6 +312,7 @@ export default function App() {
 
     const claim = input.trim();
     setInput('');
+    shouldAutoScrollRef.current = true;
     setIsLoading(true);
     setPipelineMessages((prev) => [...prev, { role: 'user', content: claim }]);
     setPipelineResult(createLivePipelineResult(claim));
@@ -376,24 +393,6 @@ export default function App() {
           },
         },
       }));
-    };
-
-    const appendEvaluationLiveLog = (message) => {
-      if (!message) return;
-      updateLivePipeline((prev) => {
-        const prevLog = prev._stream?.evaluation_live_log || [];
-        if (prevLog[prevLog.length - 1] === message) {
-          return prev;
-        }
-        const nextLog = [...prevLog, message].slice(-24);
-        return {
-          ...prev,
-          _stream: {
-            ...(prev._stream || {}),
-            evaluation_live_log: nextLog,
-          },
-        };
-      });
     };
 
     const appendPhaseToken = (phase, token, stepNumber = null) => {
@@ -648,7 +647,6 @@ export default function App() {
             };
             if (stageDetailMap[stage]) {
               setPhaseDetail('final_evaluation', stageDetailMap[stage]);
-              appendEvaluationLiveLog(`[Valutazione] ${stageDetailMap[stage]}`);
             }
             if (stage === 'done') {
               setPhaseStatus('final_evaluation', 'done');
@@ -676,7 +674,6 @@ export default function App() {
             const relativeProgress = Number(payload?.progress);
             setPhaseStatus('final_evaluation', 'active');
             setPhaseDetail('final_evaluation', message);
-            appendEvaluationLiveLog(`[AQA] ${message}`);
             if (Number.isFinite(relativeProgress)) {
               bumpPhaseProgress('final_evaluation', 78 + relativeProgress * 20);
             } else {
@@ -697,7 +694,6 @@ export default function App() {
               ? `Check KB ${agentLabel}: ${processed}/${expected}`
               : `Check KB ${agentLabel}: ${processed}`;
             setPhaseDetail('final_evaluation', detail);
-            appendEvaluationLiveLog(`[KB ${agentLabel}] ${processed}${expected > 0 ? `/${expected}` : ''} citazioni`);
             setPipelineResult((prev) => {
               if (!prev) return prev;
               const agentKey = payload?.agent;
@@ -1697,6 +1693,15 @@ export default function App() {
   const pipelineActiveDetail = pipelineActivePhase
     ? (pipelineResult?._stream?.phase_details?.[pipelineActivePhase] || '')
     : '';
+  const evaluationConsistencyReport = pipelineResult?.evaluation?.consistency_report || {};
+  const evaluationReasonerReport = evaluationConsistencyReport.reasoner;
+  const evaluationCounterReport = evaluationConsistencyReport.counter_reasoner;
+  const evaluationPhaseStatus = pipelineResult?._stream?.phases?.final_evaluation || 'pending';
+  const evaluationPhaseActive = evaluationPhaseStatus === 'active';
+  const evaluationPhaseProgress = Math.round(
+    Number(pipelineResult?._stream?.phase_progress?.final_evaluation || 0),
+  );
+  const evaluationPhaseDetail = pipelineResult?._stream?.phase_details?.final_evaluation || '';
 
   const renderStructuredResponse = ({
     parsed,
@@ -2083,7 +2088,11 @@ export default function App() {
       </div>
 
       {/* Content Area */}
-      <div className="messages-area">
+      <div
+        className="messages-area"
+        ref={messagesAreaRef}
+        onScroll={handleMessagesScroll}
+      >
         <div className="messages-container">
           {activeTab !== TABS.SEARCH && (
             <div className="message message-assistant">
@@ -2250,16 +2259,6 @@ export default function App() {
                           );
                         })}
                       </div>
-                      {pipelineResult._stream?.evaluation_live_log?.length > 0 && (
-                        <div className="stream-live-log">
-                          <h5>Dettaglio Valutazione Live</h5>
-                          <ul>
-                            {pipelineResult._stream.evaluation_live_log.map((item, idx) => (
-                              <li key={`eval-live-log-${idx}`}>{item}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
                     </div>
                   )}
 
@@ -2437,31 +2436,43 @@ export default function App() {
                   </div>
 
                   {/* SEZIONE EVALUATOR - Verifica Consistenza */}
-                  {pipelineResult.evaluation?.consistency_report && (
+                  {(evaluationPhaseActive || pipelineResult.evaluation?.consistency_report) && (
                     <div className="result-section pipeline-section">
                       <h3 className="section-header">
                         <ClipboardCheck size={20} style={{ color: '#8b5cf6' }} />
                         3. EVALUATOR - Verifica Consistenza
                       </h3>
 
+                      {evaluationPhaseActive && (
+                        <div className="subsection evaluation-live-status">
+                          <div className="structured-live-tag">
+                            <Loader2 size={14} className="loading-spinner" />
+                            <span>Valutazione in corso ({evaluationPhaseProgress}%)</span>
+                          </div>
+                          {evaluationPhaseDetail && (
+                            <div className="stream-phase-detail">{evaluationPhaseDetail}</div>
+                          )}
+                        </div>
+                      )}
+
                       {/* Reasoner Consistency */}
-                      {pipelineResult.evaluation.consistency_report.reasoner && (
+                      {evaluationReasonerReport && (
                         <div className="subsection">
                           <h4>
-                            Reasoner - Score: {(((pipelineResult.evaluation.consistency_report.reasoner.consistency_score ?? 0) * 100)).toFixed(0)}%
+                            Reasoner - Score: {(((evaluationReasonerReport.consistency_score ?? 0) * 100)).toFixed(0)}%
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
-                              ✅ Valide: {(pipelineResult.evaluation.consistency_report.reasoner.valid_citations ?? 0)}/{(pipelineResult.evaluation.consistency_report.reasoner.total_citations ?? 0)}
+                              ✅ Valide: {(evaluationReasonerReport.valid_citations ?? 0)}/{(evaluationReasonerReport.total_citations ?? 0)}
                             </span>
                             <span className="stat-item stat-text">
-                              📝 Testo match: {(pipelineResult.evaluation.consistency_report.reasoner.text_matches ?? 0)}/{((pipelineResult.evaluation.consistency_report.reasoner.text_matches ?? 0) + (pipelineResult.evaluation.consistency_report.reasoner.text_mismatches ?? 0))}
+                              📝 Testo match: {(evaluationReasonerReport.text_matches ?? 0)}/{((evaluationReasonerReport.text_matches ?? 0) + (evaluationReasonerReport.text_mismatches ?? 0))}
                             </span>
                           </div>
 
-                          {pipelineResult.evaluation.consistency_report.reasoner.citation_checks?.length > 0 && (
+                          {evaluationReasonerReport.citation_checks?.length > 0 && (
                             <div className="citation-checks-list">
-                              {pipelineResult.evaluation.consistency_report.reasoner.citation_checks.map((check, idx) => (
+                              {evaluationReasonerReport.citation_checks.map((check, idx) => (
                                 <div key={idx} className={`citation-check-item ${check.found_in_kb ? 'check-valid' : 'check-invalid'}`}>
                                   <div className="check-header">
                                     {check.found_in_kb ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
@@ -2501,11 +2512,11 @@ export default function App() {
                             </div>
                           )}
 
-                          {pipelineResult.evaluation.consistency_report.reasoner.issues?.length > 0 && (
+                          {evaluationReasonerReport.issues?.length > 0 && (
                             <div className="issues-list">
                               <h5><AlertTriangle size={14} /> Problemi Rilevati:</h5>
                               <ul>
-                                {pipelineResult.evaluation.consistency_report.reasoner.issues.map((issue, idx) => (
+                                {evaluationReasonerReport.issues.map((issue, idx) => (
                                   <li key={idx}>{issue}</li>
                                 ))}
                               </ul>
@@ -2515,23 +2526,23 @@ export default function App() {
                       )}
 
                       {/* Counter-Reasoner Consistency */}
-                      {pipelineResult.evaluation.consistency_report.counter_reasoner && (
+                      {evaluationCounterReport && (
                         <div className="subsection">
                           <h4>
-                            Counter-Reasoner - Score: {(((pipelineResult.evaluation.consistency_report.counter_reasoner.consistency_score ?? 0) * 100)).toFixed(0)}%
+                            Counter-Reasoner - Score: {(((evaluationCounterReport.consistency_score ?? 0) * 100)).toFixed(0)}%
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
-                              ✅ Valide: {(pipelineResult.evaluation.consistency_report.counter_reasoner.valid_citations ?? 0)}/{(pipelineResult.evaluation.consistency_report.counter_reasoner.total_citations ?? 0)}
+                              ✅ Valide: {(evaluationCounterReport.valid_citations ?? 0)}/{(evaluationCounterReport.total_citations ?? 0)}
                             </span>
                             <span className="stat-item stat-text">
-                              📝 Testo match: {(pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches ?? 0)}/{((pipelineResult.evaluation.consistency_report.counter_reasoner.text_matches ?? 0) + (pipelineResult.evaluation.consistency_report.counter_reasoner.text_mismatches ?? 0))}
+                              📝 Testo match: {(evaluationCounterReport.text_matches ?? 0)}/{((evaluationCounterReport.text_matches ?? 0) + (evaluationCounterReport.text_mismatches ?? 0))}
                             </span>
                           </div>
 
-                          {pipelineResult.evaluation.consistency_report.counter_reasoner.citation_checks?.length > 0 && (
+                          {evaluationCounterReport.citation_checks?.length > 0 && (
                             <div className="citation-checks-list">
-                              {pipelineResult.evaluation.consistency_report.counter_reasoner.citation_checks.map((check, idx) => (
+                              {evaluationCounterReport.citation_checks.map((check, idx) => (
                                 <div key={idx} className={`citation-check-item ${check.found_in_kb ? 'check-valid' : 'check-invalid'}`}>
                                   <div className="check-header">
                                     {check.found_in_kb ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
@@ -2571,11 +2582,11 @@ export default function App() {
                             </div>
                           )}
 
-                          {pipelineResult.evaluation.consistency_report.counter_reasoner.issues?.length > 0 && (
+                          {evaluationCounterReport.issues?.length > 0 && (
                             <div className="issues-list">
                               <h5><AlertTriangle size={14} /> Problemi Rilevati:</h5>
                               <ul>
-                                {pipelineResult.evaluation.consistency_report.counter_reasoner.issues.map((issue, idx) => (
+                                {evaluationCounterReport.issues.map((issue, idx) => (
                                   <li key={idx}>{issue}</li>
                                 ))}
                               </ul>
@@ -2622,6 +2633,7 @@ export default function App() {
                           </div>
                         </div>
                       )}
+
                     </div>
                   )}
 
@@ -2715,6 +2727,13 @@ export default function App() {
                           </div>
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {evaluationPhaseActive && (
+                    <div className="pipeline-working-indicator evaluation-working-footer">
+                      <Loader2 size={14} className="loading-spinner" />
+                      <span>{evaluationPhaseDetail || 'Valutazione AQA e attacchi in corso...'}</span>
                     </div>
                   )}
 

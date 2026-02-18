@@ -304,7 +304,11 @@ class LegalSearchPipeline:
             filters.append(key)
 
         if not filters:
-            return [("codice_civile", ""), ("codice_penale", "")]
+            return [
+                ("codice_civile", ""),
+                ("codice_penale", ""),
+                ("codice_amministrativo", ""),
+            ]
         return filters
 
     def search(

@@ -1101,12 +1101,14 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
-    def _build_stance_rewrite_prompt(self, original_prompt: str, invalid_step: str) -> str:
+    def _build_stance_rewrite_prompt(
+        self, original_prompt: str, invalid_step: str
+    ) -> str:
         """Ask the model to rewrite a step that drifted toward pro-claim content."""
         return (
             f"{original_prompt}\n\n"
             "YOUR PREVIOUS STEP WAS INVALID because it partially supports the claim.\n"
-            f"INVALID STEP:\n\"{invalid_step}\"\n\n"
+            f'INVALID STEP:\n"{invalid_step}"\n\n'
             "Rewrite the SAME legal point with STRICT anti-claim stance.\n"
             "Do not add new facts. Do not balance pros and cons.\n"
             "The rewritten step must clearly weaken the claim.\n\n"
@@ -1150,7 +1152,9 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         for p in pro_patterns:
             if not re.search(p, text):
                 continue
-            if p == r"\bannullabil" and re.search(r"\bnon\s+(?:e|è)?\s*annullabil", text):
+            if p == r"\bannullabil" and re.search(
+                r"\bnon\s+(?:e|è)?\s*annullabil", text
+            ):
                 anti_score += 1
                 continue
             if p in (
@@ -1245,8 +1249,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
 
         # Ensure the conclusion opposes the claim without reusing drifted text.
         conclusion_text = (
-            "Pertanto, la pretesa deve essere RIGETTATA poiché "
-            f"{conclusion_ground}."
+            "Pertanto, la pretesa deve essere RIGETTATA poiché " f"{conclusion_ground}."
         )
 
         raw = (

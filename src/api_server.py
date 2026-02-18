@@ -227,6 +227,7 @@ def prepare_claim_context(
     include_precedents: bool,
     max_statutes: int,
     max_precedents: int,
+    progress_callback=None,
 ) -> tuple[list[dict], list[dict]]:
     """Pre-retrieve statutes and precedents before reasoning.
 
@@ -235,6 +236,8 @@ def prepare_claim_context(
     expands by `search_expansion_step` at a time (up to `search_max_expansions`
     rounds) until the minimum is met or no more articles can be found.
     """
+    progress_callback = progress_callback or (lambda _detail, _progress: None)
+
     min_kept = settings.search_min_kept_statutes
     expansion_step = settings.search_expansion_step
     max_expansions = settings.search_max_expansions
@@ -248,6 +251,7 @@ def prepare_claim_context(
     reas = get_reasoner()
 
     # ── Step 1: classify + embed once ──────────────────────────────────
+    progress_callback("Classificazione claim e embedding query", 18)
     classification = pipe.classifier.classify(claim)
     embedding = pipe.embed_text(claim)
     libri_filters = pipe.build_search_filters(
@@ -255,11 +259,14 @@ def prepare_claim_context(
     )
 
     # ── Step 2: initial vector search ──────────────────────────────────
+    progress_callback("Recupero norme candidate", 28)
     current_top_k = max_statutes
     articles = pipe.vector_search(embedding, libri_filters, current_top_k)
     statutes = _articles_to_dicts(articles)
     legal_context = reas._extract_legal_context(claim)
+    progress_callback("Filtro rilevanza norme", 38)
     kept_statutes = reas.filter_irrelevant_statutes(claim, statutes)
+    progress_callback("Verifica applicabilità norme", 48)
     kept_statutes = reas.filter_applicable_statutes(claim, kept_statutes, legal_context)
     seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
 
@@ -273,6 +280,10 @@ def prepare_claim_context(
     while len(kept_statutes) < min_kept and expansion < max_expansions:
         expansion += 1
         current_top_k += expansion_step
+        progress_callback(
+            f"Espansione recupero norme ({expansion}/{max_expansions})",
+            min(58, 50 + expansion * 2),
+        )
         print(
             f"🔄 Expansion {expansion}/{max_expansions}: "
             f"top_k={current_top_k}, kept so far={len(kept_statutes)}"
@@ -289,7 +300,9 @@ def prepare_claim_context(
             break
 
         seen_ids.update(s["statute_id"] for s in new_statutes)
+        progress_callback("Filtro rilevanza norme (espansione)", 60)
         new_kept = reas.filter_irrelevant_statutes(claim, new_statutes)
+        progress_callback("Verifica applicabilità norme (espansione)", 62)
         new_kept = reas.filter_applicable_statutes(claim, new_kept, legal_context)
         kept_statutes.extend(new_kept)
 
@@ -309,6 +322,7 @@ def prepare_claim_context(
     # ── Precedents (unchanged) ─────────────────────────────────────────
     precedents: list[dict] = []
     if include_precedents:
+        progress_callback("Recupero precedenti", 64)
         try:
             result = search_precedents_tool.invoke(
                 {"query": claim, "limit": max_precedents}
@@ -318,6 +332,7 @@ def prepare_claim_context(
         except Exception as e:
             print(f"⚠️ Errore recupero precedenti: {e}")
 
+    progress_callback("Filtro precedenti", 66)
     precedents = reas.filter_irrelevant_precedents(claim, precedents)
 
     return statutes, precedents
@@ -754,17 +769,24 @@ def _run_full_pipeline(
         status_callback("Preparazione contesto giuridico...")
         _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
         routing_decision = resolve_routing_decision(claim, data)
-        _emit_phase("context_setup", "active", 32, "Recupero norme e precedenti")
+        _emit_phase("context_setup", "active", 20, "Avvio recupero contesto")
 
         # Preload context once for both reasoners
+        def _emit_context_detail(detail: str, progress: int) -> None:
+            _emit_phase("context_setup", "active", progress, detail)
+
         statutes, precedents = prepare_claim_context(
             claim=claim,
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
+            progress_callback=_emit_context_detail,
         )
         _emit_phase(
-            "context_setup", "active", 68, "Classificazione NLI supporto/contrasto"
+            "context_setup",
+            "active",
+            68,
+            "Classificazione stance NLI (norme e precedenti)",
         )
 
         # Classify stance using NLI to separate support vs against
@@ -879,6 +901,9 @@ def _run_full_pipeline(
         print(
             f"   - Counter-reasoning chain: {len(counter_result.reasoning_chain)} steps"
         )
+        # Emit the complete counter output immediately so the frontend can render
+        # the same structured view as the reasoner before evaluation starts.
+        _emit_progress("counter_result", counter_result.to_dict())
         _emit_phase("counter", "done", 100, "Contro-argomentazione completata")
         _emit_phase("final_evaluation", "active", 10, "Avvio verifica consistenza")
 
@@ -937,6 +962,7 @@ def _run_full_pipeline(
             print(
                 f"   - Gate reason: {counter_gate.get('reason', counter_result.abstention_reason)}"
             )
+        # Re-emit after evaluator in case the counter gate updated abstention fields.
         _emit_progress("counter_result", counter_result.to_dict())
 
         # Derive winning_side and confidence from AQA verdict

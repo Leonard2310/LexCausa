@@ -207,11 +207,19 @@ function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight, isCapped }) 
 // ---- PRECEDENT NODE (external, purple) ----
 function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
   const title = prec.title || prec.precedent_id || 'Precedente';
-  const shortTitle = title.length > 38 ? title.slice(0, 35) + '…' : title;
+  const shortTitle = title.length > 28 ? title.slice(0, 25) + '…' : title;
   const stanceLabel = prec._stance === 1 ? '✅ support' : prec._stance === -1 ? '❌ against' : '⚖️ neutral';
+  const titleClipId = `prec-title-clip-${String(prec.precedent_id || title)
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 24)}-${Math.round(x)}-${Math.round(y)}`;
 
   return (
     <g style={{ cursor: 'pointer' }} onClick={() => onClick?.(prec)}>
+      <defs>
+        <clipPath id={titleClipId}>
+          <rect x={x + 28} y={y + 6} width={PREC_NODE_W - 36} height={16} />
+        </clipPath>
+      </defs>
       <rect
         x={x}
         y={y}
@@ -230,6 +238,7 @@ function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
       <text
         x={x + 28}
         y={y + 18}
+        clipPath={`url(#${titleClipId})`}
         fill={COLORS.precText}
         fontWeight="700"
         fontSize="11"
@@ -436,10 +445,12 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
       // Collect delta info from AQA links
       const deltaByPrecId = {};
       const influenceByPrecId = {};
+      const usedPrecedentIds = new Set();
       aLinks.forEach((link) => {
         (link.precedent_influences || []).forEach((inf) => {
-          const pid = inf.precedent_id;
-          if (pid != null) {
+          const pid = String(inf.precedent_id ?? '').trim();
+          if (pid) {
+            usedPrecedentIds.add(pid);
             deltaByPrecId[pid] = (deltaByPrecId[pid] || 0) + (inf.delta || 0);
             if (!influenceByPrecId[pid]) influenceByPrecId[pid] = inf;
           }
@@ -449,7 +460,8 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
       // For each precedent node, find which step IDs it links to
       const precTargets = {};
       pLinks.forEach((e) => {
-        const from = e.from;
+        const from = String(e.from ?? '').trim();
+        if (!from) return;
         if (!precTargets[from]) precTargets[from] = [];
         precTargets[from].push(e.to);
       });
@@ -464,14 +476,29 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
 
       // Create a node entry for each unique precedent
       pNodes.forEach((pn, pidx) => {
-        const precId = pn.precedent_id || pn.id;
-        const dedup = `${isPro ? 'pro' : 'contra'}:${precId}`;
-        if (seen.has(dedup)) return;
-        seen.add(dedup);
+        const precId = String(pn.precedent_id || pn.id || '').trim();
+        if (!precId || !usedPrecedentIds.has(precId)) return;
 
         const inf = influenceByPrecId[precId] || {};
+        let stance = inf.stance ?? 0;
+        if (typeof stance === 'string') {
+          const s = stance.trim().toLowerCase();
+          if (s === 'support' || s === 'pro' || s === 'favour') stance = 1;
+          else if (s === 'neutral') stance = 0;
+          else if (s === 'against' || s === 'contra' || s === 'contradict') stance = -1;
+          else stance = 0;
+        }
+        if (typeof stance !== 'number' || Number.isNaN(stance)) stance = 0;
+        if (stance < 0) return;
+        stance = stance > 0 ? 1 : 0;
+
+        const dedup = `${isPro ? 'pro' : 'contra'}:${precId}`;
+        if (seen.has(dedup)) return;
         const totalDelta = deltaByPrecId[precId] || 0;
-        const targets = precTargets[pn.id] || [];
+        const targets = [
+          ...(precTargets[String(pn.id ?? '').trim()] || []),
+          ...(precTargets[precId] || []),
+        ];
 
         // Find which chain rows this precedent connects to
         const targetRows = [];
@@ -489,6 +516,9 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
           }
         });
         const uniqueRows = [...new Set(targetRows)];
+        if (uniqueRows.length === 0) return;
+
+        seen.add(dedup);
 
         // Position: outside the chain column
         const col = isPro ? 0 : 1;
@@ -504,7 +534,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
           _x: px,
           _y: py,
           _delta: totalDelta,
-          _stance: inf.stance ?? 0,
+          _stance: stance,
           _bind: inf.bindingness,
           _sim: inf.similarity,
           _rec: inf.recency,
@@ -513,22 +543,43 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
           _col: col,
         };
         nodes.push(node);
-
-        // Create edges to chain nodes
-        uniqueRows.forEach((row) => {
-          edges.push({
-            precX: px + (isPro ? PREC_NODE_W : 0),
-            precY: py + PREC_NODE_H / 2,
-            chainX: isPro ? nodeX(0) : nodeX(1) + NODE_W,
-            chainY: nodeY(row) + NODE_H / 2,
-            isPro,
-          });
-        });
       });
     };
 
     processIr(reasonerIr, proLinks, true);
     processIr(counterIr, contraLinks, false);
+
+    // Avoid vertical overlaps for precedent nodes per side.
+    const resolveSideOverlaps = (isProSide) => {
+      const sideNodes = nodes
+        .filter((n) => n._isPro === isProSide)
+        .sort((a, b) => a._y - b._y);
+
+      let nextFreeY = PAD_Y;
+      const minGap = 8;
+      sideNodes.forEach((n) => {
+        if (n._y < nextFreeY) {
+          n._y = nextFreeY;
+        }
+        nextFreeY = n._y + PREC_NODE_H + minGap;
+      });
+    };
+
+    resolveSideOverlaps(true);
+    resolveSideOverlaps(false);
+
+    // Create edges to chain nodes after positions are finalized.
+    nodes.forEach((n) => {
+      (n._targetRows || []).forEach((row) => {
+        edges.push({
+          precX: n._x + (n._isPro ? PREC_NODE_W : 0),
+          precY: n._y + PREC_NODE_H / 2,
+          chainX: n._isPro ? nodeX(0) : nodeX(1) + NODE_W,
+          chainY: nodeY(row) + NODE_H / 2,
+          isPro: n._isPro,
+        });
+      });
+    });
 
     return { precNodes: nodes, precEdges: edges };
   }, [reasonerIr, counterIr, proLinks, contraLinks]);

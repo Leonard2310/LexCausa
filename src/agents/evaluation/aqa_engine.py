@@ -85,7 +85,9 @@ class AQAEngineMixin:
             lookup_variants = (
                 self._build_lookup_variants(article_id, "CIVILE")
                 if hasattr(self, "_build_lookup_variants")
-                else [article_id if article_id.startswith("art") else f"art{article_id}"]
+                else [
+                    article_id if article_id.startswith("art") else f"art{article_id}"
+                ]
             )
         elif domain == "PENALE":
             codice = "codice_penale"
@@ -152,6 +154,8 @@ class AQAEngineMixin:
             if "fuori range" in libro:
                 return ""
             return (self._aqa_severity_map_civile or {}).get(token, "")
+        if source == "codice_amministrativo":
+            return "amministrativo"
         return ""
 
     def _collect_links(self, aspic_ir: dict, role: str, domain: str) -> list[dict]:
@@ -791,8 +795,6 @@ class AQAEngineMixin:
         similarity = self._clamp01(self._safe_float(similarity, 0.0))
 
         stance = self._stance_from_link_type(edge.get("type"))
-        # NOTE: do NOT default neutral (0) to 1.
-        # Neutral precedents should produce δ = 0 (no influence).
 
         court = (
             prec_meta.get("court")
@@ -946,9 +948,18 @@ class AQAEngineMixin:
                 if stance_norm in {"support", "pro", "favour"}:
                     stance = 1
                 elif stance_norm in {"contradict", "contra", "against"}:
-                    stance = -1
+                    stance = 0
                 else:
                     stance = 0
+            try:
+                stance = float(stance)
+            except Exception:
+                stance = 0.0
+            # Defensive clamp: no negative precedent contribution.
+            if stance < 0:
+                stance = 0.0
+            elif stance > 0:
+                stance = 1.0
             bindingness = prec.get("bindingness", 0.0)
             if not bindingness:
                 court = (
@@ -975,6 +986,14 @@ class AQAEngineMixin:
                 {
                     "precedent_id": prec.get("precedent_id"),
                     "delta": delta,
+                    "stance": stance,
+                    "bindingness": bindingness,
+                    "similarity": similarity,
+                    "recency": recency,
+                    "confidence": confidence,
+                    "court": prec.get("court"),
+                    "year": prec.get("year"),
+                    "link_match": prec.get("link_match"),
                 }
             )
             total_delta += delta
@@ -989,9 +1008,8 @@ class AQAEngineMixin:
             return bmap.get("cassazione", 1.0)
         if "consiglio di giustizia amministrativa" in court_norm:
             return bmap.get("appello", 0.7)
-        if (
-            "tribunale amministrativo regionale" in court_norm
-            or re.search(r"\btar\b", court_norm)
+        if "tribunale amministrativo regionale" in court_norm or re.search(
+            r"\btar\b", court_norm
         ):
             return bmap.get("tribunale", 0.4)
         if "cass" in court_norm:

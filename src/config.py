@@ -241,6 +241,7 @@ class Settings(BaseSettings):
             "delitti_patrimonio": "II_penale",
             "delitti_stato": "II_penale",
             "contravvenzioni": "III_penale",
+            "amministrativo": "AMM_L241",
         },
         alias="AQA_SEVERITY_BOOK_MAP",
         description="Map severity_category → libro identifier for same-book checks.",

@@ -657,6 +657,11 @@ def _build_precedent_graph(
                 "title": title,
                 "summary": p.get("summary") or "",
                 "url": p.get("url") or "",
+                "year": p.get("year"),
+                "court": p.get("court") or "",
+                "court_level": p.get("court_level") or "",
+                "bindingness": p.get("bindingness"),
+                "recency": p.get("recency"),
                 "score": p.get("score"),
                 # Stance metadata injected by StanceClassifier
                 "_stance_label": p.get("_stance_label"),
@@ -682,6 +687,11 @@ def _build_precedent_graph(
                 "title": p.get("title"),
                 "summary": p.get("summary"),
                 "url": p.get("url"),
+                "year": p.get("year"),
+                "court": p.get("court"),
+                "court_level": p.get("court_level"),
+                "bindingness": p.get("bindingness"),
+                "recency": p.get("recency"),
                 "score": p.get("score"),
                 # Propagate stance metadata for the AQA engine
                 "stance_confidence": p.get("_stance_confidence"),

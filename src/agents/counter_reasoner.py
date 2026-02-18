@@ -151,6 +151,7 @@ class CounterReasoner(BaseAgent):
         super().__init__(config)
         self._react_agent = None
         self._config = config_loader.load_config()
+        self._max_stance_rewrites = 2
 
     # ------------------------------------------------------------------
     # Attack selection logic (config-driven)
@@ -789,32 +790,76 @@ CRITICAL RULES:
 
             self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
 
-            try:
-                resp = self._resilient_llm_invoke(
-                    [HumanMessage(content=step_prompt)],
-                    stream_callback=(
-                        (
-                            lambda token: self._emit_stream_token(
-                                stream_callback,
-                                phase="counter",
-                                token=token,
-                                step=step_num,
-                            )
-                        )
-                        if stream_callback
-                        else None
-                    ),
+            step_text = ""
+            last_candidate = ""
+            for stance_try in range(1, self._max_stance_rewrites + 2):
+                prompt_for_try = (
+                    step_prompt
+                    if stance_try == 1
+                    else self._build_stance_rewrite_prompt(
+                        original_prompt=step_prompt,
+                        invalid_step=last_candidate,
+                    )
                 )
-                step_response = (resp.content or "").strip()
-            except Exception as e:
+
+                try:
+                    resp = self._resilient_llm_invoke(
+                        [HumanMessage(content=prompt_for_try)],
+                        stream_callback=(
+                            (
+                                lambda token: self._emit_stream_token(
+                                    stream_callback,
+                                    phase="counter",
+                                    token=token,
+                                    step=step_num,
+                                )
+                            )
+                            if stream_callback and stance_try == 1
+                            else None
+                        ),
+                    )
+                    step_response = (resp.content or "").strip()
+                except Exception as e:
+                    self._log(
+                        f"⚠️ Counter-step {step_num} generation failed: {e}",
+                        "warning",
+                    )
+                    break
+
+                last_candidate = self._parse_step_text(step_response)
+
+                if not last_candidate or last_candidate.strip().upper() == "DONE":
+                    step_text = last_candidate
+                    break
+
+                if self._is_counter_step_consistent(last_candidate):
+                    step_text = last_candidate
+                    break
+
+                if stance_try <= self._max_stance_rewrites:
+                    self._log(
+                        f"⚠️ Counter-step {step_num}: generated text supports the claim; "
+                        f"rewriting ({stance_try}/{self._max_stance_rewrites})",
+                        "warning",
+                    )
+                    continue
+
                 self._log(
-                    f"⚠️ Counter-step {step_num} generation failed: {e}", "warning"
+                    f"⚠️ Counter-step {step_num}: could not enforce anti-claim stance "
+                    f"after {self._max_stance_rewrites + 1} attempts, stopping",
+                    "warning",
+                )
+                step_text = ""
+                break
+
+            if not step_text:
+                self._log(
+                    f"⚠️ Counter-step {step_num}: no valid anti-claim step generated, stopping",
+                    "warning",
                 )
                 break
 
-            step_text = self._parse_step_text(step_response)
-
-            if not step_text or step_text.strip().upper() == "DONE":
+            if step_text.strip().upper() == "DONE":
                 self._log(
                     f"⚠️ Counter-step {step_num}: no new norm available, stopping",
                     "warning",
@@ -1056,6 +1101,98 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
+    def _build_stance_rewrite_prompt(self, original_prompt: str, invalid_step: str) -> str:
+        """Ask the model to rewrite a step that drifted toward pro-claim content."""
+        return (
+            f"{original_prompt}\n\n"
+            "YOUR PREVIOUS STEP WAS INVALID because it partially supports the claim.\n"
+            f"INVALID STEP:\n\"{invalid_step}\"\n\n"
+            "Rewrite the SAME legal point with STRICT anti-claim stance.\n"
+            "Do not add new facts. Do not balance pros and cons.\n"
+            "The rewritten step must clearly weaken the claim.\n\n"
+            "RESPONSE FORMAT:\n"
+            "STEP: [Italian text, max 4 sentences, strictly anti-claim]"
+        )
+
+    def _is_counter_step_consistent(self, step_text: str) -> bool:
+        """
+        Heuristic guardrail against semantic drift.
+
+        Returns False when the step contains strong pro-claim signals
+        that are not counter-balanced by explicit anti-claim language.
+        """
+        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
+        if not text:
+            return False
+
+        anti_patterns = [
+            r"\bpretesa\b.*\brigettat",
+            r"\bricorso\b.*\brigettat",
+            r"\bnon\s+(?:e|è)?\s*annullabil",
+            r"\bnon\s+determina\b.*\billegittimit",
+            r"\bnon\s+rende\b.*\billegittim",
+            r"\bnon\s+incide\b.*\blegittimit",
+            r"\binfondat",
+            r"\binammissibil",
+        ]
+        pro_patterns = [
+            r"\bpretesa\b.*\bfondat",
+            r"\bricorso\b.*\bfondat",
+            r"\bdeve\s+essere\s+accolt",
+            r"\brende\b.*\billegittim",
+            r"\bdetermina\b.*\billegittimit",
+            r"\bprovvedimento\b.*\billegittim",
+            r"\bannullabil",
+        ]
+
+        anti_score = sum(1 for p in anti_patterns if re.search(p, text))
+        pro_score = 0
+        for p in pro_patterns:
+            if not re.search(p, text):
+                continue
+            if p == r"\bannullabil" and re.search(r"\bnon\s+(?:e|è)?\s*annullabil", text):
+                anti_score += 1
+                continue
+            if p in (
+                r"\brende\b.*\billegittim",
+                r"\bdetermina\b.*\billegittimit",
+                r"\bprovvedimento\b.*\billegittim",
+            ) and re.search(r"\bnon\s+(?:rende|determina)\b.*\billegittim", text):
+                anti_score += 1
+                continue
+            pro_score += 1
+
+        # Explicit contradiction pattern seen in faulty outputs.
+        if re.search(r"\brigettat", text) and re.search(r"\billegittim", text):
+            if not re.search(r"\bnon\b.{0,25}\billegittim", text):
+                return False
+
+        if pro_score >= 2 and anti_score == 0:
+            return False
+        if pro_score > anti_score + 1:
+            return False
+        return True
+
+    def _derive_counter_conclusion_ground(self, steps: List[str]) -> str:
+        """Pick a final anti-claim rationale from the last stance-consistent step."""
+        for step in reversed(steps):
+            if not self._is_counter_step_consistent(step):
+                continue
+            first_sentence = re.split(r"(?<=[.!?])\s+", step.strip())[0]
+            first_sentence = re.sub(
+                r"^(?:pertanto|quindi|dunque|in\s+conclusione)\s*,?\s*",
+                "",
+                first_sentence,
+                flags=re.IGNORECASE,
+            ).strip()
+            first_sentence = first_sentence.rstrip(" .")
+            if first_sentence:
+                return first_sentence
+        return (
+            "le norme richiamate e i fatti allegati non rendono fondata "
+            "la domanda del ricorrente"
+        )
+
     def _assemble_counter_raw_response(
         self,
         claim: str,
@@ -1071,11 +1208,11 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             chain_section += f"{i}. {step}\n"
 
         premise_steps = steps[:-1] if len(steps) > 1 else steps
-        conclusion_step = steps[-1] if steps else ""
 
         premise_text = " ".join(premise_steps)
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
+        conclusion_ground = self._derive_counter_conclusion_ground(steps)
 
         # Build attack-specific causal link description
         attack_descriptions_it = {
@@ -1106,8 +1243,11 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             "le norme citate indeboliscono il fondamento giuridico della pretesa",
         )
 
-        # Ensure the conclusion opposes the claim
-        conclusion_prefix = "Pertanto, la pretesa deve essere RIGETTATA poiché "
+        # Ensure the conclusion opposes the claim without reusing drifted text.
+        conclusion_text = (
+            "Pertanto, la pretesa deve essere RIGETTATA poiché "
+            f"{conclusion_ground}."
+        )
 
         raw = (
             f"**Premessa Alternativa**: {premise_text}\n\n"
@@ -1116,7 +1256,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             f"{attack_desc_it}. La catena argomentativa evidenzia come "
             f"le norme applicabili al caso non supportino la pretesa del ricorrente, "
             f"ma anzi ne rivelino l'infondatezza giuridica.\n\n"
-            f"**Conclusione Contraria**: {conclusion_prefix}{conclusion_step}\n\n"
+            f"**Conclusione Contraria**: {conclusion_text}\n\n"
             f"{chain_section}"
         )
         return raw

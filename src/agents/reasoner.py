@@ -109,6 +109,7 @@ class Reasoner(BaseAgent):
         """Initialize the Reasoner agent."""
         super().__init__(config)
         self._react_agent = None
+        self._max_support_stance_rewrites = 1
 
     @property
     def tools(self) -> list:
@@ -896,30 +897,68 @@ CRITICAL RULES:
 
             self._log(f"🔗 Generating step {step_num}/{MAX_STEPS}...")
 
-            try:
-                resp = self._resilient_llm_invoke(
-                    [HumanMessage(content=step_prompt)],
-                    stream_callback=(
-                        (
-                            lambda token: self._emit_stream_token(
-                                stream_callback,
-                                phase="support",
-                                token=token,
-                                step=step_num,
-                            )
-                        )
-                        if stream_callback
-                        else None
-                    ),
+            step_text = ""
+            last_candidate = ""
+            for stance_try in range(1, self._max_support_stance_rewrites + 2):
+                prompt_for_try = (
+                    step_prompt
+                    if stance_try == 1
+                    else self._build_support_stance_rewrite_prompt(
+                        original_prompt=step_prompt,
+                        invalid_step=last_candidate,
+                    )
                 )
-                step_response = (resp.content or "").strip()
-            except Exception as e:
-                self._log(f"⚠️ Step {step_num} generation failed: {e}", "warning")
+                try:
+                    resp = self._resilient_llm_invoke(
+                        [HumanMessage(content=prompt_for_try)],
+                        stream_callback=(
+                            (
+                                lambda token: self._emit_stream_token(
+                                    stream_callback,
+                                    phase="support",
+                                    token=token,
+                                    step=step_num,
+                                )
+                            )
+                            if stream_callback and stance_try == 1
+                            else None
+                        ),
+                    )
+                    step_response = (resp.content or "").strip()
+                except Exception as e:
+                    self._log(f"⚠️ Step {step_num} generation failed: {e}", "warning")
+                    break
+
+                last_candidate = self._parse_step_text(step_response)
+                if not last_candidate or last_candidate.strip().upper() == "DONE":
+                    step_text = last_candidate
+                    break
+                if self._is_support_step_consistent(last_candidate):
+                    step_text = last_candidate
+                    break
+                if stance_try <= self._max_support_stance_rewrites:
+                    self._log(
+                        f"⚠️ Step {step_num}: generated text weakens the claim; "
+                        f"rewriting ({stance_try}/{self._max_support_stance_rewrites})",
+                        "warning",
+                    )
+                    continue
+                self._log(
+                    f"⚠️ Step {step_num}: could not enforce pro-claim stance "
+                    f"after {self._max_support_stance_rewrites + 1} attempts, stopping",
+                    "warning",
+                )
+                step_text = ""
                 break
 
-            step_text = self._parse_step_text(step_response)
+            if not step_text:
+                self._log(
+                    f"⚠️ Step {step_num}: no valid pro-claim step generated, stopping",
+                    "warning",
+                )
+                break
 
-            if not step_text or step_text.strip().upper() == "DONE":
+            if step_text.strip().upper() == "DONE":
                 self._log(
                     f"⚠️ Step {step_num}: no new norm available, stopping", "warning"
                 )
@@ -1152,6 +1191,120 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
         return should_continue
 
+    def _build_support_stance_rewrite_prompt(
+        self, original_prompt: str, invalid_step: str
+    ) -> str:
+        """Rewrite step text that drifted away from pro-claim stance."""
+        return (
+            f"{original_prompt}\n\n"
+            "YOUR PREVIOUS STEP WAS INVALID because it weakens or contradicts the claim.\n"
+            f"INVALID STEP:\n\"{invalid_step}\"\n\n"
+            "Rewrite the SAME legal point with STRICT pro-claim stance.\n"
+            "Do not add new facts. Do not balance pros and cons.\n\n"
+            "RESPONSE FORMAT:\n"
+            "STEP: [Italian text, max 4 sentences, strictly pro-claim]"
+        )
+
+    def _build_support_conclusion_rewrite_prompt(
+        self, claim: str, chain_text: str, norms_text: str, invalid_conclusion: str
+    ) -> str:
+        """Force a concise conclusion aligned with pro-claim stance."""
+        return f"""You are an expert Italian jurist. Rewrite the conclusion below so it STRICTLY supports the claim.
+
+CLAIM:
+"{claim}"
+
+REASONING CHAIN:
+{chain_text}
+
+CITED NORMS: {norms_text}
+
+INVALID CONCLUSION TO REWRITE:
+"{invalid_conclusion}"
+
+RULES:
+- Keep it in Italian.
+- 2-4 sentences max.
+- Must clearly state the claim is legally founded.
+- Must not include language suggesting rigetto/infondatezza/non annullabilita/legittimita dell'atto.
+- Do not add facts or norms outside the chain.
+
+CONCLUSION:"""
+
+    def _is_support_step_consistent(self, step_text: str) -> bool:
+        """
+        Heuristic guardrail against anti-claim drift in support generation.
+
+        Returns False when the text contains strong anti-claim signals
+        not offset by explicit pro-claim language.
+        """
+        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
+        if not text:
+            return False
+
+        pro_patterns = [
+            r"\bpretesa\b.*\bfondat",
+            r"\bricorso\b.*\bfondat",
+            r"\bdeve\s+essere\s+accolt",
+            r"\baccoglibil",
+            r"\bannullabil",
+            r"\b(il|lo)\s+atto\b.*\billegittim",
+            r"\bprovvedimento\b.*\billegittim",
+            r"\bviolazion",
+            r"\bdetermina\b.*\billegittimit",
+        ]
+        anti_patterns = [
+            r"\bpretesa\b.*\brigettat",
+            r"\bricorso\b.*\brigettat",
+            r"\binfondat",
+            r"\binammissibil",
+            r"\bnon\s+(?:e|è)?\s*annullabil",
+            r"\bnon\s+determina\b.*\billegittimit",
+            r"\b(?:atto|provvedimento)\b.{0,25}\blegittim",
+        ]
+
+        pro_score = 0
+        for p in pro_patterns:
+            if not re.search(p, text):
+                continue
+            if p == r"\bannullabil" and re.search(r"\bnon\s+(?:e|è)?\s*annullabil", text):
+                continue
+            if p in (
+                r"\b(il|lo)\s+atto\b.*\billegittim",
+                r"\bprovvedimento\b.*\billegittim",
+                r"\bdetermina\b.*\billegittimit",
+            ) and re.search(
+                r"\bnon\s+(?:rende|determina)\b.*\billegittim",
+                text,
+            ):
+                continue
+            if p == r"\bviolazion" and re.search(r"\bnon\b.{0,12}\bviolazion", text):
+                continue
+            if p == r"\bpretesa\b.*\bfondat" and re.search(
+                r"\bnon\b.{0,12}\bfondat", text
+            ):
+                continue
+            pro_score += 1
+
+        anti_score = 0
+        for p in anti_patterns:
+            if not re.search(p, text):
+                continue
+            if p == r"\b(?:atto|provvedimento)\b.{0,25}\blegittim" and re.search(
+                r"\bnon\b.{0,15}\blegittim", text
+            ):
+                continue
+            anti_score += 1
+
+        if re.search(r"\baccolt", text) and re.search(r"\brigettat", text):
+            return False
+
+        if anti_score >= 2 and pro_score == 0:
+            return False
+        if anti_score > pro_score + 1:
+            return False
+        return True
+
     def _generate_conclusion(
         self,
         claim: str,
@@ -1214,8 +1367,45 @@ INSTRUCTIONS:
                 flags=re.IGNORECASE,
             ).strip()
             if conclusion:
-                self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
-                return conclusion
+                if not self._is_support_step_consistent(conclusion):
+                    self._log(
+                        "⚠️ LLM conclusion drifts from pro-claim stance; rewriting",
+                        "warning",
+                    )
+                    rewrite_prompt = self._build_support_conclusion_rewrite_prompt(
+                        claim=claim,
+                        chain_text=chain_text,
+                        norms_text=norms_text,
+                        invalid_conclusion=conclusion,
+                    )
+                    try:
+                        rewrite_resp = self._resilient_llm_invoke(
+                            [HumanMessage(content=rewrite_prompt)]
+                        )
+                        rewritten = (rewrite_resp.content or "").strip()
+                        rewritten = re.sub(
+                            r"^(?:CONCLUSIONE|CONCLUSION)\s*:\s*",
+                            "",
+                            rewritten,
+                            flags=re.IGNORECASE,
+                        ).strip()
+                        if rewritten and self._is_support_step_consistent(rewritten):
+                            conclusion = rewritten
+                        else:
+                            self._log(
+                                "⚠️ Rewritten conclusion still inconsistent; using fallback",
+                                "warning",
+                            )
+                            conclusion = ""
+                    except Exception as rewrite_exc:
+                        self._log(
+                            f"⚠️ Conclusion rewrite failed: {rewrite_exc}",
+                            "warning",
+                        )
+                        conclusion = ""
+                if conclusion:
+                    self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
+                    return conclusion
         except Exception as e:
             self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
 
@@ -1248,6 +1438,13 @@ INSTRUCTIONS:
         premise_text = " ".join(steps)
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
+
+        if conclusion_text and not self._is_support_step_consistent(conclusion_text):
+            self._log(
+                "⚠️ Provided conclusion inconsistent with pro-claim stance; using fallback",
+                "warning",
+            )
+            conclusion_text = ""
 
         if not conclusion_text:
             norms_list = ", ".join(norms) if norms else "le norme applicabili"

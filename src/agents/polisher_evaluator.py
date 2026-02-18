@@ -62,7 +62,16 @@ class PolisherEvaluator(
     """
 
     STATUTE_PATTERN = re.compile(
-        r"(?:art(?:icolo)?\.?\s*)(\d{1,4}(?:[-\s]?[a-z0-9]+)?)\s*"
+        r"(?:art(?:icolo)?\.?\s*)"
+        r"(\d{1,4}(?:"
+        r"-(?:[a-z0-9]{2,})|"
+        r"(?:noviesdecies|octiesdecies|septiesdecies|sexiesdecies|"
+        r"quinquiesdecies|quaterdecies|terdecies|duodecies|undecies|"
+        r"quinquies|septies|quater|sexies|octies|nonies|decies|vicies|ter|bis)|"
+        r"\s+(?:noviesdecies|octiesdecies|septiesdecies|sexiesdecies|"
+        r"quinquiesdecies|quaterdecies|terdecies|duodecies|undecies|"
+        r"quinquies|septies|quater|sexies|octies|nonies|decies|vicies|ter|bis)"
+        r")?)\s*"
         r"(c\.?\s*[cp]\.?|"
         r"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?)|"
         r"l\.?\s*241(?:\s*/\s*1990)?|"

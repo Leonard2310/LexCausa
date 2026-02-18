@@ -983,6 +983,17 @@ class AQAEngineMixin:
     def _bindingness_from_court(self, court: str) -> float:
         court_norm = (court or "").lower()
         bmap = settings.aqa_bindingness_map
+        if "consiglio di stato" in court_norm:
+            return bmap.get("cassazione", 1.0)
+        if "corte costituzionale" in court_norm:
+            return bmap.get("cassazione", 1.0)
+        if "consiglio di giustizia amministrativa" in court_norm:
+            return bmap.get("appello", 0.7)
+        if (
+            "tribunale amministrativo regionale" in court_norm
+            or re.search(r"\btar\b", court_norm)
+        ):
+            return bmap.get("tribunale", 0.4)
         if "cass" in court_norm:
             return bmap.get("cassazione", 1.0)
         if "appello" in court_norm:

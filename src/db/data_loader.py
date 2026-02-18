@@ -11,6 +11,8 @@ Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codic
 per il raggruppamento degli articoli per libro di appartenenza.
 """
 
+import re
+from datetime import datetime
 from typing import Optional, Tuple
 
 import numpy as np
@@ -172,27 +174,104 @@ def load_itacasehold_metadata() -> list[dict]:
     Load itacasehold precedents metadata without embeddings.
 
     Returns:
-        List of dicts with title, summary, url, materia.
+        List of dicts with title, summary, url, materia and parsed metadata
+        (year, court, court_level).
     """
     parquet_path = settings.precedents_dir / "itacasehold_train.parquet"
     if not parquet_path.exists():
         raise FileNotFoundError(f"Itacasehold parquet not found at {parquet_path}")
 
-    columns = ["title", "summary", "url", "materia"]
+    columns = ["title", "summary", "url", "materia", "doc"]
     df = pd.read_parquet(parquet_path, columns=columns)
-    # Keep payload Neo4j-safe and consistent for fulltext retrieval
-    records = (
-        df.fillna("")
-        .astype(
+    df = df.fillna("").astype(
+        {
+            "title": "string",
+            "summary": "string",
+            "url": "string",
+            "materia": "string",
+            "doc": "string",
+        }
+    )
+
+    def _extract_decision_year(doc: str, title: str, summary: str) -> int | None:
+        """Extract the most plausible decision year from itacasehold fields."""
+        current_year = datetime.now().year + 1
+        min_year = 1950
+
+        # Priority 1: explicit "N. xxxx/yyyy REG.PROV...." in document header.
+        prov_patterns = (
+            r"\bN\.\s*\d{1,7}\s*/\s*((?:19|20)\d{2})\s*REG\.PROV\.",
+            r"\bN\.\s*\d{1,7}\s*/\s*((?:19|20)\d{2})\s*REG\.PROV\.COLL\.",
+        )
+        for patt in prov_patterns:
+            match = re.search(patt, doc, re.IGNORECASE)
+            if match:
+                year = int(match.group(1))
+                if min_year <= year <= current_year:
+                    return year
+
+        # Priority 2: latest year in the document header/body.
+        years = [
+            int(y)
+            for y in re.findall(r"\b((?:19|20)\d{2})\b", doc)
+            if min_year <= int(y) <= current_year
+        ]
+        if years:
+            return max(years)
+
+        # Priority 3: fallback on title + summary.
+        text = f"{title} {summary}"
+        years = [
+            int(y)
+            for y in re.findall(r"\b((?:19|20)\d{2})\b", text)
+            if min_year <= int(y) <= current_year
+        ]
+        return max(years) if years else None
+
+    def _extract_court(doc: str, title: str, summary: str) -> tuple[str, str]:
+        """Extract court label and normalized level from precedent text."""
+        text = f"{doc} {title} {summary}".lower()
+
+        # Prefer the most specific administrative courts first.
+        if "consiglio di stato" in text:
+            return "Consiglio di Stato", "consiglio_stato"
+        if "consiglio di giustizia amministrativa" in text:
+            return "Consiglio di Giustizia Amministrativa", "cga"
+        if "tribunale amministrativo regionale" in text:
+            return "Tribunale Amministrativo Regionale", "tar"
+        if "corte costituzionale" in text:
+            return "Corte Costituzionale", "corte_costituzionale"
+        if "corte di cassazione" in text or "cassazione" in text:
+            return "Corte di Cassazione", "cassazione"
+        if "corte d'appello" in text or "corte di appello" in text:
+            return "Corte d'Appello", "appello"
+        if "tribunale" in text:
+            return "Tribunale", "tribunale"
+        return "", "other"
+
+    records: list[dict] = []
+    for row in df.to_dict(orient="records"):
+        title = str(row.get("title", ""))
+        summary = str(row.get("summary", ""))
+        url = str(row.get("url", ""))
+        materia = str(row.get("materia", ""))
+        doc = str(row.get("doc", ""))
+
+        year = _extract_decision_year(doc=doc, title=title, summary=summary)
+        court, court_level = _extract_court(doc=doc, title=title, summary=summary)
+
+        records.append(
             {
-                "title": "string",
-                "summary": "string",
-                "url": "string",
-                "materia": "string",
+                "title": title,
+                "summary": summary,
+                "url": url,
+                "materia": materia,
+                "year": year,
+                "court": court,
+                "court_level": court_level,
             }
         )
-        .to_dict(orient="records")
-    )
+
     print(f"✅ Loaded itacasehold metadata: {len(records)} precedents")
     return records
 

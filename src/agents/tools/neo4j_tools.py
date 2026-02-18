@@ -562,6 +562,9 @@ def _search_precedents_by_keywords(
                node.title AS title,
                node.summary AS summary,
                node.url AS url,
+               node.year AS year,
+               node.court AS court,
+               node.court_level AS court_level,
                score
         ORDER BY score DESC
         LIMIT $limit
@@ -594,6 +597,9 @@ def _search_precedents_by_keywords(
                     "title": title,
                     "summary": summary,
                     "url": record["url"] or "",
+                    "year": record["year"],
+                    "court": record["court"] or "",
+                    "court_level": record["court_level"] or "",
                     "score": (
                         float(record["score"]) if record["score"] is not None else 0.0
                     ),

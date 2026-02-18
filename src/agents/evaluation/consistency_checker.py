@@ -168,17 +168,120 @@ class ConsistencyMixin:
 
         return list(dict.fromkeys(v for v in variants if v))
 
+    @staticmethod
+    def _normalize_text_for_match(text: str) -> str:
+        """Normalize legal text for robust matching across noisy DB formats."""
+        if not text:
+            return ""
+        normalized = str(text)
+        # Remove invisible chars frequently found in itacasehold exports.
+        normalized = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", normalized)
+        normalized = normalized.replace("\u00a0", " ")
+        # Unify punctuation variants.
+        normalized = (
+            normalized.replace("’", "'")
+            .replace("‘", "'")
+            .replace("“", '"')
+            .replace("”", '"')
+        )
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    @staticmethod
+    def _extract_quote_candidate(text: str) -> str:
+        """Extract quoted span from model output (supports «...» and \"...\")."""
+        if not text:
+            return ""
+        for pattern in (r"«([^»]+)»", r'"([^"]+)"'):
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    def _quote_matches_db_summary(self, quote: str, db_summary: str) -> bool:
+        """
+        Validate quoted text against DB summary with exact+fuzzy checks.
+
+        Exact inclusion is preferred; fuzzy token/4-gram overlap handles
+        whitespace/invisible-char noise from the precedent dataset.
+        """
+        quote_norm = self._normalize_text_for_match(quote).lower()
+        db_norm = self._normalize_text_for_match(db_summary).lower()
+        if not quote_norm or not db_norm:
+            return False
+
+        quote_tokens = re.findall(r"\b\w+\b", quote_norm)
+        if len(quote_tokens) < 8:
+            return False
+
+        if quote_norm in db_norm:
+            return True
+
+        db_tokens = set(re.findall(r"\b\w+\b", db_norm))
+        quote_set = set(quote_tokens)
+        if not quote_set:
+            return False
+
+        token_recall = len(quote_set & db_tokens) / len(quote_set)
+        if token_recall >= 0.9 and len(quote_tokens) >= 10:
+            return True
+
+        n = 4
+        quote_ngrams = {
+            " ".join(quote_tokens[i : i + n])
+            for i in range(0, max(len(quote_tokens) - n + 1, 1))
+        }
+        if not quote_ngrams:
+            return False
+        matched_ngrams = sum(1 for ng in quote_ngrams if ng in db_norm)
+        ngram_recall = matched_ngrams / len(quote_ngrams)
+        return ngram_recall >= 0.6
+
+    def _build_precedent_fallback_repair(
+        self, precedent_title: str, db_summary: str
+    ) -> str:
+        """Build deterministic repaired precedent citation from DB summary."""
+        title = self._normalize_text_for_match(precedent_title)
+        summary = self._normalize_text_for_match(db_summary)
+        if not summary:
+            return ""
+
+        sentences = re.split(r"(?<=[.!?])\s+", summary)
+        holding = ""
+        for sentence in sentences:
+            if len(sentence.split()) >= 12:
+                holding = sentence.strip()
+                break
+        if not holding:
+            holding = summary[:420].rstrip(" ,;:")
+
+        if len(holding) > 450:
+            holding = holding[:450].rsplit(" ", 1)[0].rstrip(" ,;:") + "..."
+
+        return (
+            f"Come evidenziato dalla giurisprudenza in «{title}», "
+            f"«{holding}»."
+        )
+
     def _extract_article_id_from_citation(self, citation: str) -> str:
         """Extract full article id from a citation (supports suffixes like -bis/-quinquies)."""
         if not citation:
             return ""
+        suffix = (
+            r"(?:noviesdecies|octiesdecies|septiesdecies|sexiesdecies|"
+            r"quinquiesdecies|quaterdecies|terdecies|duodecies|undecies|"
+            r"quinquies|septies|quater|sexies|octies|nonies|decies|vicies|ter|bis)"
+        )
+        article_pat = (
+            rf"\d{{1,4}}(?:-(?:[a-z0-9]{{2,}})|{suffix}|\s+{suffix})?"
+        )
         match = re.search(
-            r"Art(?:icolo)?\.?\s*(\d{1,4}(?:[-\s]?[a-z0-9]+)?)",
+            rf"Art(?:icolo)?\.?\s*({article_pat})",
             citation,
             re.IGNORECASE,
         )
         if not match:
-            match = re.search(r"(\d{1,4}(?:[-\s]?[a-z0-9]+)?)", citation, re.IGNORECASE)
+            match = re.search(rf"\b({article_pat})\b", citation, re.IGNORECASE)
         return self._normalize_article_id(match.group(1) if match else "")
 
     @staticmethod
@@ -321,8 +424,8 @@ class ConsistencyMixin:
             return 0.0
 
         # Normalize both texts
-        cited_lower = cited_text.lower().strip()
-        db_lower = db_text.lower().strip()
+        cited_lower = self._normalize_text_for_match(cited_text).lower()
+        db_lower = self._normalize_text_for_match(db_text).lower()
 
         # Check direct substring match
         if cited_lower in db_lower:
@@ -335,9 +438,15 @@ class ConsistencyMixin:
         if not cited_words:
             return 0.0
 
-        # Calculate Jaccard-like similarity
+        # Calculate recall-oriented overlap and blend with F1
         common_words = cited_words & db_words
-        similarity = len(common_words) / len(cited_words)
+        recall = len(common_words) / len(cited_words)
+        precision = len(common_words) / len(db_words) if db_words else 0.0
+        if recall + precision == 0:
+            similarity = 0.0
+        else:
+            f1 = 2 * recall * precision / (recall + precision)
+            similarity = max(recall, f1)
 
         return min(similarity, 1.0)
 
@@ -813,10 +922,15 @@ class ConsistencyMixin:
                     result = session.run(query_by_id, parameters={"id": precedent_id})
                     record = result.single()
                     if record:
-                        summary = record.get("summary", "") or ""
+                        summary = self._normalize_text_for_match(
+                            record.get("summary", "") or ""
+                        )
+                        title_clean = self._normalize_text_for_match(
+                            record.get("title", "") or ""
+                        )
                         self._log(
                             f"      🗄️ Neo4j: precedent found by ID ({precedent_id}) - "
-                            f"'{(record.get('title') or '')[:60]}...'"
+                            f"'{title_clean[:60]}...'"
                         )
                         return True, summary
             except Exception as e:
@@ -836,10 +950,15 @@ class ConsistencyMixin:
                 result = session.run(query_by_title, parameters={"title": title})
                 record = result.single()
                 if record:
-                    summary = record.get("summary", "") or ""
+                    summary = self._normalize_text_for_match(
+                        record.get("summary", "") or ""
+                    )
+                    title_clean = self._normalize_text_for_match(
+                        record.get("title", "") or ""
+                    )
                     self._log(
                         f"      🗄️ Neo4j: precedent found by title - "
-                        f"'{(record.get('title') or '')[:60]}...'"
+                        f"'{title_clean[:60]}...'"
                     )
                     return True, summary
                 return False, ""
@@ -860,6 +979,7 @@ class ConsistencyMixin:
 
         Returns the surrounding sentence/context or empty string.
         """
+        precedent_title = self._normalize_text_for_match(precedent_title)
         title_lower = precedent_title.lower()
         text_lower = full_text.lower()
 
@@ -885,6 +1005,7 @@ class ConsistencyMixin:
             if title_lower in sentence.lower():
                 cleaned = sentence.strip()
                 if len(cleaned) >= 20:
+                    cleaned = self._normalize_text_for_match(cleaned)
                     self._log(
                         f"      🎯 Extracted precedent context: " f"'{cleaned[:80]}...'"
                     )
@@ -893,7 +1014,7 @@ class ConsistencyMixin:
         # Fallback: return the raw window
         raw = window.strip()
         if len(raw) >= 20:
-            return raw
+            return self._normalize_text_for_match(raw)
         return ""
 
     def _handle_precedent_mismatch(
@@ -1004,29 +1125,53 @@ class ConsistencyMixin:
                     HumanMessage(content=user_prompt),
                 ],
             )
-            repaired_text = response.content.strip()
+            repaired_text = self._normalize_text_for_match(response.content.strip())
 
-            # Validate: check verbatim quote
-            quote_match = re.search(r"«([^»]+)»", repaired_text)
-            if quote_match:
-                quote = quote_match.group(1).lower().strip()
-                if quote in db_summary.lower() and len(quote) >= 15:
-                    check.mismatch_action = MismatchAction.REPAIRED.value
-                    check.repaired_text = repaired_text
-                    check.repair_success = True
-                    check.details += " [REPAIRED with DB summary]"
-                    report.repaired_citations += 1
-                    self._log(
-                        f"      ✅ Precedent REPAIRED successfully "
-                        f"(quote {len(quote)} chars)"
-                    )
-                    return
+            # Validate quote with robust normalization/fuzzy matching.
+            quote = self._extract_quote_candidate(repaired_text)
+            if quote and self._quote_matches_db_summary(quote, db_summary):
+                check.mismatch_action = MismatchAction.REPAIRED.value
+                check.repaired_text = repaired_text
+                check.repair_success = True
+                check.details += " [REPAIRED with DB summary]"
+                report.repaired_citations += 1
+                self._log(
+                    f"      ✅ Precedent REPAIRED successfully "
+                    f"(quote {len(quote)} chars)"
+                )
+                return
 
-            self._log("      ❌ Precedent repair FAILED: no valid quote")
+            # Fallback acceptance: high semantic overlap even without valid quote.
+            repaired_similarity = self._compute_text_similarity(repaired_text, db_summary)
+            if repaired_similarity >= 0.75:
+                check.mismatch_action = MismatchAction.REPAIRED.value
+                check.repaired_text = repaired_text
+                check.repair_success = True
+                check.details += (
+                    f" [REPAIRED with DB summary - semantic overlap {repaired_similarity:.0%}]"
+                )
+                report.repaired_citations += 1
+                self._log(
+                    f"      ✅ Precedent REPAIRED (semantic overlap {repaired_similarity:.0%})"
+                )
+                return
+
+            self._log("      ⚠️ Precedent LLM repair not valid enough, trying DB fallback")
         except Exception as e:
             self._log(f"      ⚠️ Precedent repair failed: {e}", "warning")
 
-        # Repair failed → drop
+        # Deterministic fallback using DB summary snippet (prevents noisy false drops).
+        fallback_text = self._build_precedent_fallback_repair(precedent_title, db_summary)
+        if fallback_text:
+            check.mismatch_action = MismatchAction.REPAIRED.value
+            check.repaired_text = fallback_text
+            check.repair_success = True
+            check.details += " [REPAIRED with deterministic DB fallback]"
+            report.repaired_citations += 1
+            self._log("      ✅ Precedent REPAIRED with deterministic DB fallback")
+            return
+
+        # Repair failed → drop (only when DB summary unavailable/empty).
         check.mismatch_action = MismatchAction.REPAIR_FAILED.value
         check.repair_success = False
         check.details += " [REPAIR FAILED - precedent citation unreliable]"

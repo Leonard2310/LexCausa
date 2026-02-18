@@ -509,6 +509,9 @@ class DatabaseOrchestrator:
                             "summary": str(meta.get("summary", ""))[:5000],
                             "url": str(meta.get("url", "")),
                             "materia": str(meta.get("materia", ""))[:200],
+                            "year": meta.get("year"),
+                            "court": str(meta.get("court", ""))[:200],
+                            "court_level": str(meta.get("court_level", ""))[:80],
                             "source": "itacasehold",
                         }
                     )
@@ -516,14 +519,15 @@ class DatabaseOrchestrator:
                 session.run(
                     """
                     UNWIND $records AS record
-                    CREATE (p:Precedent {
-                        precedent_id: record.precedent_id,
-                        title: record.title,
-                        summary: record.summary,
-                        url: record.url,
-                        materia: record.materia,
-                        source: record.source
-                    })
+                    MERGE (p:Precedent {precedent_id: record.precedent_id})
+                    SET p.title = record.title,
+                        p.summary = record.summary,
+                        p.url = record.url,
+                        p.materia = record.materia,
+                        p.year = record.year,
+                        p.court = record.court,
+                        p.court_level = record.court_level,
+                        p.source = record.source
                 """,
                     records=records,
                 )

@@ -42,76 +42,47 @@ class ConsistencyMixin:
             Tuple of (exists: bool, text: str). Text is empty if not found.
         """
         driver = get_driver()
+        article_id = self._normalize_article_id(article_num)
+        if not article_id:
+            return False, ""
 
-        # If citation explicitly references L. 241/1990 or amministrativo,
-        # force lookup on codice_amministrativo.
-        if citation_str:
-            citation_lower = citation_str.lower()
+        domain = (domain or "").strip().upper()
+        citation_lower = citation_str.lower() if citation_str else ""
+
+        if citation_lower:
             if "241/1990" in citation_lower or "legge 241" in citation_lower:
                 self._log(
                     f"      🔍 detected L. 241/1990 in '{citation_str}', searching AMMINISTRATIVO"
                 )
-                return self._verify_statute_in_neo4j(
-                    article_num, "AMMINISTRATIVO", citation_str
-                )
-            if "amministrativ" in citation_lower and "codice" in citation_lower:
+                domain = "AMMINISTRATIVO"
+            elif "amministrativ" in citation_lower and "codice" in citation_lower:
                 self._log(
                     f"      🔍 detected codice amministrativo in '{citation_str}', searching AMMINISTRATIVO"
                 )
-                return self._verify_statute_in_neo4j(
-                    article_num, "AMMINISTRATIVO", citation_str
-                )
+                domain = "AMMINISTRATIVO"
 
-        # When domain is ENTRAMBI, try to determine the correct codice
-        # from the citation string (e.g. "c.p." → penale, "c.c." → civile)
-        if domain == "ENTRAMBI" and citation_str:
-            citation_lower = citation_str.lower()
+        # Resolve candidate domains once, then query iteratively (no recursion).
+        if domain == "ENTRAMBI" and citation_lower:
             if "c.p" in citation_lower or (
                 "cod" in citation_lower and "pen" in citation_lower
             ):
                 self._log(
                     f"      🔍 ENTRAMBI → detected c.p. in '{citation_str}', searching PENALE"
                 )
-                return self._verify_statute_in_neo4j(
-                    article_num, "PENALE", citation_str
-                )
+                candidate_domains = ["PENALE"]
             elif "c.c" in citation_lower or (
                 "cod" in citation_lower and "civ" in citation_lower
             ):
                 self._log(
                     f"      🔍 ENTRAMBI → detected c.c. in '{citation_str}', searching CIVILE"
                 )
-                return self._verify_statute_in_neo4j(
-                    article_num, "CIVILE", citation_str
-                )
-
-        # Determine codice based on domain
-        if domain == "CIVILE":
-            # Per CIVILE, l'articolo è salvato come "art1223"
-            articolo_normalized = f"art{article_num}"
-            codice = "codice_civile"
-        elif domain == "PENALE":
-            # Per PENALE, l'articolo è salvato come "1223" (senza prefisso)
-            articolo_normalized = article_num
-            codice = "codice_penale"
-        elif domain == "AMMINISTRATIVO":
-            articolo_normalized = article_num
-            codice = "codice_amministrativo"
+                candidate_domains = ["CIVILE"]
+            else:
+                candidate_domains = ["PENALE", "CIVILE", "AMMINISTRATIVO"]
+        elif domain in ("CIVILE", "PENALE", "AMMINISTRATIVO"):
+            candidate_domains = [domain]
         else:
-            # ENTRAMBI without citation hint: try all supported codici
-            found, text = self._verify_statute_in_neo4j(
-                article_num, "PENALE", citation_str
-            )
-            if found:
-                return found, text
-            found, text = self._verify_statute_in_neo4j(
-                article_num, "CIVILE", citation_str
-            )
-            if found:
-                return found, text
-            return self._verify_statute_in_neo4j(
-                article_num, "AMMINISTRATIVO", citation_str
-            )
+            candidate_domains = ["PENALE", "CIVILE", "AMMINISTRATIVO"]
 
         query = """
             MATCH (s:Statute)
@@ -122,28 +93,96 @@ class ConsistencyMixin:
 
         try:
             with driver.session() as session:
-                result = session.run(
-                    query,
-                    parameters={"articolo": articolo_normalized, "codice": codice},
-                )
-                record = result.single()
-                if record:
+                for candidate in candidate_domains:
+                    if candidate == "CIVILE":
+                        # Per CIVILE, l'articolo è salvato come "art1223"
+                        articolo_normalized = (
+                            article_id if article_id.startswith("art") else f"art{article_id}"
+                        )
+                        codice = "codice_civile"
+                    elif candidate == "PENALE":
+                        # Per PENALE, l'articolo è salvato come "1223" (senza prefisso)
+                        articolo_normalized = (
+                            article_id[3:] if article_id.startswith("art") else article_id
+                        )
+                        codice = "codice_penale"
+                    else:  # AMMINISTRATIVO
+                        articolo_normalized = (
+                            article_id[3:] if article_id.startswith("art") else article_id
+                        )
+                        codice = "codice_amministrativo"
+
+                    result = session.run(
+                        query,
+                        parameters={"articolo": articolo_normalized, "codice": codice},
+                    )
+                    record = result.single()
+                    if not record:
+                        continue
+
                     testo = record.get("testo", "") or ""
                     titolo = record.get("titolo", "") or ""
                     if testo:
                         self._log(
-                            f"      🗄️ Neo4j: Art. {article_num} found - '{titolo[:50]}...'"
+                            f"      🗄️ Neo4j: Art. {article_id} found - '{titolo[:50]}...'"
                         )
                         self._log(f"      📄 DB text preview: '{testo[:100]}...'")
                     else:
                         self._log(
-                            f"      🗄️ Neo4j: Art. {article_num} found but NO TEXT in DB"
+                            f"      🗄️ Neo4j: Art. {article_id} found but NO TEXT in DB"
                         )
                     return True, testo
                 return False, ""
         except Exception as e:
             self._log(f"⚠️ Neo4j query failed: {e}", "warning")
             return False, ""
+
+    @staticmethod
+    def _normalize_article_id(raw: str) -> str:
+        """Normalize article identifiers across formats (e.g. 21 quinquies -> 21-quinquies)."""
+        text = (raw or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"^art(?:icolo)?\.?\s*", "", text, flags=re.IGNORECASE)
+        text = text.replace("_", "-")
+        text = re.sub(r"\s+", "-", text)
+        text = re.sub(r"^(\d{1,4})([a-z]{2,})$", r"\1-\2", text)
+        text = re.sub(r"-+", "-", text).strip("-")
+        return text
+
+    @staticmethod
+    def _article_id_to_regex(article_id: str) -> str:
+        """Build a regex fragment that accepts both hyphen and space suffixes."""
+        return re.escape(article_id).replace(r"\-", r"[-\s]?")
+
+    def _extract_article_id_from_citation(self, citation: str) -> str:
+        """Extract full article id from a citation (supports suffixes like -bis/-quinquies)."""
+        if not citation:
+            return ""
+        match = re.search(
+            r"Art(?:icolo)?\.?\s*(\d{1,4}(?:[-\s]?[a-z0-9]+)?)",
+            citation,
+            re.IGNORECASE,
+        )
+        if not match:
+            match = re.search(r"(\d{1,4}(?:[-\s]?[a-z0-9]+)?)", citation, re.IGNORECASE)
+        return self._normalize_article_id(match.group(1) if match else "")
+
+    @staticmethod
+    def _infer_source_hint_from_citation(citation: str) -> str:
+        """Infer statute source from citation text."""
+        lower = (citation or "").lower()
+        if (
+            "241/1990" in lower
+            or "legge 241" in lower
+            or "codice amministrativ" in lower
+        ):
+            return "codice_amministrativo"
+        if "c.c" in lower or ("cod" in lower and "civ" in lower):
+            return "codice_civile"
+        if "c.p" in lower or ("cod" in lower and "pen" in lower):
+            return "codice_penale"
+        return ""
 
     def _extract_cited_text_for_article(
         self, full_text: str, article_num: str, aspic_ir: dict | None = None
@@ -164,9 +203,17 @@ class ConsistencyMixin:
         Returns:
             Extracted text associated with the article, or empty string if not found.
         """
+        article_id = self._normalize_article_id(article_num)
+        article_pattern = self._article_id_to_regex(article_id or article_num)
+        code_pattern = (
+            r"(?:c\.?\s*c\.?|c\.?\s*p\.?|"
+            r"l\.?\s*241(?:\s*/\s*1990)?|legge\s*241(?:\s*/\s*1990)?|"
+            r"cod(?:ice)?\.?\s*amm(?:inistrativ[oa])?)?"
+        )
+
         # Pattern 0: block with Norma + Testo lines
         block_pattern = (
-            rf"Norma.*?Art(?:icolo)?\.?\s*{article_num}.*?\n"
+            rf"Norma.*?Art(?:icolo)?\.?\s*{article_pattern}.*?\n"
             rf".*?Testo\s*:\s*\"([^\"]{{20,}})\""
         )
         match = re.search(block_pattern, full_text, re.IGNORECASE | re.DOTALL)
@@ -179,7 +226,7 @@ class ConsistencyMixin:
 
         # Pattern 1: "L'Art. 1223 c.c. stabilisce/prevede/limita che..."
         # Captures the verb + "che" + text until period
-        pattern1 = rf"[Ll][''']?Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\s+(?:stabilisce|prevede|limita|dispone|sancisce|afferma)\s+(?:che\s+)?(.+?)(?:\.|$)"
+        pattern1 = rf"[Ll][''']?Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\s+(?:stabilisce|prevede|limita|dispone|sancisce|afferma)\s+(?:che\s+)?(.+?)(?:\.|$)"
         match = re.search(pattern1, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
@@ -193,13 +240,17 @@ class ConsistencyMixin:
                 return extracted
 
         # Pattern 2: "Art. 1223 c.c. - [testo]"
-        pattern2 = rf"Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\s*[\-:]\s*(.+?)(?:\.|$)"
+        pattern2 = rf"Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\s*[\-:]\s*(.+?)(?:\.|$)"
         match = re.search(pattern2, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
             extracted = re.sub(r"\s+", " ", extracted)
             # Avoid if it contains other article references (means it's a list)
-            if not re.search(r"Art(?:icolo)?\.?\s*\d{3,4}", extracted, re.IGNORECASE):
+            if not re.search(
+                r"Art(?:icolo)?\.?\s*\d{1,4}(?:[-\s]?[a-z0-9]+)?",
+                extracted,
+                re.IGNORECASE,
+            ):
                 if len(extracted) >= 20:
                     self._log(
                         "      🎯 Found 'Art. " + str(article_num) + " - ...' pattern"
@@ -207,7 +258,7 @@ class ConsistencyMixin:
                     return extracted
 
         # Pattern 3: "Secondo l'Art. 1223 c.c., [testo]"
-        pattern3 = rf"[Ss]econdo\s+[Ll][''']?Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?,?\s+(.+?)(?:\.|$)"
+        pattern3 = rf"[Ss]econdo\s+[Ll][''']?Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern},?\s+(.+?)(?:\.|$)"
         match = re.search(pattern3, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
@@ -221,7 +272,7 @@ class ConsistencyMixin:
                 return extracted
 
         # Pattern 4: "(Art. 1223 c.c.)" in parentheses after text - capture text before
-        pattern4 = rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_num}\s*(?:c\.?\s*c\.?|c\.?\s*p\.?)?\)"
+        pattern4 = rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\)"
         match = re.search(pattern4, full_text, re.IGNORECASE)
         if match:
             extracted = match.group(1).strip()
@@ -1077,28 +1128,32 @@ class ConsistencyMixin:
         cited_prec_titles = [
             t for t in known_prec_titles if t.lower() in full_text_lower
         ]
-        unique_statute_articles = {
-            m.group(1) for c in statute_citations if (m := re.search(r"(\d{1,4})", c))
-        }
-        expected_total_checks = len(unique_statute_articles) + len(cited_prec_titles)
+        parsed_statute_citations: list[tuple[str, str, str]] = []
+        for citation in statute_citations:
+            article_id = self._extract_article_id_from_citation(citation)
+            if not article_id:
+                continue
+            source_hint = self._infer_source_hint_from_citation(citation)
+            parsed_statute_citations.append((citation, article_id, source_hint))
+
+        unique_statute_citations = {(a, s) for _, a, s in parsed_statute_citations}
+        expected_total_checks = len(unique_statute_citations) + len(cited_prec_titles)
 
         # Track already verified articles to avoid duplicates
-        verified_articles: set[str] = set()
+        verified_articles: set[tuple[str, str]] = set()
         verified_precedent_titles: set[str] = set()
 
-        for citation in statute_citations:
-            # Extract article number from citation (e.g., "Art. 1223 c.c." -> "1223")
-            match = re.search(r"(\d{1,4})", citation)
-            if not match:
-                continue
-
-            article_num = match.group(1)
+        for citation, article_num, source_hint in parsed_statute_citations:
+            article_key = (article_num, source_hint)
 
             # Skip if already verified
-            if article_num in verified_articles:
-                self._log(f"   ⏭️ Art. {article_num} already verified, skipping")
+            if article_key in verified_articles:
+                self._log(
+                    f"   ⏭️ Art. {article_num}"
+                    f"{' (' + source_hint + ')' if source_hint else ''} already verified, skipping"
+                )
                 continue
-            verified_articles.add(article_num)
+            verified_articles.add(article_key)
 
             # Verify existence in Neo4j and get text
             found, db_text = self._verify_statute_in_neo4j(
@@ -1338,7 +1393,9 @@ class ConsistencyMixin:
         seen = set()
 
         for match in self.STATUTE_PATTERN.finditer(text):
-            article_num = match.group(1)
+            article_num = self._normalize_article_id(match.group(1) or "")
+            if not article_num:
+                continue
             code_part = match.group(2) or ""
 
             # Determine code
@@ -1559,18 +1616,18 @@ class ConsistencyMixin:
         to a surgical text injection.
         """
         # Extract article number
-        m = re.search(r"(\d{1,4})", check.citation)
-        if not m:
+        article_id = self._extract_article_id_from_citation(check.citation)
+        if not article_id:
             return self._inject_text_after_article(
                 chain, check.citation, check.repaired_text
             )
-        article_num = m.group(1)
+        article_pattern = self._article_id_to_regex(article_id)
 
         # Find the numbered step containing this article in the chain.
         # Steps are formatted as "N. <text>\n" where N is 1, 2, 3…
         # We look for a line starting with a number, containing our article.
         step_pattern = re.compile(
-            rf"^(\d+)\.\s+(.*?Art(?:icolo)?\.?\s*{article_num}\b.*?)$",
+            rf"^(\d+)\.\s+(.*?Art(?:icolo)?\.?\s*{article_pattern}(?!\w).*?)$",
             re.IGNORECASE | re.MULTILINE,
         )
         match = step_pattern.search(chain)
@@ -1668,9 +1725,8 @@ class ConsistencyMixin:
                 chain, check.citation, check.repaired_text
             )
 
-    @staticmethod
     def _inject_text_after_article(
-        chain: str, citation: str, repaired_text: str
+        self, chain: str, citation: str, repaired_text: str
     ) -> str:
         """Insert a normative-text annotation after the first mention of *citation*.
 
@@ -1681,15 +1737,17 @@ class ConsistencyMixin:
         The ``repaired_text`` is truncated to a reasonable length to
         avoid bloating the chain.
         """
-        # Extract article number from citation (e.g. "Art. 43 c.p." → "43")
-        m = re.search(r"(\d{1,4})", citation)
-        if not m:
+        article_id = self._extract_article_id_from_citation(citation)
+        if not article_id:
             return chain
-        article_num = m.group(1)
+        article_pattern = self._article_id_to_regex(article_id)
 
-        # Build a regex that matches "Art. 43 c.p." or "Art. 43 c.c."
+        # Build a regex that matches "Art. X c.p./c.c./L.241/1990".
         pattern = re.compile(
-            rf"(Art(?:icolo)?\.?\s*{article_num}\s*c\.?\s*[cp]\.?)",
+            rf"(Art(?:icolo)?\.?\s*{article_pattern}\s*"
+            rf"(?:c\.?\s*[cp]\.?|"
+            rf"l\.?\s*241(?:\s*/\s*1990)?|legge\s*241(?:\s*/\s*1990)?|"
+            rf"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?))?)",
             re.IGNORECASE,
         )
 

@@ -31,7 +31,15 @@ class AQAEngineMixin:
     def _extract_statute_refs_from_text(self, text: str) -> list[dict]:
         refs = []
         for match in self.STATUTE_PATTERN.finditer(text):
-            art = match.group(1)
+            art_raw = match.group(1)
+            normalizer = getattr(self, "_normalize_article_id", None)
+            art = (
+                normalizer(art_raw)
+                if callable(normalizer)
+                else str(art_raw or "").strip().lower()
+            )
+            if not art:
+                continue
             code_part = match.group(2) or ""
             source = ""
             if code_part:
@@ -50,6 +58,15 @@ class AQAEngineMixin:
     def _get_statute_meta(
         self, article_num: str, domain: str, source_hint: str = ""
     ) -> dict:
+        normalizer = getattr(self, "_normalize_article_id", None)
+        article_id = (
+            normalizer(article_num)
+            if callable(normalizer)
+            else str(article_num or "").strip().lower()
+        )
+        if not article_id:
+            return {}
+
         # If a source_hint is provided (e.g. "codice_penale"), resolve domain
         if source_hint and domain == "ENTRAMBI":
             if source_hint == "codice_penale":
@@ -59,28 +76,28 @@ class AQAEngineMixin:
             elif source_hint == "codice_amministrativo":
                 domain = "AMMINISTRATIVO"
 
-        key = (article_num, domain)
+        key = (article_id, domain)
         if key in self._statute_meta_cache:
             return self._statute_meta_cache[key]
         driver = get_driver()
         if domain == "CIVILE":
-            articolo = f"art{article_num}"
+            articolo = article_id if article_id.startswith("art") else f"art{article_id}"
             codice = "codice_civile"
         elif domain == "PENALE":
-            articolo = article_num
+            articolo = article_id[3:] if article_id.startswith("art") else article_id
             codice = "codice_penale"
         elif domain == "AMMINISTRATIVO":
-            articolo = article_num
+            articolo = article_id[3:] if article_id.startswith("art") else article_id
             codice = "codice_amministrativo"
         else:
             # ENTRAMBI without hint: try PENALE, then CIVILE, then AMMINISTRATIVO
-            meta = self._get_statute_meta(article_num, "PENALE")
+            meta = self._get_statute_meta(article_id, "PENALE")
             if meta:
                 return meta
-            meta = self._get_statute_meta(article_num, "CIVILE")
+            meta = self._get_statute_meta(article_id, "CIVILE")
             if meta:
                 return meta
-            meta = self._get_statute_meta(article_num, "AMMINISTRATIVO")
+            meta = self._get_statute_meta(article_id, "AMMINISTRATIVO")
             if meta:
                 return meta
             return {}

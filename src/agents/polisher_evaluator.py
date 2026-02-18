@@ -62,9 +62,11 @@ class PolisherEvaluator(
     """
 
     STATUTE_PATTERN = re.compile(
-        r"(?:art(?:icolo)?\.?\s*)(\d{1,4})\s*"
-        r"(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativo)?)|"
-        r"l\.?\s*241(?:/1990)?|legge\s*241(?:/1990)?)?",
+        r"(?:art(?:icolo)?\.?\s*)(\d{1,4}(?:[-\s]?[a-z0-9]+)?)\s*"
+        r"(c\.?\s*[cp]\.?|"
+        r"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?)|"
+        r"l\.?\s*241(?:\s*/\s*1990)?|"
+        r"legge\s*241(?:\s*/\s*1990)?)?",
         re.IGNORECASE,
     )
     PRECEDENT_PATTERN = re.compile(

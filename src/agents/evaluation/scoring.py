@@ -10,8 +10,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import textstat
-
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
 
@@ -42,34 +40,6 @@ class ScoringMixin:
         except Exception:
             self._arg_quality = None
         return self._arg_quality
-
-    def _readability_score(self, text: str) -> float:
-        text = self._normalize_text(text)
-        if not text:
-            return 0.0
-        if textstat is not None:
-            try:
-                flesch = textstat.flesch_reading_ease(text)
-                fog = textstat.gunning_fog(text)
-                smog = textstat.smog_index(text)
-                flesch_score = self._clamp01(flesch / 100.0)
-                fog_score = 1.0 - self._clamp01(fog / 20.0)
-                smog_score = 1.0 - self._clamp01(smog / 20.0)
-                scores = [flesch_score, fog_score, smog_score]
-                return sum(scores) / len(scores)
-            except Exception:
-                pass
-        # Fallback: prefer moderate length
-        word_count = len(text.split())
-        if word_count <= 0:
-            return 0.0
-        if word_count <= 30:
-            return 0.6
-        if word_count <= 80:
-            return 0.8
-        if word_count <= 150:
-            return 0.6
-        return 0.4
 
     def _argument_quality_score(
         self, premise_text: str, rule_text: str, conclusion_text: str
@@ -125,54 +95,6 @@ class ScoringMixin:
             settings.coherence_base_weight * base
             + settings.coherence_chain_weight * (sum(sims) / len(sims))
         )
-
-    def _build_chain_text(self, aspic_ir: dict) -> str:
-        """
-        Build the full text of a reasoning chain from ASPIC IR for norm support calculation.
-
-        Extracts text from all arguments (premises, rules, conclusions) and reasoning chain steps.
-
-        Args:
-            aspic_ir: ASPIC IR structure
-
-        Returns:
-            Concatenated text of the entire chain.
-        """
-        if not aspic_ir:
-            return ""
-
-        parts = []
-
-        # Extract from arguments
-        for arg in aspic_ir.get("arguments", []):
-            # Premises
-            for premise in arg.get("premises", []):
-                if isinstance(premise, dict):
-                    parts.append(premise.get("text", ""))
-                elif isinstance(premise, str):
-                    parts.append(premise)
-            # Rule/norm
-            rule = arg.get("rule") or arg.get("norm") or {}
-            if isinstance(rule, dict):
-                parts.append(rule.get("text", ""))
-            elif isinstance(rule, str):
-                parts.append(rule)
-            # Conclusion
-            conclusion = arg.get("conclusion") or {}
-            if isinstance(conclusion, dict):
-                parts.append(conclusion.get("text", ""))
-            elif isinstance(conclusion, str):
-                parts.append(conclusion)
-
-        # Extract from reasoning_chain steps
-        for step in aspic_ir.get("reasoning_chain", []):
-            if isinstance(step, dict):
-                parts.append(step.get("text", ""))
-            elif isinstance(step, str):
-                parts.append(step)
-
-        # Filter empty and join
-        return " ".join(p for p in parts if p and isinstance(p, str))
 
     def _norm_support_score(
         self,

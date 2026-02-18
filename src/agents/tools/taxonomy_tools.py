@@ -235,12 +235,6 @@ def get_causality_theory_tool(
     return result
 
 
-def get_all_causality_types() -> list[dict]:
-    """Get summary of all causality types for reference."""
-    taxonomy = get_taxonomy()
-    return taxonomy.get("causal_types", [])
-
-
 def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:
     """Soft-filter taxonomy norms for claim relevance (default keep)."""
     if not norms:

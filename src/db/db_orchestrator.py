@@ -7,7 +7,7 @@ Esegue in ordine tutte le operazioni necessarie per inizializzare il database:
 2. Pulizia database (opzionale)
 3. Creazione schema (indici, constraint, struttura grafo)
 4. Caricamento statuti (Codice Penale + Civile) con embeddings
-5. Caricamento precedenti (itacasehold) con embeddings
+5. Caricamento precedenti (itacasehold) senza embeddings
 
 Uso:
     python db_orchestrator.py                    # Setup completo
@@ -232,8 +232,11 @@ class DatabaseOrchestrator:
 
             vector_indexes = [
                 ("statutes_idx", "Statute", "embedding"),
-                ("precedents_idx", "Precedent", "embedding"),
             ]
+
+            # Ensure deprecated precedent vector index is removed.
+            session.run("DROP INDEX precedents_idx IF EXISTS")
+            print("      ✅ precedents_idx rimosso (precedenti senza embedding)")
 
             for name, label, prop in vector_indexes:
                 # Drop e ricrea per assicurare dimensione corretta
@@ -447,31 +450,23 @@ class DatabaseOrchestrator:
     # =========================================================================
 
     def load_precedents(self):
-        """Carica precedenti itacasehold con summary embeddings."""
-        from data_loader import load_itacasehold_with_embeddings
+        """Carica precedenti itacasehold senza embeddings (fulltext only)."""
+        from data_loader import load_itacasehold_metadata
 
-        print("\n⚖️ Caricamento precedenti (itacasehold)...")
+        print("\n⚖️ Caricamento precedenti (itacasehold, no-embedding)...")
 
         try:
-            metadata, embeddings = load_itacasehold_with_embeddings()
+            metadata = load_itacasehold_metadata()
         except FileNotFoundError as e:
             print(f"      ⚠️ {e}")
-            print("      Esegui prima lo script per generare gli embeddings")
-            return
-
-        if len(metadata) != embeddings.shape[0]:
-            print(
-                f"      ⚠️ Mismatch: {len(metadata)} meta vs {embeddings.shape[0]} emb"
-            )
             return
 
         with self.driver.session() as session:
             for i in range(0, len(metadata), BATCH_SIZE):
                 batch_meta = metadata[i : i + BATCH_SIZE]
-                batch_emb = embeddings[i : i + BATCH_SIZE]
 
                 records = []
-                for idx, (meta, emb) in enumerate(zip(batch_meta, batch_emb)):
+                for idx, meta in enumerate(batch_meta):
                     global_idx = i + idx
                     records.append(
                         {
@@ -479,7 +474,7 @@ class DatabaseOrchestrator:
                             "title": str(meta.get("title", ""))[:500],
                             "summary": str(meta.get("summary", ""))[:5000],
                             "url": str(meta.get("url", "")),
-                            "embedding": emb.tolist(),
+                            "materia": str(meta.get("materia", ""))[:200],
                             "source": "itacasehold",
                         }
                     )
@@ -492,7 +487,7 @@ class DatabaseOrchestrator:
                         title: record.title,
                         summary: record.summary,
                         url: record.url,
-                        embedding: record.embedding,
+                        materia: record.materia,
                         source: record.source
                     })
                 """,
@@ -502,7 +497,7 @@ class DatabaseOrchestrator:
                 inserted = min(i + BATCH_SIZE, len(metadata))
                 print(f"      Inseriti: {inserted}/{len(metadata)}", end="\r")
 
-            print(f"      ✅ {len(metadata)} precedenti con summary embeddings")
+            print(f"      ✅ {len(metadata)} precedenti (senza embeddings)")
 
         print("\n✅ Precedenti caricati")
 

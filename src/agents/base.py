@@ -17,7 +17,6 @@ from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
-from neo4j import GraphDatabase
 
 # Add parent to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -91,7 +90,6 @@ class BaseAgent(ABC):
         """
         self.config = config or AgentConfig()
         self._llm: Optional[ChatGroq] = None
-        self._neo4j_driver = None
 
     @property
     def llm(self) -> ChatGroq:
@@ -105,15 +103,6 @@ class BaseAgent(ABC):
             )
         return self._llm
 
-    def _rebuild_llm(self, api_key: str, model: str) -> ChatGroq:
-        """Rebuild the LLM with a new API key and model (used by resilient wrappers)."""
-        return get_chat_groq(
-            model=model,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            api_key=api_key,
-        )
-
     def _resilient_llm_invoke(self, messages, **kwargs):
         """Invoke LLM with automatic retry, key rotation, and model fallback."""
         stream_callback = kwargs.pop("stream_callback", None)
@@ -126,20 +115,9 @@ class BaseAgent(ABC):
             )
         return resilient_chat_call(self.llm, messages, **kwargs)
 
-    @property
-    def neo4j_driver(self):
-        """Lazy initialization of Neo4j driver."""
-        if self._neo4j_driver is None:
-            self._neo4j_driver = GraphDatabase.driver(
-                self.config.neo4j_uri,
-                auth=(self.config.neo4j_user, self.config.neo4j_password),
-            )
-        return self._neo4j_driver
-
     def close(self):
-        """Close connections."""
-        if self._neo4j_driver:
-            self._neo4j_driver.close()
+        """Close resources held by the agent."""
+        pass
 
     @abstractmethod
     def run(self, claim: str, *args: Any, **kwargs: Any) -> Any:
@@ -166,6 +144,51 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------
     # Step repetition detection
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_garbage_text(text: str, min_words: int = 15) -> bool:
+        """Return ``True`` if *text* looks like degenerate LLM output.
+
+        Detects token-repetition loops (e.g. the model outputs the same
+        word hundreds of times) by checking:
+        1. **Unique-word ratio**: if unique_words / total_words < 0.15
+           the text is almost certainly a repetition loop.
+        2. **Dominant-token ratio**: if any single token accounts for
+           more than 40 % of all tokens, it's degenerate.
+        3. **Non-Latin dominance**: if more than 50 % of alphabetical
+           characters are outside the Latin/extended-Latin range
+           (e.g. CJK, Cyrillic) the model switched language randomly.
+
+        Short texts (< *min_words* words) are never flagged.
+        """
+        words = text.split()
+        n_words = len(words)
+        if n_words < min_words:
+            return False
+
+        # 1. Unique-word ratio
+        unique = set(w.lower() for w in words)
+        if len(unique) / n_words < 0.15:
+            return True
+
+        # 2. Dominant-token ratio
+        from collections import Counter
+
+        counts = Counter(w.lower() for w in words)
+        most_common_count = counts.most_common(1)[0][1]
+        if most_common_count / n_words > 0.40:
+            return True
+
+        # 3. Non-Latin dominance
+        alpha_chars = [c for c in text if c.isalpha()]
+        if alpha_chars:
+            non_latin = sum(
+                1 for c in alpha_chars if ord(c) > 0x024F  # beyond Latin Extended-B
+            )
+            if non_latin / len(alpha_chars) > 0.50:
+                return True
+
+        return False
 
     @staticmethod
     def _is_repetitive_step(

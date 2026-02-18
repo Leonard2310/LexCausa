@@ -42,7 +42,6 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     search_precedents_tool,
 )
 from config import settings  # noqa: E402
-from services.claim_classifier import ClaimClassifier  # noqa: E402
 from services.stance_classifier import StanceClassifier  # noqa: E402
 
 # Initialize Flask app
@@ -196,34 +195,11 @@ def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
 
 
 # Agenti globali (lazy initialization)
-classifier = None
 reasoner = None
 counter_reasoner = None
 polisher_evaluator = None
 stance_classifier = None
 router_agent = None
-
-# Carica la tassonomia una volta all'avvio
-TAXONOMY = None
-
-
-def load_taxonomy():
-    """Carica la tassonomia di causalità dal file JSON."""
-    global TAXONOMY
-    if TAXONOMY is None:
-        candidate_paths = [
-            settings.taxonomy_path,
-        ]
-
-        taxonomy_path = next((p for p in candidate_paths if p.exists()), None)
-
-        if taxonomy_path:
-            with open(taxonomy_path, "r", encoding="utf-8") as f:
-                TAXONOMY = json.load(f)
-        else:
-            print("⚠️ Tassonomia non trovata in nessun percorso noto")
-            TAXONOMY = {"tassonomia_causalita": []}
-    return TAXONOMY
 
 
 def get_pipeline():
@@ -343,16 +319,6 @@ def prepare_claim_context(
     precedents = reas.filter_irrelevant_precedents(claim, precedents)
 
     return statutes, precedents
-
-
-def get_classifier():
-    """Lazy load del classificatore."""
-    global classifier
-    if classifier is None:
-        print("🔧 Inizializzazione classificatore...")
-        classifier = ClaimClassifier()
-        print("✅ Classificatore pronto!")
-    return classifier
 
 
 def get_reasoner():

@@ -916,6 +916,15 @@ CRITICAL RULES:
                 )
                 break
 
+            # --- GARBAGE DETECTION (degenerate LLM output) ---
+            if self._is_garbage_text(step_text):
+                self._log(
+                    f"🗑️ Step {step_num}: garbage/degenerate output detected "
+                    f"(token repetition loop), discarding and stopping chain",
+                    "warning",
+                )
+                break
+
             # --- REPETITION DETECTION (programmatic) ---
             if steps and self._is_repetitive_step(step_text, steps):
                 self._log(
@@ -1367,24 +1376,6 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
                 f"- {t.get('id', 'TEST')} | {t.get('name', '')}: {t.get('description', '')}"
             )
         return "\n".join(lines)
-
-    def _anchor_norms_to_statutes(self, anchor_norms: dict) -> list[dict]:
-        """Convert anchor norms into statute-like dicts for prompt allow-list."""
-        if not anchor_norms:
-            return []
-        combined = anchor_norms.get("core_norms", []) + anchor_norms.get(
-            "accessory_norms", []
-        )
-        result = []
-        for n in combined:
-            # Support both old keys (riferimento/nota) and new keys (ref/role)
-            ref = n.get("ref") or n.get("riferimento", "")
-            role = n.get("role") or n.get("nota", "")
-            if ref:
-                result.append(
-                    self._norm_to_statute_dict({"riferimento": ref, "nota": role})
-                )
-        return result
 
     def _expand_with_cross_references(self, statutes: list[dict]) -> list[dict]:
         """

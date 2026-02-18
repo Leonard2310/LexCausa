@@ -286,24 +286,6 @@ class ClaimClassifier:
             libro_mappings=libro_mappings,
         )
 
-    def get_libro_filter(
-        self,
-        claim: str,
-        top_n: int = 1,
-    ) -> list[tuple[str, str]]:
-        """
-        Get libro filters for Neo4j vector search.
-
-        Args:
-            claim: The legal claim to classify.
-            top_n: Number of top categories to return.
-
-        Returns:
-            List of (codice, libro) tuples for filtering.
-        """
-        result = self.classify(claim)
-        return result.libro_mappings[:top_n]
-
 
 def main():
     """Interactive CLI for testing the classifier."""

@@ -103,7 +103,7 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │  📚 3964 articles (925 Penal Code + 3039 Civil Code)                    │
 │  ⚖️  9112 precedent chunks from 792 rulings (ITA-CaseHold)              │
-│  📊 768-dim Vector Indexes (Legal-BERT)                                 │
+│  📊 768-dim Vector Index (Legal-BERT) on statutes                       │
 │  🔗 Causality taxonomy (Material, Legal, Concurrent)                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -192,8 +192,8 @@ poetry run python src/db/db_orchestrator.py
 This will:
 - Create schema (indexes, constraints, graph structure)
 - Load Civil Code and Penal Code articles with embeddings
-- Load ITA-CaseHold precedents with summary embeddings
-- Wait for all vector indexes to come online
+- Load ITA-CaseHold precedents metadata (no embeddings)
+- Wait for indexes to come online (vector for statutes, fulltext for precedents)
 
 Use `--clean` for a full wipe and reload, or `--check` to inspect database status.
 
@@ -248,9 +248,7 @@ LexCausa/
 │   │   └── legal_search.py       # Legal search pipeline
 │   ├── db/                        # Database management
 │   │   ├── db_orchestrator.py    # Full DB lifecycle (clean/schema/load/verify)
-│   │   ├── data_loader.py        # Centralized data loading (CSV, parquet, embeddings)
-│   │   ├── neo4j_ingestion.py
-│   │   └── neo4j_schema.py
+│   │   └── data_loader.py        # Centralized data loading (CSV/parquet + statute embeddings)
 │   ├── data/                      # Data files
 │   │   ├── embeddings/           # Pre-computed embeddings (.npy)
 │   │   ├── precedents/           # ITA-CaseHold precedents (parquet)
@@ -447,7 +445,7 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Frontend Settings Panel: per-step model selection, temperature, max tokens, search params, AQA weights, chain min/max steps, attack parameters
 - [x] Per-claim pipeline logging (`logs/` directory)
 - [x] React frontend (Vite) with three tabs + ASPIC+ Metagraph + Attack Details + settings panel
-- [x] Precedent ingestion and vector search (ITA-CaseHold)
+- [x] Precedent ingestion and fulltext search (ITA-CaseHold)
 - [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
 
 ### 🚧 In Progress

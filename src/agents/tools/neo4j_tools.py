@@ -632,11 +632,3 @@ def search_precedents_tool(
 
     print(f"  ✅ Total precedents found: {len(results)} [KEYWORD + FULLTEXT]")
     return results
-
-
-def close_driver():
-    """Close the Neo4j driver."""
-    global _driver
-    if _driver:
-        _driver.close()
-        _driver = None

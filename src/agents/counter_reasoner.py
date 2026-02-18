@@ -816,6 +816,15 @@ CRITICAL RULES:
                 )
                 break
 
+            # --- GARBAGE DETECTION (degenerate LLM output) ---
+            if self._is_garbage_text(step_text):
+                self._log(
+                    f"🗑️ Counter-step {step_num}: garbage/degenerate output detected "
+                    f"(token repetition loop), discarding and stopping chain",
+                    "warning",
+                )
+                break
+
             # --- REPETITION DETECTION (programmatic) ---
             if steps and self._is_repetitive_step(step_text, steps):
                 self._log(
@@ -1101,101 +1110,6 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             f"{chain_section}"
         )
         return raw
-
-    def _build_counter_reasoning_prompt_with_context(
-        self,
-        claim: str,
-        routing_decision: RoutingDecision,
-        attack_selection: AttackSelection,
-        knowledge_base: str,
-        allowed_statutes: List[str],
-        allowed_precedents: List[str],
-    ) -> str:
-        """
-        Build the prompt for CounterReasoner with pre-retrieved context.
-        """
-        statutes_list = (
-            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
-        )
-        precedents_list = (
-            "\n".join(f"- {p}" for p in allowed_precedents)
-            or "- No precedents available"
-        )
-
-        attack_id = attack_selection.attack_id or "N/A"
-        attack_desc = attack_selection.description or "N/A"
-        pool = attack_selection.pool
-        pool_lines = "\n".join(f"- {a}" for a in pool) or "- No attack available"
-
-        return f"""Analyze the claim and generate an independent counter-argument that dismantles the thesis.
-
-CLAIM:
-"{claim}"
-
-ROUTING DECISION:
-- causal_type_id: {routing_decision.causal_type_id}
-- theory_id: {routing_decision.theory_id}
-
-COUNTER ATTACK FOCUS (chosen from config):
-- selected_attack_id: {attack_id}
-- description: {attack_desc}
-- candidate_pool:
-{pool_lines}
-
-=== KNOWLEDGE BASE (use ONLY these sources) ===
-{knowledge_base}
-=== END KNOWLEDGE BASE ===
-
-ALLOWED STATUTE REFERENCES (do not cite others):
-{statutes_list}
-
-ALLOWED PRECEDENT REFERENCES (do not cite others):
-{precedents_list}
-
-INSTRUCTIONS:
-1) Use selected_attack_id as the main lens to attack the causal link.
-2) Build one or more counter-arguments with EXACTLY this structure and these Italian headers:
-   **Premessa Alternativa**: (incompatible with the claim — write in prose, NO numbered lists)
-   **Norma**: (cite MULTIPLE relevant statutes from ALLOWED STATUTES, not just one;
-              if none apply, omit this section — use bullet points with "-" if listing multiple norms, NEVER numbered lists)
-   **Nesso Causale Alternativo**: (write in prose, NO numbered lists)
-   **Conclusione Contraria**: (write in prose, NO numbered lists)
-3) After the counter-arguments, you MUST add the following header and numbered chain.
-   This section is MANDATORY and must NEVER be omitted:
-
-   **Catena di ragionamento**:
-   1. [First reasoning step — cite the specific article(s) it relies on, e.g. Art. XX c.p.]
-   2. [Second reasoning step — cite the specific article(s)]
-   3. [Continue for each logical step...]
-
-   RULES for the numbered chain:
-   - Use EXACTLY the header "**Catena di ragionamento**:" before the numbered list.
-   - Each step MUST be on its own line, starting with "N. " (e.g. "1. ", "2. ", "3. ").
-   - Each step MUST reference at least one specific article (e.g. "Art. 40 c.p.").
-   - The chain must have AT LEAST 3 numbered steps.
-   - Do NOT mention the Reasoner.
-   - If you omit this section, your response is INVALID.
-
-FORMATTING RULE — CRITICAL:
-- Numbered lists ("1. ", "2. ", "3. ", etc.) are ONLY allowed inside the **Catena di ragionamento** section.
-- In ALL other sections (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria),
-  use ONLY prose text or bullet points with "-". NEVER use numbered lists outside the chain.
-
-IMPORTANT - NORM USAGE REQUIREMENTS:
-- You have {len(allowed_statutes)} statutes available. Cite EVERY article you deem pertinent
-  to dismantling the claim — do not artificially limit yourself to a fixed number.
-- Do NOT rely on a single norm for the entire counter-argument.
-- For each factual aspect you attack (e.g., causation, foreseeability, duty, mitigation),
-  identify the most specific applicable statute from the ALLOWED STATUTES list.
-- Quote the relevant text from each statute when available in the KNOWLEDGE BASE.
-- Anchor norms provide the framework, but integrate additional non-anchor statutes
-  from the knowledge base that strengthen your counter-argument on the specific facts.
-- COHERENCE RULE: Every norm you cite in the **Norma** section MUST appear in at least one
-  step of the numbered counter-reasoning chain, with an explanation of its specific role.
-  Do NOT list norms in **Norma** that you never use in the chain.
-
-CRITICAL: Do not invent sources, do not mention the Reasoner.
-MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT write in English. Every sentence, header, and explanation must be in Italian. Use EXACTLY the Italian headers shown above (Premessa Alternativa, Norma, Nesso Causale Alternativo, Conclusione Contraria)."""
 
     def _extract_arguments(self, response: str) -> List[CounterArgument]:
         """Estrae contro-argomenti strutturati dalla risposta."""

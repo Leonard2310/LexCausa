@@ -771,6 +771,9 @@ ANTI-CLAIM REQUIREMENTS for this step:
 5. CONNECT to the previous step: your step must start from where the last step ended.
    If step N-1 exposed flaw X, step N should use X to attack further.
 6. ALWAYS DISFAVOR THE CLAIM: interpret norms and facts in the way most unfavorable to the claimant.
+7. LOGICAL CONSISTENCY: NEVER contradict any previous accepted step.
+8. FACT LOCK: NEVER replace claim facts with their opposite. If the claim says facts are
+   "complex/contested", you cannot state they are "simple/uncontested" (and vice versa).
 {last_step_notice}
 
 RESPONSE FORMAT:
@@ -786,12 +789,14 @@ CRITICAL RULES:
 - NEVER argue in favor of the claim. You are the OPPOSITION.
 - Do NOT write a complete rebuttal. Write ONE building block of the counter-argument.
 - NEVER write anything that supports or validates the claim. Every sentence must ATTACK it.
+- NEVER contradict previous accepted steps. If you cannot add a coherent anti-claim step, output STEP: DONE.
 """
 
             self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
 
             step_text = ""
             last_candidate = ""
+            invalid_reason = "it partially supports the claim."
             for stance_try in range(1, self._max_stance_rewrites + 2):
                 prompt_for_try = (
                     step_prompt
@@ -799,6 +804,7 @@ CRITICAL RULES:
                     else self._build_stance_rewrite_prompt(
                         original_prompt=step_prompt,
                         invalid_step=last_candidate,
+                        invalid_reason=invalid_reason,
                     )
                 )
 
@@ -833,20 +839,35 @@ CRITICAL RULES:
                     break
 
                 if self._is_counter_step_consistent(last_candidate):
-                    step_text = last_candidate
-                    break
+                    is_compatible, compat_reason = (
+                        self._is_counter_step_compatible_with_history(
+                            candidate_step=last_candidate,
+                            previous_steps=steps,
+                            claim=claim,
+                        )
+                    )
+                    if is_compatible:
+                        step_text = last_candidate
+                        break
+                    invalid_reason = (
+                        "it contradicts previous accepted steps or claim facts "
+                        f"({compat_reason})"
+                    )
+                else:
+                    invalid_reason = "it partially supports the claim."
 
                 if stance_try <= self._max_stance_rewrites:
                     self._log(
-                        f"⚠️ Counter-step {step_num}: generated text supports the claim; "
-                        f"rewriting ({stance_try}/{self._max_stance_rewrites})",
+                        f"⚠️ Counter-step {step_num}: invalid step "
+                        f"({invalid_reason}); rewriting "
+                        f"({stance_try}/{self._max_stance_rewrites})",
                         "warning",
                     )
                     continue
 
                 self._log(
-                    f"⚠️ Counter-step {step_num}: could not enforce anti-claim stance "
-                    f"after {self._max_stance_rewrites + 1} attempts, stopping",
+                    f"⚠️ Counter-step {step_num}: could not enforce anti-claim and "
+                    f"consistency constraints after {self._max_stance_rewrites + 1} attempts, stopping",
                     "warning",
                 )
                 step_text = ""
@@ -1102,14 +1123,16 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         return should_continue
 
     def _build_stance_rewrite_prompt(
-        self, original_prompt: str, invalid_step: str
+        self, original_prompt: str, invalid_step: str, invalid_reason: str = ""
     ) -> str:
-        """Ask the model to rewrite a step that drifted toward pro-claim content."""
+        """Ask the model to rewrite a step that violates stance/consistency rules."""
+        reason_text = invalid_reason or "it partially supports the claim."
         return (
             f"{original_prompt}\n\n"
-            "YOUR PREVIOUS STEP WAS INVALID because it partially supports the claim.\n"
+            "YOUR PREVIOUS STEP WAS INVALID.\n"
+            f"REASON: {reason_text}\n"
             f'INVALID STEP:\n"{invalid_step}"\n\n'
-            "Rewrite the SAME legal point with STRICT anti-claim stance.\n"
+            "Rewrite the SAME legal point with STRICT anti-claim stance and full consistency.\n"
             "Do not add new facts. Do not balance pros and cons.\n"
             "The rewritten step must clearly weaken the claim.\n\n"
             "RESPONSE FORMAT:\n"
@@ -1143,7 +1166,9 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             r"\bdeve\s+essere\s+accolt",
             r"\brende\b.*\billegittim",
             r"\bdetermina\b.*\billegittimit",
+            r"\bincide\b.*\blegittimit",
             r"\bprovvedimento\b.*\billegittim",
+            r"\bcomunicazione\b.*\b(?:necessaria|obbligatoria)\b",
             r"\bannullabil",
         ]
 
@@ -1176,6 +1201,130 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         if pro_score > anti_score + 1:
             return False
         return True
+
+    @staticmethod
+    def _extract_step_signals(text: str) -> Dict[str, int]:
+        """
+        Extract coarse factual/legal polarity signals from a step.
+
+        Signals are used to reject steps that contradict already accepted
+        counter-steps or invert explicit claim facts.
+        """
+        t = re.sub(r"\s+", " ", (text or "").strip().lower())
+        if not t:
+            return {
+                "complexity": 0,
+                "contestation": 0,
+                "communication_need": 0,
+                "legitimacy_effect": 0,
+            }
+
+        def has(patterns: List[str]) -> bool:
+            return any(re.search(p, t) for p in patterns)
+
+        complexity = 0
+        if has([r"\bcompless", r"\barticolat", r"\bnon\s+lineare"]):
+            complexity = 1
+        elif has([r"\bsemplic", r"\blineare", r"\bchiar[ao]\b"]):
+            complexity = -1
+
+        contestation = 0
+        if has([r"\bcontestat", r"\bcontrovers", r"\bdisputat"]):
+            if not has([r"\bnon\s+contestat", r"\bincontestat"]):
+                contestation = 1
+        elif has([r"\bnon\s+contestat", r"\bincontestat", r"\bpacific"]):
+            contestation = -1
+
+        communication_need = 0
+        if has(
+            [
+                r"\bcomunicazione\b.*\b(?:necessaria|obbligatoria|imposta)\b",
+                r"\bart\.\s*7\b.*\bimpone\b",
+            ]
+        ):
+            communication_need = 1
+        if has(
+            [
+                r"\bcomunicazione\b.*\bnon\s+(?:necessaria|obbligatoria)\b",
+                r"\bmancata\s+comunicazione\b.*\bnon\s+incide\b",
+            ]
+        ):
+            communication_need = -1
+
+        legitimacy_effect = 0
+        if has(
+            [
+                r"\bincide\b.*\blegittimit",
+                r"\bdetermina\b.*\billegittimit",
+                r"\brende\b.*\billegittim",
+                r"\bprovvedimento\b.*\billegittim",
+            ]
+        ) and not has(
+            [
+                r"\bnon\s+incide\b.*\blegittimit",
+                r"\bnon\s+determina\b.*\billegittimit",
+                r"\bnon\s+rende\b.*\billegittim",
+                r"\bnon\s+(?:e|è)?\s*annullabil",
+            ]
+        ):
+            legitimacy_effect = 1
+        elif has(
+            [
+                r"\bnon\s+incide\b.*\blegittimit",
+                r"\bnon\s+determina\b.*\billegittimit",
+                r"\bnon\s+rende\b.*\billegittim",
+                r"\bnon\s+(?:e|è)?\s*annullabil",
+            ]
+        ):
+            legitimacy_effect = -1
+
+        return {
+            "complexity": complexity,
+            "contestation": contestation,
+            "communication_need": communication_need,
+            "legitimacy_effect": legitimacy_effect,
+        }
+
+    def _is_counter_step_compatible_with_history(
+        self,
+        candidate_step: str,
+        previous_steps: List[str],
+        claim: str,
+    ) -> tuple[bool, str]:
+        """
+        Check whether candidate step is logically compatible with history and claim facts.
+        """
+        candidate = self._extract_step_signals(candidate_step)
+        claim_signals = self._extract_step_signals(claim)
+
+        # Hard lock on explicit claim facts for complexity/contestation.
+        for key in ("complexity", "contestation"):
+            c_sig = claim_signals.get(key, 0)
+            s_sig = candidate.get(key, 0)
+            if c_sig and s_sig and c_sig != s_sig:
+                return False, f"candidate flips claim fact '{key}'"
+
+        if not previous_steps:
+            return True, ""
+
+        history_sum: Dict[str, int] = {
+            "complexity": 0,
+            "contestation": 0,
+            "communication_need": 0,
+            "legitimacy_effect": 0,
+        }
+        for step in previous_steps:
+            sig = self._extract_step_signals(step)
+            for key, value in sig.items():
+                history_sum[key] += value
+
+        for key in history_sum:
+            h_sig = history_sum.get(key, 0)
+            s_sig = candidate.get(key, 0)
+            if h_sig and s_sig and (h_sig * s_sig < 0):
+                return False, f"candidate contradicts chain on '{key}'"
+
+        return True, ""
 
     def _derive_counter_conclusion_ground(self, steps: List[str]) -> str:
         """Pick a final anti-claim rationale from the last stance-consistent step."""

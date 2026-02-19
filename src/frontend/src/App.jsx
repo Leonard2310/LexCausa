@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords, Download } from 'lucide-react';
 import './App.css';
 import AspicMetagraph from './AspicMetagraph';
 import AttackTextDetails from './AttackTextDetails';
@@ -151,6 +151,9 @@ export default function App() {
   const messagesAreaRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef(null);
+  const currentPipelinePdfRef = useRef(null);
+  const historyPipelinePdfRefs = useRef({});
+  const [exportingPdfKey, setExportingPdfKey] = useState(null);
 
   const isNearBottom = () => {
     const el = messagesAreaRef.current;
@@ -312,10 +315,20 @@ export default function App() {
     if (!input.trim() || isLoading) return;
 
     const claim = input.trim();
+    const isCompletedRun = (run) => Boolean(
+      run
+      && !run.error
+      && run.evaluation
+      && (
+        run._stream?.phases?.final_evaluation === 'done'
+        || run.evaluation?.aqa_report
+        || run.evaluation?.summary
+      ),
+    );
     setInput('');
     shouldAutoScrollRef.current = true;
     setIsLoading(true);
-    if (pipelineResult) {
+    if (isCompletedRun(pipelineResult)) {
       setPipelineHistory((prev) => [...prev, pipelineResult].slice(-10));
     }
     setPipelineMessages((prev) => [...prev, { role: 'user', content: claim }]);
@@ -467,35 +480,37 @@ export default function App() {
       });
     };
 
-    try {
+    const requestBody = JSON.stringify({
+      claim,
+      include_precedents: pipelineSettings.include_precedents,
+      max_statutes: pipelineSettings.search_top_k_default,
+      max_precedents: pipelineSettings.precedents_limit_default,
+      settings: {
+        reasoner_model: pipelineSettings.reasoner_model,
+        counter_model: pipelineSettings.counter_model,
+        llm_temperature: pipelineSettings.llm_temperature,
+        llm_max_tokens: pipelineSettings.llm_max_tokens,
+        search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
+        search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
+        chain_min_steps: pipelineSettings.chain_min_steps,
+        chain_max_steps: pipelineSettings.chain_max_steps,
+        aqa_alpha: pipelineSettings.aqa_alpha,
+        aqa_beta: pipelineSettings.aqa_beta,
+        aqa_gamma: pipelineSettings.aqa_gamma,
+        aqa_min_semantic_overlap: pipelineSettings.aqa_min_semantic_overlap,
+        aqa_min_strength_ratio: pipelineSettings.aqa_min_strength_ratio,
+        aqa_damage_factor: pipelineSettings.aqa_damage_factor,
+        aqa_allow_factual_attacks: pipelineSettings.aqa_allow_factual_attacks,
+        aqa_allow_cross_codice: pipelineSettings.aqa_allow_cross_codice,
+        enable_causality: pipelineSettings.enable_causality,
+      },
+    });
+
+    const runPipelineStreamAttempt = async () => {
       const response = await fetch(`${API_BASE}/pipeline/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          claim,
-          include_precedents: pipelineSettings.include_precedents,
-          max_statutes: pipelineSettings.search_top_k_default,
-          max_precedents: pipelineSettings.precedents_limit_default,
-          settings: {
-            reasoner_model: pipelineSettings.reasoner_model,
-            counter_model: pipelineSettings.counter_model,
-            llm_temperature: pipelineSettings.llm_temperature,
-            llm_max_tokens: pipelineSettings.llm_max_tokens,
-            search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
-            search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
-            chain_min_steps: pipelineSettings.chain_min_steps,
-            chain_max_steps: pipelineSettings.chain_max_steps,
-            aqa_alpha: pipelineSettings.aqa_alpha,
-            aqa_beta: pipelineSettings.aqa_beta,
-            aqa_gamma: pipelineSettings.aqa_gamma,
-            aqa_min_semantic_overlap: pipelineSettings.aqa_min_semantic_overlap,
-            aqa_min_strength_ratio: pipelineSettings.aqa_min_strength_ratio,
-            aqa_damage_factor: pipelineSettings.aqa_damage_factor,
-            aqa_allow_factual_attacks: pipelineSettings.aqa_allow_factual_attacks,
-            aqa_allow_cross_codice: pipelineSettings.aqa_allow_cross_codice,
-            enable_causality: pipelineSettings.enable_causality,
-          },
-        }),
+        body: requestBody,
       });
 
       if (!response.ok) {
@@ -546,6 +561,10 @@ export default function App() {
           try {
             payload = JSON.parse(dataText);
           } catch (_) {
+            continue;
+          }
+
+          if (eventName === 'heartbeat') {
             continue;
           }
 
@@ -844,6 +863,58 @@ export default function App() {
       if (!finalPayload) {
         throw new Error('Streaming interrotto prima del risultato finale.');
       }
+      return finalPayload;
+    };
+
+    const isRetriableStreamError = (message = '') => {
+      const text = String(message || '').toLowerCase();
+      return (
+        text.includes('failed to fetch')
+        || text.includes('networkerror')
+        || text.includes('network error')
+        || text.includes('load failed')
+        || text.includes('aborted')
+        || text.includes('already running')
+        || text.includes('streaming interrotto')
+      );
+    };
+
+    try {
+      const maxRetries = 2;
+      let finalPayload = null;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        if (attempt > 0) {
+          setPipelineResult(createLivePipelineResult(claim));
+          setPhaseStatus(
+            'context_setup',
+            'active',
+            `Riconnessione stream (${attempt}/${maxRetries})...`,
+          );
+          setPhaseProgress('context_setup', 6);
+        }
+        try {
+          finalPayload = await runPipelineStreamAttempt();
+          break;
+        } catch (attemptError) {
+          const errorMessage = attemptError?.message || 'Errore sconosciuto';
+          if (attempt < maxRetries && isRetriableStreamError(errorMessage)) {
+            const waitMs = 1200 * (attempt + 1);
+            setPhaseStatus('final_evaluation', 'active');
+            setPhaseDetail(
+              'final_evaluation',
+              `Connessione instabile, nuovo tentativo tra ${Math.ceil(waitMs / 1000)}s...`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            continue;
+          }
+          throw attemptError;
+        }
+      }
+
+      if (!finalPayload) {
+        throw new Error('Streaming interrotto prima del risultato finale.');
+      }
     } catch (error) {
       console.error('Errore pipeline:', error);
       const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
@@ -886,6 +957,152 @@ export default function App() {
         return 'Inserisci un claim per la pipeline completa...';
       default:
         return 'Scrivi un messaggio...';
+    }
+  };
+
+  const sanitizeFilename = (value = '') => {
+    const normalized = String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80);
+    return normalized || 'claim';
+  };
+
+  const buildPipelinePdfFilename = (claim = '', prefix = 'pipeline') => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `lexcausa_${prefix}_${sanitizeFilename(claim)}_${timestamp}.pdf`;
+  };
+
+  const downloadPipelineCardPdf = async ({
+    targetElement,
+    claim = '',
+    key = 'pipeline',
+    prefix = 'pipeline',
+    openDetails = false,
+  }) => {
+    if (!targetElement || exportingPdfKey) return;
+    setExportingPdfKey(key);
+    let sandbox = null;
+    try {
+      const measuredWidth = Math.ceil(targetElement.getBoundingClientRect().width || 0);
+      const sourceWidth = Math.max(measuredWidth || targetElement.clientWidth || 0, 860);
+      sandbox = document.createElement('div');
+      sandbox.style.position = 'fixed';
+      sandbox.style.left = '-100000px';
+      sandbox.style.top = '0';
+      sandbox.style.width = `${sourceWidth}px`;
+      sandbox.style.background = '#ffffff';
+      sandbox.style.zIndex = '-1';
+
+      const cloned = targetElement.cloneNode(true);
+      cloned.style.width = `${sourceWidth}px`;
+      cloned.style.maxWidth = `${sourceWidth}px`;
+      cloned.style.boxSizing = 'border-box';
+      cloned.classList.add('pdf-export-root');
+
+      // Hide export controls from PDF copy
+      cloned.querySelectorAll('[data-pdf-ignore="true"]').forEach((node) => node.remove());
+
+      // Open only top-level archived run details (avoid huge nested blocks
+      // that can exceed canvas limits and generate blank PDFs).
+      if (openDetails) {
+        cloned.querySelectorAll('details.history-run-toggle').forEach((details) => {
+          details.open = true;
+        });
+      }
+
+      // Expand scroll/overflow blocks to avoid clipping and overlapping on page breaks.
+      const expandSelector = [
+        '.raw-response',
+        '.code-block',
+        '.aspic-full-pre',
+        '.citation-checks-list',
+        '.aqa-link-list',
+        '.metagraph-canvas-wrap',
+      ].join(',');
+      cloned.querySelectorAll(expandSelector).forEach((node) => {
+        node.style.maxHeight = 'none';
+        node.style.height = 'auto';
+        node.style.overflow = 'visible';
+      });
+
+      // Metagraph: capture full width/height, not only the visible scrolled viewport.
+      cloned.querySelectorAll('.metagraph-canvas-wrap').forEach((wrap) => {
+        const fullW = Math.max(wrap.scrollWidth, wrap.clientWidth);
+        const fullH = Math.max(wrap.scrollHeight, wrap.clientHeight);
+        wrap.style.width = '100%';
+        wrap.style.minWidth = '0';
+        wrap.style.maxWidth = '100%';
+        wrap.style.maxHeight = 'none';
+        wrap.style.overflow = 'visible';
+        wrap.style.backgroundColor = '#ffffff';
+        wrap.style.backgroundImage = 'none';
+
+        const svg = wrap.querySelector('svg');
+        if (svg) {
+          svg.setAttribute('viewBox', `0 0 ${fullW} ${fullH}`);
+          svg.setAttribute('width', `${fullW}`);
+          svg.setAttribute('height', `${fullH}`);
+          svg.style.width = '100%';
+          svg.style.maxWidth = '100%';
+          svg.style.height = 'auto';
+        }
+      });
+
+      sandbox.appendChild(cloned);
+      document.body.appendChild(sandbox);
+
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      const exportWidth = sourceWidth;
+      const exportHeight = Math.max(cloned.scrollHeight, cloned.clientHeight);
+      const maxCanvasPixels = 14000;
+      const canvasScale = Math.max(
+        0.35,
+        Math.min(1.6, maxCanvasPixels / Math.max(exportHeight, exportWidth, 1)),
+      );
+      const html2pdfModule = await import('html2pdf.js/dist/html2pdf.bundle.min.js');
+      const html2pdf = html2pdfModule.default || html2pdfModule;
+
+      await html2pdf()
+        .set({
+          margin: [8, 8, 8, 8],
+          filename: buildPipelinePdfFilename(claim, prefix),
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: {
+            scale: canvasScale,
+            useCORS: true,
+            backgroundColor: '#ffffff',
+            windowWidth: exportWidth,
+            windowHeight: Math.min(exportHeight, 5000),
+            scrollX: 0,
+            scrollY: 0,
+            ignoreElements: (element) => element?.dataset?.pdfIgnore === 'true',
+          },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: {
+            mode: ['css', 'legacy'],
+            avoid: [
+              '.result-section',
+              '.pipeline-section',
+              '.subsection',
+              '.metagraph-wrapper',
+              '.summary-card',
+              '.citation-check-item',
+            ],
+          },
+        })
+        .from(cloned)
+        .save();
+    } catch (error) {
+      console.error('Errore durante export PDF:', error);
+    } finally {
+      if (sandbox && sandbox.parentNode) {
+        sandbox.parentNode.removeChild(sandbox);
+      }
+      setExportingPdfKey(null);
     }
   };
 
@@ -2227,8 +2444,37 @@ export default function App() {
                         <p className="message-text">{run?.claim || '—'}</p>
                       </div>
                     </div>
-                    <div className="result-card archived-pipeline-card">
-                      <details className="ir-toggle">
+                    <div
+                      className="result-card archived-pipeline-card"
+                      ref={(el) => {
+                        if (el) historyPipelinePdfRefs.current[idx] = el;
+                        else delete historyPipelinePdfRefs.current[idx];
+                      }}
+                    >
+                      <div className="result-card-toolbar" data-pdf-ignore="true">
+                        <button
+                          type="button"
+                          className="pdf-download-btn"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            downloadPipelineCardPdf({
+                              targetElement: historyPipelinePdfRefs.current[idx],
+                              claim: run?.claim || '',
+                              key: `history-${idx}`,
+                              prefix: `pipeline_precedente_${idx + 1}`,
+                              openDetails: true,
+                            });
+                          }}
+                          disabled={exportingPdfKey !== null}
+                        >
+                          {exportingPdfKey === `history-${idx}`
+                            ? <Loader2 size={14} className="loading-spinner" />
+                            : <Download size={14} />}
+                          <span>{exportingPdfKey === `history-${idx}` ? 'Esporto PDF...' : 'Scarica PDF'}</span>
+                        </button>
+                      </div>
+                      <details className="ir-toggle history-run-toggle">
                         <summary>
                           Risultato Pipeline Precedente #{idx + 1}
                         </summary>
@@ -2355,7 +2601,28 @@ export default function App() {
                   <p className="message-text">{pipelineResult.claim}</p>
                 </div>
               </div>
-              <div className="result-card">
+              <div className="result-card" ref={currentPipelinePdfRef}>
+              <div className="result-card-toolbar" data-pdf-ignore="true">
+                <button
+                  type="button"
+                  className="pdf-download-btn"
+                  onClick={() => {
+                    downloadPipelineCardPdf({
+                      targetElement: currentPipelinePdfRef.current,
+                      claim: pipelineResult?.claim || '',
+                      key: 'current',
+                      prefix: 'pipeline_completa',
+                      openDetails: false,
+                    });
+                  }}
+                  disabled={exportingPdfKey !== null}
+                >
+                  {exportingPdfKey === 'current'
+                    ? <Loader2 size={14} className="loading-spinner" />
+                    : <Download size={14} />}
+                  <span>{exportingPdfKey === 'current' ? 'Esporto PDF...' : 'Scarica PDF'}</span>
+                </button>
+              </div>
               <h3 className="result-title">
                 <FileText size={20} />
                 Risultato Pipeline Completa
@@ -2813,11 +3080,6 @@ export default function App() {
                                 pipelineResult.evaluation.repaired_reasoner_aspic_ir,
                                 true,
                               )}
-                              {pipelineResult.evaluation?.repaired_aspic_files?.reasoner?.relative_path && (
-                                <p className="aspic-file-path">
-                                  File JSON: <code>{pipelineResult.evaluation.repaired_aspic_files.reasoner.relative_path}</code>
-                                </p>
-                              )}
                             </>
                           )}
                         </div>
@@ -2842,11 +3104,6 @@ export default function App() {
                                 'ASPIC+ IR Riparato (Counter-Reasoner)',
                                 pipelineResult.evaluation.repaired_counter_aspic_ir,
                                 true,
-                              )}
-                              {pipelineResult.evaluation?.repaired_aspic_files?.counter_reasoner?.relative_path && (
-                                <p className="aspic-file-path">
-                                  File JSON: <code>{pipelineResult.evaluation.repaired_aspic_files.counter_reasoner.relative_path}</code>
-                                </p>
                               )}
                             </>
                           )}
@@ -3060,11 +3317,6 @@ export default function App() {
                             <summary>Dettagli AQA completi</summary>
                             {renderAqaFullView(aqaReport)}
                           </details>
-                          {pipelineResult.evaluation?.aqa_report_file?.relative_path && (
-                            <p className="aqa-file-path">
-                              File JSON: <code>{pipelineResult.evaluation.aqa_report_file.relative_path}</code>
-                            </p>
-                          )}
                         </>
                       ) : (
                         <div className="aqa-disabled">AQA disabilitata</div>

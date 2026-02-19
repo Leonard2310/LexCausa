@@ -10,12 +10,13 @@ import json
 import os
 import sys
 import threading
+import time
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
@@ -1097,7 +1098,12 @@ def pipeline_stream():
     @stream_with_context
     def generate():
         while True:
-            item = event_queue.get()
+            try:
+                item = event_queue.get(timeout=12)
+            except Empty:
+                # Keep proxies/tunnels alive during long LLM phases with no tokens.
+                yield _sse_event("heartbeat", {"ts": int(time.time())})
+                continue
             if item is sentinel:
                 break
             event, payload = item

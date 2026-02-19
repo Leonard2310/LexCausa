@@ -1,4 +1,22 @@
 repos:
+  - repo: local
+    hooks:
+      - id: ruff-unused-check
+        name: ruff (unused imports/vars + undefined names)
+        entry: poetry run ruff check --select F401,F841,F821 src
+        language: system
+        pass_filenames: false
+      - id: vulture-dead-code
+        name: vulture (dead code scan)
+        entry: poetry run vulture src --min-confidence 80 --exclude "src/frontend/node_modules,notebooks,logs" --ignore-decorators "@app.get,@app.post,@app.put,@app.patch,@app.delete,@app.options,@app.middleware,@app.on_event,@app.exception_handler"
+        language: system
+        pass_filenames: false
+      - id: frontend-eslint
+        name: eslint frontend (unused vars/components)
+        entry: bash -c 'cd src/frontend && npm run lint'
+        language: system
+        pass_filenames: false
+        files: ^src/frontend/
   - repo: https://github.com/psf/black
     rev: 24.4.2
     hooks:

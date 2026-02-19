@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 
 /* ================================================================
    ASPIC+ Metagraph — SVG visualisation of cross-attack results.
@@ -51,6 +51,7 @@ const PREC_NODE_W = 200;
 const PREC_NODE_H = 70;
 const PREC_GAP_X = 30;
 const PREC_GAP_Y = 24;
+const EMPTY_LINKS = Object.freeze([]);
 
 // ---- small helpers ----
 const pct = (v) => `${((v ?? 0) * 100).toFixed(0)}%`;
@@ -423,9 +424,16 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [hasManualViewport, setHasManualViewport] = useState(false);
 
-  const proLinks = aqaReport?.links?.pro ?? [];
-  const contraLinks = aqaReport?.links?.contra ?? [];
-  const chainScores = aqaReport?.chain_scores ?? {};
+  const proLinksRaw = aqaReport?.links?.pro;
+  const contraLinksRaw = aqaReport?.links?.contra;
+  const proLinks = useMemo(
+    () => (Array.isArray(proLinksRaw) ? proLinksRaw : EMPTY_LINKS),
+    [proLinksRaw],
+  );
+  const contraLinks = useMemo(
+    () => (Array.isArray(contraLinksRaw) ? contraLinksRaw : EMPTY_LINKS),
+    [contraLinksRaw],
+  );
   const netPlaus = aqaReport?.net_plausibility ?? {};
 
   // Build precedent nodes with positions and connections

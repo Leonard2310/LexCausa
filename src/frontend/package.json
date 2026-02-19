@@ -10,6 +10,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "html2pdf.js": "^0.14.0",
     "lucide-react": "^0.460.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

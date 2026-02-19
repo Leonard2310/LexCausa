@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 
 /**
  * AttackTextDetails – shows completed cross-attacks with full link text.
@@ -66,11 +66,6 @@ export default function AttackTextDetails({ aqaReport }) {
     const r = (role || '').toLowerCase();
     if (r === 'support' || r === 'pro') return 'atk-role-pro';
     return 'atk-role-contra';
-  };
-
-  const truncate = (text, max = 200) => {
-    if (!text) return '—';
-    return text.length > max ? text.slice(0, max) + '…' : text;
   };
 
   const toggle = (idx) => setExpandedIdx(expandedIdx === idx ? null : idx);

@@ -28,7 +28,7 @@
 - **Stance Classifier (NLI)**: Classifies statutes and precedents as SUPPORT, AGAINST, or NEUTRAL relative to the claim using NLI-style prompting
 - **Iterative Reasoning Chain Generation**: Reasoner and Counter-Reasoner build chains step-by-step with dedicated LLM calls; the LLM autonomously decides when to conclude, bounded by configurable min/max step limits and a separate EVALUATION phase
 - **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations
-- **Counter-Reasoner Agent**: Generates independent counter-arguments using the causality taxonomy, identifying attacking causalities and building attack reasoning chains with explicit precedent citation
+- **Counter-Reasoner Agent**: Generates independent counter-arguments using the causality taxonomy, identifying attacking causalities and building attack reasoning chains with explicit precedent citation, step-to-step logical consistency checks, and claim-fact lock (no inversion of explicit facts)
 - **Repetition Detection**: Jaccard similarity-based detection (threshold 0.70) prevents duplicate reasoning steps across the chain
 - **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, and verdict generation
 - **Consistency Checker**: Verifies statute and precedent citations against Neo4j KB, classifies articles as core/peripheral, repairs mismatches via LLM-constrained rewriting (with verbatim quote validation), and drops unreliable citations

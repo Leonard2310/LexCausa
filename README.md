@@ -19,8 +19,8 @@
 
 ## 🎯 Features
 
-- **Legal Claim Classification**: Automatic claim classification and routing to the correct book of the Civil/Penal Code via LLM
-- **Domain Router**: Lightweight pre-routing agent that classifies claims as CIVILE, PENALE, or ENTRAMBI
+- **Legal Claim Classification**: Automatic claim classification and routing for Civil, Penal, and Administrative law via LLM
+- **Domain Router**: Lightweight pre-routing agent that classifies claims as CIVILE, PENALE, AMMINISTRATIVO, or ENTRAMBI
 - **Semantic Search**: Vector search on 3900+ articles using Legal-BERT, with unified and configurable pipeline
 - **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
 - **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
@@ -44,6 +44,7 @@
 - **Frontend Settings Panel**: Collapsible panel to configure per-step LLM model, temperature, max tokens, search parameters, AQA weights, chain min/max steps, and attack parameters — without touching code
 - **Per-Claim Pipeline Logging**: Every pipeline run is logged to `logs/<timestamp>_<slug>.log` for full auditability
 - **React Frontend**: Modern three-tab interface (Search, Reasoning, Full Pipeline) with ASPIC+ Metagraph visualization on Vite + React 18
+- **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation, and live evaluation/AQA status updates
 
 
 
@@ -101,7 +102,8 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                   Neo4j Knowledge Base + Taxonomy                       │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  📚 3964 articles (925 Penal Code + 3039 Civil Code)                    │
+│  📚 Italian statutes KB: Civil Code + Penal Code + Administrative Law    │
+│     (L. 7 agosto 1990, n. 241)                                           │
 │  ⚖️  9112 precedent chunks from 792 rulings (ITA-CaseHold)              │
 │  📊 768-dim Vector Index (Legal-BERT) on statutes                       │
 │  🔗 Causality taxonomy (Material, Legal, Concurrent)                    │
@@ -191,7 +193,7 @@ poetry run python src/db/db_orchestrator.py
 
 This will:
 - Create schema (indexes, constraints, graph structure)
-- Load Civil Code and Penal Code articles with embeddings
+- Load Civil Code, Penal Code, and Administrative Law (L. 241/1990) articles with embeddings
 - Load ITA-CaseHold precedents metadata (no embeddings)
 - Wait for indexes to come online (vector for statutes, fulltext for precedents)
 
@@ -252,7 +254,7 @@ LexCausa/
 │   ├── data/                      # Data files
 │   │   ├── embeddings/           # Pre-computed embeddings (.npy)
 │   │   ├── precedents/           # ITA-CaseHold precedents (parquet)
-│   │   └── statutes/              # Civil + Penal Code CSVs
+│   │   └── statutes/              # Civil + Penal + Administrative law CSVs
 │   └── frontend/                  # React frontend (Vite + React 18)
 │       └── src/
 │           ├── App.jsx            # Main app with three tabs + settings
@@ -447,9 +449,9 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] React frontend (Vite) with three tabs + ASPIC+ Metagraph + Attack Details + settings panel
 - [x] Precedent ingestion and fulltext search (ITA-CaseHold)
 - [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
+- [x] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)
 
 ### 🚧 In Progress
-- [ ] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)
 - [ ] Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
 
 ### 📋 Planned

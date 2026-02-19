@@ -414,12 +414,14 @@ function AttackDetailPanel({ link, onClose }) {
 // ---- MAIN COMPONENT ----
 export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
   const svgRef = useRef(null);
+  const canvasWrapRef = useRef(null);
   const [selectedLink, setSelectedLink] = useState(null);
   const [selectedPrec, setSelectedPrec] = useState(null);
   const [zoom, setZoom] = useState(0.85);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const [hasManualViewport, setHasManualViewport] = useState(false);
 
   const proLinks = aqaReport?.links?.pro ?? [];
   const contraLinks = aqaReport?.links?.contra ?? [];
@@ -635,19 +637,100 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
     return edges;
   }, [proLinks, contraLinks]);
 
-  // SVG dimensions (account for precedent nodes on sides)
-  const maxRows = Math.max(proLinks.length, contraLinks.length, 1);
-  const precExtraLeft = precNodes.some((p) => p._isPro) ? PREC_NODE_W + PREC_GAP_X + 20 : 0;
-  const precExtraRight = precNodes.some((p) => !p._isPro) ? PREC_NODE_W + PREC_GAP_X + 20 : 0;
-  const svgW = PAD_X * 2 + NODE_W * 2 + COL_GAP + precExtraLeft + precExtraRight;
-  const precMaxY = precNodes.length > 0 ? Math.max(...precNodes.map((p) => p._y + PREC_NODE_H)) : 0;
-  const svgH = PAD_Y * 2 + Math.max(maxRows * (NODE_H + V_GAP), precMaxY - PAD_Y) + 80;
+  // Graph bounds + viewport dimensions (robust centering/fit on all layouts)
+  const {
+    svgW,
+    svgH,
+    baseOffsetX,
+    baseOffsetY,
+    summaryY,
+    summaryCenterX,
+  } = useMemo(() => {
+    const proLeft = nodeX(0);
+    const proRight = nodeX(0) + NODE_W;
+    const contraLeft = nodeX(1);
+    const contraRight = nodeX(1) + NODE_W;
+
+    const proBottom = proLinks.length > 0
+      ? nodeY(proLinks.length - 1) + NODE_H
+      : PAD_Y + NODE_H;
+    const contraBottom = contraLinks.length > 0
+      ? nodeY(contraLinks.length - 1) + NODE_H
+      : PAD_Y + NODE_H;
+    const chainBottom = Math.max(proBottom, contraBottom);
+
+    const precMinX = precNodes.length > 0
+      ? Math.min(...precNodes.map((p) => p._x))
+      : Math.min(proLeft, contraLeft);
+    const precMaxX = precNodes.length > 0
+      ? Math.max(...precNodes.map((p) => p._x + PREC_NODE_W))
+      : Math.max(proRight, contraRight);
+    const precMinY = precNodes.length > 0
+      ? Math.min(...precNodes.map((p) => p._y))
+      : PAD_Y;
+    const precMaxY = precNodes.length > 0
+      ? Math.max(...precNodes.map((p) => p._y + PREC_NODE_H))
+      : chainBottom;
+
+    const graphMinX = Math.min(proLeft, contraLeft, precMinX);
+    const graphMaxX = Math.max(proRight, contraRight, precMaxX);
+    const headerTop = PAD_Y - 32;
+    const nextSummaryY = Math.max(chainBottom, precMaxY) + 52;
+    const graphMinY = Math.min(headerTop, precMinY);
+    const graphMaxY = Math.max(chainBottom, precMaxY, nextSummaryY + 24);
+
+    const viewPadX = 36;
+    const viewPadY = 28;
+    return {
+      svgW: Math.ceil(graphMaxX - graphMinX + viewPadX * 2),
+      svgH: Math.ceil(graphMaxY - graphMinY + viewPadY * 2),
+      baseOffsetX: -graphMinX + viewPadX,
+      baseOffsetY: -graphMinY + viewPadY,
+      summaryY: nextSummaryY,
+      summaryCenterX: (graphMinX + graphMaxX) / 2,
+    };
+  }, [proLinks, contraLinks, precNodes]);
+
+  const viewSignature = useMemo(
+    () => [
+      proLinks.map((l) => l.link_id).join('|'),
+      contraLinks.map((l) => l.link_id).join('|'),
+      precNodes.map((p) => String(p.precedent_id || p.id || '')).join('|'),
+    ].join('::'),
+    [proLinks, contraLinks, precNodes],
+  );
 
   // Zoom handler
   const handleWheel = useCallback((e) => {
     e.preventDefault();
+    setHasManualViewport(true);
     setZoom((z) => Math.max(0.4, Math.min(2, z - e.deltaY * 0.001)));
   }, []);
+
+  useEffect(() => {
+    // New result/layout -> re-enable auto-fit once.
+    setHasManualViewport(false);
+  }, [viewSignature]);
+
+  useEffect(() => {
+    if (hasManualViewport) return;
+    const wrapEl = canvasWrapRef.current;
+    if (!wrapEl) return;
+
+    const viewportW = Math.max(320, wrapEl.clientWidth || svgW);
+    const viewportH = Math.max(300, wrapEl.clientHeight || 500);
+    const fitX = (viewportW - 24) / svgW;
+    const fitY = (viewportH - 24) / svgH;
+    const nextZoom = Math.max(0.45, Math.min(1, fitX, fitY));
+
+    const scaledW = svgW * nextZoom;
+    const scaledH = svgH * nextZoom;
+    const centeredPanX = scaledW < viewportW ? (viewportW - scaledW) / 2 : 0;
+    const centeredPanY = scaledH < viewportH ? (viewportH - scaledH) / 2 : 0;
+
+    setZoom(nextZoom);
+    setPan({ x: centeredPanX, y: centeredPanY });
+  }, [hasManualViewport, svgW, svgH]);
 
   useEffect(() => {
     const svgEl = svgRef.current;
@@ -659,6 +742,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
 
   const handleMouseDown = (e) => {
     if (e.button === 0 && e.target.tagName === 'svg') {
+      setHasManualViewport(true);
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     }
@@ -732,7 +816,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
       </div>
 
       {/* SVG canvas */}
-      <div className="metagraph-canvas-wrap">
+      <div className="metagraph-canvas-wrap" ref={canvasWrapRef}>
         <svg
           ref={svgRef}
           width="100%"
@@ -809,7 +893,8 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
             </marker>
           </defs>
 
-          <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+          <g transform={`translate(${pan.x},${pan.y})`}>
+            <g transform={`scale(${zoom}) translate(${baseOffsetX},${baseOffsetY})`}>
             {/* Column headers */}
             <text
               x={nodeX(0) + NODE_W / 2}
@@ -935,8 +1020,8 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
 
             {/* Bottom summary */}
             <text
-              x={svgW / 2}
-              y={nodeY(maxRows) + 10}
+              x={summaryCenterX}
+              y={summaryY}
               textAnchor="middle"
               fontWeight="700"
               fontSize="15"
@@ -950,6 +1035,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
                   ? '❌ Implausibile'
                   : '⚠️ Incerto'}
             </text>
+            </g>
           </g>
         </svg>
       </div>

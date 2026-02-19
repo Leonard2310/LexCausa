@@ -120,6 +120,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [reasoningResult, setReasoningResult] = useState(null);
   const [pipelineResult, setPipelineResult] = useState(null);
+  const [pipelineHistory, setPipelineHistory] = useState([]);
   const [reasonMessages, setReasonMessages] = useState([]);
   const [pipelineMessages, setPipelineMessages] = useState([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -314,6 +315,9 @@ export default function App() {
     setInput('');
     shouldAutoScrollRef.current = true;
     setIsLoading(true);
+    if (pipelineResult) {
+      setPipelineHistory((prev) => [...prev, pipelineResult].slice(-10));
+    }
     setPipelineMessages((prev) => [...prev, { role: 'user', content: claim }]);
     setPipelineResult(createLivePipelineResult(claim));
 
@@ -1687,12 +1691,6 @@ export default function App() {
   const hasCounterRepairs = Number(counterRepairStats.repaired_citations || 0) > 0
     || Number(counterRepairStats.dropped_citations || 0) > 0;
   const hasAnyRepairs = hasReasonerRepairs || hasCounterRepairs;
-  const pipelineActivePhase = PIPELINE_PHASES.find(
-    (phase) => pipelineResult?._stream?.phases?.[phase.key] === 'active',
-  )?.key || null;
-  const pipelineActiveDetail = pipelineActivePhase
-    ? (pipelineResult?._stream?.phase_details?.[pipelineActivePhase] || '')
-    : '';
   const evaluationConsistencyReport = pipelineResult?.evaluation?.consistency_report || {};
   const evaluationReasonerReport = evaluationConsistencyReport.reasoner;
   const evaluationCounterReport = evaluationConsistencyReport.counter_reasoner;
@@ -2105,13 +2103,6 @@ export default function App() {
             </div>
           )}
 
-          {isLoading && activeTab === TABS.PIPELINE && (
-            <div className="pipeline-working-indicator pipeline-working-indicator-top">
-              <Loader2 size={16} className="loading-spinner" />
-              <span>{pipelineActiveDetail || 'Pipeline in esecuzione...'}</span>
-            </div>
-          )}
-
           {activeTab === TABS.SEARCH && (
             <>
               {messages.map((msg, idx) => (
@@ -2135,24 +2126,6 @@ export default function App() {
               {reasonMessages.map((msg, idx) => (
                 <div
                   key={`reason-msg-${idx}`}
-                  className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
-                >
-                  <div className={`message-avatar ${msg.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>
-                    {msg.role === 'user' ? <User size={20} /> : <Bot size={20} />}
-                  </div>
-                  <div className={`message-bubble ${msg.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
-                    <p className="message-text">{msg.content}</p>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-
-          {activeTab === TABS.PIPELINE && (
-            <>
-              {pipelineMessages.map((msg, idx) => (
-                <div
-                  key={`pipeline-msg-${idx}`}
                   className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
                 >
                   <div className={`message-avatar ${msg.role === 'user' ? 'user-avatar' : 'assistant-avatar'}`}>
@@ -2206,8 +2179,183 @@ export default function App() {
             </div>
           )}
 
+          {activeTab === TABS.PIPELINE && pipelineHistory.length > 0 && (
+            <>
+              {pipelineHistory.map((run, idx) => {
+                const histReasonerParsed = parseStructuredResponse(run?.reasoner?.raw_response || '');
+                const histCounterParsed = parseStructuredResponse(run?.counter_reasoner?.raw_response || '');
+                const histSummary = parseConsistencySummary(run?.evaluation?.summary || '');
+                const histRepairedReasonerParsed = parseStructuredResponse(
+                  run?.evaluation?.repaired_reasoner_chain || '',
+                );
+                const histRepairedCounterParsed = parseStructuredResponse(
+                  run?.evaluation?.repaired_counter_chain || '',
+                );
+                const histReasonerRepairStats = run?.evaluation?.consistency_report?.reasoner || {};
+                const histCounterRepairStats = run?.evaluation?.consistency_report?.counter_reasoner || {};
+                const histHasReasonerRepairs = Number(histReasonerRepairStats.repaired_citations || 0) > 0
+                  || Number(histReasonerRepairStats.dropped_citations || 0) > 0
+                  || Boolean(run?.evaluation?.repaired_reasoner_chain);
+                const histHasCounterRepairs = Number(histCounterRepairStats.repaired_citations || 0) > 0
+                  || Number(histCounterRepairStats.dropped_citations || 0) > 0
+                  || Boolean(run?.evaluation?.repaired_counter_chain);
+                const histHasAnyRepairs = histHasReasonerRepairs || histHasCounterRepairs;
+                const histAqaReport = run?.evaluation?.aqa_report;
+                const histAqaProLinks = histAqaReport?.links?.pro ?? [];
+                const histAqaContraLinks = histAqaReport?.links?.contra ?? [];
+                const histAqaVerdict = histAqaReport?.verdict ?? 'uncertain';
+                const histAqaVerdictLabel = histAqaVerdict === 'plausible'
+                  ? 'Plausibile'
+                  : histAqaVerdict === 'implausible'
+                    ? 'Implausibile'
+                    : 'Incerto';
+                const histAqaVerdictClass = histAqaVerdict === 'plausible'
+                  ? 'aqa-verdict-positive'
+                  : histAqaVerdict === 'implausible'
+                    ? 'aqa-verdict-negative'
+                    : 'aqa-verdict-uncertain';
+                const histAqaProScore = histAqaReport?.net_plausibility?.pro ?? 0;
+                const histAqaContraScore = histAqaReport?.net_plausibility?.contra ?? 0;
+                const histAqaFinalScore = histAqaReport?.net_plausibility?.final ?? 0;
+                return (
+                  <React.Fragment key={`pipeline-history-${idx}`}>
+                    <div className="message message-user">
+                      <div className="message-avatar user-avatar">
+                        <User size={20} />
+                      </div>
+                      <div className="message-bubble bubble-user">
+                        <p className="message-text">{run?.claim || '—'}</p>
+                      </div>
+                    </div>
+                    <div className="result-card archived-pipeline-card">
+                      <details className="ir-toggle">
+                        <summary>
+                          Risultato Pipeline Precedente #{idx + 1}
+                        </summary>
+                        {run?.reasoner?.raw_response && (
+                          <div className="result-section" style={{ marginTop: '0.75rem' }}>
+                            <h4>Argomentazione Principale</h4>
+                            {renderStructuredResponse({ parsed: histReasonerParsed })}
+                          </div>
+                        )}
+                        {run?.counter_reasoner?.raw_response && (
+                          <div className="result-section">
+                            <h4>Argomentazione Contraria</h4>
+                            {renderStructuredResponse({ parsed: histCounterParsed })}
+                          </div>
+                        )}
+                        {run?.evaluation?.summary && (
+                          <div className="result-section">
+                            <h4>{histSummary.title || 'Riepilogo'}</h4>
+                            <div className="summary-cards-grid">
+                              {histSummary.sections.map((section, sIdx) => (
+                                <div key={`hist-summary-${idx}-${sIdx}`} className="summary-card">
+                                  <div className="summary-card-title">{section.name}</div>
+                                  {section.metrics.length > 0 && (
+                                    <div className="summary-metrics">
+                                      {section.metrics.map((metric, mIdx) => (
+                                        <div
+                                          key={`hist-summary-metric-${idx}-${sIdx}-${mIdx}`}
+                                          className={`summary-metric ${getSummaryMetricClass(metric.label)}`}
+                                        >
+                                          <span className="summary-metric-label">{metric.label}</span>
+                                          <span className="summary-metric-value">{metric.value}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {section.freeText.length > 0 && (
+                                    <ul className="summary-notes-list">
+                                      {section.freeText.map((note, nIdx) => (
+                                        <li key={`hist-summary-note-${idx}-${sIdx}-${nIdx}`}>{note}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              ))}
+                              {histSummary.sections.length === 0 && (
+                                <div className="summary-card">
+                                  <div className="raw-response">{run.evaluation.summary}</div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {run?.evaluation && histHasAnyRepairs && (
+                          <div className="result-section pipeline-section">
+                            <h4>Catene di Ragionamento Riparate</h4>
+                            {run?.evaluation?.repaired_reasoner_chain && (
+                              <div className="subsection">
+                                <h5>Reasoner - Catena Riparata</h5>
+                                {renderStructuredResponse({
+                                  parsed: histRepairedReasonerParsed,
+                                  variant: 'repaired',
+                                })}
+                              </div>
+                            )}
+                            {run?.evaluation?.repaired_counter_chain && (
+                              <div className="subsection">
+                                <h5>Counter-Reasoner - Catena Riparata</h5>
+                                {renderStructuredResponse({
+                                  parsed: histRepairedCounterParsed,
+                                  variant: 'repaired',
+                                })}
+                              </div>
+                            )}
+                            <div className="consistency-stats">
+                              <span className="stat-item stat-repaired">
+                                🔧 Reasoner: {histReasonerRepairStats.repaired_citations || 0} riparate, {histReasonerRepairStats.dropped_citations || 0} scartate
+                              </span>
+                              <span className="stat-item stat-repaired">
+                                🔧 Counter: {histCounterRepairStats.repaired_citations || 0} riparate, {histCounterRepairStats.dropped_citations || 0} scartate
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {histAqaReport && (
+                          <div className="result-section pipeline-section">
+                            <h4>AQA - Valutazione Argomentativa</h4>
+                            <div className="aqa-stats">
+                              <span className={`aqa-badge ${histAqaVerdictClass}`}>
+                                Verdetto: {histAqaVerdictLabel}
+                              </span>
+                              <span className="stat-item stat-valid">Pro: {(histAqaProScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-text">Contro: {(histAqaContraScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-repaired">Finale: {(histAqaFinalScore * 100).toFixed(0)}%</span>
+                            </div>
+                            {(histAqaProLinks.length > 0 || histAqaContraLinks.length > 0) && (
+                              <>
+                                <AspicMetagraph
+                                  aqaReport={histAqaReport}
+                                  reasonerIr={run?.evaluation?.repaired_reasoner_aspic_ir}
+                                  counterIr={run?.evaluation?.repaired_counter_aspic_ir}
+                                />
+                                <AttackTextDetails aqaReport={histAqaReport} />
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </details>
+                    </div>
+                  </React.Fragment>
+                );
+              })}
+            </>
+          )}
+
           {activeTab === TABS.PIPELINE && pipelineResult && (
-            <div className="result-card">
+            <>
+              <div className="message message-user">
+                <div className="message-avatar user-avatar">
+                  <User size={20} />
+                </div>
+                <div className="message-bubble bubble-user">
+                  <p className="message-text">{pipelineResult.claim}</p>
+                </div>
+              </div>
+              <div className="result-card">
               <h3 className="result-title">
                 <FileText size={20} />
                 Risultato Pipeline Completa
@@ -2957,7 +3105,8 @@ export default function App() {
                   )}
                 </>
               )}
-            </div>
+              </div>
+            </>
           )}
 
           {activeTab === TABS.REASON && !reasoningResult && reasonMessages.length === 0 && !isLoading && (

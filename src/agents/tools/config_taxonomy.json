@@ -412,7 +412,8 @@
         "counter_attack_selection": {
             "step_1_pool": "Use default_mapping.counter_attack_pool for causal_type_id",
             "step_2_optional_intersection": "If theory_id is provided, intersect with theories[].default_counter_attacks when intersection is non-empty; otherwise keep full pool",
-            "step_3_choose_one": "Select exactly one attack_id from resulting pool based only on claim content"
+            "step_3_choose_k": "Select 2-3 attack_ids from resulting pool based only on claim content (or fewer if pool size < 2)",
+            "step_4_assign_per_step": "Planner must assign one selected attack_id to each reasoning step"
         }
     },
     "retrieval_contracts": {

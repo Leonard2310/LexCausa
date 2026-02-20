@@ -110,6 +110,8 @@ class Reasoner(BaseAgent):
         super().__init__(config)
         self._react_agent = None
         self._max_support_stance_rewrites = 1
+        self._max_plan_retries = 3
+        self._max_step_rewrites = 2
 
     @property
     def tools(self) -> list:
@@ -323,16 +325,25 @@ class Reasoner(BaseAgent):
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
             self._log(f"🔄 Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
 
-            raw_output, iterative_chain = self._generate_chain_iteratively(
-                claim=claim,
-                routing_decision=routing_decision,
-                anchor_text=anchor_text,
-                principle_text=principle_text,
-                knowledge_base=knowledge_base,
-                allowed_statutes=allowed_statutes,
-                allowed_precedents=allowed_precedents,
-                stream_callback=stream_callback,
-            )
+            try:
+                raw_output, iterative_chain = self._generate_chain_iteratively(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    anchor_text=anchor_text,
+                    principle_text=principle_text,
+                    knowledge_base=knowledge_base,
+                    allowed_statutes=allowed_statutes,
+                    allowed_precedents=allowed_precedents,
+                    stream_callback=stream_callback,
+                )
+            except Exception as gen_exc:
+                self._log(
+                    f"⚠️ Attempt {attempt}/{MAX_CHAIN_RETRIES}: planner/executor failed ({gen_exc})",
+                    "warning",
+                )
+                if attempt == MAX_CHAIN_RETRIES:
+                    raise
+                continue
 
             # Generate dynamic LLM conclusion from chain
             conclusion = (
@@ -754,23 +765,17 @@ REASONING CHAIN (for context):
         allowed_precedents: list[str],
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, list[str]]:
-        """Generate the reasoning chain step-by-step with dedicated LLM calls.
+        """Generate the reasoning chain with plan -> execute workflow.
 
-        Each iteration produces ONE substantive reasoning step.  The LLM
-        receives full context of prior steps and autonomously decides
-        whether to continue or conclude.  ``chain_max_steps`` acts only
-        as a safety cap.
+        Flow:
+        1. Build a reasoning plan (distinct steps) with one LLM call.
+        2. Execute one LLM call per planned step.
+        3. Validate each produced step (stance, repetition, semantic novelty).
 
-        Returns
-        -------
-        (raw_response, reasoning_chain)
-            The assembled raw text and the list of individual step texts.
+        No fallback to the previous auto-stop strategy is used.
         """
-        MAX_STEPS = settings.chain_max_steps
-        MIN_STEPS = settings.chain_min_steps
-        steps: list[str] = []
-        used_norms: list[str] = []
-
+        max_steps = settings.chain_max_steps
+        min_steps = settings.chain_min_steps
         statutes_list = (
             "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
         )
@@ -779,240 +784,487 @@ REASONING CHAIN (for context):
             or "- No precedents available"
         )
 
-        for step_num in range(1, MAX_STEPS + 1):
-            is_last_possible = step_num == MAX_STEPS
-            can_conclude = step_num >= MIN_STEPS
+        plan = self._generate_reasoning_plan(
+            claim=claim,
+            routing_decision=routing_decision,
+            anchor_text=anchor_text,
+            principle_text=principle_text,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            min_steps=min_steps,
+            max_steps=max_steps,
+        )
+        self._log(f"🧭 Reasoning plan generated: {len(plan)} step(s)")
 
-            # --- EVALUATION PHASE (separate LLM call) ---
-            if can_conclude and not is_last_possible and steps:
-                should_continue = self._evaluate_should_continue(
-                    claim=claim,
-                    domain=routing_decision.domain,
-                    steps=steps,
-                    used_norms=used_norms,
-                    knowledge_base=knowledge_base,
-                    statutes_list=statutes_list,
-                    role="support",
-                )
-                if not should_continue:
-                    self._log(
-                        f"🏁 Chain concluded at step {step_num - 1} "
-                        f"by evaluator (before generating step {step_num})"
-                    )
-                    break
+        steps: list[str] = []
+        step_summaries: list[str] = []
+        used_norms: list[str] = []
 
-            # Build context of previous steps
-            if steps:
-                prev_context = "\n".join(
-                    f"  Step {i + 1}: {s}" for i, s in enumerate(steps)
-                )
-                used_norms_text = ", ".join(used_norms) if used_norms else "none"
-            else:
-                prev_context = "  (No previous steps — you are at step 1.)"
-                used_norms_text = "none"
-
-            # ---- Per-step prompt (English, response in Italian) ----
-            last_step_notice = (
-                "\nTHIS IS THE LAST ALLOWED STEP. "
-                "You MUST conclude the argument now."
-                if is_last_possible
-                else ""
+        for idx, plan_step in enumerate(plan, start=1):
+            self._log(
+                f"🔗 Generating planned step {idx}/{len(plan)}: "
+                f"{plan_step.get('goal', '')[:80]}"
             )
-            step_prompt = f"""You are an expert Italian jurist. You are building a SUPPORTING argument STEP BY STEP for the following legal claim.
-
-YOUR STANCE: You are the ADVOCATE of the claim. You MUST argue that the claim IS legally founded.
-Every step must provide ONE concrete reason WHY the claim succeeds under Italian law.
-NEVER mention weaknesses, counter-arguments, possible objections, or doubts about the claim.
-Do NOT balance pros and cons. You are EXCLUSIVELY pro-claim.
-
-CLAIM (you must SUPPORT this):
-"{claim}"
-
-DOMAIN: {routing_decision.domain}
-
-ANCHOR NORMS (structural constraints):
-{anchor_text}
-
-PRINCIPLE TESTS (evaluation criteria):
-{principle_text}
-
-=== KNOWLEDGE BASE (use ONLY these sources) ===
-{knowledge_base}
-=== END KNOWLEDGE BASE ===
-
-ALLOWED STATUTE REFERENCES (do not cite others):
-{statutes_list}
-
-ALLOWED PRECEDENT REFERENCES (do not cite others):
-{precedents_list}
-
---- CURRENT ARGUMENT STATE ---
-Steps completed so far:
-{prev_context}
-
-Norms already used: {used_norms_text}
-Current step: {step_num} (safety cap: {MAX_STEPS})
-
---- INSTRUCTIONS FOR STEP {step_num} ---
-Generate EXACTLY ONE ATOMIC reasoning step (step {step_num}).
-
-ATOMIC STEP RULES:
-- This step is ONE SMALL PIECE of a multi-step logical chain. Do NOT try to give a complete answer.
-- Focus on EXACTLY ONE legal point, norm, or factual aspect. Do NOT cover multiple aspects.
-- 2-4 sentences MAXIMUM. Be concise and precise.
-- Do NOT repeat or summarize the claim. The claim is already known.
-- Do NOT restate conclusions from previous steps. Build on them.
-
-PRO-CLAIM REQUIREMENTS for this step:
-1. ONE SUPPORTING POINT ONLY: Pick exactly ONE of the following for this step:
-   - Show how ONE specific norm SUPPORTS the claim on ONE specific fact, OR
-   - Demonstrate that ONE legal prerequisite IS satisfied, OR
-   - Draw ONE narrow conclusion showing the claim IS legally grounded
-2. NORM COVERAGE: Try to cite an article NOT yet used ({used_norms_text}).
-   You MAY reuse an already-cited article ONLY if you apply it to a DIFFERENT factual aspect
-   that was NOT discussed in any previous step. Never repeat the same reasoning.
-   If you have nothing new to add (no new aspect, no new norm), respond with STEP: DONE.
-3. PRECEDENT CITATION: If a precedent from the ALLOWED PRECEDENT REFERENCES list directly
-   supports your reasoning point, you MUST cite it by including its FULL EXACT TITLE in the step text.
-   For example: "Come confermato dalla giurisprudenza in «Titolo completo del precedente», ..."
-   Do NOT rephrase or shorten the title — copy it exactly as listed.
-   If no precedent is relevant for this step, skip this and cite only the norm.
-4. CONNECT to the previous step: your step must start from where the last step ended.
-   If step N-1 established X, step N should use X to advance to Y.
-5. ALWAYS FAVOR THE CLAIM: interpret norms and facts in the way most favorable to the claimant.
-{last_step_notice}
-
-RESPONSE FORMAT:
-STEP: [Your atomic reasoning step in Italian — max 4 sentences]
-
-CRITICAL RULES:
-- Your ENTIRE STEP text must be written in Italian.
-- MAX 4 sentences. If you need more, you are covering too much — split it.
-- Cite exactly one specific article (e.g. Art. 2043 c.c.) and, when relevant, one precedent by its FULL EXACT TITLE from the ALLOWED PRECEDENT REFERENCES list.
-- FACTUAL FIDELITY: Use ONLY facts explicitly stated in the CLAIM above. Do NOT add, infer, assume, or invent facts that are not written in the claim. If the claim says the person struck once, do not say they struck multiple times.
-- Do NOT invent sources not present in the knowledge base.
-- Do NOT write a complete argument. Write ONE building block.
-- NEVER write anything that weakens or questions the claim. Every sentence must SUPPORT it.
-"""
-
-            self._log(f"🔗 Generating step {step_num}/{MAX_STEPS}...")
-
-            step_text = ""
-            last_candidate = ""
-            for stance_try in range(1, self._max_support_stance_rewrites + 2):
-                prompt_for_try = (
-                    step_prompt
-                    if stance_try == 1
-                    else self._build_support_stance_rewrite_prompt(
-                        original_prompt=step_prompt,
-                        invalid_step=last_candidate,
-                    )
-                )
-                try:
-                    resp = self._resilient_llm_invoke(
-                        [HumanMessage(content=prompt_for_try)],
-                        stream_callback=(
-                            (
-                                lambda token: self._emit_stream_token(
-                                    stream_callback,
-                                    phase="support",
-                                    token=token,
-                                    step=step_num,
-                                )
-                            )
-                            if stream_callback and stance_try == 1
-                            else None
-                        ),
-                    )
-                    step_response = (resp.content or "").strip()
-                except Exception as e:
-                    self._log(f"⚠️ Step {step_num} generation failed: {e}", "warning")
-                    break
-
-                last_candidate = self._parse_step_text(step_response)
-                if not last_candidate or last_candidate.strip().upper() == "DONE":
-                    step_text = last_candidate
-                    break
-                if self._is_support_step_consistent(last_candidate):
-                    step_text = last_candidate
-                    break
-                if stance_try <= self._max_support_stance_rewrites:
-                    self._log(
-                        f"⚠️ Step {step_num}: generated text weakens the claim; "
-                        f"rewriting ({stance_try}/{self._max_support_stance_rewrites})",
-                        "warning",
-                    )
-                    continue
-                self._log(
-                    f"⚠️ Step {step_num}: could not enforce pro-claim stance "
-                    f"after {self._max_support_stance_rewrites + 1} attempts, stopping",
-                    "warning",
-                )
-                step_text = ""
-                break
-
+            step_text = self._generate_support_step_from_plan(
+                claim=claim,
+                routing_decision=routing_decision,
+                anchor_text=anchor_text,
+                principle_text=principle_text,
+                knowledge_base=knowledge_base,
+                statutes_list=statutes_list,
+                precedents_list=precedents_list,
+                plan=plan,
+                plan_index=idx,
+                plan_step=plan_step,
+                previous_steps=steps,
+                previous_summaries=step_summaries,
+                used_norms=used_norms,
+                stream_callback=stream_callback,
+            )
             if not step_text:
-                self._log(
-                    f"⚠️ Step {step_num}: no valid pro-claim step generated, stopping",
-                    "warning",
+                raise RuntimeError(
+                    f"Planned support step {idx} could not be generated with valid content"
                 )
-                break
-
-            if step_text.strip().upper() == "DONE":
-                self._log(
-                    f"⚠️ Step {step_num}: no new norm available, stopping", "warning"
-                )
-                break
-
-            # --- GARBAGE DETECTION (degenerate LLM output) ---
-            if self._is_garbage_text(step_text):
-                self._log(
-                    f"🗑️ Step {step_num}: garbage/degenerate output detected "
-                    f"(token repetition loop), discarding and stopping chain",
-                    "warning",
-                )
-                break
-
-            # --- REPETITION DETECTION (programmatic) ---
-            if steps and self._is_repetitive_step(step_text, steps):
-                self._log(
-                    f"🔁 Step {step_num}: too similar to a previous step, "
-                    f"stopping chain (repetition detected)"
-                )
-                break
 
             steps.append(step_text)
-
+            step_summaries.append(self._compact_step_summary(step_text))
             new_norms = self._extract_cited_articles(step_text)
-            used_norms.extend(new_norms)
+            for norm in new_norms:
+                if norm not in used_norms:
+                    used_norms.append(norm)
 
-            # Detect precedent mentions in step text
             prec_mentions = [
                 p for p in allowed_precedents if p.lower() in step_text.lower()
             ]
             prec_info = f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
-
             self._log(
-                f"✅ Step {step_num}: {step_text[:80]}... "
+                f"✅ Step {idx}: {step_text[:80]}... "
                 f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
             )
 
-            # Last possible step: forced stop
-            if is_last_possible:
-                self._log(f"🏁 Chain stopped at safety cap (step {step_num})")
-                break
-
-        if not steps:
-            self._log("❌ No steps generated in iterative chain", "error")
-            return "", []
+        if len(steps) < min_steps:
+            raise RuntimeError(
+                "Planner/executor produced fewer steps than chain_min_steps"
+            )
 
         self._log(
-            f"📊 Iterative chain complete: {len(steps)} steps, "
+            f"📊 Planned chain complete: {len(steps)} steps, "
             f"{len(set(used_norms))} unique norms"
         )
+        return self._assemble_raw_response(claim, steps), steps
 
-        raw_response = self._assemble_raw_response(claim, steps)
-        return raw_response, steps
+    def _generate_reasoning_plan(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        anchor_text: str,
+        principle_text: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        min_steps: int,
+        max_steps: int,
+    ) -> list[dict[str, str]]:
+        """Generate and validate an execution plan for support reasoning."""
+        prompt = f"""You are a legal planning engine for Italian law.
+
+Create a step-by-step plan to SUPPORT the claim.
+The plan must be executable in sequence and each step must be materially different.
+Return ONLY valid JSON (no markdown, no prose) with this schema:
+{{
+  "steps": [
+    {{
+      "id": "P1",
+      "goal": "specific legal objective for this step",
+      "focus": "single legal/factual focus",
+      "expected_norm": "article expected to be cited or 'N/A'"
+    }}
+  ]
+}}
+
+CLAIM:
+"{claim}"
+
+DOMAIN: {routing_decision.domain}
+ANCHOR NORMS:
+{anchor_text}
+
+PRINCIPLE TESTS:
+{principle_text}
+
+ALLOWED STATUTES:
+{statutes_list}
+
+ALLOWED PRECEDENTS:
+{precedents_list}
+
+KNOWLEDGE BASE:
+{knowledge_base}
+
+RULES:
+- Number of steps must be between {min_steps} and {max_steps}.
+- Each step must address a DIFFERENT objective (no overlap/rephrasing).
+- Steps must be ordered logically (premise -> legal qualification -> applicability -> consequence -> final support).
+- Every step must be pro-claim.
+- Prefer using different statutes across steps when possible.
+- Keep each 'goal' and 'focus' concise (max 25 words each).
+"""
+        last_error = "planner failed"
+        for attempt in range(1, self._max_plan_retries + 1):
+            try:
+                resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                raw = (resp.content or "").strip()
+                plan = self._parse_reasoning_plan(
+                    raw=raw,
+                    min_steps=min_steps,
+                    max_steps=max_steps,
+                )
+                if plan:
+                    return plan
+                last_error = "parsed empty plan"
+            except Exception as e:
+                last_error = str(e)
+            self._log(
+                f"⚠️ Planner attempt {attempt}/{self._max_plan_retries} failed: {last_error}",
+                "warning",
+            )
+        raise RuntimeError(f"Support planner failed: {last_error}")
+
+    def _parse_reasoning_plan(
+        self,
+        raw: str,
+        min_steps: int,
+        max_steps: int,
+    ) -> list[dict[str, str]]:
+        """Parse planner JSON and enforce plan quality constraints."""
+        payload_text = raw.strip()
+        if not payload_text.startswith("{"):
+            match = re.search(r"\{[\s\S]*\}", payload_text)
+            if match:
+                payload_text = match.group(0)
+        data = json.loads(payload_text)
+        steps_raw = data.get("steps")
+        if not isinstance(steps_raw, list):
+            raise ValueError("planner output missing 'steps' array")
+
+        cleaned: list[dict[str, str]] = []
+        for idx, item in enumerate(steps_raw, start=1):
+            if not isinstance(item, dict):
+                continue
+            goal = str(item.get("goal", "")).strip()
+            focus = str(item.get("focus", "")).strip()
+            expected_norm = str(item.get("expected_norm", "")).strip() or "N/A"
+            if not goal or not focus:
+                continue
+            cleaned.append(
+                {
+                    "id": str(item.get("id", f"P{idx}")).strip() or f"P{idx}",
+                    "goal": goal,
+                    "focus": focus,
+                    "expected_norm": expected_norm,
+                }
+            )
+
+        if len(cleaned) < min_steps or len(cleaned) > max_steps:
+            raise ValueError(
+                f"invalid plan length {len(cleaned)} (expected {min_steps}-{max_steps})"
+            )
+        if self._has_overlapping_plan_steps(cleaned):
+            raise ValueError("planner produced overlapping/repetitive steps")
+        return cleaned
+
+    def _has_overlapping_plan_steps(self, plan_steps: list[dict[str, str]]) -> bool:
+        """Detect obvious overlap across planned goals/focuses."""
+        normalized = []
+        for step in plan_steps:
+            text = f"{step.get('goal', '')} {step.get('focus', '')}".lower()
+            text = re.sub(r"[^a-z0-9àèéìòù\s]", " ", text)
+            words = {w for w in text.split() if len(w) > 3}
+            normalized.append(words)
+
+        for i in range(len(normalized)):
+            for j in range(i + 1, len(normalized)):
+                a = normalized[i]
+                b = normalized[j]
+                if not a or not b:
+                    continue
+                overlap = len(a & b) / len(a | b)
+                if overlap >= 0.65:
+                    return True
+        return False
+
+    def _generate_support_step_from_plan(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        anchor_text: str,
+        principle_text: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        plan: list[dict[str, str]],
+        plan_index: int,
+        plan_step: dict[str, str],
+        previous_steps: list[str],
+        previous_summaries: list[str],
+        used_norms: list[str],
+        stream_callback: Optional[Callable[[dict], None]],
+    ) -> str:
+        """Execute one planned support step with validation + retries."""
+        last_candidate = ""
+        last_reason = "invalid output"
+        for attempt in range(1, self._max_step_rewrites + 2):
+            prompt = (
+                self._build_support_step_prompt_from_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    anchor_text=anchor_text,
+                    principle_text=principle_text,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    precedents_list=precedents_list,
+                    plan=plan,
+                    plan_index=plan_index,
+                    plan_step=plan_step,
+                    previous_summaries=previous_summaries,
+                    used_norms=used_norms,
+                )
+                if attempt == 1
+                else self._build_support_plan_rewrite_prompt(
+                    previous_prompt=self._build_support_step_prompt_from_plan(
+                        claim=claim,
+                        routing_decision=routing_decision,
+                        anchor_text=anchor_text,
+                        principle_text=principle_text,
+                        knowledge_base=knowledge_base,
+                        statutes_list=statutes_list,
+                        precedents_list=precedents_list,
+                        plan=plan,
+                        plan_index=plan_index,
+                        plan_step=plan_step,
+                        previous_summaries=previous_summaries,
+                        used_norms=used_norms,
+                    ),
+                    invalid_step=last_candidate,
+                    invalid_reason=last_reason,
+                )
+            )
+            try:
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=prompt)],
+                    stream_callback=(
+                        (
+                            lambda token: self._emit_stream_token(
+                                stream_callback,
+                                phase="support",
+                                token=token,
+                                step=plan_index,
+                            )
+                        )
+                        if stream_callback and attempt == 1
+                        else None
+                    ),
+                )
+                candidate = self._parse_step_text((resp.content or "").strip())
+            except Exception as exc:
+                last_reason = f"generation error: {exc}"
+                self._log(
+                    f"⚠️ Step {plan_index} generation failed (attempt {attempt}): {exc}",
+                    "warning",
+                )
+                continue
+
+            last_candidate = candidate
+            ok, reason = self._validate_support_step_candidate(
+                candidate_step=candidate,
+                previous_steps=previous_steps,
+                claim=claim,
+            )
+            if ok:
+                return candidate
+            if (
+                reason == "semantic repetition"
+                and attempt == self._max_step_rewrites + 1
+                and candidate
+                and self._is_support_step_consistent(candidate)
+                and not self._is_garbage_text(candidate)
+                and (
+                    not previous_steps
+                    or not self._is_repetitive_step(candidate, previous_steps)
+                )
+            ):
+                self._log(
+                    f"⚠️ Step {plan_index}: accepting semantically-close step after retries",
+                    "warning",
+                )
+                return candidate
+            last_reason = reason
+            self._log(
+                f"⚠️ Step {plan_index} rejected ({reason}) "
+                f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
+                "warning",
+            )
+        return ""
+
+    def _build_support_step_prompt_from_plan(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        anchor_text: str,
+        principle_text: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        plan: list[dict[str, str]],
+        plan_index: int,
+        plan_step: dict[str, str],
+        previous_summaries: list[str],
+        used_norms: list[str],
+    ) -> str:
+        """Create prompt for one planned support step."""
+        plan_lines = "\n".join(
+            f"{idx}. {step.get('goal', '')} | focus: {step.get('focus', '')}"
+            for idx, step in enumerate(plan, start=1)
+        )
+        summary_lines = (
+            "\n".join(
+                f"- Step {idx}: {summary}"
+                for idx, summary in enumerate(previous_summaries, start=1)
+            )
+            if previous_summaries
+            else "- none"
+        )
+        used_norms_text = ", ".join(used_norms) if used_norms else "none"
+        return f"""You are an expert Italian jurist.
+You must execute ONLY one planned SUPPORT step, keeping strict pro-claim stance.
+
+CLAIM:
+"{claim}"
+
+DOMAIN: {routing_decision.domain}
+ANCHOR NORMS:
+{anchor_text}
+PRINCIPLE TESTS:
+{principle_text}
+
+KNOWLEDGE BASE (use only these sources):
+{knowledge_base}
+
+ALLOWED STATUTES:
+{statutes_list}
+ALLOWED PRECEDENTS:
+{precedents_list}
+
+GLOBAL PLAN:
+{plan_lines}
+
+CURRENT STEP TO EXECUTE: {plan_index}
+- Goal: {plan_step.get("goal", "")}
+- Focus: {plan_step.get("focus", "")}
+- Expected norm: {plan_step.get("expected_norm", "N/A")}
+
+ALREADY GENERATED STEP SUMMARIES:
+{summary_lines}
+
+NORMS ALREADY USED: {used_norms_text}
+
+HARD RULES:
+- Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
+- It must advance the plan and add NEW information, not paraphrase prior steps.
+- It must support the claim only (no doubts, no balancing, no anti-claim hints).
+- Use only facts explicitly in claim.
+- Cite at least one statute when legally possible.
+- If citing a precedent, include its full exact title from allowed list.
+
+RESPONSE FORMAT:
+STEP: [italian atomic step]
+"""
+
+    def _build_support_plan_rewrite_prompt(
+        self, previous_prompt: str, invalid_step: str, invalid_reason: str
+    ) -> str:
+        """Prompt to rewrite a planned step that failed validation."""
+        return (
+            f"{previous_prompt}\n\n"
+            "YOUR PREVIOUS STEP WAS REJECTED.\n"
+            f"REASON: {invalid_reason}\n"
+            f"INVALID STEP:\n{invalid_step}\n\n"
+            "Rewrite only this step. Keep the same planned objective, but produce NEW, "
+            "non-redundant, strict pro-claim content.\n"
+            "RESPONSE FORMAT:\n"
+            "STEP: [italian atomic step]"
+        )
+
+    def _validate_support_step_candidate(
+        self, candidate_step: str, previous_steps: list[str], claim: str
+    ) -> tuple[bool, str]:
+        """Validation checks for one support step candidate."""
+        text = (candidate_step or "").strip()
+        if not text or text.upper() == "DONE":
+            return False, "empty step"
+        if self._is_garbage_text(text):
+            return False, "garbage output"
+        if not self._is_support_step_consistent(text):
+            return False, "stance drift (not strictly pro-claim)"
+        if not self._extract_cited_articles(text):
+            return False, "missing statutory citation"
+        if previous_steps and self._is_repetitive_step(text, previous_steps):
+            return False, "lexical repetition"
+        if previous_steps and self._is_semantically_redundant_step(
+            candidate_step=text,
+            previous_steps=previous_steps,
+            claim=claim,
+            role="support",
+        ):
+            return False, "semantic repetition"
+        return True, ""
+
+    def _is_semantically_redundant_step(
+        self,
+        candidate_step: str,
+        previous_steps: list[str],
+        claim: str,
+        role: str,
+    ) -> bool:
+        """LLM-based semantic redundancy check (NEW vs REPEAT)."""
+        if not previous_steps:
+            return False
+        context_prev = "\n".join(
+            f"{idx}. {step}" for idx, step in enumerate(previous_steps[-3:], start=1)
+        )
+        prompt = f"""Valuta se il NUOVO passo aggiunge davvero informazione giuridica nuova.
+
+CLAIM:
+{claim}
+
+RUOLO ARGOMENTATIVO: {role}
+
+PASSI PRECEDENTI:
+{context_prev}
+
+NUOVO PASSO:
+{candidate_step}
+
+Regola:
+- Rispondi REPEAT se il nuovo passo è sostanzialmente parafrasi/duplicazione dei precedenti.
+- Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
+
+Rispondi con UNA SOLA parola: NEW oppure REPEAT.
+"""
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+            return "REPEAT" in answer
+        except Exception:
+            return False
+
+    @staticmethod
+    def _compact_step_summary(step_text: str) -> str:
+        """Compact summary used as execution memory for following steps."""
+        first_sentence = re.split(r"(?<=[.!?])\s+", step_text.strip())[0]
+        first_sentence = re.sub(r"\s+", " ", first_sentence).strip()
+        return first_sentence[:220]
 
     @staticmethod
     def _emit_stream_token(

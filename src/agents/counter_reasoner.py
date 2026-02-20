@@ -8,6 +8,7 @@ pre-retrieved contrary/neutral sources.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -46,6 +47,7 @@ class CounterReasonerOutput:
     causal_type_id: str
     theory_id: str
     selected_attack_id: str = ""
+    selected_attack_ids: List[str] = field(default_factory=list)
     reasoner_causality: dict = field(default_factory=dict)  # compatibility alias
     relevant_statutes: List[dict] = field(default_factory=list)
     relevant_precedents: List[dict] = field(default_factory=list)
@@ -63,6 +65,7 @@ class CounterReasonerOutput:
             "causal_type_id": self.causal_type_id,
             "theory_id": self.theory_id,
             "selected_attack_id": self.selected_attack_id,
+            "selected_attack_ids": self.selected_attack_ids,
             "reasoner_causality": self.reasoner_causality,
             "statutes": self.relevant_statutes,
             "precedents": self.relevant_precedents,
@@ -90,7 +93,7 @@ COUNTER_REASONER_SYSTEM_PROMPT = """IMPORTANT: You MUST respond ENTIRELY in Ital
 You are the Counter-Reasoner. Dismantle the claim independently.
 You receive:
 - causal_type_id and theory_id fixed by the Router (do not re-classify)
-- selected_attack_id chosen from the config attack pool
+- selected_attack_ids chosen from the config attack pool
 - KNOWLEDGE BASE with contrary/neutral statutes and precedents
 
 Critical rules:
@@ -138,7 +141,7 @@ class CounterReasoner(BaseAgent):
     Legal Counter-Reasoner Agent.
 
     Generates counter-arguments to challenge the claim independently of the Reasoner.
-    Selects the attack from config (counter_attack_pool) based on causal_type_id/theory_id.
+    Selects multiple attacks from config (counter_attack_pool) based on causal_type_id/theory_id.
 
     Flow:
     1. api_server pre-retrieves statutes and precedents
@@ -152,14 +155,16 @@ class CounterReasoner(BaseAgent):
         self._react_agent = None
         self._config = config_loader.load_config()
         self._max_stance_rewrites = 2
+        self._max_plan_retries = 3
+        self._max_step_rewrites = 2
 
     # ------------------------------------------------------------------
     # Attack selection logic (config-driven)
     # ------------------------------------------------------------------
-    def _select_attack(
+    def _select_attacks(
         self, claim: str, routing_decision: RoutingDecision
     ) -> AttackSelection:
-        """Select counter attack id based on config pools."""
+        """Select 2-3 counter attacks from config pools."""
         pool: List[str] = config_loader.counter_attack_pool_for(
             routing_decision.causal_type_id, self._config
         )
@@ -176,26 +181,37 @@ class CounterReasoner(BaseAgent):
             # Fallback to theory attacks or all known attacks
             pool = theory_attacks or list(ATTACK_DESCRIPTIONS.keys())
 
-        attack_id = self._pick_attack_with_llm(
-            claim, routing_decision.causal_type_id, routing_decision.theory_id, pool
-        )
-
-        return AttackSelection(
+        selected_ids = self._pick_attacks_with_llm(
+            claim=claim,
+            causal_type_id=routing_decision.causal_type_id,
+            theory_id=routing_decision.theory_id,
             pool=pool,
-            attack_id=attack_id,
-            description=ATTACK_DESCRIPTIONS.get(attack_id, ""),
+        )
+        if not selected_ids:
+            fallback_count = min(3, len(pool))
+            selected_ids = pool[:fallback_count]
+
+        descriptions = {aid: ATTACK_DESCRIPTIONS.get(aid, "") for aid in selected_ids}
+        return AttackSelection(
+            pool=pool, attack_ids=selected_ids, descriptions=descriptions
         )
 
-    def _pick_attack_with_llm(
+    def _pick_attacks_with_llm(
         self,
         claim: str,
         causal_type_id: str,
         theory_id: str,
         pool: List[str],
-    ) -> str:
-        """Use LLM to pick the most suitable attack id from pool."""
+    ) -> List[str]:
+        """Use LLM to pick 2-3 suitable attack ids from pool."""
         if not pool:
-            return ""
+            return []
+
+        if len(pool) == 1:
+            return [pool[0]]
+
+        min_attacks = 2
+        max_attacks = min(3, len(pool))
 
         options_text = "\n".join(
             f"- {aid}: {ATTACK_DESCRIPTIONS.get(aid, '')}" for aid in pool
@@ -207,30 +223,82 @@ Routing context:
 - causal_type_id: {causal_type_id}
 - theory_id: {theory_id}
 
-Select the most useful attack among the following ids and return ONLY the chosen id:
+Select the most useful attack IDs among the following ids.
+Return ONLY JSON in this format:
+{{"attack_ids": ["id1", "id2", "id3"]}}
+
+Rules:
+- choose between {min_attacks} and {max_attacks} ids
+- ids must be from the list below
+- avoid near-duplicate attacks
+
 {options_text}
 """
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             answer = (resp.content or "").strip()
-            attack_id = self._clean_attack_choice(answer, pool)
-            if attack_id:
-                return attack_id
+            attack_ids = self._clean_attack_choices(
+                raw=answer,
+                pool=pool,
+                min_count=min_attacks,
+                max_count=max_attacks,
+            )
+            if attack_ids:
+                return attack_ids
         except Exception as e:
             self._log(f"⚠️ LLM attack selection failed: {e}", "warning")
 
-        return pool[0]
+        return pool[:max_attacks]
 
-    def _clean_attack_choice(self, raw: str, pool: List[str]) -> str:
-        """Normalize LLM output to a valid attack id."""
-        candidate = raw.replace("`", "").strip()
-        if candidate.lower().startswith("json"):
-            candidate = candidate[4:].strip()
-        candidate = candidate.split()[0] if candidate else ""
-        for attack_id in pool:
-            if attack_id.lower() in candidate.lower():
-                return attack_id
-        return ""
+    def _clean_attack_choices(
+        self,
+        raw: str,
+        pool: List[str],
+        min_count: int,
+        max_count: int,
+    ) -> List[str]:
+        """Normalize LLM output to a list of valid attack IDs."""
+        pool_set = set(pool)
+        payload = raw.strip().replace("```json", "").replace("```", "").strip()
+        candidates: List[str] = []
+
+        if payload:
+            try:
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict):
+                    attack_ids = parsed.get("attack_ids", [])
+                    if isinstance(attack_ids, list):
+                        candidates.extend(str(a).strip() for a in attack_ids)
+            except Exception:
+                pass
+
+        if not candidates:
+            lowered = payload.lower()
+            for attack_id in pool:
+                if attack_id.lower() in lowered:
+                    candidates.append(attack_id)
+
+        cleaned: List[str] = []
+        seen = set()
+        for attack_id in candidates:
+            normalized = attack_id.strip()
+            if normalized not in pool_set or normalized in seen:
+                continue
+            cleaned.append(normalized)
+            seen.add(normalized)
+            if len(cleaned) >= max_count:
+                break
+
+        if len(cleaned) < min_count:
+            for attack_id in pool:
+                if attack_id in seen:
+                    continue
+                cleaned.append(attack_id)
+                seen.add(attack_id)
+                if len(cleaned) >= min_count:
+                    break
+
+        return cleaned[:max_count]
 
     def _expand_with_cross_references(self, statutes: List[dict]) -> List[dict]:
         """
@@ -412,13 +480,19 @@ Select the most useful attack among the following ids and return ONLY the chosen
             )
 
         if enable_causality:
-            # Select counter attack from config pools
-            attack_selection = self._select_attack(claim, routing_decision)
+            # Select counter attacks from config pools
+            attack_selection = self._select_attacks(claim, routing_decision)
             self._log(
-                f"⚔️ Selected counter attack: {attack_selection.attack_id or 'N/A'} "
+                f"⚔️ Selected counter attacks: "
+                f"{', '.join(attack_selection.attack_ids) if attack_selection.attack_ids else 'N/A'} "
                 f"(pool size {len(attack_selection.pool)})"
             )
-            self._log(f"📝 Attack description: {attack_selection.description or 'N/A'}")
+            if attack_selection.attack_ids:
+                descs = [
+                    f"{aid}: {attack_selection.descriptions.get(aid, 'N/A')}"
+                    for aid in attack_selection.attack_ids
+                ]
+                self._log(f"📝 Attack descriptions: {' | '.join(descs)}")
 
             # Add filtered anchor norms for provided causal types (router + additional)
             anchor_statutes = self._filtered_anchor_statutes_for_types(
@@ -435,7 +509,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
             self._log(
                 "🔬 Causality DISABLED — skipping attack selection and anchor norms"
             )
-            attack_selection = AttackSelection(pool=[], attack_id="", description="")
+            attack_selection = AttackSelection(pool=[], attack_ids=[], descriptions={})
             anchor_statutes = []
 
         all_statutes = pre_retrieved_statutes + anchor_statutes
@@ -480,16 +554,27 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 f"🔄 Counter-Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}"
             )
 
-            raw_output, iterative_chain = self._generate_counter_chain_iteratively(
-                claim=claim,
-                routing_decision=routing_decision,
-                attack_selection=attack_selection,
-                knowledge_base=knowledge_base,
-                allowed_statutes=allowed_statutes,
-                allowed_precedents=allowed_precedents,
-                reasoner_conclusion=reasoner_conclusion,
-                stream_callback=stream_callback,
-            )
+            try:
+                raw_output, iterative_chain, step_attack_ids = (
+                    self._generate_counter_chain_iteratively(
+                        claim=claim,
+                        routing_decision=routing_decision,
+                        attack_selection=attack_selection,
+                        knowledge_base=knowledge_base,
+                        allowed_statutes=allowed_statutes,
+                        allowed_precedents=allowed_precedents,
+                        reasoner_conclusion=reasoner_conclusion,
+                        stream_callback=stream_callback,
+                    )
+                )
+            except Exception as gen_exc:
+                self._log(
+                    f"⚠️ Attempt {attempt}/{MAX_CHAIN_RETRIES}: counter planner/executor failed ({gen_exc})",
+                    "warning",
+                )
+                if attempt == MAX_CHAIN_RETRIES:
+                    raise
+                continue
 
             # Build output
             output = CounterReasonerOutput(
@@ -497,6 +582,7 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 causal_type_id=routing_decision.causal_type_id,
                 theory_id=routing_decision.theory_id,
                 selected_attack_id=attack_selection.attack_id,
+                selected_attack_ids=attack_selection.attack_ids,
                 reasoner_causality={
                     "causal_type_id": routing_decision.causal_type_id,
                     "theory_id": routing_decision.theory_id,
@@ -529,6 +615,11 @@ Select the most useful attack among the following ids and return ONLY the chosen
                 arguments=output.counter_arguments,
                 metadata={
                     "selected_attack_id": attack_selection.attack_id,
+                    "selected_attack_ids": attack_selection.attack_ids,
+                    "selected_attack_by_step": [
+                        {"step": idx + 1, "attack_id": attack_id}
+                        for idx, attack_id in enumerate(step_attack_ids)
+                    ],
                     "causal_type_id": routing_decision.causal_type_id,
                     "theory_id": routing_decision.theory_id,
                 },
@@ -596,19 +687,24 @@ Select the most useful attack among the following ids and return ONLY the chosen
 
     def _extract_cited_articles(self, text: str) -> List[str]:
         """Extract article references cited in the text."""
-        import re
-
         pattern = re.compile(
-            r"(?:art(?:icolo)?\.?\s*)(\d{1,4})\s*"
-            r"(c\.?[cp]\.?|cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?))",
+            r"(?:art(?:icolo)?\.?\s*)(\d{1,4}(?:[-\s]?[a-z]+)?)\s*"
+            r"(c\.?[cp]\.?|"
+            r"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?)|"
+            r"l(?:egge)?\.?\s*241\s*/?\s*1990|"
+            r"241\s*/?\s*1990)",
             re.IGNORECASE,
         )
         matches = pattern.findall(text)
         articles: List[str] = []
         for num, code in matches:
-            code_norm = (
-                "c.c." if "c" in code.lower() and "p" not in code.lower() else "c.p."
-            )
+            code_lower = code.lower()
+            if "241" in code_lower or "amm" in code_lower:
+                code_norm = "L. 241/1990"
+            elif "civ" in code_lower or "c.c" in code_lower:
+                code_norm = "c.c."
+            else:
+                code_norm = "c.p."
             articles.append(f"Art. {num} {code_norm}")
         seen: set[str] = set()
         unique: List[str] = []
@@ -628,22 +724,10 @@ Select the most useful attack among the following ids and return ONLY the chosen
         allowed_precedents: List[str],
         reasoner_conclusion: str = "",
         stream_callback: Optional[Callable[[dict], None]] = None,
-    ) -> tuple[str, List[str]]:
-        """Generate counter-reasoning chain step-by-step.
-
-        Same iterative approach as Reasoner but with counter-argument
-        framing.  The LLM autonomously decides when to stop; only
-        ``chain_max_steps`` acts as a safety cap.
-
-        Returns
-        -------
-        (raw_response, reasoning_chain)
-        """
-        MAX_STEPS = settings.chain_max_steps
-        MIN_STEPS = settings.chain_min_steps
-        steps: List[str] = []
-        used_norms: List[str] = []
-
+    ) -> tuple[str, List[str], List[str]]:
+        """Generate counter-reasoning chain with plan -> execute workflow."""
+        max_steps = settings.chain_max_steps
+        min_steps = settings.chain_min_steps
         statutes_list = (
             "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
         )
@@ -651,291 +735,519 @@ Select the most useful attack among the following ids and return ONLY the chosen
             "\n".join(f"- {p}" for p in allowed_precedents)
             or "- No precedents available"
         )
+        selected_attack_ids = attack_selection.attack_ids or [
+            attack_selection.attack_id
+        ]
+        selected_attack_ids = [aid for aid in selected_attack_ids if aid]
+        if not selected_attack_ids:
+            selected_attack_ids = ["N/A"]
+        attack_catalog = "\n".join(
+            f"- {aid}: {ATTACK_DESCRIPTIONS.get(aid, 'N/A')}"
+            for aid in selected_attack_ids
+        )
 
-        attack_id = attack_selection.attack_id or "N/A"
-        attack_desc = attack_selection.description or "N/A"
+        plan = self._generate_counter_plan(
+            claim=claim,
+            routing_decision=routing_decision,
+            selected_attack_ids=selected_attack_ids,
+            attack_catalog=attack_catalog,
+            reasoner_conclusion=reasoner_conclusion,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            min_steps=min_steps,
+            max_steps=max_steps,
+        )
+        self._log(f"🧭 Counter plan generated: {len(plan)} step(s)")
 
-        for step_num in range(1, MAX_STEPS + 1):
-            is_last_possible = step_num == MAX_STEPS
-            can_conclude = step_num >= MIN_STEPS
+        steps: List[str] = []
+        step_summaries: List[str] = []
+        used_norms: List[str] = []
+        step_attacks: List[str] = []
 
-            # --- EVALUATION PHASE (separate LLM call) ---
-            if can_conclude and not is_last_possible and steps:
-                should_continue = self._evaluate_should_continue(
-                    claim=claim,
-                    domain=routing_decision.domain,
-                    steps=steps,
-                    used_norms=used_norms,
-                    knowledge_base=knowledge_base,
-                    statutes_list=statutes_list,
-                    role="counter",
-                )
-                if not should_continue:
-                    self._log(
-                        f"🏁 Counter-chain concluded at step {step_num - 1} "
-                        f"by evaluator (before generating step {step_num})"
-                    )
-                    break
+        for idx, plan_step in enumerate(plan, start=1):
+            step_attack_id = plan_step.get("attack_id", selected_attack_ids[0])
+            if step_attack_id not in selected_attack_ids:
+                step_attack_id = selected_attack_ids[0]
+            step_attack_desc = ATTACK_DESCRIPTIONS.get(step_attack_id, "N/A")
 
-            if steps:
-                prev_context = "\n".join(
-                    f"  Step {i + 1}: {s}" for i, s in enumerate(steps)
-                )
-                used_norms_text = ", ".join(used_norms) if used_norms else "none"
-            else:
-                prev_context = "  (No previous steps — you are at step 1.)"
-                used_norms_text = "none"
-
-            # ---- Build reasoner conclusion directive ----
-            reasoner_directive = ""
-            if reasoner_conclusion:
-                reasoner_directive = f"""
-REASONER'S CONCLUSION (you MUST argue the OPPOSITE):
-\"{reasoner_conclusion}\"
-
-CRITICAL OPPOSITION RULE:
-- If the Reasoner concludes GUILT/LIABILITY, you MUST argue INNOCENCE/NON-LIABILITY.
-- If the Reasoner concludes INNOCENCE, you MUST argue GUILT/LIABILITY.
-- If the Reasoner concludes the claim is FOUNDED, you MUST argue it is UNFOUNDED.
-- Your final conclusion MUST be the logical OPPOSITE of the Reasoner's conclusion above.
-- NEVER agree with or support the Reasoner's conclusion.
-"""
-
-            # ---- Per-step prompt (English, response in Italian) ----
-            last_step_notice = (
-                "\nTHIS IS THE LAST ALLOWED STEP. "
-                "You MUST conclude with a STRONG statement AGAINST the claim. "
-                "Your conclusion must clearly state why the claim FAILS or is LEGALLY UNFOUNDED."
-                if is_last_possible
-                else ""
+            self._log(
+                f"🔗 Generating planned counter-step {idx}/{len(plan)}: "
+                f"{plan_step.get('goal', '')[:80]} | attack={step_attack_id}"
             )
-            step_prompt = f"""You are an expert Italian jurist acting as PROSECUTOR/OPPOSING COUNSEL. You are building a COUNTER-ARGUMENT STEP BY STEP to DISMANTLE and REJECT the following legal claim.
-
-YOUR STANCE: You are the ADVERSARY of the claim. You MUST argue that the claim is LEGALLY UNFOUNDED.
-Every step must provide ONE concrete reason WHY the claim FAILS under Italian law.
-NEVER mention strengths, merits, or valid points of the claim.
-Do NOT balance pros and cons. You are EXCLUSIVELY anti-claim.
-
-CLAIM TO ATTACK (you must DEMOLISH this):
-"{claim}"
-
-{reasoner_directive}ATTACK STRATEGY: {attack_id}
-DESCRIPTION: {attack_desc}
-
-DOMAIN: {routing_decision.domain}
-CAUSAL TYPE: {routing_decision.causal_type_id}
-THEORY: {routing_decision.theory_id}
-
-=== KNOWLEDGE BASE (use ONLY these sources) ===
-{knowledge_base}
-=== END KNOWLEDGE BASE ===
-
-ALLOWED STATUTE REFERENCES (do not cite others):
-{statutes_list}
-
-ALLOWED PRECEDENT REFERENCES (do not cite others):
-{precedents_list}
-
---- CURRENT COUNTER-ARGUMENT STATE ---
-Steps completed so far:
-{prev_context}
-
-Norms already used: {used_norms_text}
-Current step: {step_num} (safety cap: {MAX_STEPS})
-
---- INSTRUCTIONS FOR STEP {step_num} ---
-Generate EXACTLY ONE ATOMIC counter-reasoning step (step {step_num}).
-
-ATOMIC STEP RULES:
-- This step is ONE SMALL PIECE of a multi-step counter-argument chain. Do NOT try to give a complete rebuttal.
-- Focus on EXACTLY ONE weak point, one norm violation, or one factual gap. Do NOT cover multiple issues.
-- 2-4 sentences MAXIMUM. Be concise and precise.
-- Do NOT repeat or summarize the claim. The claim is already known.
-- Do NOT restate conclusions from previous steps. Build on them.
-
-ANTI-CLAIM REQUIREMENTS for this step:
-1. ONE ATTACK POINT ONLY: Pick exactly ONE of the following for this step:
-   - Show how ONE specific norm CONTRADICTS or LIMITS the claim, OR
-   - Expose ONE legal prerequisite that is NOT satisfied, OR
-   - Draw ONE narrow conclusion showing the claim FAILS on a specific point
-2. NORM COVERAGE: Try to cite an article NOT yet used ({used_norms_text}).
-   You MAY reuse an already-cited article ONLY if you apply it to a DIFFERENT factual aspect
-   that was NOT discussed in any previous step. Never repeat the same reasoning.
-   If you have nothing new to add (no new aspect, no new norm), respond with STEP: DONE.
-3. PRECEDENT CITATION: If a precedent from the ALLOWED PRECEDENT REFERENCES list directly
-   supports your counter-argument, you MUST cite it by including its FULL EXACT TITLE in the step text.
-   For example: "Come evidenziato dalla giurisprudenza in «Titolo completo del precedente», ..."
-   Do NOT rephrase or shorten the title — copy it exactly as listed.
-   If no precedent is relevant for this step, skip this and cite only the norm.
-4. ATTACK ANGLE: Use the strategy "{attack_id}" as the main lens
-5. CONNECT to the previous step: your step must start from where the last step ended.
-   If step N-1 exposed flaw X, step N should use X to attack further.
-6. ALWAYS DISFAVOR THE CLAIM: interpret norms and facts in the way most unfavorable to the claimant.
-7. LOGICAL CONSISTENCY: NEVER contradict any previous accepted step.
-8. FACT LOCK: NEVER replace claim facts with their opposite. If the claim says facts are
-   "complex/contested", you cannot state they are "simple/uncontested" (and vice versa).
-{last_step_notice}
-
-RESPONSE FORMAT:
-STEP: [Your atomic counter-reasoning step in Italian — max 4 sentences]
-
-CRITICAL RULES:
-- Your ENTIRE STEP text must be written in Italian.
-- MAX 4 sentences. If you need more, you are covering too much — split it.
-- Cite exactly one specific article (e.g. Art. 52 c.p.) and, when relevant, one precedent by its FULL EXACT TITLE from the ALLOWED PRECEDENT REFERENCES list.
-- FACTUAL FIDELITY: Use ONLY facts explicitly stated in the CLAIM above. Do NOT add, infer, assume, or invent facts that are not written in the claim. For example, if the claim says ONE strike, do NOT say multiple strikes. If the claim does not mention a detail, do NOT fabricate it.
-- Do NOT mention the Reasoner. Produce a standalone counter-argument.
-- Do NOT invent sources not present in the knowledge base.
-- NEVER argue in favor of the claim. You are the OPPOSITION.
-- Do NOT write a complete rebuttal. Write ONE building block of the counter-argument.
-- NEVER write anything that supports or validates the claim. Every sentence must ATTACK it.
-- NEVER contradict previous accepted steps. If you cannot add a coherent anti-claim step, output STEP: DONE.
-"""
-
-            self._log(f"🔗 Generating counter-step {step_num}/{MAX_STEPS}...")
-
-            step_text = ""
-            last_candidate = ""
-            invalid_reason = "it partially supports the claim."
-            for stance_try in range(1, self._max_stance_rewrites + 2):
-                prompt_for_try = (
-                    step_prompt
-                    if stance_try == 1
-                    else self._build_stance_rewrite_prompt(
-                        original_prompt=step_prompt,
-                        invalid_step=last_candidate,
-                        invalid_reason=invalid_reason,
-                    )
-                )
-
-                try:
-                    resp = self._resilient_llm_invoke(
-                        [HumanMessage(content=prompt_for_try)],
-                        stream_callback=(
-                            (
-                                lambda token: self._emit_stream_token(
-                                    stream_callback,
-                                    phase="counter",
-                                    token=token,
-                                    step=step_num,
-                                )
-                            )
-                            if stream_callback and stance_try == 1
-                            else None
-                        ),
-                    )
-                    step_response = (resp.content or "").strip()
-                except Exception as e:
-                    self._log(
-                        f"⚠️ Counter-step {step_num} generation failed: {e}",
-                        "warning",
-                    )
-                    break
-
-                last_candidate = self._parse_step_text(step_response)
-
-                if not last_candidate or last_candidate.strip().upper() == "DONE":
-                    step_text = last_candidate
-                    break
-
-                if self._is_counter_step_consistent(last_candidate):
-                    is_compatible, compat_reason = (
-                        self._is_counter_step_compatible_with_history(
-                            candidate_step=last_candidate,
-                            previous_steps=steps,
-                            claim=claim,
-                        )
-                    )
-                    if is_compatible:
-                        step_text = last_candidate
-                        break
-                    invalid_reason = (
-                        "it contradicts previous accepted steps or claim facts "
-                        f"({compat_reason})"
-                    )
-                else:
-                    invalid_reason = "it partially supports the claim."
-
-                if stance_try <= self._max_stance_rewrites:
-                    self._log(
-                        f"⚠️ Counter-step {step_num}: invalid step "
-                        f"({invalid_reason}); rewriting "
-                        f"({stance_try}/{self._max_stance_rewrites})",
-                        "warning",
-                    )
-                    continue
-
-                self._log(
-                    f"⚠️ Counter-step {step_num}: could not enforce anti-claim and "
-                    f"consistency constraints after {self._max_stance_rewrites + 1} attempts, stopping",
-                    "warning",
-                )
-                step_text = ""
-                break
-
+            step_text = self._generate_counter_step_from_plan(
+                claim=claim,
+                routing_decision=routing_decision,
+                attack_id=step_attack_id,
+                attack_desc=step_attack_desc,
+                reasoner_conclusion=reasoner_conclusion,
+                knowledge_base=knowledge_base,
+                statutes_list=statutes_list,
+                precedents_list=precedents_list,
+                plan=plan,
+                plan_index=idx,
+                plan_step=plan_step,
+                previous_steps=steps,
+                previous_summaries=step_summaries,
+                used_norms=used_norms,
+                stream_callback=stream_callback,
+            )
             if not step_text:
-                self._log(
-                    f"⚠️ Counter-step {step_num}: no valid anti-claim step generated, stopping",
-                    "warning",
+                raise RuntimeError(
+                    f"Planned counter step {idx} could not be generated with valid content"
                 )
-                break
-
-            if step_text.strip().upper() == "DONE":
-                self._log(
-                    f"⚠️ Counter-step {step_num}: no new norm available, stopping",
-                    "warning",
-                )
-                break
-
-            # --- GARBAGE DETECTION (degenerate LLM output) ---
-            if self._is_garbage_text(step_text):
-                self._log(
-                    f"🗑️ Counter-step {step_num}: garbage/degenerate output detected "
-                    f"(token repetition loop), discarding and stopping chain",
-                    "warning",
-                )
-                break
-
-            # --- REPETITION DETECTION (programmatic) ---
-            if steps and self._is_repetitive_step(step_text, steps):
-                self._log(
-                    f"🔁 Counter-step {step_num}: too similar to a previous step, "
-                    f"stopping chain (repetition detected)"
-                )
-                break
-
             steps.append(step_text)
-
+            step_attacks.append(step_attack_id)
+            step_summaries.append(self._compact_step_summary(step_text))
             new_norms = self._extract_cited_articles(step_text)
-            used_norms.extend(new_norms)
+            for norm in new_norms:
+                if norm not in used_norms:
+                    used_norms.append(norm)
 
-            # Detect precedent mentions in step text
             prec_mentions = [
                 p for p in allowed_precedents if p.lower() in step_text.lower()
             ]
             prec_info = f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
-
             self._log(
-                f"✅ Counter-step {step_num}: {step_text[:80]}... "
+                f"✅ Counter-step {idx}: {step_text[:80]}... "
+                f"| attack: {step_attack_id} "
                 f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
             )
 
-            # Last possible step: forced stop
-            if is_last_possible:
-                self._log(f"🏁 Counter-chain stopped at safety cap (step {step_num})")
-                break
-
-        if not steps:
-            self._log("❌ No steps generated in iterative counter-chain", "error")
-            return "", []
+        if len(steps) < min_steps:
+            raise RuntimeError(
+                "Counter planner/executor produced fewer steps than chain_min_steps"
+            )
 
         self._log(
-            f"📊 Iterative counter-chain complete: {len(steps)} steps, "
+            f"📊 Planned counter-chain complete: {len(steps)} steps, "
             f"{len(set(used_norms))} unique norms"
         )
+        return (
+            self._assemble_counter_raw_response(claim, steps, step_attacks),
+            steps,
+            step_attacks,
+        )
 
-        raw_response = self._assemble_counter_raw_response(claim, steps, attack_id)
-        return raw_response, steps
+    def _generate_counter_plan(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        selected_attack_ids: List[str],
+        attack_catalog: str,
+        reasoner_conclusion: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        min_steps: int,
+        max_steps: int,
+    ) -> List[Dict[str, str]]:
+        """Generate and validate an execution plan for counter reasoning."""
+        reasoner_block = (
+            f"\nReasoner conclusion to oppose:\n{reasoner_conclusion}\n"
+            if reasoner_conclusion
+            else ""
+        )
+        prompt = f"""You are a legal planning engine for Italian counter-argumentation.
+
+Create a step-by-step plan to ATTACK and REJECT the claim.
+Return ONLY valid JSON (no markdown, no prose) with this schema:
+{{
+  "steps": [
+    {{
+      "id": "C1",
+      "goal": "specific objective to weaken claim",
+      "focus": "single weak point for this step",
+      "expected_norm": "article expected to be cited or 'N/A'",
+      "attack_id": "one of the selected attack ids"
+    }}
+  ]
+}}
+
+CLAIM:
+"{claim}"
+{reasoner_block}
+DOMAIN: {routing_decision.domain}
+CAUSAL TYPE: {routing_decision.causal_type_id}
+THEORY: {routing_decision.theory_id}
+SELECTED ATTACK IDS:
+{", ".join(selected_attack_ids)}
+
+ATTACK CATALOG:
+{attack_catalog}
+
+ALLOWED STATUTES:
+{statutes_list}
+ALLOWED PRECEDENTS:
+{precedents_list}
+KNOWLEDGE BASE:
+{knowledge_base}
+
+RULES:
+- Number of steps must be between {min_steps} and {max_steps}.
+- Each step must be materially different (no overlap/rephrasing).
+- Steps must be anti-claim only.
+- Each step must include one attack_id from the selected attack ids.
+- Distribute selected attacks across the plan whenever possible.
+- Keep each 'goal' and 'focus' concise (max 25 words each).
+"""
+        last_error = "planner failed"
+        for attempt in range(1, self._max_plan_retries + 1):
+            try:
+                resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                raw = (resp.content or "").strip()
+                plan = self._parse_counter_plan(
+                    raw=raw,
+                    min_steps=min_steps,
+                    max_steps=max_steps,
+                    allowed_attack_ids=selected_attack_ids,
+                )
+                if plan:
+                    return plan
+                last_error = "parsed empty plan"
+            except Exception as e:
+                last_error = str(e)
+            self._log(
+                f"⚠️ Counter planner attempt {attempt}/{self._max_plan_retries} failed: {last_error}",
+                "warning",
+            )
+        raise RuntimeError(f"Counter planner failed: {last_error}")
+
+    def _parse_counter_plan(
+        self,
+        raw: str,
+        min_steps: int,
+        max_steps: int,
+        allowed_attack_ids: List[str],
+    ) -> List[Dict[str, str]]:
+        """Parse planner JSON and enforce plan quality constraints."""
+        payload_text = raw.strip()
+        if not payload_text.startswith("{"):
+            match = re.search(r"\{[\s\S]*\}", payload_text)
+            if match:
+                payload_text = match.group(0)
+        data = json.loads(payload_text)
+        steps_raw = data.get("steps")
+        if not isinstance(steps_raw, list):
+            raise ValueError("planner output missing 'steps' array")
+
+        cleaned: List[Dict[str, str]] = []
+        for idx, item in enumerate(steps_raw, start=1):
+            if not isinstance(item, dict):
+                continue
+            goal = str(item.get("goal", "")).strip()
+            focus = str(item.get("focus", "")).strip()
+            expected_norm = str(item.get("expected_norm", "")).strip() or "N/A"
+            attack_id = str(item.get("attack_id", "")).strip()
+            if not goal or not focus or not attack_id:
+                continue
+            if attack_id not in allowed_attack_ids:
+                continue
+            cleaned.append(
+                {
+                    "id": str(item.get("id", f"C{idx}")).strip() or f"C{idx}",
+                    "goal": goal,
+                    "focus": focus,
+                    "expected_norm": expected_norm,
+                    "attack_id": attack_id,
+                }
+            )
+
+        if len(cleaned) < min_steps or len(cleaned) > max_steps:
+            raise ValueError(
+                f"invalid counter-plan length {len(cleaned)} (expected {min_steps}-{max_steps})"
+            )
+        if self._has_overlapping_plan_steps(cleaned):
+            raise ValueError("counter planner produced overlapping/repetitive steps")
+
+        min_distinct_attacks = min(2, len(allowed_attack_ids))
+        distinct_attacks = {step.get("attack_id", "") for step in cleaned}
+        if len(distinct_attacks) < min_distinct_attacks:
+            raise ValueError(
+                "counter planner did not distribute attacks across planned steps"
+            )
+        return cleaned
+
+    def _has_overlapping_plan_steps(self, plan_steps: List[Dict[str, str]]) -> bool:
+        """Detect obvious overlap across planned goals/focuses."""
+        normalized = []
+        for step in plan_steps:
+            text = f"{step.get('goal', '')} {step.get('focus', '')}".lower()
+            text = re.sub(r"[^a-z0-9àèéìòù\s]", " ", text)
+            words = {w for w in text.split() if len(w) > 3}
+            normalized.append(words)
+
+        for i in range(len(normalized)):
+            for j in range(i + 1, len(normalized)):
+                a = normalized[i]
+                b = normalized[j]
+                if not a or not b:
+                    continue
+                overlap = len(a & b) / len(a | b)
+                if overlap >= 0.65:
+                    return True
+        return False
+
+    def _generate_counter_step_from_plan(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        attack_id: str,
+        attack_desc: str,
+        reasoner_conclusion: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        plan: List[Dict[str, str]],
+        plan_index: int,
+        plan_step: Dict[str, str],
+        previous_steps: List[str],
+        previous_summaries: List[str],
+        used_norms: List[str],
+        stream_callback: Optional[Callable[[dict], None]],
+    ) -> str:
+        """Execute one planned counter step with validation + retries."""
+        base_prompt = self._build_counter_step_prompt_from_plan(
+            claim=claim,
+            routing_decision=routing_decision,
+            attack_id=attack_id,
+            attack_desc=attack_desc,
+            reasoner_conclusion=reasoner_conclusion,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            plan=plan,
+            plan_index=plan_index,
+            plan_step=plan_step,
+            previous_summaries=previous_summaries,
+            used_norms=used_norms,
+        )
+        last_candidate = ""
+        last_reason = "invalid output"
+        for attempt in range(1, self._max_step_rewrites + 2):
+            prompt = (
+                base_prompt
+                if attempt == 1
+                else self._build_stance_rewrite_prompt(
+                    original_prompt=base_prompt,
+                    invalid_step=last_candidate,
+                    invalid_reason=last_reason,
+                )
+            )
+            try:
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=prompt)],
+                    stream_callback=(
+                        (
+                            lambda token: self._emit_stream_token(
+                                stream_callback,
+                                phase="counter",
+                                token=token,
+                                step=plan_index,
+                            )
+                        )
+                        if stream_callback and attempt == 1
+                        else None
+                    ),
+                )
+                candidate = self._parse_step_text((resp.content or "").strip())
+            except Exception as exc:
+                last_reason = f"generation error: {exc}"
+                self._log(
+                    f"⚠️ Counter-step {plan_index} generation failed (attempt {attempt}): {exc}",
+                    "warning",
+                )
+                continue
+
+            last_candidate = candidate
+            ok, reason = self._validate_counter_step_candidate(
+                candidate_step=candidate,
+                previous_steps=previous_steps,
+                claim=claim,
+            )
+            if ok:
+                return candidate
+            if (
+                reason == "semantic repetition"
+                and attempt == self._max_step_rewrites + 1
+                and candidate
+                and self._is_counter_step_consistent(candidate)
+                and not self._is_garbage_text(candidate)
+                and (
+                    not previous_steps
+                    or not self._is_repetitive_step(candidate, previous_steps)
+                )
+            ):
+                self._log(
+                    f"⚠️ Counter-step {plan_index}: accepting semantically-close step after retries",
+                    "warning",
+                )
+                return candidate
+            last_reason = reason
+            self._log(
+                f"⚠️ Counter-step {plan_index} rejected ({reason}) "
+                f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
+                "warning",
+            )
+        return ""
+
+    def _build_counter_step_prompt_from_plan(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        attack_id: str,
+        attack_desc: str,
+        reasoner_conclusion: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        plan: List[Dict[str, str]],
+        plan_index: int,
+        plan_step: Dict[str, str],
+        previous_summaries: List[str],
+        used_norms: List[str],
+    ) -> str:
+        """Create prompt for one planned counter step."""
+        plan_lines = "\n".join(
+            f"{idx}. {step.get('goal', '')} | focus: {step.get('focus', '')} | attack: {step.get('attack_id', '')}"
+            for idx, step in enumerate(plan, start=1)
+        )
+        summary_lines = (
+            "\n".join(
+                f"- Step {idx}: {summary}"
+                for idx, summary in enumerate(previous_summaries, start=1)
+            )
+            if previous_summaries
+            else "- none"
+        )
+        used_norms_text = ", ".join(used_norms) if used_norms else "none"
+        reasoner_block = (
+            f"\nCONCLUSION TO OPPOSE:\n{reasoner_conclusion}\n"
+            if reasoner_conclusion
+            else ""
+        )
+        return f"""You are an expert Italian jurist.
+You must execute ONLY one planned COUNTER step, keeping strict anti-claim stance.
+
+CLAIM:
+"{claim}"
+{reasoner_block}
+DOMAIN: {routing_decision.domain}
+CAUSAL TYPE: {routing_decision.causal_type_id}
+THEORY: {routing_decision.theory_id}
+ATTACK STRATEGY: {attack_id} - {attack_desc}
+
+KNOWLEDGE BASE (use only these sources):
+{knowledge_base}
+
+ALLOWED STATUTES:
+{statutes_list}
+ALLOWED PRECEDENTS:
+{precedents_list}
+
+GLOBAL PLAN:
+{plan_lines}
+
+CURRENT STEP TO EXECUTE: {plan_index}
+- Goal: {plan_step.get("goal", "")}
+- Focus: {plan_step.get("focus", "")}
+- Expected norm: {plan_step.get("expected_norm", "N/A")}
+- Attack id for this step: {plan_step.get("attack_id", attack_id)}
+
+ALREADY GENERATED STEP SUMMARIES:
+{summary_lines}
+
+NORMS ALREADY USED: {used_norms_text}
+
+HARD RULES:
+- Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
+- It must advance the plan and add NEW information, not paraphrase prior steps.
+- It must attack the claim only (no balancing, no claim-friendly language).
+- Never invent facts outside claim.
+- Never contradict previous accepted steps.
+- Cite at least one statute when legally possible.
+- Align this step explicitly to attack "{plan_step.get("attack_id", attack_id)}".
+
+RESPONSE FORMAT:
+STEP: [italian atomic counter-step]
+"""
+
+    def _validate_counter_step_candidate(
+        self, candidate_step: str, previous_steps: List[str], claim: str
+    ) -> tuple[bool, str]:
+        """Validation checks for one counter step candidate."""
+        text = (candidate_step or "").strip()
+        if not text or text.upper() == "DONE":
+            return False, "empty step"
+        if self._is_garbage_text(text):
+            return False, "garbage output"
+        if not self._is_counter_step_consistent(text):
+            return False, "stance drift (not strictly anti-claim)"
+        if not self._extract_cited_articles(text):
+            return False, "missing statutory citation"
+        compatible, reason = self._is_counter_step_compatible_with_history(
+            candidate_step=text,
+            previous_steps=previous_steps,
+            claim=claim,
+        )
+        if not compatible:
+            return False, reason or "history incompatibility"
+        if previous_steps and self._is_repetitive_step(text, previous_steps):
+            return False, "lexical repetition"
+        if previous_steps and self._is_semantically_redundant_step(
+            candidate_step=text,
+            previous_steps=previous_steps,
+            claim=claim,
+            role="counter",
+        ):
+            return False, "semantic repetition"
+        return True, ""
+
+    def _is_semantically_redundant_step(
+        self,
+        candidate_step: str,
+        previous_steps: List[str],
+        claim: str,
+        role: str,
+    ) -> bool:
+        """LLM-based semantic redundancy check (NEW vs REPEAT)."""
+        if not previous_steps:
+            return False
+        context_prev = "\n".join(
+            f"{idx}. {step}" for idx, step in enumerate(previous_steps[-3:], start=1)
+        )
+        prompt = f"""Valuta se il NUOVO passo aggiunge davvero informazione giuridica nuova.
+
+CLAIM:
+{claim}
+
+RUOLO ARGOMENTATIVO: {role}
+
+PASSI PRECEDENTI:
+{context_prev}
+
+NUOVO PASSO:
+{candidate_step}
+
+Regola:
+- Rispondi REPEAT se il nuovo passo è sostanzialmente parafrasi/duplicazione dei precedenti.
+- Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
+
+Rispondi con UNA SOLA parola: NEW oppure REPEAT.
+"""
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+            return "REPEAT" in answer
+        except Exception:
+            return False
+
+    @staticmethod
+    def _compact_step_summary(step_text: str) -> str:
+        """Compact summary used as execution memory for following steps."""
+        first_sentence = re.split(r"(?<=[.!?])\s+", step_text.strip())[0]
+        first_sentence = re.sub(r"\s+", " ", first_sentence).strip()
+        return first_sentence[:220]
 
     @staticmethod
     def _emit_stream_token(
@@ -1350,7 +1662,7 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self,
         claim: str,
         steps: List[str],
-        attack_id: str,
+        step_attack_ids: List[str],
     ) -> str:
         """Assemble counter-argument raw response from iterative steps.
 
@@ -1391,10 +1703,19 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
             "event_was_foreseeable": "l'evento era prevedibile e non fortuito",
             "risk_was_assumed_or_controllable": "il rischio era assunto o controllabile",
         }
-        attack_desc_it = attack_descriptions_it.get(
-            attack_id,
-            "le norme citate indeboliscono il fondamento giuridico della pretesa",
-        )
+        unique_attacks = list(dict.fromkeys(a for a in step_attack_ids if a))
+        attack_desc_list = [
+            attack_descriptions_it.get(
+                attack_id,
+                "le norme citate indeboliscono il fondamento giuridico della pretesa",
+            )
+            for attack_id in unique_attacks
+        ]
+        if not attack_desc_list:
+            attack_desc_list = [
+                "le norme citate indeboliscono il fondamento giuridico della pretesa"
+            ]
+        attack_desc_it = "; ".join(attack_desc_list[:3])
 
         # Ensure the conclusion opposes the claim without reusing drifted text.
         conclusion_text = (
@@ -1458,5 +1779,15 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
 @dataclass
 class AttackSelection:
     pool: List[str]
-    attack_id: str
-    description: str
+    attack_ids: List[str]
+    descriptions: Dict[str, str]
+
+    @property
+    def attack_id(self) -> str:
+        """Primary attack id (first selected), kept for compatibility."""
+        return self.attack_ids[0] if self.attack_ids else ""
+
+    @property
+    def description(self) -> str:
+        """Primary attack description (first selected), kept for compatibility."""
+        return self.descriptions.get(self.attack_id, "")

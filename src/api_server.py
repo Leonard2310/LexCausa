@@ -898,7 +898,14 @@ def _run_full_pipeline(
         print(
             f"   - Causal type: {counter_result.causal_type_id} / {counter_result.theory_id}"
         )
-        print(f"   - Selected attack: {counter_result.selected_attack_id}")
+        print(
+            "   - Selected attacks: "
+            + (
+                ", ".join(counter_result.selected_attack_ids)
+                if counter_result.selected_attack_ids
+                else counter_result.selected_attack_id
+            )
+        )
         print(
             f"   - Statutes for counter-reasoning: {len(counter_result.relevant_statutes)}"
         )

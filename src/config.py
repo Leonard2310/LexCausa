@@ -392,7 +392,7 @@ class Settings(BaseSettings):
         description="Safety cap: maximum reasoning steps per iterative chain (LLM decides when to stop).",
     )
     chain_min_steps: int = Field(
-        default=5,
+        default=3,
         alias="CHAIN_MIN_STEPS",
         description="Minimum reasoning steps before the LLM is allowed to conclude.",
     )

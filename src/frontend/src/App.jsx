@@ -30,6 +30,30 @@ const PIPELINE_PHASES = [
   { key: 'final_evaluation', label: 'Verifica finale' },
 ];
 
+const ATTACK_LABELS_IT = {
+  but_for_fails: 'Controfattuale fallisce',
+  no_covering_law_or_low_support: 'Legge di copertura assente/debole',
+  alternative_causal_path: 'Percorso causale alternativo',
+  duty_to_act_missing_for_omission: "Manca l'obbligo giuridico di agire",
+  abnormal_or_atypical_chain: 'Catena causale atipica/anomala',
+  sole_sufficient_cause: 'Causa sopravvenuta da sola sufficiente',
+  intervening_cause_breaks_chain: 'Fattore sopravvenuto interrompe il nesso',
+  force_majeure_filter: 'Filtro caso fortuito/forza maggiore',
+  damage_is_indirect: 'Danno indiretto/non immediato',
+  damage_not_foreseeable: 'Danno non prevedibile ex ante',
+  creditor_contributed: 'Concorso del creditore',
+  creditor_failed_to_mitigate: 'Mancata mitigazione del danno',
+  quantification_uncertain: 'Quantificazione danno incerta/speculativa',
+  competence_or_procedure_regular: 'Competenza e procedura regolari',
+  motivation_is_sufficient: 'Motivazione sufficiente',
+  participation_not_essential_or_not_denied: 'Partecipazione non decisiva/garanzie rispettate',
+  silence_rule_not_applicable: 'Regola su silenzio/termini non applicabile',
+  vizio_non_invalidante_21_octies: 'Vizio non invalidante (art. 21-octies)',
+  event_was_avoidable: 'Evento evitabile con diligenza',
+  event_was_foreseeable: 'Evento prevedibile',
+  risk_was_assumed_or_controllable: 'Rischio assunto o controllabile',
+};
+
 const sourceShortLabel = (source) => {
   if (source === 'codice_civile') return 'c.c.';
   if (source === 'codice_penale') return 'c.p.';
@@ -1343,6 +1367,66 @@ export default function App() {
     );
   };
 
+  const normalizeAttackLabel = (attackId = '') =>
+    ATTACK_LABELS_IT[String(attackId || '').trim()]
+    || String(attackId || '')
+      .replace(/_/g, ' ')
+      .trim();
+
+  const renderCounterAttacksUsed = (counterData = {}, keyPrefix = 'counter-attacks') => {
+    if (!counterData || typeof counterData !== 'object') return null;
+
+    const selectedIds = Array.isArray(counterData.selected_attack_ids)
+      ? counterData.selected_attack_ids.filter(Boolean)
+      : [];
+    const primaryId = counterData.selected_attack_id || '';
+    const uniqueSelected = selectedIds.length > 0
+      ? [...new Set(selectedIds)]
+      : (primaryId ? [primaryId] : []);
+
+    const byStepRaw = counterData?.aspic_ir?.metadata?.selected_attack_by_step;
+    const byStep = Array.isArray(byStepRaw)
+      ? byStepRaw
+        .filter((item) => item && typeof item === 'object' && item.attack_id)
+        .map((item) => ({
+          step: Number(item.step || 0),
+          attack_id: String(item.attack_id),
+        }))
+        .sort((a, b) => a.step - b.step)
+      : [];
+
+    if (uniqueSelected.length === 0 && byStep.length === 0) return null;
+
+    return (
+      <div className="subsection counter-attack-usage">
+        <h4>Attacchi Utilizzati</h4>
+        {uniqueSelected.length > 0 && (
+          <div className="counter-attack-chip-row">
+            {uniqueSelected.map((attackId, idx) => (
+              <span
+                key={`${keyPrefix}-selected-${attackId}-${idx}`}
+                className="counter-attack-chip"
+                title={attackId}
+              >
+                {normalizeAttackLabel(attackId)}
+              </span>
+            ))}
+          </div>
+        )}
+        {byStep.length > 0 && (
+          <ul className="counter-attack-step-list">
+            {byStep.map((item, idx) => (
+              <li key={`${keyPrefix}-step-${item.step}-${idx}`}>
+                <strong>Step {item.step || idx + 1}</strong>
+                <span>{normalizeAttackLabel(item.attack_id)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  };
+
   const renderAspicCitationPills = (citations = {}, keyPrefix = 'aspic-cit') => {
     if (!citations || typeof citations !== 'object') return null;
     const statutes = Array.isArray(citations.statutes) ? citations.statutes : [];
@@ -2487,6 +2571,10 @@ export default function App() {
                         {run?.counter_reasoner?.raw_response && (
                           <div className="result-section">
                             <h4>Argomentazione Contraria</h4>
+                            {renderCounterAttacksUsed(
+                              run.counter_reasoner,
+                              `history-counter-attacks-${idx}`,
+                            )}
                             {renderStructuredResponse({ parsed: histCounterParsed })}
                           </div>
                         )}
@@ -2788,6 +2876,11 @@ export default function App() {
                         <h4>Causalità del Reasoner (da Attaccare)</h4>
                         {renderCausalityCard('Target Causale da Attaccare', pipelineResult.counter_reasoner.reasoner_causality)}
                       </div>
+                    )}
+
+                    {renderCounterAttacksUsed(
+                      pipelineResult.counter_reasoner,
+                      'pipeline-counter-attacks',
                     )}
 
                     {pipelineResult.counter_reasoner?.warrant_info && (

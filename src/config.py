@@ -15,6 +15,7 @@ Usage:
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import ClassVar
 
 from dotenv import load_dotenv
 from pydantic import Field, model_validator
@@ -56,13 +57,18 @@ class Settings(BaseSettings):
     # =========================================================================
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY_V1")
     _groq_api_keys: list[str] = []  # populated dynamically by validator
-    groq_model: str = Field(
-        default="meta-llama/llama-4-scout-17b-16e-instruct", alias="GROQ_MODEL"
-    )
-    groq_fallback_model: str = Field(
-        default="meta-llama/llama-4-maverick-17b-128e-instruct",
-        alias="GROQ_FALLBACK_MODEL",
-    )
+    # Model catalog is code-owned (not env-driven).
+    MODEL_ALIAS_MAP: ClassVar[dict[str, str]] = {
+        "groq_llama_scout_17b": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "groq_llama_maverick_17b": "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "gpt_oss_120b": "openai/gpt-oss-120b",
+    }
+    PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
+        "groq_llama_scout_17b",
+        "groq_llama_maverick_17b",
+    ]
+    REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "groq_llama_maverick_17b"
+    COUNTER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "groq_llama_maverick_17b"
 
     # =========================================================================
     # Retry / Resilience Configuration
@@ -584,9 +590,51 @@ class Settings(BaseSettings):
         return list(self._groq_api_keys)
 
     @property
+    def model_alias_map(self) -> dict[str, str]:
+        """Centralized alias -> provider model mapping."""
+        return dict(self.MODEL_ALIAS_MAP)
+
+    @property
+    def available_model_aliases(self) -> list[str]:
+        """Aliases exposed to frontend model selectors."""
+        return list(self.model_alias_map.keys())
+
+    @property
+    def pipeline_model_order_aliases(self) -> list[str]:
+        """Ordered model aliases used in resilient runtime calls."""
+        deduped: list[str] = []
+        for alias in self.PIPELINE_MODEL_ORDER_ALIASES:
+            if alias not in deduped:
+                deduped.append(alias)
+        return deduped
+
+    @property
+    def reasoner_default_model(self) -> str:
+        """Default frontend alias for Reasoner model selection."""
+        return self.REASONER_DEFAULT_MODEL_ALIAS
+
+    @property
+    def counter_default_model(self) -> str:
+        """Default frontend alias for Counter-Reasoner model selection."""
+        return self.COUNTER_DEFAULT_MODEL_ALIAS
+
+    def resolve_model_name(self, alias_or_model: str | None) -> str:
+        """Resolve alias to provider model id; pass-through raw ids unchanged."""
+        alias_map = self.model_alias_map
+        if not alias_or_model:
+            first_alias = self.pipeline_model_order_aliases[0]
+            return alias_map.get(first_alias, self.MODEL_ALIAS_MAP[first_alias])
+        return alias_map.get(alias_or_model, alias_or_model)
+
+    @property
     def groq_models(self) -> list[str]:
-        """Get ordered list of models: primary first, then fallback."""
-        return [self.groq_model, self.groq_fallback_model]
+        """Ordered provider model ids for runtime resilience loop."""
+        models: list[str] = []
+        for alias in self.pipeline_model_order_aliases:
+            model = self.resolve_model_name(alias)
+            if model and model not in models:
+                models.append(model)
+        return models
 
     @property
     def project_root(self) -> Path:
@@ -632,7 +680,7 @@ class Settings(BaseSettings):
             "valid": len(issues) == 0,
             "issues": issues,
             "neo4j_uri": self.neo4j_uri,
-            "groq_model": self.groq_model,
+            "pipeline_models": self.groq_models,
             "embedding_model": self.embedding_model,
         }
 
@@ -658,7 +706,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"Project Root: {settings.project_root}")
     print(f"Neo4j URI: {settings.neo4j_uri}")
-    print(f"Groq Model: {settings.groq_model}")
+    print(f"Pipeline Models: {settings.groq_models}")
     print(f"Embedding Model: {settings.embedding_model}")
     print()
     validation = settings.validate_config()

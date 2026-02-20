@@ -509,7 +509,7 @@ RULES:
 
     try:
         llm = get_chat_groq(
-            model=settings.groq_model,
+            model=settings.groq_models[0],
             temperature=0.0,
             max_tokens=200,
             api_key=settings.groq_api_key or None,

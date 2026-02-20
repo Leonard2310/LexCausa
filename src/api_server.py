@@ -475,12 +475,16 @@ def get_settings():
 
     The frontend uses this to populate the Settings panel.
     """
+    selectable_models = settings.available_model_aliases
+
     return jsonify(
         {
-            "models": settings.groq_models,
+            "models": selectable_models,
+            "model_mapping": settings.model_alias_map,
             "defaults": {
-                "groq_model": settings.groq_model,
-                "groq_fallback_model": settings.groq_fallback_model,
+                "reasoner_model": settings.reasoner_default_model,
+                "counter_model": settings.counter_default_model,
+                "pipeline_model_order": settings.pipeline_model_order_aliases,
                 "llm_temperature": settings.llm_temperature,
                 "llm_max_tokens": settings.llm_max_tokens,
                 "search_top_k_default": settings.search_top_k_default,
@@ -512,7 +516,7 @@ def _build_agent_config(
 ) -> AgentConfig:
     """Build an AgentConfig from optional frontend overrides."""
     return AgentConfig(
-        model_name=model_override or settings.groq_model,
+        model_name=settings.resolve_model_name(model_override),
         temperature=(
             temperature if temperature is not None else settings.llm_temperature
         ),
@@ -723,7 +727,7 @@ def _run_full_pipeline(
     fe_settings = data.get("settings", {}) or {}
     fe_temperature = fe_settings.get("llm_temperature")
     fe_max_tokens = fe_settings.get("llm_max_tokens")
-    # Per-step model selection (primary + fallback derived automatically)
+    # Per-step model selection (alias resolved via settings model map)
     fe_reasoner_model = fe_settings.get("reasoner_model")
     fe_counter_model = fe_settings.get("counter_model")
     # AQA weights

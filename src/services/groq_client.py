@@ -390,7 +390,7 @@ def get_chat_groq(
     Create a ChatGroq instance with the current API key.
 
     Args:
-        model: Model name; defaults to settings.groq_model.
+        model: Model name; defaults to first runtime model in settings.groq_models.
         temperature: LLM temperature; defaults to settings.llm_temperature.
         max_tokens: Max tokens; defaults to settings.llm_max_tokens.
         api_key: Explicit key override.
@@ -401,7 +401,7 @@ def get_chat_groq(
     key = api_key or _current_key()
     return ChatGroq(
         api_key=key,
-        model=model or settings.groq_model,
+        model=model or settings.groq_models[0],
         temperature=(
             temperature if temperature is not None else settings.llm_temperature
         ),

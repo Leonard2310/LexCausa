@@ -126,8 +126,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [pipelineSettings, setPipelineSettings] = useState({
-    reasoner_model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
-    counter_model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
+    reasoner_model: 'groq_llama_maverick_17b',
+    counter_model: 'groq_llama_maverick_17b',
     llm_temperature: 0.3,
     llm_max_tokens: 8192,
     search_top_k_default: 100,
@@ -184,8 +184,8 @@ export default function App() {
         const d = data.defaults || {};
         setPipelineSettings((prev) => ({
           ...prev,
-          reasoner_model: d.reasoner_model || d.groq_fallback_model || d.groq_model || prev.reasoner_model,
-          counter_model: d.counter_model || d.groq_fallback_model || d.groq_model || prev.counter_model,
+          reasoner_model: d.reasoner_model || prev.reasoner_model,
+          counter_model: d.counter_model || prev.counter_model,
           llm_temperature: d.llm_temperature ?? prev.llm_temperature,
           llm_max_tokens: d.llm_max_tokens ?? prev.llm_max_tokens,
           search_top_k_default: d.search_top_k_default ?? prev.search_top_k_default,
@@ -2047,7 +2047,7 @@ export default function App() {
                     onChange={(e) => updateSetting('reasoner_model', e.target.value)}
                   >
                     {availableModels.map((m) => (
-                      <option key={m} value={m}>{m.split('/').pop()}</option>
+                      <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
                 </label>
@@ -2058,7 +2058,7 @@ export default function App() {
                     onChange={(e) => updateSetting('counter_model', e.target.value)}
                   >
                     {availableModels.map((m) => (
-                      <option key={m} value={m}>{m.split('/').pop()}</option>
+                      <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
                 </label>

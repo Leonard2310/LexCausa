@@ -168,8 +168,6 @@ GROQ_API_KEY_V1=your_groq_api_key_here
 GROQ_API_KEY_V2=your_second_key_here
 ...
 GROQ_API_KEY_VN=your_third_key_here
-GROQ_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
-GROQ_FALLBACK_MODEL=meta-llama/llama-4-maverick-17b-128e-instruct
 
 # API Server
 API_HOST=0.0.0.0
@@ -289,8 +287,6 @@ These have sensible defaults and can be overridden in `.env` or via the frontend
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GROQ_MODEL` | `llama-4-scout-17b-16e-instruct` | Primary LLM model |
-| `GROQ_FALLBACK_MODEL` | `llama-4-maverick-17b-128e-instruct` | Fallback LLM model |
 | `GROQ_MAX_RETRIES` | `3` | Max retries per API call |
 | `GROQ_RETRY_BASE_DELAY` | `1.0` | Base delay (s) for exponential backoff |
 | `LLM_TEMPERATURE` | `0.3` | LLM temperature |
@@ -298,6 +294,8 @@ These have sensible defaults and can be overridden in `.env` or via the frontend
 | `API_HOST` | `0.0.0.0` | API server bind address |
 | `API_PORT` | `8000` | API server port |
 | `DEBUG` | `true` | Enable debug mode |
+
+Model catalog and aliases (`groq_llama_scout_17b`, `groq_llama_maverick_17b`, `gpt_oss_120b`) are code-defined in `src/config.py`.
 
 ### Optional — Embedding & Search
 

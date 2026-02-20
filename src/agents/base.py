@@ -34,7 +34,7 @@ class AgentConfig:
 
     # Groq LLM settings
     groq_api_key: str = field(default_factory=lambda: settings.groq_api_key)
-    model_name: str = field(default_factory=lambda: settings.groq_model)
+    model_name: str = field(default_factory=lambda: settings.groq_models[0])
     temperature: float = field(default_factory=lambda: settings.llm_temperature)
     max_tokens: int = field(default_factory=lambda: settings.llm_max_tokens)
 

@@ -172,7 +172,7 @@ class ClaimClassifier:
             )
 
         self.client = get_groq_client(api_key=self.api_key)
-        self.model = model or settings.groq_model
+        self.model = model or settings.resolve_model_name("groq_llama_scout_17b")
 
     def _build_messages(self, claim: str) -> list[dict]:
         """Build the message chain with few-shot examples."""

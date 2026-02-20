@@ -135,6 +135,66 @@ class Settings(BaseSettings):
         alias="SEARCH_USE_TOP_N_LIBRI",
         description="How many top classified libri to query during statute search.",
     )
+    search_hybrid_vector_weight: float = Field(
+        default=0.30,
+        alias="SEARCH_HYBRID_VECTOR_WEIGHT",
+        description="Weight of vector-ranked candidates in hybrid statute retrieval score fusion.",
+    )
+    search_hybrid_fulltext_weight: float = Field(
+        default=0.70,
+        alias="SEARCH_HYBRID_FULLTEXT_WEIGHT",
+        description="Weight of fulltext-ranked candidates in hybrid statute retrieval score fusion.",
+    )
+    search_hybrid_admin_vector_weight: float = Field(
+        default=0.35,
+        alias="SEARCH_HYBRID_ADMIN_VECTOR_WEIGHT",
+        description="Vector weight used for administrative-code hybrid retrieval.",
+    )
+    search_hybrid_admin_fulltext_weight: float = Field(
+        default=0.65,
+        alias="SEARCH_HYBRID_ADMIN_FULLTEXT_WEIGHT",
+        description="Fulltext weight used for administrative-code hybrid retrieval.",
+    )
+    search_hybrid_candidate_multiplier: int = Field(
+        default=6,
+        alias="SEARCH_HYBRID_CANDIDATE_MULTIPLIER",
+        description="Candidate expansion factor: preliminary candidates = top_k * multiplier before fusion.",
+    )
+    search_hybrid_candidate_min: int = Field(
+        default=40,
+        alias="SEARCH_HYBRID_CANDIDATE_MIN",
+        description="Minimum number of preliminary candidates per source/libro before fusion.",
+    )
+    search_hybrid_fused_pool_multiplier: int = Field(
+        default=2,
+        alias="SEARCH_HYBRID_FUSED_POOL_MULTIPLIER",
+        description="Multiplier for intermediate fused pool size before final top_k truncation.",
+    )
+    search_hybrid_filter_priority_decay: float = Field(
+        default=0.4,
+        alias="SEARCH_HYBRID_FILTER_PRIORITY_DECAY",
+        description="Priority decay applied to secondary/tertiary classifier filters in fused ranking.",
+    )
+    search_hybrid_filter_priority_floor: float = Field(
+        default=0.35,
+        alias="SEARCH_HYBRID_FILTER_PRIORITY_FLOOR",
+        description="Lower bound for classifier-filter priority scaling in fused ranking.",
+    )
+    search_hybrid_keyword_bonus_max: float = Field(
+        default=0.20,
+        alias="SEARCH_HYBRID_KEYWORD_BONUS_MAX",
+        description="Maximum lexical bonus added to fused score when query terms overlap article title/articolo.",
+    )
+    search_hybrid_keyword_bonus_scale: float = Field(
+        default=0.25,
+        alias="SEARCH_HYBRID_KEYWORD_BONUS_SCALE",
+        description="Linear scale factor for lexical overlap bonus before clamping to max.",
+    )
+    search_hybrid_min_keyword_length: int = Field(
+        default=4,
+        alias="SEARCH_HYBRID_MIN_KEYWORD_LENGTH",
+        description="Minimum token length to be considered as salient query keyword for lexical bonus.",
+    )
     precedents_limit_default: int = Field(
         default=5,
         alias="PRECEDENTS_LIMIT_DEFAULT",

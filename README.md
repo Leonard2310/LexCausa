@@ -21,14 +21,14 @@
 
 - **Legal Claim Classification**: Automatic claim classification and routing for Civil, Penal, and Administrative law via LLM
 - **Domain Router**: Lightweight pre-routing agent that classifies claims as CIVILE, PENALE, AMMINISTRATIVO, or ENTRAMBI
-- **Semantic Search**: Vector search on 3900+ articles using Legal-BERT, with unified and configurable pipeline
+- **Hybrid Statute Retrieval**: Hybrid search on 3900+ articles using Legal-BERT embeddings + Neo4j fulltext (rank fusion), with strict source/libro pre-filtering
 - **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
 - **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
 - **Unified Pipeline**: All functionalities (Search, Reasoning, Full Pipeline) share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
 - **Stance Classifier (NLI)**: Classifies statutes and precedents as SUPPORT, AGAINST, or NEUTRAL relative to the claim using NLI-style prompting
-- **Iterative Reasoning Chain Generation**: Reasoner and Counter-Reasoner build chains step-by-step with dedicated LLM calls; the LLM autonomously decides when to conclude, bounded by configurable min/max step limits and a separate EVALUATION phase
+- **Planned Iterative Chain Generation**: Reasoner and Counter-Reasoner first create an execution plan (3-10 steps), then generate one LLM step per planned objective with anti-repetition and consistency checks
 - **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations
-- **Counter-Reasoner Agent**: Generates independent counter-arguments using the causality taxonomy, identifying attacking causalities and building attack reasoning chains with explicit precedent citation, step-to-step logical consistency checks, and claim-fact lock (no inversion of explicit facts)
+- **Counter-Reasoner Agent**: Generates independent counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, and enforces strict anti-claim consistency with claim-fact lock (no inversion of explicit facts)
 - **Repetition Detection**: Jaccard similarity-based detection (threshold 0.70) prevents duplicate reasoning steps across the chain
 - **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, and verdict generation
 - **Consistency Checker**: Verifies statute and precedent citations against Neo4j KB, classifies articles as core/peripheral, repairs mismatches via LLM-constrained rewriting (with verbatim quote validation), and drops unreliable citations
@@ -77,7 +77,7 @@
 │   (groq_client.py)           │  │  (Singleton, thread-safe)            │
 ├──────────────────────────────┤  ├──────────────────────────────────────┤
 │  Dynamic key discovery (V1…N)│  │  ClaimClassifier → book routing      │
-│  Model fallback + down cache │  │  Legal-BERT → 768-dim vectors        │
+│  Model fallback + down cache │  │  Hybrid retrieval (vector + fulltext)│
 │  Smart error classification  │  │  Progressive search + expansion      │
 │  Exponential backoff         │  │  Pre-retrieval LLM filtering         │
 │                              │  │  StanceClassifier (NLI)              │
@@ -237,7 +237,7 @@ LexCausa/
 │   │   │   ├── scoring.py        # Readability, coherence, argument quality scoring
 │   │   │   └── nlp_utils.py      # Flesch/FOG/SMOG, NLI via LLM, text utilities
 │   │   └── tools/                # Agent tools
-│   │       ├── neo4j_tools.py    # Neo4j search pipeline
+│   │       ├── neo4j_tools.py    # Neo4j hybrid search pipeline
 │   │       ├── taxonomy_tools.py # Causality taxonomy
 │   │       ├── config_loader.py  # Taxonomy config loader
 │   │       └── config_taxonomy.json
@@ -245,7 +245,7 @@ LexCausa/
 │   │   ├── groq_client.py        # Resilient Groq client (dynamic key discovery, rotation)
 │   │   ├── claim_classifier.py   # LLM claim classification
 │   │   ├── stance_classifier.py  # NLI stance classification
-│   │   └── legal_search.py       # Legal search pipeline
+│   │   └── legal_search.py       # Hybrid legal search pipeline (vector + fulltext fusion)
 │   ├── db/                        # Database management
 │   │   ├── db_orchestrator.py    # Full DB lifecycle (clean/schema/load/verify)
 │   │   └── data_loader.py        # Centralized data loading (CSV/parquet + statute embeddings)
@@ -268,82 +268,63 @@ LexCausa/
 
 All configuration is managed through environment variables and the `src/config.py` Settings class (90+ parameters total).
 Runtime-tunable settings (model, temperature, max tokens, search parameters, AQA weights, chain steps, attack parameters) can also be adjusted from the **frontend Settings panel** without restarting the server.
+To keep this README stable across tuning changes, defaults are intentionally **not duplicated** here.
 
 ### Required (`.env`)
 
 These variables **must** be set in the `.env` file:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection URI |
-| `NEO4J_USER` | `neo4j` | Neo4j username |
-| `NEO4J_PASSWORD` | - | Neo4j password |
-| `GROQ_API_KEY_V1` | - | Primary Groq API key |
-| `GROQ_API_KEY_V2…VN` | - | Additional Groq API keys (dynamic discovery V1…V99) |
+| Variable | Description |
+|----------|-------------|
+| `NEO4J_URI` | Neo4j connection URI |
+| `NEO4J_USER` | Neo4j username |
+| `NEO4J_PASSWORD` | Neo4j password |
+| `GROQ_API_KEY_V1` | Primary Groq API key |
+| `GROQ_API_KEY_V2…VN` | Additional Groq API keys (dynamic discovery V1…V99) |
 
 ### Optional — LLM & Server
 
-These have sensible defaults and can be overridden in `.env` or via the frontend Settings panel:
+These can be overridden in `.env` or via the frontend Settings panel:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GROQ_MAX_RETRIES` | `3` | Max retries per API call |
-| `GROQ_RETRY_BASE_DELAY` | `1.0` | Base delay (s) for exponential backoff |
-| `LLM_TEMPERATURE` | `0.3` | LLM temperature |
-| `LLM_MAX_TOKENS` | `8192` | LLM max output tokens |
-| `API_HOST` | `0.0.0.0` | API server bind address |
-| `API_PORT` | `8000` | API server port |
-| `DEBUG` | `true` | Enable debug mode |
+- Groq client behavior (retry/backoff, key rotation, model-down cache TTL)
+- LLM generation knobs (temperature, max tokens)
+- API runtime settings (host/port/debug)
 
 Model catalog and aliases (`groq_llama_scout_17b`, `groq_llama_maverick_17b`, `gpt_oss_120b`) are code-defined in `src/config.py`.
 
 ### Optional — Embedding & Search
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_MODEL` | `nlpaueb/legal-bert-base-uncased` | Embedding model |
-| `EMBEDDING_DIM` | `768` | Embedding vector dimension |
-| `EMBEDDING_MAX_LENGTH` | `512` | Max token length for embeddings |
-| `SEARCH_TOP_K_DEFAULT` | `100` | Default statute results to retrieve |
-| `SEARCH_USE_TOP_N_LIBRI` | `3` | Top classified books to query |
-| `PRECEDENTS_LIMIT_DEFAULT` | `5` | Default number of precedents |
-| `SEARCH_MIN_KEPT_STATUTES` | `10` | Min statutes after filtering to trigger progressive expansion |
-| `SEARCH_EXPANSION_STEP` | `10` | Additional statutes per expansion round |
-| `SEARCH_MAX_EXPANSIONS` | `5` | Max expansion rounds |
+Configurable areas:
+
+- Embedding model and tokenization limits
+- Search breadth (`top_k`, top classified libri, precedent limits)
+- Hybrid retrieval tuning (vector/fulltext weights, candidate pool sizes, priority decay, keyword bonus)
+- Progressive search thresholds/steps for expansion rounds
+
+Debug support:
+
+- Existing backend/pipeline logs print, for each retrieved statute:
+  `vector_rank_score`, `fulltext_rank_score`, `fusion_score`, `keyword_bonus`, `priority_multiplier`.
 
 ### Optional — AQA (Argument Quality Assessment)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AQA_ENABLED` | `true` | Enable AQA scoring |
-| `AQA_ALPHA` | `0.3` | AQA weight for Cogency |
-| `AQA_BETA` | `0.4` | AQA weight for NormSupport |
-| `AQA_GAMMA` | `0.3` | AQA weight for Semantics |
-| `AQA_ATTACK_TOP_K` | `3` | Top-K cross-attacks to retain |
-| `AQA_VERDICT_POS_THRESHOLD` | `0.2` | Threshold for plausible verdict |
-| `AQA_VERDICT_NEG_THRESHOLD` | `-0.2` | Threshold for implausible verdict |
-| `AQA_EMBEDDING_MODEL` | `all-mpnet-base-v2` | Sentence embedding model for AQA |
-| `AQA_TFIDF_MAX_FEATURES` | `5000` | Max TF-IDF features |
-| `AQA_NORMSUPPORT_MAX_CITATIONS` | `3` | Max citations for NormSupport |
-| `AQA_NORMSUPPORT_CITATION_WEIGHT` | `0.7` | Citation weight in NormSupport |
-| `AQA_NORMSUPPORT_RETRIEVED_WEIGHT` | `0.3` | Retrieved weight in NormSupport |
-| `AQA_NORMSUPPORT_RETRIEVED_AGG` | `avg` | Aggregation for retrieved scores |
-| `AQA_MIN_SEMANTIC_OVERLAP` | `0.3` | Min semantic overlap to validate an attack |
-| `AQA_MIN_STRENGTH_RATIO` | `1.2` | Min base_score ratio for attacks |
-| `AQA_DAMAGE_FACTOR` | `0.5` | Excess damage scaling factor |
-| `AQA_ALLOW_FACTUAL_ATTACKS` | `true` | Allow factual attacks on normative links |
-| `AQA_ALLOW_CROSS_CODICE` | `true` | Allow cross-codice attacks |
-| `AQA_MAX_AGE` | `50.0` | Max precedent age for recency scoring |
-| `AQA_DOMINANT_ATTACKS_LIMIT` | `10` | Max dominant attacks in report |
+Configurable areas:
+
+- AQA enable/disable and weight triplet (α, β, γ)
+- Verdict thresholds and top-K attack retention
+- Norm support scoring strategy
+- Attack gating/tuning (semantic overlap, strength ratio, damage factor, cross-codice flags)
+- Precedent recency window and dominant-attack reporting limits
 
 ### Optional — Chain Generation
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHAIN_MAX_RETRIES` | `5` | Max retries for chain generation |
-| `CHAIN_MAX_STEPS` | `10` | Safety cap: max steps per iterative chain |
-| `CHAIN_MIN_STEPS` | `3` | Min steps before the LLM may conclude |
-| `MODEL_DOWN_TTL` | `300.0` | Seconds before retrying a down model |
+Configurable areas:
+
+- Retry and robustness controls for chain generation
+- Planned step bounds (min/max)
+- Model-down cache behavior used by the resilient Groq client
+
+For the authoritative, always-updated list of settings, env aliases, and descriptions, see `src/config.py`.
 
 
 ## 🌐 Public Demo (Cloudflare Tunnel)
@@ -417,15 +398,15 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 
 ### ✅ Completed
 - [x] Neo4j Knowledge Base with Civil/Penal Code
-- [x] Legal-BERT embeddings and vector search
+- [x] Hybrid statute retrieval: exact cosine search (source/libro pre-filtered) + fulltext rank fusion
 - [x] Claim classification and book routing via LLM
 - [x] Domain Router Agent (CIVILE / PENALE / ENTRAMBI)
 - [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering, stance)
 - [x] Progressive search with adaptive expansion when post-filtering yields too few results
 - [x] Pre-retrieval LLM filtering for statutes and precedents (default-YES soft filter)
 - [x] Stance Classifier (NLI): SUPPORT / AGAINST / NEUTRAL classification for statutes and precedents
-- [x] Reasoner Agent: iterative step-by-step chain generation (ASPIC+), with LLM evaluation phase and min/max step bounds
-- [x] Counter-Reasoner Agent: iterative counter-argumentation (ASPIC+), same iterative architecture as Reasoner
+- [x] Reasoner Agent: plan-then-execute generation (ASPIC+) with 3-10 planned steps and anti-repetition validation
+- [x] Counter-Reasoner Agent: plan-then-execute counter-generation (ASPIC+) with multi-attack selection and per-step attack assignment
 - [x] Explicit precedent citation by full title in Reasoner and Counter-Reasoner prompts
 - [x] Repetition detection in reasoning steps (Jaccard similarity, threshold 0.70)
 - [x] Polisher-Evaluator Agent: modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin)

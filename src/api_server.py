@@ -223,6 +223,57 @@ def _articles_to_dicts(articles) -> list[dict]:
     ]
 
 
+def _article_with_retrieval_debug(art) -> dict:
+    """Serialize an ArticleResult including hybrid retrieval score breakdown."""
+    breakdown = art.score_debug or {}
+    return {
+        "statute_id": art.statute_id,
+        "source": art.source,
+        "libro": art.libro,
+        "articolo": art.articolo,
+        "titolo": art.titolo,
+        "testo": art.testo,
+        "score": float(art.score),
+        "vector_rank_score": float(breakdown.get("vector_rank_score", 0.0)),
+        "fulltext_rank_score": float(breakdown.get("fulltext_rank_score", 0.0)),
+        "fusion_score": float(breakdown.get("fusion_score", 0.0)),
+        "keyword_bonus": float(breakdown.get("keyword_bonus", 0.0)),
+        "priority_multiplier": float(breakdown.get("priority_multiplier", 1.0)),
+    }
+
+
+def _log_retrieval_debug(
+    claim: str,
+    filters: list[tuple[str, str]],
+    articles: list,
+    stage: str = "retrieval",
+) -> None:
+    """Print retrieval debug lines for each returned article."""
+    print(f"\n{'─'*70}")
+    print(f"🔬 RETRIEVAL DEBUG [{stage}]")
+    print(f"{'─'*70}")
+    print(f"Claim: {claim[:180]}{'...' if len(claim) > 180 else ''}")
+    print(
+        "Filtri: "
+        + ", ".join(f"{source}/{libro or 'N/A'}" for source, libro in filters if source)
+    )
+    if not articles:
+        print("⚠️ Nessun articolo recuperato.")
+        return
+    print("Top articoli (con breakdown score):")
+    for i, art in enumerate(articles, start=1):
+        payload = _article_with_retrieval_debug(art)
+        print(
+            f"{i:02d}. [{payload['source']}] Art. {payload['articolo']} "
+            f"| score={payload['score']:.4f} "
+            f"| v_rank={payload['vector_rank_score']:.4f} "
+            f"| ft_rank={payload['fulltext_rank_score']:.4f} "
+            f"| fusion={payload['fusion_score']:.4f} "
+            f"| kw={payload['keyword_bonus']:.4f} "
+            f"| priority={payload['priority_multiplier']:.4f}"
+        )
+
+
 def prepare_claim_context(
     claim: str,
     include_precedents: bool,
@@ -259,10 +310,21 @@ def prepare_claim_context(
         classification, settings.search_use_top_n_libri
     )
 
-    # ── Step 2: initial vector search ──────────────────────────────────
-    progress_callback("Recupero norme candidate", 28)
+    # ── Step 2: initial hybrid retrieval ───────────────────────────────
+    progress_callback("Recupero norme candidate (vettoriale + fulltext)", 28)
     current_top_k = max_statutes
-    articles = pipe.vector_search(embedding, libri_filters, current_top_k)
+    articles = pipe.vector_search(
+        embedding,
+        libri_filters,
+        current_top_k,
+        query_text=claim,
+    )
+    _log_retrieval_debug(
+        claim=claim,
+        filters=libri_filters,
+        articles=articles,
+        stage=f"initial_top_k_{current_top_k}",
+    )
     statutes = _articles_to_dicts(articles)
     legal_context = reas._extract_legal_context(claim)
     progress_callback("Filtro rilevanza norme", 38)
@@ -291,7 +353,18 @@ def prepare_claim_context(
         )
 
         # Re-query with larger top_k (embedding & classification reused)
-        articles = pipe.vector_search(embedding, libri_filters, current_top_k)
+        articles = pipe.vector_search(
+            embedding,
+            libri_filters,
+            current_top_k,
+            query_text=claim,
+        )
+        _log_retrieval_debug(
+            claim=claim,
+            filters=libri_filters,
+            articles=articles,
+            stage=f"expansion_{expansion}_top_k_{current_top_k}",
+        )
         new_statutes = [
             d for d in _articles_to_dicts(articles) if d["statute_id"] not in seen_ids
         ]

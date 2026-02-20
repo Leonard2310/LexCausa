@@ -211,103 +211,57 @@ def search_statutes_tool(
 
     results = []
 
-    if libro and codice != "both":
-        # Use pipeline's vector_search with specific libro filter
-        # This is EXACTLY what Tab Ricerca does!
-        libri_filters = [(codice, libro)]
+    try:
+        # Use the same hybrid retrieval used by Tab Ricerca.
+        if codice == "both":
+            if libro:
+                libri_filters = [
+                    ("codice_civile", libro),
+                    ("codice_penale", libro),
+                    ("codice_amministrativo", ""),
+                ]
+            else:
+                libri_filters = [
+                    ("codice_civile", ""),
+                    ("codice_penale", ""),
+                    ("codice_amministrativo", ""),
+                ]
+        else:
+            libro_filter = (libro or "").strip()
+            if codice == "codice_amministrativo":
+                libro_filter = ""
+            libri_filters = [(codice, libro_filter)]
 
-        try:
-            article_results = pipeline.vector_search(
-                query_embedding, libri_filters, top_k=limit
+        article_results = pipeline.vector_search(
+            query_embedding,
+            libri_filters,
+            top_k=limit,
+            query_text=query,
+        )
+
+        for article in article_results:
+            result_item = {
+                "statute_id": article.statute_id,
+                "articolo": article.articolo,
+                "titolo": article.titolo,
+                "testo": (
+                    article.testo[: settings.truncation_tool_testo]
+                    if article.testo
+                    else "No text available"
+                ),
+                "libro": article.libro,
+                "source": article.source,
+                "score": float(article.score),
+            }
+            results.append(result_item)
+            source_label = _source_short_label(result_item["source"])
+            print(
+                f"  📜 Found: Art. {result_item['articolo']} {source_label} - {result_item['titolo'][:40]}... (score: {result_item['score']:.4f})"
             )
-
-            for article in article_results:
-                result_item = {
-                    "statute_id": article.statute_id,
-                    "articolo": article.articolo,
-                    "titolo": article.titolo,
-                    "testo": (
-                        article.testo[: settings.truncation_tool_testo]
-                        if article.testo
-                        else "No text available"
-                    ),
-                    "libro": article.libro,
-                    "source": article.source,
-                    "score": float(article.score),
-                }
-                results.append(result_item)
-                source_label = _source_short_label(result_item["source"])
-                print(
-                    f"  📜 Found: Art. {result_item['articolo']} {source_label} - {result_item['titolo'][:40]}... (score: {result_item['score']:.4f})"
-                )
-
-        except Exception as e:
-            print(f"  ❌ Vector search failed: {str(e)}")
-            print("  ⚠️ Switching to fulltext fallback...")
-            return _search_statutes_fallback(query, codice, libro, limit)
-    else:
-        # Fallback: no libro specified, need to do a broader search
-        # Use Neo4j driver directly for this case
-        driver = get_driver()
-
-        where_clauses = []
-        if codice != "both":
-            where_clauses.append(f"node.source = '{codice}'")
-        if libro:
-            where_clauses.append(f"node.libro = '{libro}'")
-        where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
-
-        query_cypher = f"""
-            CALL db.index.vector.queryNodes('statutes_idx', $top_k_expanded, $embedding)
-            YIELD node, score
-            {where_clause}
-            RETURN node.statute_id AS id,
-                   node.articolo AS articolo,
-                   node.titolo AS titolo,
-                   node.testo AS testo,
-                   node.libro AS libro,
-                   node.source AS source,
-                   score
-            ORDER BY score DESC
-            LIMIT $limit
-        """
-        try:
-            with driver.session() as session:
-                records = session.run(
-                    query_cypher,
-                    parameters={
-                        "embedding": query_embedding,
-                        "limit": limit,
-                        "top_k_expanded": limit * 20,
-                    },
-                )
-                for record in records:
-                    result_item = {
-                        "statute_id": record["id"] or "",
-                        "articolo": record["articolo"] or "",
-                        "titolo": record["titolo"] or "No title",
-                        "testo": (
-                            record["testo"][: settings.truncation_tool_testo]
-                            if record["testo"]
-                            else "No text available"
-                        ),
-                        "libro": record["libro"] or "",
-                        "source": record["source"] or "",
-                        "score": (
-                            float(record["score"])
-                            if record["score"] is not None
-                            else 0.0
-                        ),
-                    }
-                    results.append(result_item)
-                    source_label = _source_short_label(result_item["source"])
-                    print(
-                        f"  📜 Found: Art. {result_item['articolo']} {source_label} - {result_item['titolo'][:40]}... (score: {result_item['score']:.4f})"
-                    )
-        except Exception as e:
-            print(f"  ❌ Vector search failed: {str(e)}")
-            print("  ⚠️ Switching to fulltext fallback...")
-            return _search_statutes_fallback(query, codice, libro, limit)
+    except Exception as e:
+        print(f"  ❌ Hybrid search failed: {str(e)}")
+        print("  ⚠️ Switching to fulltext fallback...")
+        return _search_statutes_fallback(query, codice, libro, limit)
 
     if not results:
         print(
@@ -316,7 +270,7 @@ def search_statutes_tool(
         return _search_statutes_fallback(query, codice, libro, limit)
 
     print(
-        f"  ✅ Total statutes found: {len(results)} [VECTOR SEARCH via LegalSearchPipeline]"
+        f"  ✅ Total statutes found: {len(results)} [HYBRID SEARCH via LegalSearchPipeline]"
     )
     return results
 

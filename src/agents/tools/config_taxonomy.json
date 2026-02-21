@@ -33,6 +33,109 @@
         ],
         "notes": "Il router assegna causal_type_id/theory_id prima del ragionamento. Il reasoner riceve anche le anchor norms dal tipo di causalità e poi usa retrieval per norme di merito (supportive/neutral)."
     },
+    "claim_classifier": {
+        "max_categories": 3,
+        "categories": [
+            {
+                "id": "CC_PRE",
+                "description": "Codice Civile, Disposizioni sulla legge in generale",
+                "codice": "codice_civile",
+                "libro": "CC Disposizioni Preliminari"
+            },
+            {
+                "id": "CC_L1",
+                "description": "Codice Civile, Libro I: Persone e famiglia",
+                "codice": "codice_civile",
+                "libro": "CC Libro I"
+            },
+            {
+                "id": "CC_L2",
+                "description": "Codice Civile, Libro II: Successioni",
+                "codice": "codice_civile",
+                "libro": "CC Libro II"
+            },
+            {
+                "id": "CC_L3",
+                "description": "Codice Civile, Libro III: Proprietà e diritti reali",
+                "codice": "codice_civile",
+                "libro": "CC Libro III"
+            },
+            {
+                "id": "CC_L4",
+                "description": "Codice Civile, Libro IV: Obbligazioni e contratti",
+                "codice": "codice_civile",
+                "libro": "CC Libro IV"
+            },
+            {
+                "id": "CC_L5",
+                "description": "Codice Civile, Libro V: Lavoro, impresa e società",
+                "codice": "codice_civile",
+                "libro": "CC Libro V"
+            },
+            {
+                "id": "CC_L6",
+                "description": "Codice Civile, Libro VI: Tutela dei diritti",
+                "codice": "codice_civile",
+                "libro": "CC Libro VI"
+            },
+            {
+                "id": "CP_L1",
+                "description": "Codice Penale, Libro I: Reati in generale",
+                "codice": "codice_penale",
+                "libro": "CP Libro I"
+            },
+            {
+                "id": "CP_L2",
+                "description": "Codice Penale, Libro II: Delitti in particolare",
+                "codice": "codice_penale",
+                "libro": "CP Libro II"
+            },
+            {
+                "id": "CP_L3",
+                "description": "Codice Penale, Libro III: Contravvenzioni",
+                "codice": "codice_penale",
+                "libro": "CP Libro III"
+            },
+            {
+                "id": "AMM_L241",
+                "description": "Legge 241/1990: Procedimento amministrativo e accesso",
+                "codice": "codice_amministrativo",
+                "libro": ""
+            }
+        ],
+        "few_shot_examples": [
+            {
+                "claim": "Il venditore non ha consegnato l'immobile nei tempi previsti dal contratto e chiede comunque il saldo.",
+                "response": [
+                    "CC_L4",
+                    "CC_L3",
+                    "CC_L6"
+                ]
+            },
+            {
+                "claim": "Il creditore agisce dopo molti anni e temo che il diritto sia prescritto.",
+                "response": [
+                    "CC_PRE",
+                    "CC_L6",
+                    "CC_L4"
+                ]
+            },
+            {
+                "claim": "Ho subito un furto in casa e voglio sporgere denuncia.",
+                "response": [
+                    "CP_L2",
+                    "CP_L1",
+                    "CC_L3"
+                ]
+            },
+            {
+                "claim": "Il Comune non risponde alla mia istanza di accesso agli atti entro i termini del procedimento.",
+                "response": [
+                    "AMM_L241"
+                ]
+            }
+        ]
+    },
     "causal_types": [
         {
             "id": "PEN_FACTUAL",
@@ -408,6 +511,92 @@
             ]
         }
     ],
+    "counter_attack_definitions": {
+        "but_for_fails": {
+            "description": "Counterfactual fails: the event would have occurred anyway.",
+            "description_it": "Il test controfattuale fallisce: l'evento si sarebbe verificato comunque."
+        },
+        "no_covering_law_or_low_support": {
+            "description": "Missing covering law or insufficient support for probabilistic counterfactual.",
+            "description_it": "Manca una legge di copertura o il supporto probabilistico del nesso è insufficiente."
+        },
+        "alternative_causal_path": {
+            "description": "A plausible alternative causal path exists.",
+            "description_it": "Esiste un percorso causale alternativo plausibile."
+        },
+        "duty_to_act_missing_for_omission": {
+            "description": "For omission, the legal duty to act is missing.",
+            "description_it": "Per l'omissione manca l'obbligo giuridico di impedire l'evento."
+        },
+        "abnormal_or_atypical_chain": {
+            "description": "The causal chain is abnormal/atypical and breaks imputability.",
+            "description_it": "La catena causale è atipica/anomala e interrompe l'imputabilità."
+        },
+        "sole_sufficient_cause": {
+            "description": "A supervening cause alone was sufficient and breaks the link.",
+            "description_it": "Una causa sopravvenuta da sola sufficiente interrompe il nesso."
+        },
+        "intervening_cause_breaks_chain": {
+            "description": "An intervening autonomous factor breaks the chain.",
+            "description_it": "Un fattore sopravvenuto autonomo spezza la catena causale."
+        },
+        "force_majeure_filter": {
+            "description": "Fortuitous event/force majeure excludes imputability.",
+            "description_it": "Caso fortuito o forza maggiore escludono l'imputabilità."
+        },
+        "damage_is_indirect": {
+            "description": "The damage is indirect or mediated relative to the base fact.",
+            "description_it": "Il danno è indiretto o mediato rispetto al fatto base."
+        },
+        "damage_not_foreseeable": {
+            "description": "The damage was not foreseeable ex ante (e.g., art. 1225 c.c.).",
+            "description_it": "Il danno non era prevedibile ex ante (es. art. 1225 c.c.)."
+        },
+        "creditor_contributed": {
+            "description": "The creditor contributed to causing the event/damage.",
+            "description_it": "Il creditore ha concorso a causare evento o danno."
+        },
+        "creditor_failed_to_mitigate": {
+            "description": "The creditor failed to mitigate avoidable damage (art. 1227 c.c.).",
+            "description_it": "Il creditore non ha mitigato il danno evitabile (art. 1227 c.c.)."
+        },
+        "quantification_uncertain": {
+            "description": "Damage quantification is uncertain or speculative.",
+            "description_it": "La quantificazione del danno è incerta o speculativa."
+        },
+        "competence_or_procedure_regular": {
+            "description": "The authority was competent and the procedure was regular.",
+            "description_it": "L'amministrazione era competente e il procedimento è regolare."
+        },
+        "motivation_is_sufficient": {
+            "description": "The administrative act has sufficient and coherent motivation.",
+            "description_it": "La motivazione del provvedimento è sufficiente e coerente."
+        },
+        "participation_not_essential_or_not_denied": {
+            "description": "Participatory guarantees were respected, or their omission was not decisive.",
+            "description_it": "Le garanzie partecipative sono rispettate, oppure la loro omissione non è decisiva."
+        },
+        "silence_rule_not_applicable": {
+            "description": "The legal regime on procedural deadlines/silence is not applicable in this case.",
+            "description_it": "La disciplina su termini/silenzio non è applicabile al caso concreto."
+        },
+        "vizio_non_invalidante_21_octies": {
+            "description": "Any procedural defect is non-invalidating under art. 21-octies L. 241/1990.",
+            "description_it": "L'eventuale vizio procedimentale non è invalidante ex art. 21-octies L. 241/1990."
+        },
+        "event_was_avoidable": {
+            "description": "The event was avoidable with ordinary diligence.",
+            "description_it": "L'evento era evitabile con l'ordinaria diligenza."
+        },
+        "event_was_foreseeable": {
+            "description": "The event was foreseeable; it is not fortuitous.",
+            "description_it": "L'evento era prevedibile; non è fortuito."
+        },
+        "risk_was_assumed_or_controllable": {
+            "description": "The risk was assumed or controllable, so not fortuitous.",
+            "description_it": "Il rischio era assunto o controllabile, quindi non fortuito."
+        }
+    },
     "selection_rules": {
         "counter_attack_selection": {
             "step_1_pool": "Use default_mapping.counter_attack_pool for causal_type_id",

@@ -64,11 +64,29 @@ class Settings(BaseSettings):
         "gpt_oss_120b": "openai/gpt-oss-120b",
     }
     PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
-        "groq_llama_scout_17b",
         "groq_llama_maverick_17b",
+        "groq_llama_scout_17b",
     ]
     REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
     COUNTER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
+    reasoner_model_fallback_aliases: list[str] = Field(
+        default_factory=lambda: [
+            "gpt_oss_120b",
+            "groq_llama_maverick_17b",
+            "groq_llama_scout_17b",
+        ],
+        alias="REASONER_MODEL_FALLBACK_ALIASES",
+        description="Ordered model aliases used as resilient fallback chain for Reasoner.",
+    )
+    counter_model_fallback_aliases: list[str] = Field(
+        default_factory=lambda: [
+            "gpt_oss_120b",
+            "groq_llama_maverick_17b",
+            "groq_llama_scout_17b",
+        ],
+        alias="COUNTER_MODEL_FALLBACK_ALIASES",
+        description="Ordered model aliases used as resilient fallback chain for Counter-Reasoner.",
+    )
 
     # =========================================================================
     # Retry / Resilience Configuration
@@ -355,7 +373,7 @@ class Settings(BaseSettings):
         description="Top-K cross-attacks to keep per link for explainability.",
     )
     aqa_min_semantic_overlap: float = Field(
-        default=0.3,
+        default=0.5,
         alias="AQA_MIN_SEMANTIC_OVERLAP",
         description="Minimum semantic similarity between two links for an attack to be valid. "
         "Attacks below this threshold are filtered out.",
@@ -381,6 +399,33 @@ class Settings(BaseSettings):
         default=True,
         alias="AQA_ALLOW_CROSS_CODICE",
         description="Allow cross-codice attacks (penale vs civile).",
+    )
+    aqa_procedural_severity_categories: list[str] = Field(
+        default_factory=lambda: [
+            "prescrizione",
+            "decadenza",
+            "tutela_diritti",
+            "processo",
+        ],
+        alias="AQA_PROCEDURAL_SEVERITY_CATEGORIES",
+        description="Severity categories treated as procedural in ASPIC+ domain-rules checks.",
+    )
+    aqa_valid_attack_types: list[str] = Field(
+        default_factory=lambda: [
+            "contradiction",
+            "exception",
+            "derogation",
+            "extinction",
+            "factual_impediment",
+            "general_opposition",
+        ],
+        alias="AQA_VALID_ATTACK_TYPES",
+        description="Allowed attack-type labels for AQA attack classification.",
+    )
+    aqa_default_attack_type: str = Field(
+        default="general_opposition",
+        alias="AQA_DEFAULT_ATTACK_TYPE",
+        description="Fallback attack type when classifier output is missing/invalid.",
     )
 
     aqa_attack_type_multipliers: dict = Field(
@@ -581,6 +626,31 @@ class Settings(BaseSettings):
         alias="CHAIN_MIN_STEPS",
         description="Minimum reasoning steps before the LLM is allowed to conclude.",
     )
+    counter_second_pass_enabled: bool = Field(
+        default=True,
+        alias="COUNTER_SECOND_PASS_ENABLED",
+        description="Enable targeted second-pass retrieval for Counter-Reasoner when against statutes are scarce.",
+    )
+    counter_second_pass_min_against_statutes: int = Field(
+        default=8,
+        alias="COUNTER_SECOND_PASS_MIN_AGAINST_STATUTES",
+        description="If initial counter statutes are below this threshold, run targeted second-pass retrieval.",
+    )
+    counter_second_pass_top_k: int = Field(
+        default=40,
+        alias="COUNTER_SECOND_PASS_TOP_K",
+        description="Top-K statutes requested in each targeted second-pass retrieval query.",
+    )
+    counter_second_pass_max_queries: int = Field(
+        default=2,
+        alias="COUNTER_SECOND_PASS_MAX_QUERIES",
+        description="Maximum number of targeted retrieval queries generated from selected counter attacks.",
+    )
+    counter_second_pass_max_additional: int = Field(
+        default=25,
+        alias="COUNTER_SECOND_PASS_MAX_ADDITIONAL",
+        description="Maximum additional statutes retained from the targeted second-pass retrieval.",
+    )
 
     # =========================================================================
     # Text Truncation (prompt context limits)
@@ -769,6 +839,50 @@ class Settings(BaseSettings):
         mode = str(self.search_query_terms_mode or "").strip().lower()
         if mode != "llm":
             object.__setattr__(self, "search_query_terms_mode", "llm")
+
+        reasoner_aliases = [
+            str(a).strip()
+            for a in self.reasoner_model_fallback_aliases
+            if str(a).strip()
+        ]
+        if not reasoner_aliases:
+            reasoner_aliases = [self.REASONER_DEFAULT_MODEL_ALIAS]
+        object.__setattr__(self, "reasoner_model_fallback_aliases", reasoner_aliases)
+
+        counter_aliases = [
+            str(a).strip()
+            for a in self.counter_model_fallback_aliases
+            if str(a).strip()
+        ]
+        if not counter_aliases:
+            counter_aliases = [self.COUNTER_DEFAULT_MODEL_ALIAS]
+        object.__setattr__(self, "counter_model_fallback_aliases", counter_aliases)
+
+        procedural_categories = [
+            str(c).strip().lower()
+            for c in self.aqa_procedural_severity_categories
+            if str(c).strip()
+        ]
+        object.__setattr__(
+            self,
+            "aqa_procedural_severity_categories",
+            procedural_categories,
+        )
+
+        valid_attack_types = [
+            str(t).strip().lower()
+            for t in self.aqa_valid_attack_types
+            if str(t).strip()
+        ]
+        if not valid_attack_types:
+            valid_attack_types = ["general_opposition"]
+        object.__setattr__(self, "aqa_valid_attack_types", valid_attack_types)
+
+        default_attack = str(self.aqa_default_attack_type or "").strip().lower()
+        if default_attack not in valid_attack_types:
+            default_attack = "general_opposition"
+        object.__setattr__(self, "aqa_default_attack_type", default_attack)
+
         object.__setattr__(self, "_groq_api_keys", keys)
         return self
 
@@ -795,6 +909,25 @@ class Settings(BaseSettings):
             if alias not in deduped:
                 deduped.append(alias)
         return deduped
+
+    def _resolve_model_alias_order(self, aliases: list[str]) -> list[str]:
+        """Resolve alias list to provider model ids, preserving order and uniqueness."""
+        models: list[str] = []
+        for alias in aliases:
+            model = self.resolve_model_name(alias)
+            if model and model not in models:
+                models.append(model)
+        return models
+
+    @property
+    def reasoner_model_fallback_order(self) -> list[str]:
+        """Provider model ids used by Reasoner resilient fallback."""
+        return self._resolve_model_alias_order(self.reasoner_model_fallback_aliases)
+
+    @property
+    def counter_model_fallback_order(self) -> list[str]:
+        """Provider model ids used by Counter-Reasoner resilient fallback."""
+        return self._resolve_model_alias_order(self.counter_model_fallback_aliases)
 
     @property
     def reasoner_default_model(self) -> str:

@@ -17,6 +17,8 @@ from langchain_core.tools import tool
 from neo4j import Driver, GraphDatabase
 from pydantic import BaseModel, Field
 
+from .prompt_registry import render_prompt
+
 # Add parent to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
@@ -445,21 +447,7 @@ def _extract_keywords_from_claim(claim: str) -> list[str]:
 
     from services.groq_client import get_chat_groq, resilient_chat_call
 
-    prompt = f"""Extract the most important legal keywords from this claim.
-Focus on: legal concepts, legal domains, types of offenses/violations,
-key factual elements, and relevant legal categories.
-
-CLAIM:
-"{claim}"
-
-RULES:
-- Extract 5 to 10 keywords or short phrases (max 3 words each).
-- Use Italian legal terminology.
-- One keyword per line.
-- Do NOT add numbering, bullets, or explanations.
-- Do NOT repeat the claim.
-- Output ONLY the keywords, nothing else.
-"""
+    prompt = render_prompt("neo4j_tools.extract_keywords", claim=claim)
 
     try:
         llm = get_chat_groq(

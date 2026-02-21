@@ -20,9 +20,11 @@ from langgraph.prebuilt import create_react_agent
 
 from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
+from .citation_utils import extract_article_mentions, format_article_citation
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
+from .tools.prompt_registry import get_prompt, render_prompt
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
@@ -88,53 +90,15 @@ class CounterReasonerOutput:
 
 
 # System prompt for the Counter-Reasoner (with pre-retrieved context)
-COUNTER_REASONER_SYSTEM_PROMPT = """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
-
-You are the Counter-Reasoner. Dismantle the claim independently.
-You receive:
-- causal_type_id and theory_id fixed by the Router (do not re-classify)
-- selected_attack_ids chosen from the config attack pool
-- KNOWLEDGE BASE with contrary/neutral statutes and precedents
-
-Critical rules:
-- Use ONLY the sources in the KNOWLEDGE BASE; do not invent statutes or precedents.
-- Do not reference the Reasoner or its reasoning; produce a standalone counter-argument.
-- If a helpful statute is missing from the knowledge base, omit the citation instead of inventing it.
-- Always cite the statute number/code when available (e.g., "Art. 41 c.p.").
-- Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
-
-Expected structure (use these EXACT Italian headers):
-- **Premessa Alternativa**
-- **Norma** (only if present in ALLOWED STATUTES)
-- **Nesso Causale Alternativo**
-- **Conclusione Contraria**
-- **Catena di ragionamento**: followed by a numbered list (1. 2. 3. ...). This section is MANDATORY.
-MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
+COUNTER_REASONER_SYSTEM_PROMPT = get_prompt("counter_reasoner.system")
 
 
-ATTACK_DESCRIPTIONS: Dict[str, str] = {
-    "but_for_fails": "Counterfactual fails: the event would have occurred anyway.",
-    "no_covering_law_or_low_support": "Missing covering law or insufficient support for probabilistic counterfactual.",
-    "alternative_causal_path": "A plausible alternative causal path exists.",
-    "duty_to_act_missing_for_omission": "For omission, the legal duty to act is missing.",
-    "abnormal_or_atypical_chain": "The causal chain is abnormal/atypical and breaks imputability.",
-    "sole_sufficient_cause": "A supervening cause alone was sufficient and breaks the link.",
-    "intervening_cause_breaks_chain": "An intervening autonomous factor breaks the chain.",
-    "force_majeure_filter": "Fortuitous event/force majeure excludes imputability.",
-    "damage_is_indirect": "The damage is indirect or mediated relative to the base fact.",
-    "damage_not_foreseeable": "The damage was not foreseeable ex ante (e.g., art. 1225 c.c.).",
-    "creditor_contributed": "The creditor contributed to causing the event/damage.",
-    "creditor_failed_to_mitigate": "The creditor failed to mitigate avoidable damage (art. 1227 c.c.).",
-    "quantification_uncertain": "Damage quantification is uncertain or speculative.",
-    "competence_or_procedure_regular": "The authority was competent and the procedure was regular.",
-    "motivation_is_sufficient": "The administrative act has sufficient and coherent motivation.",
-    "participation_not_essential_or_not_denied": "Participatory guarantees were respected, or their omission was not decisive.",
-    "silence_rule_not_applicable": "The legal regime on procedural deadlines/silence is not applicable in this case.",
-    "vizio_non_invalidante_21_octies": "Any procedural defect is non-invalidating under art. 21-octies L. 241/1990.",
-    "event_was_avoidable": "The event was avoidable with ordinary diligence.",
-    "event_was_foreseeable": "The event was foreseeable; it is not fortuitous.",
-    "risk_was_assumed_or_controllable": "The risk was assumed or controllable, so not fortuitous.",
-}
+_DEFAULT_ATTACK_DESCRIPTION_EN = (
+    "Counter-argument to weaken causal/legal support of the claim."
+)
+_DEFAULT_ATTACK_DESCRIPTION_IT = (
+    "le norme citate indeboliscono il fondamento giuridico della pretesa"
+)
 
 
 class CounterReasoner(BaseAgent):
@@ -155,17 +119,61 @@ class CounterReasoner(BaseAgent):
         super().__init__(config)
         self._react_agent = None
         self._config = config_loader.load_config()
+        self._attack_descriptions_en = config_loader.counter_attack_descriptions(
+            self._config,
+            locale="en",
+        )
+        self._attack_descriptions_it = config_loader.counter_attack_descriptions(
+            self._config,
+            locale="it",
+        )
         self._max_stance_rewrites = 2
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
 
+    def _known_attack_ids(self) -> List[str]:
+        """Return all known attack IDs from taxonomy metadata."""
+        ids: List[str] = []
+
+        def _append_if_new(values: List[str]) -> None:
+            for value in values:
+                attack_id = str(value).strip()
+                if attack_id and attack_id not in ids:
+                    ids.append(attack_id)
+
+        _append_if_new(list(self._attack_descriptions_en.keys()))
+        _append_if_new(list(self._attack_descriptions_it.keys()))
+        for mapping in self._config.get("default_mapping", []):
+            _append_if_new(mapping.get("counter_attack_pool", []) or [])
+        for theory in self._config.get("theories", []):
+            _append_if_new(theory.get("default_counter_attacks", []) or [])
+        for causal_type in self._config.get("causal_types", []):
+            _append_if_new(causal_type.get("counter_attack_catalog", []) or [])
+        return ids
+
+    def _attack_description(
+        self,
+        attack_id: str,
+        *,
+        locale: str = "en",
+        default: str = "",
+    ) -> str:
+        """Resolve attack description from taxonomy metadata with fallback."""
+        if locale.lower().startswith("it"):
+            return (
+                self._attack_descriptions_it.get(attack_id)
+                or self._attack_descriptions_en.get(attack_id)
+                or default
+            )
+        return (
+            self._attack_descriptions_en.get(attack_id)
+            or self._attack_descriptions_it.get(attack_id)
+            or default
+        )
+
     def _resilient_model_order(self) -> list[str] | None:
-        """Counter fallback chain: selected model, then OSS -> Maverick -> Scout."""
-        preferred_chain = [
-            settings.resolve_model_name("gpt_oss_120b"),
-            settings.resolve_model_name("groq_llama_maverick_17b"),
-            settings.resolve_model_name("groq_llama_scout_17b"),
-        ]
+        """Counter fallback chain from settings (selected model first)."""
+        preferred_chain = settings.counter_model_fallback_order
         selected = settings.resolve_model_name(self.config.model_name)
         order = [selected] + [m for m in preferred_chain if m != selected]
         return order
@@ -191,7 +199,7 @@ class CounterReasoner(BaseAgent):
 
         if not pool:
             # Fallback to theory attacks or all known attacks
-            pool = theory_attacks or list(ATTACK_DESCRIPTIONS.keys())
+            pool = theory_attacks or self._known_attack_ids()
 
         selected_ids = self._pick_attacks_with_llm(
             claim=claim,
@@ -203,7 +211,14 @@ class CounterReasoner(BaseAgent):
             fallback_count = min(3, len(pool))
             selected_ids = pool[:fallback_count]
 
-        descriptions = {aid: ATTACK_DESCRIPTIONS.get(aid, "") for aid in selected_ids}
+        descriptions = {
+            aid: self._attack_description(
+                aid,
+                locale="en",
+                default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+            )
+            for aid in selected_ids
+        }
         return AttackSelection(
             pool=pool, attack_ids=selected_ids, descriptions=descriptions
         )
@@ -226,26 +241,18 @@ class CounterReasoner(BaseAgent):
         max_attacks = min(3, len(pool))
 
         options_text = "\n".join(
-            f"- {aid}: {ATTACK_DESCRIPTIONS.get(aid, '')}" for aid in pool
+            f"- {aid}: {self._attack_description(aid, locale='en', default=_DEFAULT_ATTACK_DESCRIPTION_EN)}"
+            for aid in pool
         )
-        prompt = f"""Claim:
-"{claim}"
-
-Routing context:
-- causal_type_id: {causal_type_id}
-- theory_id: {theory_id}
-
-Select the most useful attack IDs among the following ids.
-Return ONLY JSON in this format:
-{{"attack_ids": ["id1", "id2", "id3"]}}
-
-Rules:
-- choose between {min_attacks} and {max_attacks} ids
-- ids must be from the list below
-- avoid near-duplicate attacks
-
-{options_text}
-"""
+        prompt = render_prompt(
+            "counter_reasoner.pick_attacks",
+            claim=claim,
+            causal_type_id=causal_type_id,
+            theory_id=theory_id,
+            min_attacks=min_attacks,
+            max_attacks=max_attacks,
+            options_text=options_text,
+        )
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             answer = (resp.content or "").strip()
@@ -517,14 +524,22 @@ Rules:
                     f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
                     "info",
                 )
+            boosted_counter_statutes = self._retrieve_targeted_counter_boost(
+                claim=claim,
+                attack_ids=attack_selection.attack_ids,
+                existing_statutes=pre_retrieved_statutes,
+            )
         else:
             self._log(
                 "🔬 Causality DISABLED — skipping attack selection and anchor norms"
             )
             attack_selection = AttackSelection(pool=[], attack_ids=[], descriptions={})
             anchor_statutes = []
+            boosted_counter_statutes = []
 
-        all_statutes = pre_retrieved_statutes + anchor_statutes
+        all_statutes = (
+            pre_retrieved_statutes + boosted_counter_statutes + anchor_statutes
+        )
         # Deduplicate
         seen_keys = set()
         deduped_statutes = []
@@ -699,25 +714,10 @@ Rules:
 
     def _extract_cited_articles(self, text: str) -> List[str]:
         """Extract article references cited in the text."""
-        pattern = re.compile(
-            r"(?:art(?:icolo)?\.?\s*)(\d{1,4}(?:[-\s]?[a-z]+)?)\s*"
-            r"(c\.?[cp]\.?|"
-            r"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?)|"
-            r"l(?:egge)?\.?\s*241\s*/?\s*1990|"
-            r"241\s*/?\s*1990)",
-            re.IGNORECASE,
-        )
-        matches = pattern.findall(text)
-        articles: List[str] = []
-        for num, code in matches:
-            code_lower = code.lower()
-            if "241" in code_lower or "amm" in code_lower:
-                code_norm = "L. 241/1990"
-            elif "civ" in code_lower or "c.c" in code_lower:
-                code_norm = "c.c."
-            else:
-                code_norm = "c.p."
-            articles.append(f"Art. {num} {code_norm}")
+        mentions = extract_article_mentions(text, require_code=True)
+        articles: List[str] = [
+            format_article_citation(m.article_id, m.source_hint) for m in mentions
+        ]
         seen: set[str] = set()
         unique: List[str] = []
         for a in articles:
@@ -725,6 +725,124 @@ Rules:
                 seen.add(a)
                 unique.append(a)
         return unique
+
+    @staticmethod
+    def _article_result_to_dict(article) -> dict:
+        """Convert ``ArticleResult`` into statute dict format used by agents."""
+        return {
+            "statute_id": article.statute_id,
+            "articolo": article.articolo,
+            "titolo": article.titolo,
+            "testo": article.testo,
+            "libro": article.libro,
+            "source": article.source,
+        }
+
+    def _retrieve_targeted_counter_boost(
+        self,
+        claim: str,
+        attack_ids: List[str],
+        existing_statutes: List[dict],
+    ) -> List[dict]:
+        """Run a second-pass retrieval guided by selected counter attacks."""
+        if not settings.counter_second_pass_enabled:
+            return []
+        if len(existing_statutes) >= settings.counter_second_pass_min_against_statutes:
+            return []
+
+        hints: List[str] = []
+        for attack_id in attack_ids:
+            hint = self._attack_description(
+                attack_id,
+                locale="it",
+                default=_DEFAULT_ATTACK_DESCRIPTION_IT,
+            ).strip()
+            if hint and hint not in hints:
+                hints.append(hint)
+        if not hints:
+            hints.append("contestazione nesso causale e responsabilità")
+
+        queries = [f"{claim}. Focus difensivo: {hint}." for hint in hints]
+        queries = queries[: max(1, settings.counter_second_pass_max_queries)]
+
+        self._log(
+            "🔎 Counter second-pass retrieval attivato: "
+            f"{len(queries)} query mirate da attack template",
+            "info",
+        )
+
+        try:
+            from services.legal_search import LegalSearchPipeline
+        except Exception as exc:
+            self._log(f"⚠️ Counter second-pass unavailable: {exc}", "warning")
+            return []
+
+        try:
+            pipe = LegalSearchPipeline()
+        except Exception as exc:
+            self._log(f"⚠️ Counter second-pass init failed: {exc}", "warning")
+            return []
+
+        try:
+            classification = pipe.classifier.classify(claim)
+            filters = pipe.build_search_filters(
+                classification,
+                settings.search_use_top_n_libri,
+            )
+
+            boosted_by_id: Dict[str, dict] = {}
+            existing_ids = {
+                (s.get("statute_id") or "").strip()
+                for s in existing_statutes
+                if (s.get("statute_id") or "").strip()
+            }
+
+            for query_text in queries:
+                embedding = pipe.embed_text(query_text)
+                articles = pipe.vector_search(
+                    embedding=embedding,
+                    libri_filters=filters,
+                    top_k=max(1, settings.counter_second_pass_top_k),
+                    query_text=query_text,
+                )
+                articles = pipe.expand_with_cited_articles(articles)
+                for article in articles:
+                    statute_id = (article.statute_id or "").strip()
+                    if not statute_id or statute_id in existing_ids:
+                        continue
+                    current = boosted_by_id.get(statute_id)
+                    if current is None or float(article.score) > float(
+                        current.get("_score", 0.0)
+                    ):
+                        payload = self._article_result_to_dict(article)
+                        payload["_score"] = float(article.score)
+                        boosted_by_id[statute_id] = payload
+
+            boosted = sorted(
+                boosted_by_id.values(),
+                key=lambda x: float(x.get("_score", 0.0)),
+                reverse=True,
+            )
+            boosted = boosted[: max(1, settings.counter_second_pass_max_additional)]
+            for item in boosted:
+                item.pop("_score", None)
+
+            if not boosted:
+                return []
+
+            legal_context = self._extract_legal_context(claim)
+            boosted = self.filter_irrelevant_statutes(claim, boosted)
+            boosted = self.filter_applicable_statutes(claim, boosted, legal_context)
+
+            self._log(
+                f"✅ Counter second-pass: {len(boosted)} articoli aggiuntivi kept",
+                "info",
+            )
+            return boosted
+
+        except Exception as exc:
+            self._log(f"⚠️ Counter second-pass retrieval failed: {exc}", "warning")
+            return []
 
     def _generate_counter_chain_iteratively(
         self,
@@ -754,7 +872,7 @@ Rules:
         if not selected_attack_ids:
             selected_attack_ids = ["N/A"]
         attack_catalog = "\n".join(
-            f"- {aid}: {ATTACK_DESCRIPTIONS.get(aid, 'N/A')}"
+            f"- {aid}: {self._attack_description(aid, locale='en', default=_DEFAULT_ATTACK_DESCRIPTION_EN)}"
             for aid in selected_attack_ids
         )
 
@@ -781,7 +899,11 @@ Rules:
             step_attack_id = plan_step.get("attack_id", selected_attack_ids[0])
             if step_attack_id not in selected_attack_ids:
                 step_attack_id = selected_attack_ids[0]
-            step_attack_desc = ATTACK_DESCRIPTIONS.get(step_attack_id, "N/A")
+            step_attack_desc = self._attack_description(
+                step_attack_id,
+                locale="en",
+                default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+            )
 
             self._log(
                 f"🔗 Generating planned counter-step {idx}/{len(plan)}: "
@@ -860,50 +982,21 @@ Rules:
             if reasoner_conclusion
             else ""
         )
-        prompt = f"""You are a legal planning engine for Italian counter-argumentation.
-
-Create a step-by-step plan to ATTACK and REJECT the claim.
-Return ONLY valid JSON (no markdown, no prose) with this schema:
-{{
-  "steps": [
-    {{
-      "id": "C1",
-      "goal": "specific objective to weaken claim",
-      "focus": "single weak point for this step",
-      "expected_norm": "article expected to be cited or 'N/A'",
-      "attack_id": "one of the selected attack ids"
-    }}
-  ]
-}}
-
-CLAIM:
-"{claim}"
-{reasoner_block}
-DOMAIN: {routing_decision.domain}
-CAUSAL TYPE: {routing_decision.causal_type_id}
-THEORY: {routing_decision.theory_id}
-SELECTED ATTACK IDS:
-{", ".join(selected_attack_ids)}
-
-ATTACK CATALOG:
-{attack_catalog}
-
-ALLOWED STATUTES:
-{statutes_list}
-ALLOWED PRECEDENTS:
-{precedents_list}
-KNOWLEDGE BASE:
-{knowledge_base}
-
-RULES:
-- Number of steps must be between {min_steps} and {max_steps}.
-- Each step must be materially different (no overlap/rephrasing).
-- Steps must be anti-claim only.
-- Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
-- Each step must include one attack_id from the selected attack ids.
-- Distribute selected attacks across the plan whenever possible.
-- Keep each 'goal' and 'focus' concise (max 25 words each).
-"""
+        prompt = render_prompt(
+            "counter_reasoner.generate_plan",
+            claim=claim,
+            reasoner_block=reasoner_block,
+            routing_domain=routing_decision.domain,
+            causal_type_id=routing_decision.causal_type_id,
+            theory_id=routing_decision.theory_id,
+            selected_attack_ids=", ".join(selected_attack_ids),
+            attack_catalog=attack_catalog,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            knowledge_base=knowledge_base,
+            min_steps=min_steps,
+            max_steps=max_steps,
+        )
         last_error = "planner failed"
         for attempt in range(1, self._max_plan_retries + 1):
             try:
@@ -1139,55 +1232,33 @@ RULES:
             if reasoner_conclusion
             else ""
         )
-        return f"""You are an expert Italian jurist.
-You must execute ONLY one planned COUNTER step, keeping strict anti-claim stance.
-
-CLAIM:
-"{claim}"
-{reasoner_block}
-DOMAIN: {routing_decision.domain}
-CAUSAL TYPE: {routing_decision.causal_type_id}
-THEORY: {routing_decision.theory_id}
-ATTACK STRATEGY: {attack_id} - {attack_desc}
-
-KNOWLEDGE BASE (use only these sources):
-{knowledge_base}
-
-ALLOWED STATUTES:
-{statutes_list}
-ALLOWED PRECEDENTS:
-{precedents_list}
-
-GLOBAL PLAN:
-{plan_lines}
-
-CURRENT STEP TO EXECUTE: {plan_index}
-- Goal: {plan_step.get("goal", "")}
-- Focus: {plan_step.get("focus", "")}
-- Expected norm: {plan_step.get("expected_norm", "N/A")}
-- Attack id for this step: {plan_step.get("attack_id", attack_id)}
-
-ALREADY GENERATED STEP SUMMARIES:
-{summary_lines}
-
-NORMS ALREADY USED: {used_norms_text}
-
-HARD RULES:
-- Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
-- It must advance the plan and add NEW information, not paraphrase prior steps.
-- It must attack the claim only (no balancing, no claim-friendly language).
-- Never invent facts outside claim.
-- Never assume or complete missing factual details beyond what is explicitly stated in the claim.
-- Never contradict previous accepted steps.
-- Cite at least one statute when legally possible.
-- Align this step explicitly to attack "{plan_step.get("attack_id", attack_id)}".
-
-RESPONSE FORMAT:
-STEP: [italian atomic counter-step]
-"""
+        return render_prompt(
+            "counter_reasoner.step_prompt",
+            claim=claim,
+            reasoner_block=reasoner_block,
+            routing_domain=routing_decision.domain,
+            causal_type_id=routing_decision.causal_type_id,
+            theory_id=routing_decision.theory_id,
+            attack_id=attack_id,
+            attack_desc=attack_desc,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            plan_lines=plan_lines,
+            plan_index=plan_index,
+            plan_goal=plan_step.get("goal", ""),
+            plan_focus=plan_step.get("focus", ""),
+            plan_expected_norm=plan_step.get("expected_norm", "N/A"),
+            plan_attack_id=plan_step.get("attack_id", attack_id),
+            summary_lines=summary_lines,
+            used_norms_text=used_norms_text,
+        )
 
     def _validate_counter_step_candidate(
-        self, candidate_step: str, previous_steps: List[str], claim: str
+        self,
+        candidate_step: str,
+        previous_steps: List[str],
+        claim: str,
     ) -> tuple[bool, str]:
         """Validation checks for one counter step candidate."""
         text = (candidate_step or "").strip()
@@ -1230,25 +1301,13 @@ STEP: [italian atomic counter-step]
         context_prev = "\n".join(
             f"{idx}. {step}" for idx, step in enumerate(previous_steps[-3:], start=1)
         )
-        prompt = f"""Valuta se il NUOVO passo aggiunge davvero informazione giuridica nuova.
-
-CLAIM:
-{claim}
-
-RUOLO ARGOMENTATIVO: {role}
-
-PASSI PRECEDENTI:
-{context_prev}
-
-NUOVO PASSO:
-{candidate_step}
-
-Regola:
-- Rispondi REPEAT se il nuovo passo è sostanzialmente parafrasi/duplicazione dei precedenti.
-- Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
-
-Rispondi con UNA SOLA parola: NEW oppure REPEAT.
-"""
+        prompt = render_prompt(
+            "counter_reasoner.semantic_redundancy",
+            claim=claim,
+            role=role,
+            context_prev=context_prev,
+            candidate_step=candidate_step,
+        )
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             answer = (resp.content or "").strip().upper()
@@ -1381,45 +1440,18 @@ Rispondi con UNA SOLA parola: NEW oppure REPEAT.
 
         role_desc = "supporting" if role == "support" else "counter-"
 
-        eval_prompt = f"""You are a senior Italian jurist evaluating whether a legal argument needs more steps.
-
-A {role_desc}argument for the claim below has {n_steps} steps so far.
-It cites {n_unique_norms} unique norms out of {len(used_norms)} total citations.
-
-CLAIM: "{claim}"
-DOMAIN: {domain}
-
-Steps so far:
-{prev_context}
-
-Norms already cited: {used_text}
-
-AVAILABLE STATUTES (not yet used):
-{statutes_list}
-
-EVALUATION GUIDELINES:
-- A well-constructed legal argument typically needs 3-6 distinct steps covering
-  different legal aspects or applying norms to different facts.
-- With only {n_steps} step(s), consider whether there are still pertinent aspects to cover.
-- Each step should add NEW reasoning: a new norm, or a new application of an existing norm to a different fact.
-
-CRITICAL — REPETITION DETECTION:
-- REPETITION = two steps make the SAME legal point about the SAME factual aspect. This is BAD.
-- GOOD COVERAGE = each step addresses a DIFFERENT legal aspect or applies a norm to a DIFFERENT fact.
-- Re-citing an article is OK if applied to a genuinely different aspect of the case.
-- If the last step simply rephrases or restates what a previous step already said, answer CONCLUDE.
-
-DECISION RULES:
-- Answer CONTINUE if ALL of these are true:
-  (1) each step so far addresses a DIFFERENT legal aspect or fact (no repetition), AND
-  (2) there is at least one pertinent unused norm OR a new factual aspect to cover, AND
-  (3) fewer than 6 steps have been generated.
-- Answer CONCLUDE if ANY of these is true:
-  (a) any two steps make the SAME legal point about the SAME fact (repetition), OR
-  (b) all pertinent legal aspects have been covered, OR
-  (c) 6+ steps have already been generated.
-
-YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
+        eval_prompt = render_prompt(
+            "counter_reasoner.evaluate_continue",
+            role_desc=role_desc,
+            n_steps=n_steps,
+            n_unique_norms=n_unique_norms,
+            total_citations=len(used_norms),
+            claim=claim,
+            domain=domain,
+            prev_context=prev_context,
+            used_text=used_text,
+            statutes_list=statutes_list,
+        )
 
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
@@ -1453,16 +1485,11 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
     ) -> str:
         """Ask the model to rewrite a step that violates stance/consistency rules."""
         reason_text = invalid_reason or "it partially supports the claim."
-        return (
-            f"{original_prompt}\n\n"
-            "YOUR PREVIOUS STEP WAS INVALID.\n"
-            f"REASON: {reason_text}\n"
-            f'INVALID STEP:\n"{invalid_step}"\n\n'
-            "Rewrite the SAME legal point with STRICT anti-claim stance and full consistency.\n"
-            "Do not add new facts. Do not balance pros and cons.\n"
-            "The rewritten step must clearly weaken the claim.\n\n"
-            "RESPONSE FORMAT:\n"
-            "STEP: [Italian text, max 4 sentences, strictly anti-claim]"
+        return render_prompt(
+            "counter_reasoner.stance_rewrite",
+            original_prompt=original_prompt,
+            invalid_reason=reason_text,
+            invalid_step=invalid_step,
         )
 
     def _is_counter_step_consistent(self, step_text: str) -> bool:
@@ -1693,42 +1720,17 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
         conclusion_ground = self._derive_counter_conclusion_ground(steps)
 
-        # Build attack-specific causal link description
-        attack_descriptions_it = {
-            "but_for_fails": "il nesso causale controfattuale fallisce: l'evento si sarebbe verificato comunque",
-            "no_covering_law_or_low_support": "manca una legge di copertura o il supporto probabilistico è insufficiente",
-            "alternative_causal_path": "esiste un percorso causale alternativo plausibile",
-            "duty_to_act_missing_for_omission": "per l'omissione, manca l'obbligo giuridico di agire",
-            "abnormal_or_atypical_chain": "la catena causale è anormale/atipica e interrompe l'imputabilità",
-            "sole_sufficient_cause": "una causa sopravvenuta era da sola sufficiente e interrompe il nesso",
-            "intervening_cause_breaks_chain": "un fattore autonomo sopravvenuto interrompe la catena",
-            "force_majeure_filter": "caso fortuito/forza maggiore esclude l'imputabilità",
-            "damage_is_indirect": "il danno è indiretto o mediato rispetto al fatto base",
-            "damage_not_foreseeable": "il danno non era prevedibile ex ante",
-            "creditor_contributed": "il creditore ha concorso a causare l'evento/danno",
-            "creditor_failed_to_mitigate": "il creditore non ha mitigato il danno evitabile",
-            "quantification_uncertain": "la quantificazione del danno è incerta o speculativa",
-            "competence_or_procedure_regular": "l'amministrazione era competente e il procedimento risulta regolare",
-            "motivation_is_sufficient": "la motivazione del provvedimento è sufficiente e coerente",
-            "participation_not_essential_or_not_denied": "le garanzie partecipative sono state rispettate oppure la loro omissione non è stata decisiva",
-            "silence_rule_not_applicable": "la disciplina su termini e silenzio amministrativo non è applicabile al caso concreto",
-            "vizio_non_invalidante_21_octies": "l'eventuale vizio procedimentale non è invalidante ai sensi dell'art. 21-octies L. 241/1990",
-            "event_was_avoidable": "l'evento era evitabile con l'ordinaria diligenza",
-            "event_was_foreseeable": "l'evento era prevedibile e non fortuito",
-            "risk_was_assumed_or_controllable": "il rischio era assunto o controllabile",
-        }
         unique_attacks = list(dict.fromkeys(a for a in step_attack_ids if a))
         attack_desc_list = [
-            attack_descriptions_it.get(
+            self._attack_description(
                 attack_id,
-                "le norme citate indeboliscono il fondamento giuridico della pretesa",
+                locale="it",
+                default=_DEFAULT_ATTACK_DESCRIPTION_IT,
             )
             for attack_id in unique_attacks
         ]
         if not attack_desc_list:
-            attack_desc_list = [
-                "le norme citate indeboliscono il fondamento giuridico della pretesa"
-            ]
+            attack_desc_list = [_DEFAULT_ATTACK_DESCRIPTION_IT]
         attack_desc_it = "; ".join(attack_desc_list[:3])
 
         # Ensure the conclusion opposes the claim without reusing drifted text.

@@ -18,11 +18,12 @@ from typing import Callable, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ..tools.neo4j_tools import get_driver  # noqa: E402
+from ..tools.prompt_registry import render_prompt
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
-
-from ..tools.neo4j_tools import get_driver  # noqa: E402
 
 
 class AQAEngineMixin:
@@ -286,8 +287,8 @@ class AQAEngineMixin:
 
     def _is_procedural_vs_substantive(self, sev1: str, sev2: str) -> bool:
         """Return True if one severity is procedural and the other substantive."""
-        PROCEDURAL = {"prescrizione", "decadenza", "tutela_diritti", "processo"}
-        return (sev1 in PROCEDURAL) != (sev2 in PROCEDURAL)
+        procedural = getattr(self, "_aqa_procedural_categories", set())
+        return (sev1 in procedural) != (sev2 in procedural)
 
     def _classify_attack_type(self, target: dict, attacker: dict) -> str:
         """Classify the legal attack type via LLM for damage modulation.
@@ -308,14 +309,28 @@ class AQAEngineMixin:
         Falls back to ``general_opposition`` if the LLM is unavailable or
         returns an unparseable answer.
         """
-        valid_types = {
-            "contradiction",
-            "exception",
-            "derogation",
-            "extinction",
-            "factual_impediment",
-            "general_opposition",
-        }
+        valid_types = set(
+            getattr(
+                self,
+                "_aqa_valid_attack_types",
+                {
+                    "contradiction",
+                    "exception",
+                    "derogation",
+                    "extinction",
+                    "factual_impediment",
+                    "general_opposition",
+                },
+            )
+        )
+        default_type = (
+            str(getattr(self, "_aqa_default_attack_type", "general_opposition"))
+            .strip()
+            .lower()
+            or "general_opposition"
+        )
+        if default_type not in valid_types:
+            default_type = "general_opposition"
 
         target_text = self._normalize_text(
             f"{target.get('premise_text', '')} " f"{target.get('conclusion_text', '')}"
@@ -326,7 +341,7 @@ class AQAEngineMixin:
         ).strip()
 
         if not target_text or not attacker_text:
-            return "general_opposition"
+            return default_type
 
         try:
             llm = get_chat_groq(
@@ -334,38 +349,12 @@ class AQAEngineMixin:
                 max_tokens=settings.attack_type_max_tokens,
             )
 
-            system_prompt = (
-                "You are an expert in Italian law and ASPIC+ argumentation theory.\n"
-                "Given two reasoning steps from opposing legal arguments, classify "
-                "the TYPE of attack the attacker performs on the target.\n\n"
-                "Choose EXACTLY ONE of these categories:\n"
-                "- CONTRADICTION: the attacker directly negates the same legal "
-                "conclusion or factual premise (e.g. the attacker claims the opposite "
-                "outcome on the same legal question).\n"
-                "- EXCEPTION: the attacker invokes a condition, proviso, or "
-                "exception that blocks the target norm from applying (e.g. "
-                "legitimate defence as an exception to criminal liability).\n"
-                "- DEROGATION: the attacker invokes a more specific norm (lex "
-                "specialis) that overrides or displaces the target norm (lex "
-                "generalis).\n"
-                "- EXTINCTION: the attacker claims the right/liability has been "
-                "extinguished (e.g. prescription, forfeiture, settlement, "
-                "pardon, statute of limitations).\n"
-                "- FACTUAL_IMPEDIMENT: the attacker raises a factual circumstance "
-                "(without a normative basis) that impedes the target conclusion "
-                "(e.g. alibi, absence of evidence, factual impossibility).\n"
-                "- GENERAL_OPPOSITION: none of the above; a generic rebuttal or "
-                "weakening that does not fit any specific category.\n\n"
-                "Respond with EXACTLY ONE WORD: the category name in upper case.\n"
-                "No punctuation, no explanation, no extra text."
-            )
+            system_prompt = render_prompt("aqa_engine.attack_type_system")
 
-            user_prompt = (
-                f"TARGET REASONING STEP:\n"
-                f'"{target_text[:settings.truncation_nli_text]}"\n\n'
-                f"ATTACKER REASONING STEP:\n"
-                f'"{attacker_text[:settings.truncation_nli_text]}"\n\n'
-                f"Attack type?"
+            user_prompt = render_prompt(
+                "aqa_engine.attack_type_user",
+                target_text=target_text[: settings.truncation_nli_text],
+                attacker_text=attacker_text[: settings.truncation_nli_text],
             )
 
             messages = [
@@ -386,16 +375,16 @@ class AQAEngineMixin:
 
             self._log(
                 f"      \u26a0\ufe0f LLM attack-type unrecognised: "
-                f'"{answer}", falling back to general_opposition'
+                f'"{answer}", falling back to {default_type}'
             )
-            return "general_opposition"
+            return default_type
 
         except Exception as exc:
             self._log(
                 f"      \u26a0\ufe0f LLM attack-type classification failed: {exc}",
                 "warning",
             )
-            return "general_opposition"
+            return default_type
 
     def _get_attack_type_multiplier(self, attack_type: str) -> float:
         """Return the damage multiplier for a given attack type."""

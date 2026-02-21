@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.tools.prompt_registry import render_prompt  # noqa: E402
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
 
@@ -229,45 +230,23 @@ class StanceClassifier:
         self, claim: str, article_num: str, source: str, title: str, text: str
     ) -> str:
         """Build NLI prompt for statute classification."""
-        return f"""Task: Classify whether this legal article SUPPORTS or OPPOSES the claim.
-
-CLAIM (Legal thesis):
-"{claim}"
-
-ARTICLE (Art. {article_num} {source} - {title}):
-"{text}"
-
-CLASSIFICATION RULES:
-- SUPPORT: The article provides legal basis that REINFORCES or VALIDATES the claim, or sets formal requirements whose violation strengthens the claim.
-- AGAINST: The article provides grounds to CHALLENGE, LIMIT, or CONTRADICT the claim.
-- NEUTRAL: The article is equally applicable to both positions or irrelevant.
-- DEFAULT TO SUPPORT unless the article clearly limits/contradicts the claim.
-
-Consider:
-- Does the article establish rights that support the claimant?
-- Does the article impose limits, exceptions, or defenses against the claim?
-- Does the article define conditions that may not be met?
-
-Respond with EXACTLY one word: SUPPORT, AGAINST, or NEUTRAL
-No punctuation. No explanations."""
+        return render_prompt(
+            "stance_classifier.statute",
+            claim=claim,
+            article_num=article_num,
+            source=source,
+            title=title,
+            text=text,
+        )
 
     def _build_precedent_prompt(self, claim: str, title: str, summary: str) -> str:
         """Build NLI prompt for precedent classification."""
-        return f"""Task: Classify whether this judicial precedent SUPPORTS or OPPOSES the claim.
-
-CLAIM (Legal thesis):
-"{claim}"
-
-PRECEDENT ({title}):
-"{summary}"
-
-CLASSIFICATION RULES:
-- SUPPORT: The precedent establishes principles that REINFORCE the claim
-- AGAINST: The precedent establishes principles that CHALLENGE or LIMIT the claim
-- NEUTRAL: The precedent is not clearly applicable to either position
-
-Respond with EXACTLY one word: SUPPORT, AGAINST, or NEUTRAL
-No punctuation. No explanations."""
+        return render_prompt(
+            "stance_classifier.precedent",
+            claim=claim,
+            title=title,
+            summary=summary,
+        )
 
     def _parse_response(self, item: dict, answer: str) -> StanceResult:
         """Parse LLM response into StanceResult."""

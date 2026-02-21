@@ -15,6 +15,8 @@ from groq import Groq
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from .prompt_registry import get_prompt, render_prompt
+
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
@@ -56,28 +58,14 @@ def _build_classification_prompt(claim: str, cfg: dict) -> str:
     for ct in types:
         lines.append(f"- {ct.get('id')}: {ct.get('name','')} [{ct.get('domain','')}]")
     options_text = "\n".join(lines)
-    return f"""You are an expert legal classifier. Choose the best causal_type_id from the list.
-
-Allowed causal_type_id values:
-{options_text}
-
-Rules:
-- Respond ONLY with the id.
-- No explanations, no extra text.
-
-CLAIM:
-{claim}"""
+    return render_prompt(
+        "taxonomy_tools.classification",
+        options_text=options_text,
+        claim=claim,
+    )
 
 
-CAUSALITY_CLAIM_PROMPT = """CLAIM
-<<<
-{claim}
->>>
-
-CONTEXT (if available)
-<<<
-{context}
->>>"""
+CAUSALITY_CLAIM_PROMPT = get_prompt("taxonomy_tools.causality_claim_prompt")
 
 
 class ClassifyCausalityInput(BaseModel):
@@ -248,16 +236,12 @@ def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:
         ref = norm.get("ref") or norm.get("riferimento", "N/A")
         role = norm.get("role") or norm.get("nota", "")
 
-        prompt = f"""Legal Claim:
-"{claim}"
-
-Norma dalla tassonomia:
-"{ref}" - "{role}"
-
-Istruzione:
-Valuta se questa norma è rilevante per il claim. Rispondi YES a meno che la norma sia chiaramente fuori dominio rispetto ai fatti e agli istituti del claim. Se incerto, YES.
-
-Rispondi con un solo token: YES o NO."""
+        prompt = render_prompt(
+            "taxonomy_tools.filter_norm",
+            claim=claim,
+            ref=ref,
+            role=role,
+        )
 
         try:
             resp = client.chat.completions.create(

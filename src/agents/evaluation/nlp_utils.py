@@ -16,6 +16,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+from ..tools.prompt_registry import render_prompt
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
@@ -81,30 +83,12 @@ class NLPUtils:
                 max_tokens=settings.nli_max_tokens,
             )
 
-            system_prompt = (
-                "You are an expert in Italian law.\n"
-                "You are comparing two reasoning passages from opposing sides "
-                "of a legal debate.\n"
-                "Even if they cite the same legal norms, focus on whether their "
-                "CONCLUSIONS and APPLICATIONS of those norms are incompatible.\n\n"
-                "Choose EXACTLY ONE of these labels:\n"
-                "- CONTRADICTION: the two passages reach opposite conclusions "
-                "on the same legal question, or one undermines a premise "
-                "that the other relies on.\n"
-                "- ENTAILMENT: the two passages support each other "
-                "and reach compatible conclusions.\n"
-                "- NEUTRAL: the passages address different legal aspects or "
-                "their relationship is unclear.\n\n"
-                "Base your judgement solely on the semantic content of the "
-                "two passages.\n\n"
-                "Respond with EXACTLY ONE WORD in upper case.\n"
-                "No punctuation, no explanation."
-            )
+            system_prompt = render_prompt("nlp_utils.nli_system")
 
-            user_prompt = (
-                f'PASSAGE A (target):\n"{t}"\n\n'
-                f'PASSAGE B (attacker):\n"{a}"\n\n'
-                f"Relationship?"
+            user_prompt = render_prompt(
+                "nlp_utils.nli_user",
+                target_text=t,
+                attacker_text=a,
             )
 
             messages = [

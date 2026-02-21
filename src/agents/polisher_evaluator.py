@@ -35,6 +35,7 @@ from .evaluation.models import (  # noqa: F401 -- re-exported
     EvaluationResult,
     MismatchAction,
 )
+from .tools.prompt_registry import render_prompt
 
 # ---------------------------------------------------------------------------
 # Main class -- composes all mixins
@@ -109,6 +110,11 @@ class PolisherEvaluator(
         self._aqa_attack_type_multipliers = settings.aqa_attack_type_multipliers
         self._aqa_strength_ratio_by_type = settings.aqa_strength_ratio_by_type
         self._aqa_severity_book_map = settings.aqa_severity_book_map
+        self._aqa_procedural_categories = set(
+            settings.aqa_procedural_severity_categories
+        )
+        self._aqa_valid_attack_types = set(settings.aqa_valid_attack_types)
+        self._aqa_default_attack_type = settings.aqa_default_attack_type
         self._aqa_verdict_pos = settings.aqa_verdict_pos_threshold
         self._aqa_verdict_neg = settings.aqa_verdict_neg_threshold
         self._aqa_embedding_model = settings.aqa_embedding_model
@@ -170,6 +176,11 @@ class PolisherEvaluator(
         self._aqa_allow_factual_attacks = settings.aqa_allow_factual_attacks
         self._aqa_allow_cross_codice = settings.aqa_allow_cross_codice
         self._aqa_strength_ratio_by_type = settings.aqa_strength_ratio_by_type
+        self._aqa_procedural_categories = set(
+            settings.aqa_procedural_severity_categories
+        )
+        self._aqa_valid_attack_types = set(settings.aqa_valid_attack_types)
+        self._aqa_default_attack_type = settings.aqa_default_attack_type
 
         reasoner_output = reasoner_output or {}
         counter_reasoner_output = counter_reasoner_output or {}
@@ -544,23 +555,16 @@ class PolisherEvaluator(
             self._log("⚠️ Counter gate: impossibile confrontare, chain reasoner assente")
             return gate
 
-        prompt = f"""You are a legal dialectical verifier.
-Compare two reasoning chains on the same claim and determine whether the COUNTER chain reaches a genuinely opposite legal outcome from the REASONER chain.
-
-CLAIM:
-\"\"\"{claim}\"\"\"
-
-REASONER CHAIN:
-{chr(10).join(f"{i+1}. {s}" for i, s in enumerate(reasoner_steps))}
-
-COUNTER CHAIN:
-{chr(10).join(f"{i+1}. {s}" for i, s in enumerate(counter_steps))}
-
-Respond with EXACTLY ONE label:
-- OPPOSING (the COUNTER chain reaches the opposite outcome)
-- AGREEING (the COUNTER chain supports or converges with the REASONER)
-- UNCLEAR (the COUNTER chain is not clearly opposite)
-"""
+        prompt = render_prompt(
+            "polisher.counter_gate",
+            claim=claim,
+            reasoner_chain=chr(10).join(
+                f"{i + 1}. {s}" for i, s in enumerate(reasoner_steps)
+            ),
+            counter_chain=chr(10).join(
+                f"{i + 1}. {s}" for i, s in enumerate(counter_steps)
+            ),
+        )
 
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])

@@ -9,119 +9,16 @@ or the administrative procedure law (L. 241/1990).
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from groq import Groq
 
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.tools import config_loader  # noqa: E402
+from agents.tools.prompt_registry import get_prompt, render_prompt  # noqa: E402
 from config import settings  # noqa: E402
 from services.groq_client import get_groq_client, resilient_groq_call  # noqa: E402
-
-# Taxonomy mapping to Neo4j libro names
-# I nomi dei libri includono il prefisso del codice (CC/CP) per univocità
-TAXONOMY_TO_LIBRO = {
-    # Codice Civile
-    "CC_PRE": ("codice_civile", "CC Disposizioni Preliminari"),
-    "CC_L1": ("codice_civile", "CC Libro I"),
-    "CC_L2": ("codice_civile", "CC Libro II"),
-    "CC_L3": ("codice_civile", "CC Libro III"),
-    "CC_L4": ("codice_civile", "CC Libro IV"),
-    "CC_L5": ("codice_civile", "CC Libro V"),
-    "CC_L6": ("codice_civile", "CC Libro VI"),
-    # Codice Penale
-    "CP_L1": ("codice_penale", "CP Libro I"),
-    "CP_L2": ("codice_penale", "CP Libro II"),
-    "CP_L3": ("codice_penale", "CP Libro III"),
-    # Codice Amministrativo (L. 241/1990): no libri
-    "AMM_L241": ("codice_amministrativo", ""),
-}
-
-TAXONOMY_DESCRIPTIONS = {
-    "CC_PRE": "Codice Civile, Disposizioni sulla legge in generale",
-    "CC_L1": "Codice Civile, Libro I: Persone e famiglia",
-    "CC_L2": "Codice Civile, Libro II: Successioni",
-    "CC_L3": "Codice Civile, Libro III: Proprietà e diritti reali",
-    "CC_L4": "Codice Civile, Libro IV: Obbligazioni e contratti",
-    "CC_L5": "Codice Civile, Libro V: Lavoro, impresa e società",
-    "CC_L6": "Codice Civile, Libro VI: Tutela dei diritti",
-    "CP_L1": "Codice Penale, Libro I: Reati in generale",
-    "CP_L2": "Codice Penale, Libro II: Delitti in particolare",
-    "CP_L3": "Codice Penale, Libro III: Contravvenzioni",
-    "AMM_L241": "Legge 241/1990: Procedimento amministrativo e accesso",
-}
-
-SYSTEM_PROMPT = """You are a legal-domain routing classifier for Italian law.
-
-Your task is to assign a legal claim to the most relevant category
-chosen ONLY from the provided taxonomy.
-
-Rules:
-- Output ONE category ID by default.
-- Output MORE THAN ONE category ONLY if multiple categories are clearly and independently relevant.
-- Output AT MOST 2 category IDs.
-- If only one category applies, output ONLY one.
-- Do NOT explain the decision.
-- Do NOT add any text, symbols, or formatting.
-- Do NOT cite articles or laws.
-- Do NOT invent new categories.
-
-You must follow these rules strictly.
-If uncertain, prefer fewer categories.
-The response language must be Italian.
-"""
-
-TAXONOMY_PROMPT = """TAXONOMY
-
-CC_PRE  -> Codice Civile, Disposizioni sulla legge in generale
-CC_L1   -> Codice Civile, Libro I: Persone e famiglia
-CC_L2   -> Codice Civile, Libro II: Successioni
-CC_L3   -> Codice Civile, Libro III: Proprietà e diritti reali
-CC_L4   -> Codice Civile, Libro IV: Obbligazioni e contratti
-CC_L5   -> Codice Civile, Libro V: Lavoro, impresa e società
-CC_L6   -> Codice Civile, Libro VI: Tutela dei diritti
-
-CP_L1   -> Codice Penale, Libro I: Reati in generale
-CP_L2   -> Codice Penale, Libro II: Delitti in particolare
-CP_L3   -> Codice Penale, Libro III: Contravvenzioni
-
-AMM_L241 -> Legge 241/1990: Procedimento amministrativo e accesso
-
-CLAIM
-<<<
-{claim}
->>>
-
-Respond in Italian."""
-
-# Few-shot examples for better classification
-FEW_SHOT_EXAMPLES = [
-    {
-        "claim": (
-            "Il venditore non ha consegnato l'immobile nei tempi "
-            "previsti dal contratto e chiede comunque il saldo."
-        ),
-        "response": "CC_L4\nCC_L3\nCC_L6",
-    },
-    {
-        "claim": (
-            "Il creditore agisce dopo molti anni e temo che "
-            "il diritto sia prescritto."
-        ),
-        "response": "CC_PRE\nCC_L6\nCC_L4",
-    },
-    {
-        "claim": "Ho subito un furto in casa e voglio sporgere denuncia.",
-        "response": "CP_L2\nCP_L1\nCC_L3",
-    },
-    {
-        "claim": (
-            "Il Comune non risponde alla mia istanza di accesso agli atti "
-            "entro i termini del procedimento."
-        ),
-        "response": "AMM_L241",
-    },
-]
 
 
 @dataclass
@@ -173,24 +70,89 @@ class ClaimClassifier:
 
         self.client = get_groq_client(api_key=self.api_key)
         self.model = model or settings.resolve_model_name("groq_llama_scout_17b")
+        self._taxonomy_cfg = config_loader.claim_classifier_config()
+        self._categories = config_loader.claim_classifier_categories()
+        self._few_shots = config_loader.claim_classifier_few_shots()
+        self._max_categories = config_loader.claim_classifier_max_categories()
+
+        self._category_to_libro: dict[str, tuple[str, str]] = {}
+        self._category_to_description: dict[str, str] = {}
+        for item in self._categories:
+            if not isinstance(item, dict):
+                continue
+            cat_id = str(item.get("id", "")).strip()
+            if not cat_id:
+                continue
+            codice = str(item.get("codice", "unknown")).strip() or "unknown"
+            libro = str(item.get("libro", "unknown")).strip()
+            description = str(item.get("description", "Unknown")).strip() or "Unknown"
+            self._category_to_libro[cat_id] = (codice, libro)
+            self._category_to_description[cat_id] = description
+
+        if not self._category_to_libro:
+            raise ValueError(
+                "Missing claim_classifier.categories in config_taxonomy.json"
+            )
+
+        self._taxonomy_block = self._build_taxonomy_block()
+
+    def _build_taxonomy_block(self) -> str:
+        """Build taxonomy lines from config categories."""
+        taxonomy_lines = []
+        for item in self._categories:
+            if not isinstance(item, dict):
+                continue
+            cat_id = str(item.get("id", "")).strip()
+            description = str(item.get("description", "")).strip()
+            if not cat_id:
+                continue
+            taxonomy_lines.append(f"{cat_id} -> {description}")
+        return "\n".join(taxonomy_lines)
+
+    @staticmethod
+    def _format_example_response(raw: Any) -> str:
+        """Normalize few-shot response to newline-separated taxonomy IDs."""
+        if isinstance(raw, list):
+            values = [str(v).strip() for v in raw if str(v).strip()]
+            return "\n".join(values)
+        return str(raw or "").strip()
 
     def _build_messages(self, claim: str) -> list[dict]:
         """Build the message chain with few-shot examples."""
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [
+            {"role": "system", "content": get_prompt("claim_classifier.system")}
+        ]
 
         # Add few-shot examples
-        for example in FEW_SHOT_EXAMPLES:
+        for example in self._few_shots:
+            if not isinstance(example, dict):
+                continue
+            example_claim = str(example.get("claim", "")).strip()
+            example_response = self._format_example_response(example.get("response"))
+            if not example_claim or not example_response:
+                continue
             messages.append(
                 {
                     "role": "user",
-                    "content": TAXONOMY_PROMPT.format(claim=example["claim"]),
+                    "content": render_prompt(
+                        "claim_classifier.taxonomy_user",
+                        taxonomy_block=self._taxonomy_block,
+                        claim=example_claim,
+                    ),
                 }
             )
-            messages.append({"role": "assistant", "content": example["response"]})
+            messages.append({"role": "assistant", "content": example_response})
 
         # Add the actual claim
         messages.append(
-            {"role": "user", "content": TAXONOMY_PROMPT.format(claim=claim)}
+            {
+                "role": "user",
+                "content": render_prompt(
+                    "claim_classifier.taxonomy_user",
+                    taxonomy_block=self._taxonomy_block,
+                    claim=claim,
+                ),
+            }
         )
 
         return messages
@@ -275,22 +237,25 @@ class ClaimClassifier:
         """Parse LLM response into ClassificationResult."""
         # Split by newlines and filter valid categories
         lines = [line.strip() for line in response_text.split("\n")]
-        categories = [line for line in lines if line in TAXONOMY_TO_LIBRO][
-            :3
-        ]  # Take top 3
+        categories = [line for line in lines if line in self._category_to_libro][
+            : self._max_categories
+        ]
 
         # If we got fewer than 3, that's still okay
         if not categories:
             # Fallback: try to find any valid category in response
-            for cat in TAXONOMY_TO_LIBRO.keys():
+            for cat in self._category_to_libro.keys():
                 if cat in response_text:
                     categories.append(cat)
-                    if len(categories) >= 3:
+                    if len(categories) >= self._max_categories:
                         break
 
-        descriptions = [TAXONOMY_DESCRIPTIONS.get(cat, "Unknown") for cat in categories]
+        descriptions = [
+            self._category_to_description.get(cat, "Unknown") for cat in categories
+        ]
         libro_mappings = [
-            TAXONOMY_TO_LIBRO.get(cat, ("unknown", "unknown")) for cat in categories
+            self._category_to_libro.get(cat, ("unknown", "unknown"))
+            for cat in categories
         ]
 
         return ClassificationResult(

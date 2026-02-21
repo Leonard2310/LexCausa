@@ -14,13 +14,21 @@ from typing import Callable, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ..aspic_formatter import AspicFormatter
+from ..citation_utils import article_id_to_regex as build_article_id_regex
+from ..citation_utils import (
+    extract_article_mentions,
+    format_article_citation,
+    infer_source_hint,
+    normalize_article_id,
+)
+from ..tools.neo4j_tools import get_driver
+from ..tools.prompt_registry import render_prompt
+from .models import CitationCheck, ConsistencyReport, MismatchAction
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_chat_call  # noqa: E402
-
-from ..aspic_formatter import AspicFormatter  # noqa: E402
-from ..tools.neo4j_tools import get_driver  # noqa: E402
-from .models import CitationCheck, ConsistencyReport, MismatchAction  # noqa: E402
 
 
 class ConsistencyMixin:
@@ -135,20 +143,12 @@ class ConsistencyMixin:
     @staticmethod
     def _normalize_article_id(raw: str) -> str:
         """Normalize article identifiers across formats (e.g. 21 quinquies -> 21-quinquies)."""
-        text = (raw or "").strip().lower()
-        if not text:
-            return ""
-        text = re.sub(r"^art(?:icolo)?\.?\s*", "", text, flags=re.IGNORECASE)
-        text = text.replace("_", "-")
-        text = re.sub(r"\s+", "-", text)
-        text = re.sub(r"^(\d{1,4})([a-z]{2,})$", r"\1-\2", text)
-        text = re.sub(r"-+", "-", text).strip("-")
-        return text
+        return normalize_article_id(raw)
 
     @staticmethod
     def _article_id_to_regex(article_id: str) -> str:
         """Build a regex fragment that accepts both hyphen and space suffixes."""
-        return re.escape(article_id).replace(r"\-", r"[-\s]?")
+        return build_article_id_regex(article_id)
 
     @staticmethod
     def _build_lookup_variants(article_id: str, domain: str) -> list[str]:
@@ -264,24 +264,18 @@ class ConsistencyMixin:
         """Extract full article id from a citation (supports suffixes like -bis/-quinquies)."""
         if not citation:
             return ""
-        suffix = (
-            r"(?:noviesdecies|octiesdecies|septiesdecies|sexiesdecies|"
-            r"quinquiesdecies|quaterdecies|terdecies|duodecies|undecies|"
-            r"quinquies|septies|quater|sexies|octies|nonies|decies|vicies|ter|bis)"
-        )
-        article_pat = rf"\d{{1,4}}(?:-(?:[a-z0-9]{{2,}})|{suffix}|\s+{suffix})?"
-        match = re.search(
-            rf"Art(?:icolo)?\.?\s*({article_pat})",
-            citation,
-            re.IGNORECASE,
-        )
-        if not match:
-            match = re.search(rf"\b({article_pat})\b", citation, re.IGNORECASE)
-        return self._normalize_article_id(match.group(1) if match else "")
+        mentions = extract_article_mentions(citation, require_code=False)
+        if mentions:
+            return mentions[0].article_id
+        return ""
 
     @staticmethod
     def _infer_source_hint_from_citation(citation: str) -> str:
         """Infer statute source from citation text."""
+        mentions = extract_article_mentions(citation, require_code=False)
+        if mentions and mentions[0].source_hint:
+            return mentions[0].source_hint
+
         lower = (citation or "").lower()
         if (
             "241/1990" in lower
@@ -293,7 +287,7 @@ class ConsistencyMixin:
             return "codice_civile"
         if "c.p" in lower or ("cod" in lower and "pen" in lower):
             return "codice_penale"
-        return ""
+        return infer_source_hint(lower)
 
     def _extract_cited_text_for_article(
         self, full_text: str, article_num: str, aspic_ir: dict | None = None
@@ -316,6 +310,7 @@ class ConsistencyMixin:
         """
         article_id = self._normalize_article_id(article_num)
         article_pattern = self._article_id_to_regex(article_id or article_num)
+        article_anchor = rf"{article_pattern}(?![-\w])"
         code_pattern = (
             r"(?:c\.?\s*c\.?|c\.?\s*p\.?|"
             r"l\.?\s*241(?:\s*/\s*1990)?|legge\s*241(?:\s*/\s*1990)?|"
@@ -324,7 +319,7 @@ class ConsistencyMixin:
 
         # Pattern 0: block with Norma + Testo lines
         block_pattern = (
-            rf"Norma.*?Art(?:icolo)?\.?\s*{article_pattern}.*?\n"
+            rf"Norma.*?Art(?:icolo)?\.?\s*{article_anchor}.*?\n"
             rf".*?Testo\s*:\s*\"([^\"]{{20,}})\""
         )
         match = re.search(block_pattern, full_text, re.IGNORECASE | re.DOTALL)
@@ -337,7 +332,7 @@ class ConsistencyMixin:
 
         # Pattern 1: "L'Art. 1223 c.c. stabilisce/prevede/limita che..."
         # Captures the verb + "che" + text until period
-        pattern1 = rf"[Ll][''']?Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\s+(?:stabilisce|prevede|limita|dispone|sancisce|afferma)\s+(?:che\s+)?(.+?)(?:\.|$)"
+        pattern1 = rf"[Ll][''']?Art(?:icolo)?\.?\s*{article_anchor}\s*{code_pattern}\s+(?:stabilisce|prevede|limita|dispone|sancisce|afferma)\s+(?:che\s+)?(.+?)(?:\.|$)"
         match = re.search(pattern1, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
@@ -351,7 +346,7 @@ class ConsistencyMixin:
                 return extracted
 
         # Pattern 2: "Art. 1223 c.c. - [testo]"
-        pattern2 = rf"Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\s*[\-:]\s*(.+?)(?:\.|$)"
+        pattern2 = rf"Art(?:icolo)?\.?\s*{article_anchor}\s*{code_pattern}\s*[\-:]\s*(.+?)(?:\.|$)"
         match = re.search(pattern2, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
@@ -369,7 +364,7 @@ class ConsistencyMixin:
                     return extracted
 
         # Pattern 3: "Secondo l'Art. 1223 c.c., [testo]"
-        pattern3 = rf"[Ss]econdo\s+[Ll][''']?Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern},?\s+(.+?)(?:\.|$)"
+        pattern3 = rf"[Ss]econdo\s+[Ll][''']?Art(?:icolo)?\.?\s*{article_anchor}\s*{code_pattern},?\s+(.+?)(?:\.|$)"
         match = re.search(pattern3, full_text, re.IGNORECASE | re.DOTALL)
         if match:
             extracted = match.group(1).strip()
@@ -384,7 +379,7 @@ class ConsistencyMixin:
 
         # Pattern 4: "(Art. 1223 c.c.)" in parentheses after text - capture text before
         pattern4 = (
-            rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_pattern}\s*{code_pattern}\)"
+            rf"([^.]+?)\s*\(Art(?:icolo)?\.?\s*{article_anchor}\s*{code_pattern}\)"
         )
         match = re.search(pattern4, full_text, re.IGNORECASE)
         if match:
@@ -470,30 +465,14 @@ class ConsistencyMixin:
                 max_tokens=settings.repair_max_tokens,
             )
 
-            system_prompt = """You are an expert in Italian law. Your task is to determine whether two normative texts are LOGICALLY EQUIVALENT or DIFFERENT.
+            system_prompt = render_prompt("consistency.verify_mismatch_system")
 
-    Two texts are EQUIVALENT if:
-    - They express the same legal concept, even with different wording
-    - One is a faithful paraphrase of the other
-    - They don't add or omit substantial normative elements
-
-    Two texts are DIFFERENT if:
-    - They add requirements not present in the original
-    - They omit essential elements
-    - They change the legal meaning
-    - They introduce concepts not contained in the original
-
-    Respond ONLY with one of these words: EQUIVALENTI or DIVERSI (in Italian)"""
-
-            user_prompt = f"""Article {article_num}
-
-    CITED TEXT (from reasoning):
-    "{cited_text}"
-
-    OFFICIAL TEXT (from database):
-    "{db_text}"
-
-    Are the two texts EQUIVALENTI or DIVERSI? (Answer in Italian)"""
+            user_prompt = render_prompt(
+                "consistency.verify_mismatch_user",
+                article_num=article_num,
+                cited_text=cited_text,
+                db_text=db_text,
+            )
 
             messages = [
                 SystemMessage(content=system_prompt),
@@ -546,32 +525,14 @@ class ConsistencyMixin:
                 max_tokens=settings.repair_max_tokens,
             )
 
-            system_prompt = """You are an expert in Italian law. Your task is to assess whether a legal norm cited in a reasoning chain is PERTINENT or NOT_PERTINENT to the argumentative logic.
+            system_prompt = render_prompt("consistency.pertinence_system")
 
-    A norm is PERTINENT if:
-    - It contributes meaningfully to the legal reasoning (e.g., establishes liability, defines scope, sets conditions)
-    - It reinforces or integrates the legal conclusion
-    - It provides necessary normative context for the argument's thesis
-    - It completes the regulatory framework by filling a logical gap
-    - It is causally or logically connected to other steps in the chain
-
-    A norm is NOT_PERTINENT if:
-    - It is tangential to the main line of reasoning
-    - It is redundant with respect to other norms already cited that cover the same concept
-    - It adds no argumentative value to the reasoning chain
-    - It has no logical or causal link to the conclusion
-
-    Respond ONLY with one of these words: PERTINENT or NOT_PERTINENT"""
-
-            user_prompt = f"""COMPLETE REASONING CHAIN:
-    \"\"\"
-    {full_text[:settings.truncation_chain_text]}
-    \"\"\"
-
-    NORM TO EVALUATE: Art. {article_num}
-    CITED TEXT: "{cited_text}"
-
-    Is this norm PERTINENT or NOT_PERTINENT to the argumentative logic of the reasoning chain?"""
+            user_prompt = render_prompt(
+                "consistency.pertinence_user",
+                full_text=full_text[: settings.truncation_chain_text],
+                article_num=article_num,
+                cited_text=cited_text,
+            )
 
             messages = [
                 SystemMessage(content=system_prompt),
@@ -703,25 +664,14 @@ class ConsistencyMixin:
                 max_tokens=settings.repair_max_tokens,
             )
 
-            system_prompt = """You are an expert in Italian law. You must rewrite a normative passage using EXCLUSIVELY the official text of the provided article.
+            system_prompt = render_prompt("consistency.repair_db_system")
 
-    MANDATORY RULES:
-    1. You must include a VERBATIM QUOTE (exact copy) of at least 15 consecutive words from the official text
-    2. The quote must be enclosed in «» (guillemets/angle quotes)
-    3. You cannot add concepts not present in the official text
-    4. The result must be legally correct and coherent
-
-    OUTPUT: Write ONLY the rewritten text in Italian, without explanations."""
-
-            user_prompt = f"""ARTICLE: Art. {article_num}
-
-    OFFICIAL TEXT TO USE:
-    "{db_text}"
-
-    ORIGINAL CONTEXT (to correct):
-    "{original_context[:settings.truncation_context]}"
-
-    Rewrite the normative passage in Italian using only the official text, including a verbatim quote enclosed in «»."""
+            user_prompt = render_prompt(
+                "consistency.repair_db_user",
+                article_num=article_num,
+                db_text=db_text,
+                original_context=original_context[: settings.truncation_context],
+            )
 
             messages = [
                 SystemMessage(content=system_prompt),
@@ -1047,19 +997,11 @@ class ConsistencyMixin:
                 temperature=settings.classifier_temperature,
                 max_tokens=settings.repair_max_tokens,
             )
-            system_prompt = (
-                "You are an expert in Italian law. Determine whether two "
-                "descriptions of a court precedent are LOGICALLY EQUIVALENT "
-                "or DIFFERENT.\n\n"
-                "EQUIVALENT: same legal holding, even with different wording.\n"
-                "DIFFERENT: different holding, added/omitted elements, "
-                "changed meaning.\n\n"
-                "Respond ONLY with: EQUIVALENTI or DIVERSI"
-            )
-            user_prompt = (
-                f'CITED TEXT (from reasoning):\n"{cited_text}"\n\n'
-                f'OFFICIAL SUMMARY (from database):\n"{db_summary[:1500]}"\n\n'
-                f"Are the two texts EQUIVALENTI or DIVERSI?"
+            system_prompt = render_prompt("consistency.precedent_mismatch_system")
+            user_prompt = render_prompt(
+                "consistency.precedent_mismatch_user",
+                cited_text=cited_text,
+                db_summary=db_summary[:1500],
             )
             response = resilient_chat_call(
                 llm,
@@ -1097,23 +1039,12 @@ class ConsistencyMixin:
                 temperature=settings.classifier_temperature,
                 max_tokens=settings.repair_max_tokens,
             )
-            system_prompt = (
-                "You are an expert in Italian law. Rewrite a passage that "
-                "cites a court precedent using EXCLUSIVELY the official "
-                "summary provided.\n\n"
-                "RULES:\n"
-                "1. Include a VERBATIM QUOTE of at least 15 words from the "
-                "official summary enclosed in «»\n"
-                "2. Do not add concepts not in the official summary\n"
-                "3. Write in Italian\n"
-                "4. Output ONLY the rewritten text"
-            )
-            user_prompt = (
-                f"PRECEDENT: {precedent_title}\n\n"
-                f'OFFICIAL SUMMARY:\n"{db_summary[:2000]}"\n\n'
-                f"ORIGINAL CONTEXT (to correct):\n"
-                f'"{cited_text[:settings.truncation_context]}"\n\n'
-                f"Rewrite using only the official summary."
+            system_prompt = render_prompt("consistency.precedent_repair_system")
+            user_prompt = render_prompt(
+                "consistency.precedent_repair_user",
+                precedent_title=precedent_title,
+                db_summary=db_summary[:2000],
+                cited_text=cited_text[: settings.truncation_context],
             )
             response = resilient_chat_call(
                 llm,
@@ -1234,11 +1165,16 @@ class ConsistencyMixin:
                 # Progress callback failures must not affect consistency logic.
                 pass
 
-        # Combine chain and raw response for extraction
-        full_text = "\n".join(reasoning_chain) + "\n" + raw_response
+        # Parse citations only from the original reasoning steps.
+        # This avoids pulling artifacts from repaired/enriched text blocks.
+        reasoning_text = "\n".join(reasoning_chain or [])
+        citation_source_text = reasoning_text.strip() or (raw_response or "")
+        verification_text = (
+            reasoning_text + "\n" + raw_response
+        ).strip() or citation_source_text
 
         # Extract statute citations from the text
-        statute_citations = self._extract_statute_citations(full_text)
+        statute_citations = self._extract_statute_citations(citation_source_text)
         self._log(
             f"📜 [{agent}] Found {len(statute_citations)} statute citations to verify"
         )
@@ -1282,10 +1218,10 @@ class ConsistencyMixin:
             if title and prec_id and title not in prec_id_by_title:
                 prec_id_by_title[title] = prec_id
 
-        # Find which precedents are actually cited in the text
-        full_text_lower = full_text.lower()
+        # Find which precedents are actually cited in the original reasoning steps.
+        citation_source_lower = citation_source_text.lower()
         cited_prec_titles = [
-            t for t in known_prec_titles if t.lower() in full_text_lower
+            t for t in known_prec_titles if t.lower() in citation_source_lower
         ]
         parsed_statute_citations: list[tuple[str, str, str]] = []
         for citation in statute_citations:
@@ -1332,7 +1268,7 @@ class ConsistencyMixin:
 
                 # Extract cited text from the reasoning chain / raw response
                 cited_text = self._extract_cited_text_for_article(
-                    full_text, article_num, aspic_ir
+                    verification_text, article_num, aspic_ir
                 )
 
                 if cited_text:
@@ -1373,7 +1309,7 @@ class ConsistencyMixin:
                             cited_text=cited_text,
                             db_text=db_text,
                             aspic_ir=aspic_ir,
-                            full_text=full_text,
+                            full_text=verification_text,
                             report=report,
                         )
                 elif not cited_text and db_text:
@@ -1447,7 +1383,7 @@ class ConsistencyMixin:
 
                 # Extract cited text around the precedent mention
                 cited_text = self._extract_cited_text_for_precedent(
-                    full_text, prec_title
+                    verification_text, prec_title
                 )
 
                 if cited_text and db_summary:
@@ -1489,7 +1425,7 @@ class ConsistencyMixin:
                             precedent_title=prec_title,
                             cited_text=cited_text,
                             db_summary=db_summary,
-                            full_text=full_text,
+                            full_text=verification_text,
                             report=report,
                         )
                 elif not cited_text and db_summary:
@@ -1548,31 +1484,19 @@ class ConsistencyMixin:
 
     def _extract_statute_citations(self, text: str) -> list[str]:
         """Extract statute citations from text."""
-        citations = []
-        seen = set()
+        citations: list[str] = []
+        seen: set[str] = set()
 
-        for match in self.STATUTE_PATTERN.finditer(text):
-            article_num = self._normalize_article_id(match.group(1) or "")
-            if not article_num:
+        for mention in extract_article_mentions(text, require_code=False):
+            citation = format_article_citation(
+                mention.article_id,
+                mention.source_hint,
+            )
+            key = citation.lower()
+            if key in seen:
                 continue
-            code_part = match.group(2) or ""
-
-            # Determine code
-            if code_part:
-                code_lower = code_part.lower()
-                if "241" in code_lower or "amm" in code_lower:
-                    code = "L. 241/1990"
-                elif "c" in code_lower and "p" not in code_lower:
-                    code = "c.c."
-                else:
-                    code = "c.p."
-            else:
-                code = ""
-
-            citation = f"Art. {article_num} {code}".strip()
-            if citation.lower() not in seen:
-                seen.add(citation.lower())
-                citations.append(citation)
+            seen.add(key)
+            citations.append(citation)
 
         return citations
 
@@ -1786,7 +1710,7 @@ class ConsistencyMixin:
         # Steps are formatted as "N. <text>\n" where N is 1, 2, 3…
         # We look for a line starting with a number, containing our article.
         step_pattern = re.compile(
-            rf"^(\d+)\.\s+(.*?Art(?:icolo)?\.?\s*{article_pattern}(?!\w).*?)$",
+            rf"^(\d+)\.\s+(.*?Art(?:icolo)?\.?\s*{article_pattern}(?![-\w]).*?)$",
             re.IGNORECASE | re.MULTILINE,
         )
         match = step_pattern.search(chain)
@@ -1815,33 +1739,13 @@ class ConsistencyMixin:
                 max_tokens=settings.repair_max_tokens,
             )
 
-            system_prompt = (
-                "You are an expert Italian jurist. You must rewrite a SINGLE "
-                "reasoning step from a legal argument.\n\n"
-                "You will receive:\n"
-                "1. The ORIGINAL step text (which contains an incorrect "
-                "normative citation)\n"
-                "2. The CORRECT official text of the article from the database\n\n"
-                "RULES:\n"
-                "1. Rewrite the step so that it correctly uses the OFFICIAL "
-                "text of the article\n"
-                "2. Adjust the legal reasoning to be coherent with the "
-                "CORRECT article text\n"
-                "3. Include a verbatim quote from the official text in «»\n"
-                "4. Keep approximately the same length and depth\n"
-                "5. Write in Italian\n"
-                "6. Output ONLY the rewritten step text, nothing else\n"
-                "7. Do NOT include the step number (e.g. do NOT start "
-                'with "3.")'
-            )
+            system_prompt = render_prompt("consistency.regenerate_step_system")
 
-            user_prompt = (
-                f"ARTICLE: {check.citation}\n\n"
-                f"CORRECT OFFICIAL TEXT:\n"
-                f'"{check.db_text_preview}"\n\n'
-                f"ORIGINAL STEP (to rewrite):\n"
-                f'"{original_step_text[:800]}"\n\n'
-                f"Rewrite this step in Italian using the correct article text."
+            user_prompt = render_prompt(
+                "consistency.regenerate_step_user",
+                citation=check.citation,
+                db_text_preview=check.db_text_preview,
+                original_step_text=original_step_text[:800],
             )
 
             messages = [
@@ -1903,7 +1807,7 @@ class ConsistencyMixin:
 
         # Build a regex that matches "Art. X c.p./c.c./L.241/1990".
         pattern = re.compile(
-            rf"(Art(?:icolo)?\.?\s*{article_pattern}\s*"
+            rf"(Art(?:icolo)?\.?\s*{article_pattern}(?![-\w])\s*"
             rf"(?:c\.?\s*[cp]\.?|"
             rf"l\.?\s*241(?:\s*/\s*1990)?|legge\s*241(?:\s*/\s*1990)?|"
             rf"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?))?)",

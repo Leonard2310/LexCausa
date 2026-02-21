@@ -21,9 +21,11 @@ from langgraph.prebuilt import create_react_agent
 
 from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
+from .citation_utils import extract_article_mentions, format_article_citation
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
+from .tools.prompt_registry import get_prompt, render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -31,24 +33,7 @@ from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
 
 # System prompt for the Reasoner (with pre-retrieved context)
-REASONER_SYSTEM_PROMPT = """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
-
-You are the Reasoner. The router already set causal_type_id and theory_id.
-Do NOT re-classify. Use these as structural constraints:
-- anchor_norms (core + accessory) from config
-- principle_tests for the causal type
-
-You receive a pre-retrieved KNOWLEDGE BASE (statutes/precedents) filtered as supportive/neutral.
-Build ONLY supporting arguments for the claim using the provided sources.
-
-Critical rules:
-- Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
-- If a needed statute is missing, state "articolo non disponibile nella knowledge base".
-- Keep reasoning independent: do not reference the Counter-Reasoner.
-- Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
-- Your response MUST end with a **Catena di ragionamento**: section containing a numbered list.
-- Numbered lists (1. 2. 3. ...) are ONLY allowed inside **Catena di ragionamento**. Use prose or bullet points ("-") everywhere else.
-- MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
+REASONER_SYSTEM_PROMPT = get_prompt("reasoner.system")
 
 
 @dataclass
@@ -115,12 +100,8 @@ class Reasoner(BaseAgent):
         self._max_step_rewrites = 2
 
     def _resilient_model_order(self) -> list[str] | None:
-        """Reasoner fallback chain: selected model, then OSS -> Maverick -> Scout."""
-        preferred_chain = [
-            settings.resolve_model_name("gpt_oss_120b"),
-            settings.resolve_model_name("groq_llama_maverick_17b"),
-            settings.resolve_model_name("groq_llama_scout_17b"),
-        ]
+        """Reasoner fallback chain from settings (selected model first)."""
+        preferred_chain = settings.reasoner_model_fallback_order
         selected = settings.resolve_model_name(self.config.model_name)
         order = [selected] + [m for m in preferred_chain if m != selected]
         return order
@@ -520,26 +501,10 @@ class Reasoner(BaseAgent):
 
     def _extract_cited_articles(self, text: str) -> list[str]:
         """Extract article references cited in the reasoning chain."""
-        # Pattern per articoli: "Art. 2043 c.c.", "art. 1223 c.p.", "art. 10 L. 241/1990", etc.
-        pattern = re.compile(
-            r"(?:art(?:icolo)?\.?\s*)(\d{1,4}(?:[-\s]?[a-z]+)?)\s*"
-            r"(c\.?[cp]\.?|"
-            r"cod(?:ice)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?|amm(?:inistrativ[oa])?)|"
-            r"l(?:egge)?\.?\s*241\s*/?\s*1990|"
-            r"241\s*/?\s*1990)",
-            re.IGNORECASE,
-        )
-        matches = pattern.findall(text)
-        articles = []
-        for num, code in matches:
-            code_lower = code.lower()
-            if "241" in code_lower or "amm" in code_lower:
-                code_norm = "L. 241/1990"
-            elif "civ" in code_lower or "c.c" in code_lower:
-                code_norm = "c.c."
-            else:
-                code_norm = "c.p."
-            articles.append(f"Art. {num} {code_norm}")
+        mentions = extract_article_mentions(text, require_code=True)
+        articles = [
+            format_article_citation(m.article_id, m.source_hint) for m in mentions
+        ]
         # Deduplica mantenendo ordine
         seen = set()
         unique = []
@@ -592,29 +557,14 @@ class Reasoner(BaseAgent):
                 f"- {ct_id}: {ct.get('name', '')} [{ct.get('domain', '')}]"
             )
 
-        prompt = f"""You are a classifier. Based PRIMARILY on the CITED ARTICLES from the reasoning chain, choose the most appropriate causal_type_id.
-
-Allowed causal_type_id values (domain={domain}):
-{chr(10).join(type_descriptions)}
-
-Classification criteria (based on cited articles):
-- If articles are from codice civile (c.c.) like Art. 2043, 2056, 1223, 1226, 1227 → civil causality types
-- If articles are from codice penale (c.p.) like Art. 40, 41 → criminal causality types
-- If articles are from L. 241/1990 / procedimento amministrativo (e.g. Art. 1, 2, 3, 10-bis, 21-octies) → administrative causality/procedural types
-- Consider the combination of articles to determine the most specific causal type
-
-If uncertain, choose the closest from the allowed list.
-Respond with ONLY the causal_type_id (no JSON, no explanation, just the id).
-
-ORIGINAL CLAIM (for context only):
-{claim}
-
-CITED ARTICLES FROM REASONING (primary classification basis):
-{articles_text}
-
-REASONING CHAIN (for context):
-{chain_text}
-"""
+        prompt = render_prompt(
+            "reasoner.classify_causality",
+            domain=domain,
+            type_descriptions=chr(10).join(type_descriptions),
+            claim=claim,
+            articles_text=articles_text,
+            chain_text=chain_text,
+        )
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             content = (resp.content or "").strip()
@@ -880,50 +830,18 @@ REASONING CHAIN (for context):
         max_steps: int,
     ) -> list[dict[str, str]]:
         """Generate and validate an execution plan for support reasoning."""
-        prompt = f"""You are a legal planning engine for Italian law.
-
-Create a step-by-step plan to SUPPORT the claim.
-The plan must be executable in sequence and each step must be materially different.
-Return ONLY valid JSON (no markdown, no prose) with this schema:
-{{
-  "steps": [
-    {{
-      "id": "P1",
-      "goal": "specific legal objective for this step",
-      "focus": "single legal/factual focus",
-      "expected_norm": "article expected to be cited or 'N/A'"
-    }}
-  ]
-}}
-
-CLAIM:
-"{claim}"
-
-DOMAIN: {routing_decision.domain}
-ANCHOR NORMS:
-{anchor_text}
-
-PRINCIPLE TESTS:
-{principle_text}
-
-ALLOWED STATUTES:
-{statutes_list}
-
-ALLOWED PRECEDENTS:
-{precedents_list}
-
-KNOWLEDGE BASE:
-{knowledge_base}
-
-RULES:
-- Number of steps must be between {min_steps} and {max_steps}.
-- Each step must address a DIFFERENT objective (no overlap/rephrasing).
-- Steps must be ordered logically (premise -> legal qualification -> applicability -> consequence -> final support).
-- Every step must be pro-claim.
-- Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
-- Prefer using different statutes across steps when possible.
-- Keep each 'goal' and 'focus' concise (max 25 words each).
-"""
+        prompt = render_prompt(
+            "reasoner.generate_plan",
+            claim=claim,
+            routing_domain=routing_decision.domain,
+            anchor_text=anchor_text,
+            principle_text=principle_text,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            knowledge_base=knowledge_base,
+            min_steps=min_steps,
+            max_steps=max_steps,
+        )
         last_error = "planner failed"
         for attempt in range(1, self._max_plan_retries + 1):
             try:
@@ -1150,69 +1068,40 @@ RULES:
             else "- none"
         )
         used_norms_text = ", ".join(used_norms) if used_norms else "none"
-        return f"""You are an expert Italian jurist.
-You must execute ONLY one planned SUPPORT step, keeping strict pro-claim stance.
-
-CLAIM:
-"{claim}"
-
-DOMAIN: {routing_decision.domain}
-ANCHOR NORMS:
-{anchor_text}
-PRINCIPLE TESTS:
-{principle_text}
-
-KNOWLEDGE BASE (use only these sources):
-{knowledge_base}
-
-ALLOWED STATUTES:
-{statutes_list}
-ALLOWED PRECEDENTS:
-{precedents_list}
-
-GLOBAL PLAN:
-{plan_lines}
-
-CURRENT STEP TO EXECUTE: {plan_index}
-- Goal: {plan_step.get("goal", "")}
-- Focus: {plan_step.get("focus", "")}
-- Expected norm: {plan_step.get("expected_norm", "N/A")}
-
-ALREADY GENERATED STEP SUMMARIES:
-{summary_lines}
-
-NORMS ALREADY USED: {used_norms_text}
-
-HARD RULES:
-- Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
-- It must advance the plan and add NEW information, not paraphrase prior steps.
-- It must support the claim only (no doubts, no balancing, no anti-claim hints).
-- Use only facts explicitly in claim.
-- Do not infer unprovided facts (no assumptions, no hypothetical completions of the factual scenario).
-- Cite at least one statute when legally possible.
-- If citing a precedent, include its full exact title from allowed list.
-
-RESPONSE FORMAT:
-STEP: [italian atomic step]
-"""
+        return render_prompt(
+            "reasoner.support_step",
+            claim=claim,
+            routing_domain=routing_decision.domain,
+            anchor_text=anchor_text,
+            principle_text=principle_text,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            plan_lines=plan_lines,
+            plan_index=plan_index,
+            plan_goal=plan_step.get("goal", ""),
+            plan_focus=plan_step.get("focus", ""),
+            plan_expected_norm=plan_step.get("expected_norm", "N/A"),
+            summary_lines=summary_lines,
+            used_norms_text=used_norms_text,
+        )
 
     def _build_support_plan_rewrite_prompt(
         self, previous_prompt: str, invalid_step: str, invalid_reason: str
     ) -> str:
         """Prompt to rewrite a planned step that failed validation."""
-        return (
-            f"{previous_prompt}\n\n"
-            "YOUR PREVIOUS STEP WAS REJECTED.\n"
-            f"REASON: {invalid_reason}\n"
-            f"INVALID STEP:\n{invalid_step}\n\n"
-            "Rewrite only this step. Keep the same planned objective, but produce NEW, "
-            "non-redundant, strict pro-claim content.\n"
-            "RESPONSE FORMAT:\n"
-            "STEP: [italian atomic step]"
+        return render_prompt(
+            "reasoner.support_plan_rewrite",
+            previous_prompt=previous_prompt,
+            invalid_reason=invalid_reason,
+            invalid_step=invalid_step,
         )
 
     def _validate_support_step_candidate(
-        self, candidate_step: str, previous_steps: list[str], claim: str
+        self,
+        candidate_step: str,
+        previous_steps: list[str],
+        claim: str,
     ) -> tuple[bool, str]:
         """Validation checks for one support step candidate."""
         text = (candidate_step or "").strip()
@@ -1248,25 +1137,13 @@ STEP: [italian atomic step]
         context_prev = "\n".join(
             f"{idx}. {step}" for idx, step in enumerate(previous_steps[-3:], start=1)
         )
-        prompt = f"""Valuta se il NUOVO passo aggiunge davvero informazione giuridica nuova.
-
-CLAIM:
-{claim}
-
-RUOLO ARGOMENTATIVO: {role}
-
-PASSI PRECEDENTI:
-{context_prev}
-
-NUOVO PASSO:
-{candidate_step}
-
-Regola:
-- Rispondi REPEAT se il nuovo passo è sostanzialmente parafrasi/duplicazione dei precedenti.
-- Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
-
-Rispondi con UNA SOLA parola: NEW oppure REPEAT.
-"""
+        prompt = render_prompt(
+            "reasoner.semantic_redundancy",
+            claim=claim,
+            role=role,
+            context_prev=context_prev,
+            candidate_step=candidate_step,
+        )
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             answer = (resp.content or "").strip().upper()
@@ -1391,45 +1268,18 @@ Rispondi con UNA SOLA parola: NEW oppure REPEAT.
 
         role_desc = "supporting" if role == "support" else "counter-"
 
-        eval_prompt = f"""You are a senior Italian jurist evaluating whether a legal argument needs more steps.
-
-A {role_desc}argument for the claim below has {n_steps} steps so far.
-It cites {n_unique_norms} unique norms out of {len(used_norms)} total citations.
-
-CLAIM: "{claim}"
-DOMAIN: {domain}
-
-Steps so far:
-{prev_context}
-
-Norms already cited: {used_text}
-
-AVAILABLE STATUTES (not yet used):
-{statutes_list}
-
-EVALUATION GUIDELINES:
-- A well-constructed legal argument typically needs 3-6 distinct steps covering
-  different legal aspects or applying norms to different facts.
-- With only {n_steps} step(s), consider whether there are still pertinent aspects to cover.
-- Each step should add NEW reasoning: a new norm, or a new application of an existing norm to a different fact.
-
-CRITICAL — REPETITION DETECTION:
-- REPETITION = two steps make the SAME legal point about the SAME factual aspect. This is BAD.
-- GOOD COVERAGE = each step addresses a DIFFERENT legal aspect or applies a norm to a DIFFERENT fact.
-- Re-citing an article is OK if applied to a genuinely different aspect of the case.
-- If the last step simply rephrases or restates what a previous step already said, answer CONCLUDE.
-
-DECISION RULES:
-- Answer CONTINUE if ALL of these are true:
-  (1) each step so far addresses a DIFFERENT legal aspect or fact (no repetition), AND
-  (2) there is at least one pertinent unused norm OR a new factual aspect to cover, AND
-  (3) fewer than 6 steps have been generated.
-- Answer CONCLUDE if ANY of these is true:
-  (a) any two steps make the SAME legal point about the SAME fact (repetition), OR
-  (b) all pertinent legal aspects have been covered, OR
-  (c) 6+ steps have already been generated.
-
-YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
+        eval_prompt = render_prompt(
+            "reasoner.evaluate_continue",
+            role_desc=role_desc,
+            n_steps=n_steps,
+            n_unique_norms=n_unique_norms,
+            total_citations=len(used_norms),
+            claim=claim,
+            domain=domain,
+            prev_context=prev_context,
+            used_text=used_text,
+            statutes_list=statutes_list,
+        )
 
         try:
             resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
@@ -1462,41 +1312,23 @@ YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):"""
         self, original_prompt: str, invalid_step: str
     ) -> str:
         """Rewrite step text that drifted away from pro-claim stance."""
-        return (
-            f"{original_prompt}\n\n"
-            "YOUR PREVIOUS STEP WAS INVALID because it weakens or contradicts the claim.\n"
-            f'INVALID STEP:\n"{invalid_step}"\n\n'
-            "Rewrite the SAME legal point with STRICT pro-claim stance.\n"
-            "Do not add new facts. Do not balance pros and cons.\n\n"
-            "RESPONSE FORMAT:\n"
-            "STEP: [Italian text, max 4 sentences, strictly pro-claim]"
+        return render_prompt(
+            "reasoner.support_stance_rewrite",
+            original_prompt=original_prompt,
+            invalid_step=invalid_step,
         )
 
     def _build_support_conclusion_rewrite_prompt(
         self, claim: str, chain_text: str, norms_text: str, invalid_conclusion: str
     ) -> str:
         """Force a concise conclusion aligned with pro-claim stance."""
-        return f"""You are an expert Italian jurist. Rewrite the conclusion below so it STRICTLY supports the claim.
-
-CLAIM:
-"{claim}"
-
-REASONING CHAIN:
-{chain_text}
-
-CITED NORMS: {norms_text}
-
-INVALID CONCLUSION TO REWRITE:
-"{invalid_conclusion}"
-
-RULES:
-- Keep it in Italian.
-- 2-4 sentences max.
-- Must clearly state the claim is legally founded.
-- Must not include language suggesting rigetto/infondatezza/non annullabilita/legittimita dell'atto.
-- Do not add facts or norms outside the chain.
-
-CONCLUSION:"""
+        return render_prompt(
+            "reasoner.support_conclusion_rewrite",
+            claim=claim,
+            chain_text=chain_text,
+            norms_text=norms_text,
+            invalid_conclusion=invalid_conclusion,
+        )
 
     def _is_support_step_consistent(self, step_text: str) -> bool:
         """
@@ -1592,25 +1424,12 @@ CONCLUSION:"""
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = ", ".join(norms) if norms else "le norme applicabili"
 
-        prompt = f"""You are an expert Italian jurist. Based on the legal reasoning chain below, generate a concise and precise CONCLUSION.
-
-ORIGINAL CLAIM:
-"{claim}"
-
-REASONING CHAIN:
-{chain_text}
-
-CITED NORMS: {norms_text}
-
-INSTRUCTIONS:
-- Write a conclusion of 2-4 sentences in Italian.
-- The conclusion must SYNTHESIZE the result of the legal analysis, not repeat the individual steps.
-- Clearly state whether the claim is legally founded or not and WHY, based on the norms analyzed.
-- Do NOT introduce norms or facts not mentioned in the reasoning chain.
-- Be direct and assertive in the final verdict.
-- Your ENTIRE response must be written in Italian.
-
-        CONCLUSION:"""
+        prompt = render_prompt(
+            "reasoner.generate_conclusion",
+            claim=claim,
+            chain_text=chain_text,
+            norms_text=norms_text,
+        )
 
         try:
             resp = self._resilient_llm_invoke(
@@ -1753,77 +1572,17 @@ INSTRUCTIONS:
             "\n".join(f"- {p}" for p in allowed_precedents)
             or "- No precedents available"
         )
-        return f"""Analyze the following claim and build SUPPORTING arguments.
-
-CLAIM:
-"{claim}"
-
-DOMAIN (from router):
-{routing_decision.domain}
-
-ANCHOR NORMS (structural constraints):
-{anchor_text}
-
-PRINCIPLE TESTS (evaluation criteria):
-{principle_text}
-
-=== KNOWLEDGE BASE (USE ONLY THESE SOURCES) ===
-{knowledge_base}
-=== END KNOWLEDGE BASE ===
-
-ALLOWED STATUTE REFERENCES (do not cite others):
-{statutes_list}
-
-ALLOWED PRECEDENT REFERENCES (do not cite others):
-{precedents_list}
-
-INSTRUCTIONS:
-1) Build arguments appropriate for the {routing_decision.domain} domain.
-2) Use anchor norms and principle tests as structural constraints, but DO NOT limit yourself to them.
-   Your reasoning MUST cite multiple statutes from the KNOWLEDGE BASE — not only anchor norms.
-   Anchor norms provide the framework, but you MUST integrate additional non-anchor statutes
-   from the ALLOWED STATUTES list that are relevant to the specific facts of the claim.
-   A good legal argument combines the general principle (anchor) with specific rules that apply
-   to the concrete case (e.g., warranty, defects, remedies, damages, obligations).
-3) If the knowledge base lacks a statute's text, still cite the article but do NOT invent quotes.
-4) Build arguments using ONLY knowledge base sources, with EXACTLY these Italian headers:
-   **Premessa**: (premise — write in prose, NO numbered lists)
-   **Norma**: (statute with precise citation from ALLOWED STATUTES; if absent, write "articolo non disponibile nella knowledge base" — use bullet points with "-" if listing multiple norms, NEVER numbered lists)
-   **Precedente**: (only if present in ALLOWED PRECEDENTS; otherwise omit — NO numbered lists)
-   **Nesso Causale**: (causal link — write in prose, NO numbered lists)
-   **Conclusione**: (conclusion — write in prose, NO numbered lists)
-5) After the arguments, you MUST add the following header and numbered chain.
-   This section is MANDATORY and must NEVER be omitted:
-
-   **Catena di ragionamento**:
-   1. [First reasoning step — cite the specific article(s) it relies on, e.g. Art. XX c.p.]
-   2. [Second reasoning step — cite the specific article(s)]
-   3. [Continue for each logical step...]
-
-   RULES for the numbered chain:
-   - Use EXACTLY the header "**Catena di ragionamento**:" before the numbered list.
-   - Each step MUST be on its own line, starting with "N. " (e.g. "1. ", "2. ", "3. ").
-   - Each step MUST reference at least one specific article (e.g. "Art. 2043 c.c.").
-   - The chain must have AT LEAST 3 numbered steps.
-
-FORMATTING RULE — CRITICAL:
-- Numbered lists ("1. ", "2. ", "3. ", etc.) are ONLY allowed inside the **Catena di ragionamento** section.
-- In ALL other sections (Premessa, Norma, Precedente, Nesso Causale, Conclusione), use ONLY
-  prose text or bullet points with "-". NEVER use numbered lists outside the chain.
-
-IMPORTANT - NORM USAGE REQUIREMENTS:
-- You have {len(allowed_statutes)} statutes available. Cite EVERY article you deem pertinent
-  to the case — do not artificially limit yourself to a fixed number.
-- Do NOT rely on a single anchor norm for the entire chain.
-- For each factual aspect of the claim (contract formation, defects, remedies, damages, etc.),
-  identify the most specific applicable statute from the ALLOWED STATUTES list.
-- Quote the relevant text from each statute when available in the KNOWLEDGE BASE.
-- COHERENCE RULE: Every norm you cite in the **Norma** section MUST appear in at least one
-  step of the numbered reasoning chain, with an explanation of its specific role in the argument.
-  Do NOT list norms in **Norma** that you never use in the chain.
-
-CRITICAL: Do not introduce external sources.
-MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT write in English. Every sentence, header, and explanation must be in Italian."""
+        return render_prompt(
+            "reasoner.reasoning_with_context",
+            claim=claim,
+            routing_domain=routing_decision.domain,
+            anchor_text=anchor_text,
+            principle_text=principle_text,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            allowed_statutes_count=len(allowed_statutes),
+        )
 
     def _format_anchor_norms(self, anchor_norms: dict) -> str:
         """Format anchor norms for prompt readability."""

@@ -14,6 +14,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .citation_utils import (
+    extract_article_mentions,
+    infer_source_hint,
+    normalize_article_id,
+)
+
 _SECTION_ALIASES = [
     ("premessa alternativa", "premise"),
     ("premessa", "premise"),
@@ -25,13 +31,6 @@ _SECTION_ALIASES = [
     ("conclusione contraria", "conclusion"),
     ("conclusione", "conclusion"),
 ]
-
-_ARTICLE_PATTERN = re.compile(
-    r"(?:art(?:icolo|icoli)?\.?\s*)(\d{1,4}(?:-[a-z0-9]+)?)\s*"
-    r"(c\.?c\.?|c\.?p\.?|codice\s+civile|codice\s+penale|"
-    r"l\.?\s*241(?:/1990)?|legge\s*241(?:/1990)?|codice\s+amministrativo)?",
-    re.IGNORECASE,
-)
 
 _ARTICLE_LIST_PATTERN = re.compile(
     r"articoli?\s+([0-9,\s/\-e]+)\s*"
@@ -110,12 +109,7 @@ def _normalize_article_number(raw: str) -> str:
     text = (raw or "").strip()
     if not text:
         return ""
-    text = re.sub(r"^art(?:icolo|icoli)?\.?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"c\.?\s*c\.?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"c\.?\s*p\.?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"codice\s+civile", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"codice\s+penale", "", text, flags=re.IGNORECASE)
-    return text.strip().strip(".").strip()
+    return normalize_article_id(text.strip().strip(".").strip())
 
 
 def _is_argument_header(text: str) -> bool:
@@ -335,16 +329,7 @@ def _statute_label(num: str, source: str) -> str:
 
 
 def _normalize_source_from_code(code: str) -> str:
-    if not code:
-        return ""
-    code = code.lower().strip()
-    if "amm" in code or "241" in code:
-        return "codice_amministrativo"
-    if "civ" in code or "c.c" in code:
-        return "codice_civile"
-    if "pen" in code or "c.p" in code:
-        return "codice_penale"
-    return ""
+    return infer_source_hint(code)
 
 
 def _extract_citations(
@@ -360,7 +345,9 @@ def _extract_citations(
     list_matches = _ARTICLE_LIST_PATTERN.findall(text)
     for list_text, code in list_matches:
         source = _normalize_source_from_code(code)
-        for raw_num in re.findall(r"\d{1,4}(?:-[a-z0-9]+)?", list_text, re.IGNORECASE):
+        for raw_num in re.findall(
+            r"\d{1,4}(?:[-\s]?[a-z0-9]{2,})?", list_text, re.IGNORECASE
+        ):
             num = _normalize_article_number(raw_num)
             if not num:
                 continue
@@ -378,9 +365,9 @@ def _extract_citations(
             else:
                 unknown_statutes.append({"articolo": num, "source": source})
 
-    for raw_num, code in _ARTICLE_PATTERN.findall(text):
-        num = _normalize_article_number(raw_num)
-        source = _normalize_source_from_code(code)
+    for mention in extract_article_mentions(text, require_code=False):
+        num = _normalize_article_number(mention.article_id)
+        source = mention.source_hint
         if not num:
             continue
         pair = (num, source)

@@ -23,6 +23,7 @@ from .groq_client import resilient_groq_call
 
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.tools.prompt_registry import render_prompt  # noqa: E402
 from config import settings  # noqa: E402
 
 
@@ -765,17 +766,11 @@ class LegalSearchPipeline:
         if not query_text:
             return set()
 
-        system_prompt = (
-            "Sei un assistente di information retrieval legale. "
-            "Dato un claim, estrai SOLO parole chiave giuridiche utili al search "
-            "(reati, istituti, qualificazioni, elementi fattuali decisivi). "
-            "Output: sola lista separata da virgole, senza spiegazioni."
-        )
-        user_prompt = (
-            "Estrai fino a "
-            f"{settings.search_query_terms_llm_max_terms} keyword.\n"
-            "CLAIM:\n"
-            f"{query_text}"
+        system_prompt = render_prompt("legal_search.query_terms_system")
+        user_prompt = render_prompt(
+            "legal_search.query_terms_user",
+            max_terms=settings.search_query_terms_llm_max_terms,
+            query_text=query_text,
         )
         messages = [
             {"role": "system", "content": system_prompt},

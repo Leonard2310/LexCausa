@@ -18,6 +18,8 @@ from typing import Any, Optional
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
+from .tools.prompt_registry import render_prompt
+
 # Add parent to path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
@@ -396,27 +398,13 @@ class BaseAgent(ABC):
             article_title = statute.get("titolo", "Untitled")
             article_desc = statute.get("testo", "Untitled")
 
-            prompt = f"""Legal Claim:
-"{claim}"
-
-Article:
-"{article_number} - {article_title} - {article_desc}"
-
-Instruction:
-Determine whether the main topic of the article is directly mentioned or implied in the claim.
-
-Rules:
-- Do NOT evaluate whether the article fully resolves the issue.
-- Do NOT suggest any additional articles.
-- Do NOT use external knowledge; only consider the claim and this article.
-- Do NOT add explanations or comments.
-- Answer YES in all cases with even indirect connection.
-- Use NO only when the article is clearly about a different domain.
-- If uncertain, answer YES.
-
-Respond with EXACTLY one token: YES or NO.
-No punctuation. No new lines. No extra spaces.
-"""
+            prompt = render_prompt(
+                "base.filter_relevant_statutes",
+                claim=claim,
+                article_number=article_number,
+                article_title=article_title,
+                article_desc=article_desc,
+            )
 
             try:
                 response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
@@ -462,19 +450,7 @@ No punctuation. No new lines. No extra spaces.
         Returns a compact line containing domain/party relationship/procedural
         posture so statute applicability can be evaluated more strictly.
         """
-        prompt = f"""You are a legal triage assistant.
-
-Given this claim:
-"{claim}"
-
-Extract a compact legal context string (max 20 words) including:
-- legal domain (criminal/civil/administrative/labour/commercial/etc.)
-- party relationship (private-private, citizen-state, company-shareholders, etc.)
-- procedural posture (investigation/trial/enforcement/contract dispute/etc.)
-
-If uncertain, provide the most plausible generic context.
-
-Respond with EXACTLY one short line and no extra text."""
+        prompt = render_prompt("base.extract_legal_context", claim=claim)
 
         try:
             response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
@@ -510,33 +486,14 @@ Respond with EXACTLY one short line and no extra text."""
             article_title = statute.get("titolo", "Untitled")
             article_text = statute.get("testo", "") or ""
 
-            prompt = f"""Legal Situation:
-"{claim}"
-
-Legal Context: {legal_context}
-
-Statute:
-"{article_number} - {article_title}"
-"{article_text[:500]}"
-
-Question:
-Does this statute APPLY to the legal situation described?
-
-Evaluation Criteria:
-1. Subject Scope: Does the statute apply to the TYPE of parties involved?
-2. Substantive Scope: Does the statute regulate the LEGAL ISSUE at stake?
-3. Temporal Scope: Is the statute relevant to the PROCEDURAL PHASE?
-
-Rules:
-- Answer YES only if the statute directly regulates THIS situation.
-- Answer NO if it applies to a different:
-  * relationship type
-  * legal domain
-  * offense class
-  * procedural phase
-- If uncertain but potentially on-point, answer YES.
-
-Respond with EXACTLY one token: YES or NO."""
+            prompt = render_prompt(
+                "base.filter_applicable_statutes",
+                claim=claim,
+                legal_context=legal_context,
+                article_number=article_number,
+                article_title=article_title,
+                article_text=article_text[:500],
+            )
 
             try:
                 response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
@@ -606,36 +563,13 @@ Respond with EXACTLY one token: YES or NO."""
 
             materia_line = f'\nDomain: "{materia}"' if materia else ""
 
-            prompt = f"""You are a senior Italian legal expert.
-
-CLAIM (the legal case under evaluation):
-"{claim}"
-
-PRECEDENT:
-Title: "{title}"{materia_line}
-Summary: "{summary[:600]}"
-
-TASK — Decide whether a competent lawyer would cite this precedent
-when arguing the above claim (either to support or to counter it).
-
-Answer YES when ANY of the following is true:
-1. The precedent addresses the SAME or a closely analogous legal
-   question (e.g. same offence, same cause of action, same defence).
-2. The precedent establishes a legal PRINCIPLE (causation test,
-   evidentiary standard, constitutional interpretation, procedural
-   rule) that directly applies to the claim.
-3. The factual scenario of the precedent is substantially similar to
-   the claim, making the ruling transferable.
-
-Answer NO when:
-- The precedent concerns a completely unrelated area of law with no
-  transferable principle (e.g. tax evasion vs. divorce).
-- The connection is merely superficial (shared keywords but different
-  legal substance).
-
-If uncertain, answer YES.
-
-Respond with EXACTLY one token: YES or NO."""
+            prompt = render_prompt(
+                "base.filter_precedents",
+                claim=claim,
+                title=title,
+                materia_line=materia_line,
+                summary=summary[:600],
+            )
 
             try:
                 response = self._resilient_llm_invoke([HumanMessage(content=prompt)])

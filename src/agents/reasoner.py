@@ -45,6 +45,7 @@ Critical rules:
 - Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
 - If a needed statute is missing, state "articolo non disponibile nella knowledge base".
 - Keep reasoning independent: do not reference the Counter-Reasoner.
+- Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
 - Your response MUST end with a **Catena di ragionamento**: section containing a numbered list.
 - Numbered lists (1. 2. 3. ...) are ONLY allowed inside **Catena di ragionamento**. Use prose or bullet points ("-") everywhere else.
 - MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English."""
@@ -112,6 +113,17 @@ class Reasoner(BaseAgent):
         self._max_support_stance_rewrites = 1
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
+
+    def _resilient_model_order(self) -> list[str] | None:
+        """Reasoner fallback chain: selected model, then OSS -> Maverick -> Scout."""
+        preferred_chain = [
+            settings.resolve_model_name("gpt_oss_120b"),
+            settings.resolve_model_name("groq_llama_maverick_17b"),
+            settings.resolve_model_name("groq_llama_scout_17b"),
+        ]
+        selected = settings.resolve_model_name(self.config.model_name)
+        order = [selected] + [m for m in preferred_chain if m != selected]
+        return order
 
     @property
     def tools(self) -> list:
@@ -441,6 +453,7 @@ class Reasoner(BaseAgent):
             result = resilient_react_invoke(
                 self._build_react_agent,
                 {"messages": messages},
+                model_order=self._resilient_model_order(),
             )
         except Exception as e:
             # Handle Groq tool_use_failed: the model generated a valid response
@@ -907,6 +920,7 @@ RULES:
 - Each step must address a DIFFERENT objective (no overlap/rephrasing).
 - Steps must be ordered logically (premise -> legal qualification -> applicability -> consequence -> final support).
 - Every step must be pro-claim.
+- Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
 - Prefer using different statutes across steps when possible.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
 """
@@ -1174,6 +1188,7 @@ HARD RULES:
 - It must advance the plan and add NEW information, not paraphrase prior steps.
 - It must support the claim only (no doubts, no balancing, no anti-claim hints).
 - Use only facts explicitly in claim.
+- Do not infer unprovided facts (no assumptions, no hypothetical completions of the factual scenario).
 - Cite at least one statute when legally possible.
 - If citing a precedent, include its full exact title from allowed list.
 

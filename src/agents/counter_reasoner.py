@@ -101,6 +101,7 @@ Critical rules:
 - Do not reference the Reasoner or its reasoning; produce a standalone counter-argument.
 - If a helpful statute is missing from the knowledge base, omit the citation instead of inventing it.
 - Always cite the statute number/code when available (e.g., "Art. 41 c.p.").
+- Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
 
 Expected structure (use these EXACT Italian headers):
 - **Premessa Alternativa**
@@ -157,6 +158,17 @@ class CounterReasoner(BaseAgent):
         self._max_stance_rewrites = 2
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
+
+    def _resilient_model_order(self) -> list[str] | None:
+        """Counter fallback chain: selected model, then OSS -> Maverick -> Scout."""
+        preferred_chain = [
+            settings.resolve_model_name("gpt_oss_120b"),
+            settings.resolve_model_name("groq_llama_maverick_17b"),
+            settings.resolve_model_name("groq_llama_scout_17b"),
+        ]
+        selected = settings.resolve_model_name(self.config.model_name)
+        order = [selected] + [m for m in preferred_chain if m != selected]
+        return order
 
     # ------------------------------------------------------------------
     # Attack selection logic (config-driven)
@@ -887,6 +899,7 @@ RULES:
 - Number of steps must be between {min_steps} and {max_steps}.
 - Each step must be materially different (no overlap/rephrasing).
 - Steps must be anti-claim only.
+- Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
 - Each step must include one attack_id from the selected attack ids.
 - Distribute selected attacks across the plan whenever possible.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
@@ -1164,6 +1177,7 @@ HARD RULES:
 - It must advance the plan and add NEW information, not paraphrase prior steps.
 - It must attack the claim only (no balancing, no claim-friendly language).
 - Never invent facts outside claim.
+- Never assume or complete missing factual details beyond what is explicitly stated in the claim.
 - Never contradict previous accepted steps.
 - Cite at least one statute when legally possible.
 - Align this step explicitly to attack "{plan_step.get("attack_id", attack_id)}".

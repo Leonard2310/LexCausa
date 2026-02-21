@@ -150,8 +150,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState([]);
   const [pipelineSettings, setPipelineSettings] = useState({
-    reasoner_model: 'groq_llama_maverick_17b',
-    counter_model: 'groq_llama_maverick_17b',
+    reasoner_model: 'gpt_oss_120b',
+    counter_model: 'gpt_oss_120b',
     llm_temperature: 0.3,
     llm_max_tokens: 8192,
     search_top_k_default: 100,

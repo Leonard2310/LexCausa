@@ -106,14 +106,25 @@ class BaseAgent(ABC):
     def _resilient_llm_invoke(self, messages, **kwargs):
         """Invoke LLM with automatic retry, key rotation, and model fallback."""
         stream_callback = kwargs.pop("stream_callback", None)
+        model_order = self._resilient_model_order()
         if stream_callback is not None:
             return resilient_chat_stream(
                 self.llm,
                 messages,
                 on_token=stream_callback,
+                model_order=model_order,
                 **kwargs,
             )
-        return resilient_chat_call(self.llm, messages, **kwargs)
+        return resilient_chat_call(
+            self.llm,
+            messages,
+            model_order=model_order,
+            **kwargs,
+        )
+
+    def _resilient_model_order(self) -> list[str] | None:
+        """Optional per-agent model fallback order override for resilient calls."""
+        return None
 
     def close(self):
         """Close resources held by the agent."""
@@ -378,6 +389,7 @@ class BaseAgent(ABC):
         self._log(f"🔍 Filtering relevance: {len(statutes)} statutes initially")
 
         relevant_statutes = []
+        max_item_logs = max(0, settings.search_filter_log_top_n)
 
         for idx, statute in enumerate(statutes, start=1):
             article_number = statute.get("articolo", "N/A")
@@ -420,16 +432,26 @@ No punctuation. No new lines. No extra spaces.
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
+            should_log_item = idx <= max_item_logs
             if keep:
                 relevant_statutes.append(statute)
-                self._log(
-                    f"✅ Keeping article [{idx}] {article_number} - {article_title}"
-                )
+                if should_log_item:
+                    self._log(
+                        f"✅ Keeping article [{idx}] {article_number} - {article_title}"
+                    )
             else:
-                self._log(
-                    f"❌ Discarding article [{idx}] {article_number} - {article_title}",
-                    "warning",
-                )
+                if should_log_item:
+                    self._log(
+                        f"❌ Discarding article [{idx}] {article_number} - {article_title}",
+                        "warning",
+                    )
+
+        if len(statutes) > max_item_logs:
+            self._log(
+                f"… per-item filter logs truncated: {len(statutes) - max_item_logs} articoli omessi "
+                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
+                "info",
+            )
 
         self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
         return relevant_statutes
@@ -481,6 +503,7 @@ Respond with EXACTLY one short line and no extra text."""
 
         self._log(f"🎯 Checking applicability: {len(statutes)} statutes")
         applicable_statutes: list[dict] = []
+        max_item_logs = max(0, settings.search_filter_log_top_n)
 
         for idx, statute in enumerate(statutes, start=1):
             article_number = statute.get("articolo", "N/A")
@@ -530,14 +553,26 @@ Respond with EXACTLY one token: YES or NO."""
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
+            should_log_item = idx <= max_item_logs
             if keep:
                 applicable_statutes.append(statute)
-                self._log(f"✅ APPLICABLE [{idx}] {article_number} - {article_title}")
+                if should_log_item:
+                    self._log(
+                        f"✅ APPLICABLE [{idx}] {article_number} - {article_title}"
+                    )
             else:
-                self._log(
-                    f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
-                    "warning",
-                )
+                if should_log_item:
+                    self._log(
+                        f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
+                        "warning",
+                    )
+
+        if len(statutes) > max_item_logs:
+            self._log(
+                f"… per-item applicability logs truncated: {len(statutes) - max_item_logs} articoli omessi "
+                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
+                "info",
+            )
 
         self._log(
             f"📊 Applicability result: {len(applicable_statutes)}/{len(statutes)} kept"
@@ -562,6 +597,7 @@ Respond with EXACTLY one token: YES or NO."""
         self._log(f"🔍 Filtering {len(precedents)} precedents (relevance mode)")
 
         relevant: list[dict] = []
+        max_item_logs = max(0, settings.search_filter_log_top_n)
 
         for idx, precedent in enumerate(precedents, start=1):
             title = precedent.get("title", "Untitled")
@@ -616,11 +652,21 @@ Respond with EXACTLY one token: YES or NO."""
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
+            should_log_item = idx <= max_item_logs
             if keep:
                 relevant.append(precedent)
-                self._log(f"✅ Kept [{idx}] {title}")
+                if should_log_item:
+                    self._log(f"✅ Kept [{idx}] {title}")
             else:
-                self._log(f"❌ Discarded [{idx}] {title}", "warning")
+                if should_log_item:
+                    self._log(f"❌ Discarded [{idx}] {title}", "warning")
+
+        if len(precedents) > max_item_logs:
+            self._log(
+                f"… per-item precedent logs truncated: {len(precedents) - max_item_logs} elementi omessi "
+                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
+                "info",
+            )
 
         self._log(f"📊 Kept {len(relevant)}/{len(precedents)} precedents")
         return relevant

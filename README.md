@@ -21,7 +21,8 @@
 
 - **Legal Claim Classification**: Automatic claim classification and routing for Civil, Penal, and Administrative law via LLM
 - **Domain Router**: Lightweight pre-routing agent that classifies claims as CIVILE, PENALE, AMMINISTRATIVO, or ENTRAMBI
-- **Hybrid Statute Retrieval**: Hybrid search on 3900+ articles using Legal-BERT embeddings + Neo4j fulltext (rank fusion), with strict source/libro pre-filtering
+- **Hybrid Statute Retrieval**: Hybrid search on 4200+ Normattiva statutes using Legal-BERT embeddings + Neo4j fulltext (rank fusion), with strict source/libro pre-filtering
+- **Citation Graph Expansion (Neo4j CITES)**: Retrieval expands seed statutes with cited statutes via `(:Statute)-[:CITES]->(:Statute)` before LLM relevance/applicability filters
 - **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
 - **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
 - **Unified Pipeline**: All functionalities (Search, Reasoning, Full Pipeline) share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
@@ -78,7 +79,7 @@
 ├──────────────────────────────┤  ├──────────────────────────────────────┤
 │  Dynamic key discovery (V1…N)│  │  ClaimClassifier → book routing      │
 │  Model fallback + down cache │  │  Hybrid retrieval (vector + fulltext)│
-│  Smart error classification  │  │  Progressive search + expansion      │
+│  Smart error classification  │  │  Progressive + CITES expansion       │
 │  Exponential backoff         │  │  Pre-retrieval LLM filtering         │
 │                              │  │  StanceClassifier (NLI)              │
 └──────────────────────────────┘  └────────────────┬─────────────────────┘
@@ -102,10 +103,11 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                   Neo4j Knowledge Base + Taxonomy                       │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  📚 Italian statutes KB: Civil Code + Penal Code + Administrative Law    │
+│  📚 Italian statutes KB (Normattiva): Civil + Penal + Administrative      │
 │     (L. 7 agosto 1990, n. 241)                                           │
 │  ⚖️  9112 precedent chunks from 792 rulings (ITA-CaseHold)              │
 │  📊 768-dim Vector Index (Legal-BERT) on statutes                       │
+│  🔗 Statute citation edges: `CITES` from normalized reference fields      │
 │  🔗 Causality taxonomy (Material, Legal, Concurrent)                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -191,7 +193,8 @@ poetry run python src/db/db_orchestrator.py
 
 This will:
 - Create schema (indexes, constraints, graph structure)
-- Load Civil Code, Penal Code, and Administrative Law (L. 241/1990) articles with embeddings
+- Load Civil Code, Penal Code, and Administrative Law (L. 241/1990) from `*_normattiva.csv` with embeddings
+- Build statute citation edges `(:Statute)-[:CITES]->(:Statute)` from normalized internal references
 - Load ITA-CaseHold precedents metadata (no embeddings)
 - Wait for indexes to come online (vector for statutes, fulltext for precedents)
 
@@ -252,12 +255,13 @@ LexCausa/
 │   ├── data/                      # Data files
 │   │   ├── embeddings/           # Pre-computed embeddings (.npy)
 │   │   ├── precedents/           # ITA-CaseHold precedents (parquet)
-│   │   └── statutes/              # Civil + Penal + Administrative law CSVs
+│   │   └── statutes/              # Civil + Penal + Administrative CSVs (`*_normattiva.csv`)
 │   └── frontend/                  # React frontend (Vite + React 18)
 │       └── src/
 │           ├── App.jsx            # Main app with three tabs + settings
 │           ├── AspicMetagraph.jsx # ASPIC+ meta-graph SVG visualization
 │           └── AttackTextDetails.jsx # Cross-attack detail panel
+├── notebooks/                     # Normattiva extractors + embeddings notebooks
 ├── logs/                          # Per-claim pipeline logs (auto-generated)
 ├── compose.yml                    # Docker Compose for Neo4j
 ├── pyproject.toml                 # Poetry configuration
@@ -299,12 +303,45 @@ Configurable areas:
 - Embedding model and tokenization limits
 - Search breadth (`top_k`, top classified libri, precedent limits)
 - Hybrid retrieval tuning (vector/fulltext weights, candidate pool sizes, priority decay, keyword bonus)
+- Citation expansion tuning (`SEARCH_CITES_ENABLED`, per-seed limit, max added, score decay, multi-seed bonus)
 - Progressive search thresholds/steps for expansion rounds
 
 Debug support:
 
 - Existing backend/pipeline logs print, for each retrieved statute:
   `vector_rank_score`, `fulltext_rank_score`, `fusion_score`, `keyword_bonus`, `priority_multiplier`.
+
+### Supervised Retrieval Tuning (Claims Gold Labels)
+
+The script `scripts/tune_retrieval_claims.py` supports supervised tuning using
+gold labels in `claims_gold_labels.json`.
+
+Query-term extraction for the fulltext branch is LLM-only (no salient fallback).
+
+Metrics used:
+- `Hit@5`, `Hit@10`
+- `MRR`
+- `nDCG@10`
+
+Run examples:
+
+```bash
+# supervised (default if claims_gold_labels.json is present)
+poetry run python scripts/tune_retrieval_claims.py --top-k 30
+
+# force proxy-only fallback (unsupervised)
+poetry run python scripts/tune_retrieval_claims.py --unsupervised
+
+# fulltext query terms are LLM-extracted (LLM-only mode)
+poetry run python scripts/tune_retrieval_claims.py --query-terms-mode llm
+
+# disable progress bars (CI/log-friendly)
+poetry run python scripts/tune_retrieval_claims.py --query-terms-mode llm --no-progress
+```
+
+Output report:
+- `logs/tuning/retrieval_tuning_<timestamp>.json`
+- `logs/tuning/retrieval_tuning_latest.json`
 
 ### Optional — AQA (Argument Quality Assessment)
 
@@ -397,8 +434,10 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 ## 🧪 Agent & Pipeline Development Status
 
 ### ✅ Completed
-- [x] Neo4j Knowledge Base with Civil/Penal Code
+- [x] Neo4j Knowledge Base with Civil/Penal/Administrative statutes
+- [x] Normattiva-based statute pipeline (`*_normattiva.csv` + `*_normattiva_embeddings.npy`)
 - [x] Hybrid statute retrieval: exact cosine search (source/libro pre-filtered) + fulltext rank fusion
+- [x] Neo4j `CITES` graph: citation edges built from statute references and used in pre-filter retrieval expansion
 - [x] Claim classification and book routing via LLM
 - [x] Domain Router Agent (CIVILE / PENALE / ENTRAMBI)
 - [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering, stance)
@@ -434,6 +473,7 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [ ] Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
 
 ### 📋 Planned
+- [ ] Extend statutory/procedural coverage with additional corpora: c.p.a., c.p.p., c.p.c., labour law corpus, health liability corpus, consumer law corpus, military disciplinary corpus, and industrial property corpus
 - [ ] Claim-level caching: persist retrieval results (statutes, precedents, classification, stance) per claim to skip redundant searches on re-execution
 - [ ] LLM memory layer: maintain conversational context across pipeline steps to improve coherence and reduce redundant reasoning
 - [ ] Full argumentation framework (Dung-style grounded semantics visualization)
@@ -448,9 +488,8 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 ## 📚 References
 
-The ITA-CaseHold dataset, used for legal precedent extraction and summarization in this project, was introduced by Licari et al. at ICAIL 2023. Their work presents a method for extracting legal holdings from Italian case documents using Italian-LEGAL-BERT, and provides a valuable benchmark for research in Italian legal NLP. For more details, see their publication at the International Conference on Artificial Intelligence and Law: [https://doi.org/10.1145/3594536.3595177](https://doi.org/10.1145/3594536.3595177).
-
-The Italian Civil Code dataset leveraged in LexCausa is based on the unsupervised law article mining approach described by Tagarelli and Simeri (2022). Their research applies deep pre-trained language models to the Italian civil code, enabling advanced legal text mining and representation. The full article is available in Artificial Intelligence and Law: [https://doi.org/10.1007/s10506-021-09301-8](https://doi.org/10.1007/s10506-021-09301-8).
+- **Normattiva (statutes source)**: All statutes used in LexCausa (Civil Code, Penal Code, Administrative Law 241/1990) are extracted from Normattiva and stored in `*_normattiva.csv`. Official portal: [https://www.normattiva.it](https://www.normattiva.it).
+- **ITA-CaseHold (precedents source)**: The ITA-CaseHold dataset, used for legal precedent extraction and summarization in this project, was introduced by Licari et al. at ICAIL 2023. Publication: [https://doi.org/10.1145/3594536.3595177](https://doi.org/10.1145/3594536.3595177).
 
 ## 👤 Authors
 

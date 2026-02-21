@@ -19,6 +19,7 @@ from neo4j import GraphDatabase
 from transformers import AutoModel, AutoTokenizer
 
 from .claim_classifier import ClaimClassifier, ClassificationResult
+from .groq_client import resilient_groq_call
 
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -144,6 +145,7 @@ class LegalSearchPipeline:
             settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
         )
         print("✅ Neo4j connection established")
+        self._query_terms_cache: dict[str, set[str]] = {}
 
     def close(self):
         """Close connections."""
@@ -200,6 +202,11 @@ class LegalSearchPipeline:
         """
         all_results: list[ArticleResult] = []
         query_text = (query_text or "").strip()
+        # Build fulltext query only from LLM-extracted keywords.
+        fulltext_query_text = ""
+        query_terms = self.get_search_query_terms(query_text)
+        if query_terms:
+            fulltext_query_text = " ".join(sorted(query_terms))
 
         with self.driver.session() as session:
             for filter_rank, (source, libro) in enumerate(libri_filters, start=1):
@@ -224,7 +231,7 @@ class LegalSearchPipeline:
                 )
                 fulltext_results = self._fulltext_search(
                     session=session,
-                    query_text=query_text,
+                    query_text=fulltext_query_text,
                     source=source,
                     libro=libro_filter,
                     limit=candidate_limit,
@@ -262,6 +269,132 @@ class LegalSearchPipeline:
                 best_by_id[result.statute_id] = result
 
         return sorted(best_by_id.values(), key=lambda x: x.score, reverse=True)[:top_k]
+
+    def expand_with_cited_articles(
+        self,
+        seed_articles: list[ArticleResult],
+    ) -> list[ArticleResult]:
+        """
+        Expand retrieval results through Neo4j CITES edges (forward citations).
+
+        This is intended to run before relevance/applicability filters so
+        citation-linked statutes can still be pruned by the existing filters.
+        """
+        if not settings.search_cites_enabled or not seed_articles:
+            return seed_articles
+
+        seed_by_id: dict[str, ArticleResult] = {}
+        for item in seed_articles:
+            existing = seed_by_id.get(item.statute_id)
+            if existing is None or item.score > existing.score:
+                seed_by_id[item.statute_id] = item
+
+        if not seed_by_id:
+            return seed_articles
+
+        per_seed_limit = max(1, settings.search_cites_per_article_limit)
+        max_additional = max(0, settings.search_cites_max_additional)
+        if max_additional == 0:
+            return sorted(seed_by_id.values(), key=lambda x: x.score, reverse=True)
+
+        seed_ids = list(seed_by_id.keys())
+        query = """
+        UNWIND $seed_ids AS seed_id
+        MATCH (s:Statute {statute_id: seed_id})
+        CALL (s) {
+          MATCH (s)-[:CITES]->(t:Statute)
+          RETURN t
+          LIMIT $per_seed_limit
+        }
+        RETURN seed_id,
+               t.statute_id AS id,
+               t.articolo AS articolo,
+               t.titolo AS titolo,
+               t.testo AS testo,
+               t.libro AS libro,
+               t.source AS source
+        """
+
+        cited_items: dict[str, ArticleResult] = {}
+        cited_meta: dict[str, dict[str, object]] = {}
+
+        try:
+            with self.driver.session() as session:
+                records = session.run(
+                    query,
+                    seed_ids=seed_ids,
+                    per_seed_limit=per_seed_limit,
+                )
+                for record in records:
+                    target_id = record["id"]
+                    if not target_id or target_id in seed_by_id:
+                        continue
+
+                    seed_id = record["seed_id"]
+                    parent_score = float(seed_by_id.get(seed_id).score or 0.0)
+
+                    if target_id not in cited_items:
+                        cited_items[target_id] = ArticleResult(
+                            statute_id=target_id,
+                            articolo=record["articolo"] or "",
+                            titolo=record["titolo"] or "",
+                            testo=record["testo"] or "",
+                            libro=record["libro"] or "",
+                            source=record["source"] or "",
+                            score=0.0,
+                            score_debug={},
+                        )
+                        cited_meta[target_id] = {
+                            "parents": set(),
+                            "max_parent_score": 0.0,
+                        }
+
+                    meta = cited_meta[target_id]
+                    parents = meta["parents"]
+                    if isinstance(parents, set):
+                        parents.add(seed_id)
+                    max_parent_score = float(meta.get("max_parent_score", 0.0))
+                    if parent_score > max_parent_score:
+                        meta["max_parent_score"] = parent_score
+        except Exception as exc:
+            print(f"⚠️ [Retrieval] Citation expansion failed: {exc}")
+            return sorted(seed_by_id.values(), key=lambda x: x.score, reverse=True)
+
+        if not cited_items:
+            return sorted(seed_by_id.values(), key=lambda x: x.score, reverse=True)
+
+        extras: list[ArticleResult] = []
+        for target_id, item in cited_items.items():
+            meta = cited_meta.get(target_id, {})
+            parents = meta.get("parents", set())
+            if not isinstance(parents, set):
+                parents = set()
+            parent_count = len(parents)
+            max_parent_score = float(meta.get("max_parent_score", 0.0))
+            extra_bonus = (
+                max(0, parent_count - 1) * settings.search_cites_multi_seed_bonus
+            )
+            final_score = (
+                max_parent_score * settings.search_cites_score_decay
+            ) + extra_bonus
+            item.score = float(final_score)
+            item.score_debug = {
+                "vector_rank_score": 0.0,
+                "fulltext_rank_score": 0.0,
+                "fusion_score": float(max_parent_score),
+                "keyword_bonus": 0.0,
+                "priority_multiplier": 1.0,
+                "citation_parent_count": float(parent_count),
+                "citation_base_parent_score": float(max_parent_score),
+                "citation_score_decay": float(settings.search_cites_score_decay),
+                "citation_multi_seed_bonus": float(extra_bonus),
+                "final_score": float(final_score),
+            }
+            extras.append(item)
+
+        extras = sorted(extras, key=lambda x: x.score, reverse=True)[:max_additional]
+        merged = list(seed_by_id.values()) + extras
+        return sorted(merged, key=lambda x: x.score, reverse=True)
 
     def _vector_exact_search(
         self,
@@ -417,16 +550,11 @@ class LegalSearchPipeline:
         limit: int,
     ) -> list[ArticleResult]:
         """Fuse vector and fulltext ranked lists with weighted rank scores."""
-        if source == "codice_amministrativo":
-            vector_weight = settings.search_hybrid_admin_vector_weight
-            fulltext_weight = settings.search_hybrid_admin_fulltext_weight
-        else:
-            vector_weight = settings.search_hybrid_vector_weight
-            fulltext_weight = settings.search_hybrid_fulltext_weight
+        vector_weight, fulltext_weight = self._hybrid_weights_for_source(source)
 
         if not vector_results and not fulltext_results:
             return []
-        query_terms = self._extract_query_terms(query_text)
+        query_terms = self.get_search_query_terms(query_text)
         if not vector_results:
             total = len(fulltext_results)
             return [
@@ -437,19 +565,28 @@ class LegalSearchPipeline:
                     testo=item.testo,
                     libro=item.libro,
                     source=item.source,
-                    score=rank_score + keyword_bonus,
+                    score=final_score,
                     score_debug={
                         "vector_rank_score": 0.0,
                         "fulltext_rank_score": rank_score,
                         "fusion_score": rank_score,
                         "keyword_bonus": keyword_bonus,
+                        "keyword_overlap_count": float(overlap_count),
+                        "overlap_multiplier": overlap_multiplier,
                         "priority_multiplier": 1.0,
-                        "final_score": rank_score + keyword_bonus,
+                        "final_score": final_score,
                     },
                 )
                 for idx, item in enumerate(fulltext_results[:limit], start=1)
                 for rank_score in [self._rank_score(idx, total)]
-                for keyword_bonus in [self._keyword_overlap_bonus(item, query_terms)]
+                for overlap_count, keyword_bonus, overlap_multiplier in [
+                    self._lexical_adjustments(
+                        source=source,
+                        item=item,
+                        query_terms=query_terms,
+                    )
+                ]
+                for final_score in [(rank_score + keyword_bonus) * overlap_multiplier]
             ]
         if not fulltext_results:
             total = len(vector_results)
@@ -461,19 +598,28 @@ class LegalSearchPipeline:
                     testo=item.testo,
                     libro=item.libro,
                     source=item.source,
-                    score=rank_score + keyword_bonus,
+                    score=final_score,
                     score_debug={
                         "vector_rank_score": rank_score,
                         "fulltext_rank_score": 0.0,
                         "fusion_score": rank_score,
                         "keyword_bonus": keyword_bonus,
+                        "keyword_overlap_count": float(overlap_count),
+                        "overlap_multiplier": overlap_multiplier,
                         "priority_multiplier": 1.0,
-                        "final_score": rank_score + keyword_bonus,
+                        "final_score": final_score,
                     },
                 )
                 for idx, item in enumerate(vector_results[:limit], start=1)
                 for rank_score in [self._rank_score(idx, total)]
-                for keyword_bonus in [self._keyword_overlap_bonus(item, query_terms)]
+                for overlap_count, keyword_bonus, overlap_multiplier in [
+                    self._lexical_adjustments(
+                        source=source,
+                        item=item,
+                        query_terms=query_terms,
+                    )
+                ]
+                for final_score in [(rank_score + keyword_bonus) * overlap_multiplier]
             ]
 
         by_id: dict[str, ArticleResult] = {}
@@ -494,8 +640,14 @@ class LegalSearchPipeline:
             v_score = vector_rank.get(statute_id, 0.0)
             f_score = fulltext_rank.get(statute_id, 0.0)
             fusion_score = (vector_weight * v_score) + (fulltext_weight * f_score)
-            keyword_bonus = self._keyword_overlap_bonus(base_item, query_terms)
-            score = fusion_score + keyword_bonus
+            overlap_count, keyword_bonus, overlap_multiplier = (
+                self._lexical_adjustments(
+                    source=source,
+                    item=base_item,
+                    query_terms=query_terms,
+                )
+            )
+            score = (fusion_score + keyword_bonus) * overlap_multiplier
             fused.append(
                 ArticleResult(
                     statute_id=base_item.statute_id,
@@ -510,6 +662,8 @@ class LegalSearchPipeline:
                         "fulltext_rank_score": f_score,
                         "fusion_score": fusion_score,
                         "keyword_bonus": keyword_bonus,
+                        "keyword_overlap_count": float(overlap_count),
+                        "overlap_multiplier": overlap_multiplier,
                         "priority_multiplier": 1.0,
                         "final_score": score,
                     },
@@ -519,9 +673,9 @@ class LegalSearchPipeline:
         return sorted(fused, key=lambda x: x.score, reverse=True)[:limit]
 
     @staticmethod
-    def _extract_query_terms(query_text: str) -> set[str]:
-        """Extract salient query terms for lightweight lexical bonus."""
-        tokens = re.findall(r"[a-zA-Zàèéìòù0-9\-]+", query_text.lower())
+    def _normalize_query_terms(raw_text: str) -> set[str]:
+        """Normalize keyword text into filtered lexical terms."""
+        tokens = re.findall(r"[a-zA-Zàèéìòù0-9\-]+", raw_text.lower())
         stopwords = {
             "della",
             "delle",
@@ -581,21 +735,169 @@ class LegalSearchPipeline:
             and t not in stopwords
         }
 
-    def _keyword_overlap_bonus(
-        self, item: ArticleResult, query_terms: set[str]
-    ) -> float:
-        """Small lexical boost when title/article text matches salient query terms."""
+    def get_search_query_terms(
+        self,
+        query_text: str,
+        mode: Optional[str] = None,
+    ) -> set[str]:
+        """
+        Extract query terms for hybrid retrieval using LLM-only keywords.
+
+        `mode` is kept for backward compatibility; only `llm` is supported.
+        """
+        mode_norm = (mode or settings.search_query_terms_mode or "llm").strip().lower()
+        if mode_norm != "llm":
+            print(
+                f"⚠️ [Retrieval] Unsupported query terms mode '{mode_norm}', forcing 'llm'."
+            )
+
+        normalized_query = (query_text or "").strip()
+        cached = self._query_terms_cache.get(normalized_query)
+        if cached is not None:
+            return set(cached)
+
+        terms = self._extract_query_terms_llm(normalized_query)
+        self._query_terms_cache[normalized_query] = set(terms)
+        return terms
+
+    def _extract_query_terms_llm(self, query_text: str) -> set[str]:
+        """Extract legal keywords with LLM; returns empty set on failure."""
+        if not query_text:
+            return set()
+
+        system_prompt = (
+            "Sei un assistente di information retrieval legale. "
+            "Dato un claim, estrai SOLO parole chiave giuridiche utili al search "
+            "(reati, istituti, qualificazioni, elementi fattuali decisivi). "
+            "Output: sola lista separata da virgole, senza spiegazioni."
+        )
+        user_prompt = (
+            "Estrai fino a "
+            f"{settings.search_query_terms_llm_max_terms} keyword.\n"
+            "CLAIM:\n"
+            f"{query_text}"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        def _call(client, model):
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.0,
+                max_completion_tokens=settings.search_query_terms_llm_max_tokens,
+                top_p=1,
+                stream=False,
+            )
+            return (completion.choices[0].message.content or "").strip()
+
+        try:
+            llm_text = resilient_groq_call(_call)
+        except Exception as exc:
+            print(f"⚠️ [Retrieval] LLM keyword extraction failed: {exc}")
+            return set()
+
+        return self._normalize_query_terms(llm_text)
+
+    def _hybrid_weights_for_source(self, source: str) -> tuple[float, float]:
+        """Return source-specific vector/fulltext fusion weights."""
+        if source == "codice_amministrativo":
+            return (
+                settings.search_hybrid_admin_vector_weight,
+                settings.search_hybrid_admin_fulltext_weight,
+            )
+        if source == "codice_civile":
+            return (
+                settings.search_hybrid_civile_vector_weight,
+                settings.search_hybrid_civile_fulltext_weight,
+            )
+        if source == "codice_penale":
+            return (
+                settings.search_hybrid_penale_vector_weight,
+                settings.search_hybrid_penale_fulltext_weight,
+            )
+        return (
+            settings.search_hybrid_vector_weight,
+            settings.search_hybrid_fulltext_weight,
+        )
+
+    def _lexical_adjustments(
+        self,
+        source: str,
+        item: ArticleResult,
+        query_terms: set[str],
+    ) -> tuple[int, float, float]:
+        """Compute lexical overlap count, keyword bonus, and source-specific multiplier."""
+        overlap_count = self._keyword_overlap_count(item, query_terms)
+        keyword_bonus = self._keyword_bonus_from_overlap(
+            source=source,
+            overlap_count=overlap_count,
+            query_terms_count=len(query_terms),
+        )
+        overlap_multiplier = self._overlap_multiplier(
+            source=source,
+            overlap_count=overlap_count,
+        )
+        return overlap_count, keyword_bonus, overlap_multiplier
+
+    def _keyword_overlap_count(self, item: ArticleResult, query_terms: set[str]) -> int:
+        """Count lexical overlap between claim query terms and article id/title terms."""
         if not query_terms:
-            return 0.0
+            return 0
         text = f"{item.articolo} {item.titolo}".lower()
         item_terms = set(re.findall(r"[a-zA-Zàèéìòù0-9\-]+", text))
         if not item_terms:
+            return 0
+        return len(query_terms & item_terms)
+
+    def _keyword_bonus_from_overlap(
+        self,
+        source: str,
+        overlap_count: int,
+        query_terms_count: int,
+    ) -> float:
+        """Lexical bonus based on overlap count with per-source threshold."""
+        if overlap_count <= 0 or query_terms_count <= 0:
             return 0.0
-        overlap = len(query_terms & item_terms) / len(query_terms)
+        min_overlap = settings.search_hybrid_keyword_min_overlap_count
+        if source == "codice_penale":
+            min_overlap = settings.search_hybrid_penale_keyword_min_overlap_count
+        elif source == "codice_civile":
+            min_overlap = settings.search_hybrid_civile_keyword_min_overlap_count
+        elif source == "codice_amministrativo":
+            min_overlap = settings.search_hybrid_admin_keyword_min_overlap_count
+        if overlap_count < min_overlap:
+            return 0.0
+        overlap_ratio = overlap_count / query_terms_count
         return min(
             settings.search_hybrid_keyword_bonus_max,
-            overlap * settings.search_hybrid_keyword_bonus_scale,
+            overlap_ratio * settings.search_hybrid_keyword_bonus_scale,
         )
+
+    def _overlap_multiplier(self, source: str, overlap_count: int) -> float:
+        """Apply per-source downweight when lexical overlap is weak."""
+        if source == "codice_penale":
+            min_overlap = settings.search_hybrid_penale_keyword_min_overlap_count
+            zero_multiplier = settings.search_hybrid_penale_zero_overlap_multiplier
+            low_multiplier = settings.search_hybrid_penale_low_overlap_multiplier
+        elif source == "codice_civile":
+            min_overlap = settings.search_hybrid_civile_keyword_min_overlap_count
+            zero_multiplier = settings.search_hybrid_civile_zero_overlap_multiplier
+            low_multiplier = settings.search_hybrid_civile_low_overlap_multiplier
+        elif source == "codice_amministrativo":
+            min_overlap = settings.search_hybrid_admin_keyword_min_overlap_count
+            zero_multiplier = settings.search_hybrid_admin_zero_overlap_multiplier
+            low_multiplier = settings.search_hybrid_admin_low_overlap_multiplier
+        else:
+            return 1.0
+
+        if overlap_count <= 0:
+            return zero_multiplier
+        if overlap_count < min_overlap:
+            return low_multiplier
+        return 1.0
 
     def build_search_filters(
         self,

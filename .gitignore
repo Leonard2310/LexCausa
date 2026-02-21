@@ -58,4 +58,6 @@ celerybeat.pid
 
 # Dataset files
 src/data/embeddings/
+src/data/old/
 claims.md
+claims_gold_labels.json

@@ -34,7 +34,12 @@ else:
 sys.path.insert(0, src_path)
 os.chdir(project_root)
 
-from agents import CounterReasoner, PolisherEvaluator, Reasoner  # noqa: E402
+from agents import (  # noqa: E402
+    CounterReasoner,
+    PolisherEvaluator,
+    Reasoner,
+    RetrievalFilterAgent,
+)
 from agents.base import AgentConfig  # noqa: E402
 from agents.router import Router, RoutingDecision  # noqa: E402
 from agents.tools import config_loader  # noqa: E402
@@ -201,11 +206,22 @@ counter_reasoner = None
 polisher_evaluator = None
 stance_classifier = None
 router_agent = None
+retrieval_filter_agent = None
 
 
 def get_pipeline():
     """Get the shared LegalSearchPipeline singleton."""
     return get_legal_search_pipeline()
+
+
+def get_retrieval_filter_agent():
+    """Lazy load helper agent for retrieval filtering (not Reasoner)."""
+    global retrieval_filter_agent
+    if retrieval_filter_agent is None:
+        print("🔧 Inizializzazione Motore Retrieval...")
+        retrieval_filter_agent = RetrievalFilterAgent()
+        print("✅ Motore Retrieval pronto!")
+    return retrieval_filter_agent
 
 
 def _articles_to_dicts(articles) -> list[dict]:
@@ -249,6 +265,9 @@ def _log_retrieval_debug(
     stage: str = "retrieval",
 ) -> None:
     """Print retrieval debug lines for each returned article."""
+    top_n = int(settings.search_retrieval_debug_top_n)
+    if top_n <= 0:
+        return
     print(f"\n{'─'*70}")
     print(f"🔬 RETRIEVAL DEBUG [{stage}]")
     print(f"{'─'*70}")
@@ -260,8 +279,9 @@ def _log_retrieval_debug(
     if not articles:
         print("⚠️ Nessun articolo recuperato.")
         return
-    print("Top articoli (con breakdown score):")
-    for i, art in enumerate(articles, start=1):
+    shown = articles[:top_n]
+    print(f"Top articoli (con breakdown score) — showing {len(shown)}/{len(articles)}:")
+    for i, art in enumerate(shown, start=1):
         payload = _article_with_retrieval_debug(art)
         print(
             f"{i:02d}. [{payload['source']}] Art. {payload['articolo']} "
@@ -271,6 +291,10 @@ def _log_retrieval_debug(
             f"| fusion={payload['fusion_score']:.4f} "
             f"| kw={payload['keyword_bonus']:.4f} "
             f"| priority={payload['priority_multiplier']:.4f}"
+        )
+    if len(articles) > top_n:
+        print(
+            f"... {len(articles) - top_n} articoli ulteriori omessi (config: SEARCH_RETRIEVAL_DEBUG_TOP_N={top_n})"
         )
 
 
@@ -296,11 +320,12 @@ def prepare_claim_context(
 
     print(
         f"🔎 Pre-retrieval config: top_k_statutes={max_statutes}, "
-        f"min_kept={min_kept}, max_precedents={max_precedents}"
+        f"min_kept={min_kept}, max_precedents={max_precedents}, "
+        f"query_terms_mode={settings.search_query_terms_mode}"
     )
 
     pipe = get_pipeline()
-    reas = get_reasoner()
+    retrieval_agent = get_retrieval_filter_agent()
 
     # ── Step 1: classify + embed once ──────────────────────────────────
     progress_callback("Classificazione claim e embedding query", 18)
@@ -325,12 +350,27 @@ def prepare_claim_context(
         articles=articles,
         stage=f"initial_top_k_{current_top_k}",
     )
+    expanded_articles = pipe.expand_with_cited_articles(articles)
+    if len(expanded_articles) > len(articles):
+        print(
+            "ℹ️ [Retrieval] 🔗 Citation expansion: "
+            f"+{len(expanded_articles) - len(articles)} articoli via CITES"
+        )
+        _log_retrieval_debug(
+            claim=claim,
+            filters=libri_filters,
+            articles=expanded_articles,
+            stage=f"initial_top_k_{current_top_k}_plus_cites",
+        )
+    articles = expanded_articles
     statutes = _articles_to_dicts(articles)
-    legal_context = reas._extract_legal_context(claim)
+    legal_context = retrieval_agent._extract_legal_context(claim)
     progress_callback("Filtro rilevanza norme", 38)
-    kept_statutes = reas.filter_irrelevant_statutes(claim, statutes)
+    kept_statutes = retrieval_agent.filter_irrelevant_statutes(claim, statutes)
     progress_callback("Verifica applicabilità norme", 48)
-    kept_statutes = reas.filter_applicable_statutes(claim, kept_statutes, legal_context)
+    kept_statutes = retrieval_agent.filter_applicable_statutes(
+        claim, kept_statutes, legal_context
+    )
     seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
 
     print(
@@ -340,6 +380,7 @@ def prepare_claim_context(
 
     # ── Step 3: progressive expansion ──────────────────────────────────
     expansion = 0
+    zero_gain_rounds = 0
     while len(kept_statutes) < min_kept and expansion < max_expansions:
         expansion += 1
         current_top_k += expansion_step
@@ -365,6 +406,19 @@ def prepare_claim_context(
             articles=articles,
             stage=f"expansion_{expansion}_top_k_{current_top_k}",
         )
+        expanded_articles = pipe.expand_with_cited_articles(articles)
+        if len(expanded_articles) > len(articles):
+            print(
+                "ℹ️ [Retrieval] 🔗 Citation expansion: "
+                f"+{len(expanded_articles) - len(articles)} articoli via CITES"
+            )
+            _log_retrieval_debug(
+                claim=claim,
+                filters=libri_filters,
+                articles=expanded_articles,
+                stage=f"expansion_{expansion}_top_k_{current_top_k}_plus_cites",
+            )
+        articles = expanded_articles
         new_statutes = [
             d for d in _articles_to_dicts(articles) if d["statute_id"] not in seen_ids
         ]
@@ -375,15 +429,32 @@ def prepare_claim_context(
 
         seen_ids.update(s["statute_id"] for s in new_statutes)
         progress_callback("Filtro rilevanza norme (espansione)", 60)
-        new_kept = reas.filter_irrelevant_statutes(claim, new_statutes)
+        new_kept = retrieval_agent.filter_irrelevant_statutes(claim, new_statutes)
         progress_callback("Verifica applicabilità norme (espansione)", 62)
-        new_kept = reas.filter_applicable_statutes(claim, new_kept, legal_context)
+        new_kept = retrieval_agent.filter_applicable_statutes(
+            claim, new_kept, legal_context
+        )
         kept_statutes.extend(new_kept)
 
         print(
             f"   📊 +{len(new_statutes)} new fetched, "
             f"+{len(new_kept)} kept → total kept={len(kept_statutes)}"
         )
+
+        if len(new_kept) == 0:
+            zero_gain_rounds += 1
+        else:
+            zero_gain_rounds = 0
+
+        if (
+            zero_gain_rounds >= settings.search_expansion_max_zero_gain_rounds
+            and len(kept_statutes) < min_kept
+        ):
+            print(
+                "   ⚠️ Expansion early-stop: nessun guadagno utile in "
+                f"{zero_gain_rounds} round consecutivi"
+            )
+            break
 
     if expansion > 0:
         print(
@@ -407,7 +478,7 @@ def prepare_claim_context(
             print(f"⚠️ Errore recupero precedenti: {e}")
 
     progress_callback("Filtro precedenti", 66)
-    precedents = reas.filter_irrelevant_precedents(claim, precedents)
+    precedents = retrieval_agent.filter_irrelevant_precedents(claim, precedents)
 
     return statutes, precedents
 
@@ -563,6 +634,9 @@ def get_settings():
                 "search_top_k_default": settings.search_top_k_default,
                 "search_min_kept_statutes": settings.search_min_kept_statutes,
                 "search_use_top_n_libri": settings.search_use_top_n_libri,
+                "search_query_terms_mode": settings.search_query_terms_mode,
+                "search_query_terms_llm_max_terms": settings.search_query_terms_llm_max_terms,
+                "search_query_terms_llm_max_tokens": settings.search_query_terms_llm_max_tokens,
                 "precedents_limit_default": settings.precedents_limit_default,
                 "include_precedents": True,
                 "chain_min_steps": settings.chain_min_steps,
@@ -608,9 +682,16 @@ def chat():
         data = request.get_json()
         claim = data.get("message", "").strip()
         top_k = data.get("top_k", settings.search_top_k_default)
+        fe_settings = data.get("settings", {}) or {}
+        fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
 
         if not claim:
             return jsonify({"error": 'Campo "message" obbligatorio'}), 400
+
+        if fe_search_query_terms_mode is not None:
+            mode = str(fe_search_query_terms_mode).strip().lower()
+            if mode == "llm":
+                settings.search_query_terms_mode = mode
 
         result = pipe.search(claim, top_k=top_k)
         response_text = format_search_result(result)
@@ -661,13 +742,13 @@ def reason():
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
         routing_decision = resolve_routing_decision(claim, data)
-        reas = get_reasoner()
         statutes, precedents = prepare_claim_context(
             claim=claim,
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
         )
+        reas = get_reasoner()
 
         result = reas.run(
             claim=claim,
@@ -817,6 +898,13 @@ def _run_full_pipeline(
     fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
     fe_chain_min_steps = fe_settings.get("chain_min_steps")
     fe_chain_max_steps = fe_settings.get("chain_max_steps")
+    fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
+    fe_search_query_terms_llm_max_terms = fe_settings.get(
+        "search_query_terms_llm_max_terms"
+    )
+    fe_search_query_terms_llm_max_tokens = fe_settings.get(
+        "search_query_terms_llm_max_tokens"
+    )
     fe_enable_causality = fe_settings.get("enable_causality", True)
 
     if not claim:
@@ -843,6 +931,18 @@ def _run_full_pipeline(
             settings.chain_max_steps = int(fe_chain_max_steps)
         if fe_search_min_kept_statutes is not None:
             settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
+        if fe_search_query_terms_mode is not None:
+            mode = str(fe_search_query_terms_mode).strip().lower()
+            if mode == "llm":
+                settings.search_query_terms_mode = mode
+        if fe_search_query_terms_llm_max_terms is not None:
+            settings.search_query_terms_llm_max_terms = int(
+                fe_search_query_terms_llm_max_terms
+            )
+        if fe_search_query_terms_llm_max_tokens is not None:
+            settings.search_query_terms_llm_max_tokens = int(
+                fe_search_query_terms_llm_max_tokens
+            )
 
         status_callback("Preparazione contesto giuridico...")
         _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
@@ -887,7 +987,7 @@ def _run_full_pipeline(
         status_callback("Generazione argomentazione principale in corso...")
 
         reasoner_config = _build_agent_config(
-            model_override=fe_reasoner_model,
+            model_override=fe_reasoner_model or settings.reasoner_default_model,
             temperature=fe_temperature,
             max_tokens=fe_max_tokens,
         )
@@ -936,7 +1036,7 @@ def _run_full_pipeline(
         status_callback("Generazione argomentazione contraria in corso...")
 
         counter_config = _build_agent_config(
-            model_override=fe_counter_model,
+            model_override=fe_counter_model or settings.counter_default_model,
             temperature=fe_temperature,
             max_tokens=fe_max_tokens,
         )

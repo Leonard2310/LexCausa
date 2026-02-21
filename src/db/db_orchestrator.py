@@ -19,7 +19,10 @@ Uso:
 """
 
 import argparse
+import ast
+import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -279,6 +282,15 @@ class DatabaseOrchestrator:
             )
             print("      ✅ precedents_fulltext_idx")
 
+            session.run(
+                """
+                CREATE INDEX statute_source_articolo_idx IF NOT EXISTS
+                FOR (n:Statute)
+                ON (n.source, n.articolo)
+            """
+            )
+            print("      ✅ statute_source_articolo_idx")
+
             # -----------------------------------------------------------------
             # STRUTTURA GRAFO (Codice -> Libro)
             # -----------------------------------------------------------------
@@ -386,7 +398,111 @@ class DatabaseOrchestrator:
         df_amm, emb_amm = load_codice_amministrativo_with_embeddings()
         self._ingest_statutes(df_amm, "codice_amministrativo", emb_amm)
 
+        print("\n   🔗 Creazione relazioni CITES...")
+        cites_count = self._create_cites_relationships()
+        print(f"      ✅ Relazioni CITES create: {cites_count}")
+
         print("\n✅ Statuti caricati")
+
+    @staticmethod
+    def _parse_list_field(value) -> list[str]:
+        """
+        Parse a list-like CSV field.
+
+        Accepted formats:
+        - python list string: "['40', '41']"
+        - json list string: ["40", "41"]
+        - single string token
+        """
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+
+        raw = str(value).strip()
+        if not raw or raw.lower() == "nan":
+            return []
+
+        parsed = None
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(raw)
+                break
+            except Exception:
+                continue
+
+        if isinstance(parsed, list):
+            return [str(v).strip() for v in parsed if str(v).strip()]
+
+        # Fallback: comma-separated or plain string.
+        if "," in raw:
+            return [x.strip() for x in raw.split(",") if x.strip()]
+        return [raw]
+
+    @staticmethod
+    def _normalize_internal_reference(ref: str, source: str) -> str:
+        """Normalize internal article references to match stored `Statute.articolo`."""
+        if not ref:
+            return ""
+        token = ref.strip().lower()
+        token = token.replace("‑", "-").replace("–", "-").replace("—", "-")
+        token = re.sub(r"^art(?:t|icolo)?\.?\s*", "", token)
+        m = re.search(r"(\d+(?:-[a-z]+)*(?:\.\d+)?)", token)
+        if not m:
+            return ""
+        normalized = m.group(1)
+        # Codice civile statute ids are stored as article_id (e.g. art2043).
+        if source == "codice_civile" and not normalized.startswith("art"):
+            normalized = f"art{normalized}"
+        return normalized
+
+    def _extract_row_references(self, row, source: str) -> tuple[list[str], list[str]]:
+        """
+        Extract and normalize internal and external references from heterogeneous CSV schemas.
+        """
+        internal_raw = (
+            row.get("reference")
+            or row.get("references")
+            or row.get("article_references")
+            or row.get("article_reference")
+            or "[]"
+        )
+        external_raw = (
+            row.get("external_reference") or row.get("external_references") or "[]"
+        )
+
+        internal_refs = [
+            self._normalize_internal_reference(ref, source)
+            for ref in self._parse_list_field(internal_raw)
+        ]
+        internal_refs = sorted({r for r in internal_refs if r})
+
+        external_refs = sorted(
+            {ref for ref in self._parse_list_field(external_raw) if ref}
+        )
+        return internal_refs, external_refs
+
+    def _create_cites_relationships(self) -> int:
+        """Create intra-source CITES relationships from Statute.reference arrays."""
+        with self.driver.session() as session:
+            session.run("MATCH (:Statute)-[r:CITES]->(:Statute) DELETE r")
+
+            result = session.run(
+                """
+                MATCH (s:Statute)
+                UNWIND coalesce(s.reference, []) AS ref
+                WITH s, toLower(trim(toString(ref))) AS ref
+                WHERE ref <> ''
+                MATCH (t:Statute)
+                WHERE t.source = s.source
+                  AND toLower(t.articolo) = ref
+                  AND s.statute_id <> t.statute_id
+                MERGE (s)-[r:CITES {kind: 'internal_reference'}]->(t)
+                RETURN count(r) AS rel_count
+            """
+            )
+            record = result.single()
+            return int(record["rel_count"] if record else 0)
 
     def _ingest_statutes(self, df, source: str, embeddings):
         """Inserisce statuti nel database."""
@@ -439,6 +555,10 @@ class DatabaseOrchestrator:
                     if not libro:
                         libro = _clean_text(row.get("libro_codice_civile", ""))
 
+                    reference, external_reference = self._extract_row_references(
+                        row, source
+                    )
+
                     records.append(
                         {
                             "statute_id": f"{source}_{global_idx}_{articolo}",
@@ -449,6 +569,8 @@ class DatabaseOrchestrator:
                             "source": source,
                             "full_text": f"Art. {articolo} - {titolo}: {testo}",
                             "embedding": batch_emb[idx].tolist(),
+                            "reference": reference,
+                            "external_reference": external_reference,
                         }
                     )
 
@@ -463,7 +585,9 @@ class DatabaseOrchestrator:
                         libro: record.libro,
                         source: record.source,
                         full_text: record.full_text,
-                        embedding: record.embedding
+                        embedding: record.embedding,
+                        reference: record.reference,
+                        external_reference: record.external_reference
                     })
                     WITH s, record
                     FOREACH (_ IN CASE WHEN record.libro <> '' THEN [1] ELSE [] END |

@@ -11,6 +11,7 @@ from .base import AgentConfig, BaseAgent, ReasoningResult
 from .counter_reasoner import CounterArgument, CounterReasoner, CounterReasonerOutput
 from .polisher_evaluator import EvaluationResult, PolisherEvaluator
 from .reasoner import Reasoner, ReasonerOutput
+from .retrieval_filter_agent import RetrievalFilterAgent
 from .router import Router, RoutingDecision
 
 __all__ = [
@@ -18,6 +19,8 @@ __all__ = [
     "BaseAgent",
     "AgentConfig",
     "ReasoningResult",
+    # Retrieval Filter
+    "RetrievalFilterAgent",
     # Reasoner
     "Reasoner",
     "ReasonerOutput",

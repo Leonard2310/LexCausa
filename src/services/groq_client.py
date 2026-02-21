@@ -166,6 +166,7 @@ def _resilient_loop(
     *,
     max_retries: Optional[int] = None,
     label: str = "Groq",
+    model_order: Optional[list[str]] = None,
 ):
     """
     Generic resilient execution loop.
@@ -185,7 +186,17 @@ def _resilient_loop(
     - On other transient errors → retry with exponential backoff, then rotate key.
     """
     retries = max_retries or settings.groq_max_retries
-    models = list(settings.groq_models)  # copy so we can iterate safely
+    # Allow per-call model order overrides (used by Reasoner/CounterReasoner).
+    if model_order:
+        models: list[str] = []
+        for m in model_order:
+            m_norm = str(m or "").strip()
+            if m_norm and m_norm not in models:
+                models.append(m_norm)
+    else:
+        models = []
+    if not models:
+        models = list(settings.groq_models)  # copy so we can iterate safely
     keys = settings.groq_api_keys
     n_keys = len(keys)
     base_delay = settings.groq_retry_base_delay
@@ -354,7 +365,12 @@ def get_groq_client(api_key: Optional[str] = None) -> Groq:
     return Groq(api_key=key)
 
 
-def resilient_groq_call(call_fn, *, max_retries: Optional[int] = None):
+def resilient_groq_call(
+    call_fn,
+    *,
+    max_retries: Optional[int] = None,
+    model_order: Optional[list[str]] = None,
+):
     """
     Execute a Groq SDK call with retry + key rotation + model fallback.
 
@@ -370,7 +386,12 @@ def resilient_groq_call(call_fn, *, max_retries: Optional[int] = None):
         client = Groq(api_key=key)
         return call_fn(client, model)
 
-    return _resilient_loop(_execute, max_retries=max_retries, label="Groq")
+    return _resilient_loop(
+        _execute,
+        max_retries=max_retries,
+        label="Groq",
+        model_order=model_order,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -415,6 +436,7 @@ def resilient_chat_call(
     messages,
     *,
     max_retries: Optional[int] = None,
+    model_order: Optional[list[str]] = None,
     **invoke_kwargs,
 ):
     """
@@ -438,7 +460,12 @@ def resilient_chat_call(
             )
         return llm.invoke(messages, **invoke_kwargs)
 
-    return _resilient_loop(_execute, max_retries=max_retries, label="ChatGroq")
+    return _resilient_loop(
+        _execute,
+        max_retries=max_retries,
+        label="ChatGroq",
+        model_order=model_order,
+    )
 
 
 def _chunk_to_text(chunk) -> str:
@@ -471,6 +498,7 @@ def resilient_chat_stream(
     *,
     on_token: Optional[Callable[[str], None]] = None,
     max_retries: Optional[int] = None,
+    model_order: Optional[list[str]] = None,
     **stream_kwargs,
 ):
     """
@@ -501,7 +529,12 @@ def resilient_chat_stream(
                 on_token(text)
         return AIMessage(content="".join(pieces))
 
-    return _resilient_loop(_execute, max_retries=max_retries, label="ChatGroqStream")
+    return _resilient_loop(
+        _execute,
+        max_retries=max_retries,
+        label="ChatGroqStream",
+        model_order=model_order,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -514,6 +547,7 @@ def resilient_react_invoke(
     input_data: dict,
     *,
     max_retries: Optional[int] = None,
+    model_order: Optional[list[str]] = None,
 ):
     """
     Invoke a LangGraph ReAct agent with smart retry strategy.
@@ -528,4 +562,9 @@ def resilient_react_invoke(
         agent = agent_builder(key, model)
         return agent.invoke(input_data)
 
-    return _resilient_loop(_execute, max_retries=max_retries, label="ReAct")
+    return _resilient_loop(
+        _execute,
+        max_retries=max_retries,
+        label="ReAct",
+        model_order=model_order,
+    )

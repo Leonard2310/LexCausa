@@ -67,8 +67,8 @@ class Settings(BaseSettings):
         "groq_llama_scout_17b",
         "groq_llama_maverick_17b",
     ]
-    REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "groq_llama_maverick_17b"
-    COUNTER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "groq_llama_maverick_17b"
+    REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
+    COUNTER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
 
     # =========================================================================
     # Retry / Resilience Configuration
@@ -130,6 +130,11 @@ class Settings(BaseSettings):
         alias="SEARCH_MAX_EXPANSIONS",
         description="Maximum number of progressive expansion rounds to avoid infinite loops.",
     )
+    search_expansion_max_zero_gain_rounds: int = Field(
+        default=2,
+        alias="SEARCH_EXPANSION_MAX_ZERO_GAIN_ROUNDS",
+        description="Early-stop retrieval expansion after this many consecutive rounds with zero newly kept statutes.",
+    )
     search_use_top_n_libri: int = Field(
         default=3,
         alias="SEARCH_USE_TOP_N_LIBRI",
@@ -146,14 +151,34 @@ class Settings(BaseSettings):
         description="Weight of fulltext-ranked candidates in hybrid statute retrieval score fusion.",
     )
     search_hybrid_admin_vector_weight: float = Field(
-        default=0.35,
+        default=0.20,
         alias="SEARCH_HYBRID_ADMIN_VECTOR_WEIGHT",
         description="Vector weight used for administrative-code hybrid retrieval.",
     )
     search_hybrid_admin_fulltext_weight: float = Field(
-        default=0.65,
+        default=0.80,
         alias="SEARCH_HYBRID_ADMIN_FULLTEXT_WEIGHT",
         description="Fulltext weight used for administrative-code hybrid retrieval.",
+    )
+    search_hybrid_civile_vector_weight: float = Field(
+        default=0.20,
+        alias="SEARCH_HYBRID_CIVILE_VECTOR_WEIGHT",
+        description="Vector weight used for civil-code hybrid retrieval.",
+    )
+    search_hybrid_civile_fulltext_weight: float = Field(
+        default=0.80,
+        alias="SEARCH_HYBRID_CIVILE_FULLTEXT_WEIGHT",
+        description="Fulltext weight used for civil-code hybrid retrieval.",
+    )
+    search_hybrid_penale_vector_weight: float = Field(
+        default=0.45,
+        alias="SEARCH_HYBRID_PENALE_VECTOR_WEIGHT",
+        description="Vector weight used for criminal-code hybrid retrieval.",
+    )
+    search_hybrid_penale_fulltext_weight: float = Field(
+        default=0.55,
+        alias="SEARCH_HYBRID_PENALE_FULLTEXT_WEIGHT",
+        description="Fulltext weight used for criminal-code hybrid retrieval.",
     )
     search_hybrid_candidate_multiplier: int = Field(
         default=6,
@@ -190,10 +215,110 @@ class Settings(BaseSettings):
         alias="SEARCH_HYBRID_KEYWORD_BONUS_SCALE",
         description="Linear scale factor for lexical overlap bonus before clamping to max.",
     )
+    search_hybrid_keyword_min_overlap_count: int = Field(
+        default=1,
+        alias="SEARCH_HYBRID_KEYWORD_MIN_OVERLAP_COUNT",
+        description="Minimum number of query-term overlaps required before adding keyword bonus (general).",
+    )
+    search_hybrid_penale_keyword_min_overlap_count: int = Field(
+        default=2,
+        alias="SEARCH_HYBRID_PENALE_KEYWORD_MIN_OVERLAP_COUNT",
+        description="Minimum number of query-term overlaps required before adding keyword bonus for criminal code.",
+    )
+    search_hybrid_civile_keyword_min_overlap_count: int = Field(
+        default=3,
+        alias="SEARCH_HYBRID_CIVILE_KEYWORD_MIN_OVERLAP_COUNT",
+        description="Minimum number of query-term overlaps required before adding keyword bonus for civil code.",
+    )
+    search_hybrid_admin_keyword_min_overlap_count: int = Field(
+        default=3,
+        alias="SEARCH_HYBRID_ADMIN_KEYWORD_MIN_OVERLAP_COUNT",
+        description="Minimum number of query-term overlaps required before adding keyword bonus for administrative code.",
+    )
+    search_hybrid_penale_zero_overlap_multiplier: float = Field(
+        default=0.75,
+        alias="SEARCH_HYBRID_PENALE_ZERO_OVERLAP_MULTIPLIER",
+        description="Score multiplier for criminal-code results with zero lexical overlap against claim terms.",
+    )
+    search_hybrid_penale_low_overlap_multiplier: float = Field(
+        default=0.94,
+        alias="SEARCH_HYBRID_PENALE_LOW_OVERLAP_MULTIPLIER",
+        description="Score multiplier for criminal-code results with overlap below bonus threshold.",
+    )
+    search_hybrid_civile_zero_overlap_multiplier: float = Field(
+        default=0.8,
+        alias="SEARCH_HYBRID_CIVILE_ZERO_OVERLAP_MULTIPLIER",
+        description="Score multiplier for civil-code results with zero lexical overlap against claim terms.",
+    )
+    search_hybrid_civile_low_overlap_multiplier: float = Field(
+        default=1.0,
+        alias="SEARCH_HYBRID_CIVILE_LOW_OVERLAP_MULTIPLIER",
+        description="Score multiplier for civil-code results with overlap below bonus threshold.",
+    )
+    search_hybrid_admin_zero_overlap_multiplier: float = Field(
+        default=0.95,
+        alias="SEARCH_HYBRID_ADMIN_ZERO_OVERLAP_MULTIPLIER",
+        description="Score multiplier for administrative-code results with zero lexical overlap against claim terms.",
+    )
+    search_hybrid_admin_low_overlap_multiplier: float = Field(
+        default=1.0,
+        alias="SEARCH_HYBRID_ADMIN_LOW_OVERLAP_MULTIPLIER",
+        description="Score multiplier for administrative-code results with overlap below bonus threshold.",
+    )
     search_hybrid_min_keyword_length: int = Field(
         default=4,
         alias="SEARCH_HYBRID_MIN_KEYWORD_LENGTH",
-        description="Minimum token length to be considered as salient query keyword for lexical bonus.",
+        description="Minimum token length considered for normalized LLM query keywords used in lexical bonus.",
+    )
+    search_query_terms_mode: str = Field(
+        default="llm",
+        alias="SEARCH_QUERY_TERMS_MODE",
+        description="Query-term extraction mode for fulltext branch. Only 'llm' is supported.",
+    )
+    search_query_terms_llm_max_terms: int = Field(
+        default=12,
+        alias="SEARCH_QUERY_TERMS_LLM_MAX_TERMS",
+        description="Maximum number of keywords requested when using LLM query-term extraction.",
+    )
+    search_query_terms_llm_max_tokens: int = Field(
+        default=128,
+        alias="SEARCH_QUERY_TERMS_LLM_MAX_TOKENS",
+        description="Max completion tokens for LLM-based query-term extraction.",
+    )
+    search_cites_enabled: bool = Field(
+        default=True,
+        alias="SEARCH_CITES_ENABLED",
+        description="Enable citation-based expansion via Neo4j CITES edges before retrieval filters.",
+    )
+    search_cites_per_article_limit: int = Field(
+        default=10,
+        alias="SEARCH_CITES_PER_ARTICLE_LIMIT",
+        description="Maximum number of cited neighbors to fetch per initially retrieved statute.",
+    )
+    search_cites_max_additional: int = Field(
+        default=60,
+        alias="SEARCH_CITES_MAX_ADDITIONAL",
+        description="Maximum number of citation-expanded statutes added to a retrieval round.",
+    )
+    search_cites_score_decay: float = Field(
+        default=0.85,
+        alias="SEARCH_CITES_SCORE_DECAY",
+        description="Score decay applied to cited statutes relative to their strongest parent score.",
+    )
+    search_cites_multi_seed_bonus: float = Field(
+        default=0.03,
+        alias="SEARCH_CITES_MULTI_SEED_BONUS",
+        description="Bonus added per additional parent statute citing the same target.",
+    )
+    search_retrieval_debug_top_n: int = Field(
+        default=0,
+        alias="SEARCH_RETRIEVAL_DEBUG_TOP_N",
+        description="How many top retrieved statutes are printed in retrieval debug logs per stage.",
+    )
+    search_filter_log_top_n: int = Field(
+        default=100,
+        alias="SEARCH_FILTER_LOG_TOP_N",
+        description="Maximum number of per-item keep/discard filter logs for statutes/precedents; remaining items are summarized.",
     )
     precedents_limit_default: int = Field(
         default=5,
@@ -641,6 +766,9 @@ class Settings(BaseSettings):
             if val not in keys:  # avoid duplicates
                 keys.append(val)
             idx += 1
+        mode = str(self.search_query_terms_mode or "").strip().lower()
+        if mode != "llm":
+            object.__setattr__(self, "search_query_terms_mode", "llm")
         object.__setattr__(self, "_groq_api_keys", keys)
         return self
 

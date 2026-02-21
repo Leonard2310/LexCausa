@@ -2,9 +2,9 @@
 Data loader for LexCausa - Downloads and processes legal datasets.
 
 Datasets:
-1. Codice Penale - Local CSV file (src/data/statuti/codice_penale.csv)
-2. Codice Civile - Local CSV file (src/data/statuti/codice_civile.csv)
-3. Codice Amministrativo (L. 241/1990) - Local CSV file (src/data/statuti/codice_amministrativo.csv)
+1. Codice Penale - Local CSV file (src/data/statutes/codice_penale_normattiva.csv)
+2. Codice Civile - Local CSV file (src/data/statutes/codice_civile_normattiva.csv)
+3. Codice Amministrativo (L. 241/1990) - Local CSV file (src/data/statutes/codice_amministrativo_normattiva.csv)
 4. Precedenti (itacasehold) - Metadata (title/summary/url/materia)
 
 Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codice_civile
@@ -30,7 +30,7 @@ def load_codice_penale() -> pd.DataFrame:
     - libro: libro di appartenenza con prefisso (CP Libro I, II, III)
     - source: 'codice_penale'
     """
-    csv_path = settings.statutes_dir / "codice_penale.csv"
+    csv_path = settings.statutes_dir / "codice_penale_normattiva.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Penale CSV not found at {csv_path}")
 
@@ -57,7 +57,7 @@ def load_codice_civile() -> pd.DataFrame:
     - libro: libro di appartenenza con prefisso (CC Libro I, II, etc.)
     - source: 'codice_civile'
     """
-    csv_path = settings.statutes_dir / "codice_civile.csv"
+    csv_path = settings.statutes_dir / "codice_civile_normattiva.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Civile CSV not found at {csv_path}")
 
@@ -84,7 +84,7 @@ def load_codice_amministrativo() -> pd.DataFrame:
     - libro: empty string (this code has no libri)
     - source: 'codice_amministrativo'
     """
-    csv_path = settings.statutes_dir / "codice_amministrativo.csv"
+    csv_path = settings.statutes_dir / "codice_amministrativo_normattiva.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Codice Amministrativo CSV not found at {csv_path}")
 
@@ -101,7 +101,7 @@ def load_embeddings(source: str) -> Optional[np.ndarray]:
     Load pre-computed embeddings from .npy file.
 
     Args:
-        source: 'civile' or 'penale'
+        source: e.g. 'penale_normattiva', 'civile_normattiva', 'amministrativo_normattiva'
 
     Returns:
         numpy array of shape (n_articles, embedding_dim) or None if not found
@@ -279,14 +279,14 @@ def load_itacasehold_metadata() -> list[dict]:
 def load_codice_penale_with_embeddings() -> Tuple[pd.DataFrame, Optional[np.ndarray]]:
     """Load Codice Penale with corresponding embeddings."""
     df = load_codice_penale()
-    embeddings = load_embeddings("penale")
+    embeddings = load_embeddings("penale_normattiva")
     return df, embeddings
 
 
 def load_codice_civile_with_embeddings() -> Tuple[pd.DataFrame, Optional[np.ndarray]]:
     """Load Codice Civile with corresponding embeddings."""
     df = load_codice_civile()
-    embeddings = load_embeddings("civile")
+    embeddings = load_embeddings("civile_normattiva")
     return df, embeddings
 
 
@@ -295,10 +295,10 @@ def load_codice_amministrativo_with_embeddings() -> Tuple[pd.DataFrame, np.ndarr
     Load Codice Amministrativo with embeddings.
 
     If pre-computed embeddings are missing (or size-mismatched), they are generated
-    on the fly and saved to `src/data/embeddings/amministrativo_embeddings.npy`.
+    on the fly and saved to `src/data/embeddings/amministrativo_normattiva_embeddings.npy`.
     """
     df = load_codice_amministrativo()
-    embeddings = load_embeddings("amministrativo")
+    embeddings = load_embeddings("amministrativo_normattiva")
 
     if embeddings is None or len(embeddings) != len(df):
         if embeddings is not None and len(embeddings) != len(df):
@@ -313,7 +313,7 @@ def load_codice_amministrativo_with_embeddings() -> Tuple[pd.DataFrame, np.ndarr
             for _, row in df.iterrows()
         ]
         embeddings = _generate_embeddings_for_texts(texts)
-        out_path = settings.embeddings_dir / "amministrativo_embeddings.npy"
+        out_path = settings.embeddings_dir / "amministrativo_normattiva_embeddings.npy"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(out_path, embeddings)
         print(f"💾 Saved amministrativo embeddings to: {out_path}")
@@ -348,9 +348,9 @@ def main():
 
     # Load embeddings
     print("\n📊 Loading Embeddings...")
-    _ = load_embeddings("penale")
-    _ = load_embeddings("civile")
-    _ = load_embeddings("amministrativo")
+    _ = load_embeddings("penale_normattiva")
+    _ = load_embeddings("civile_normattiva")
+    _ = load_embeddings("amministrativo_normattiva")
 
     # Load itacasehold con metadata
     print("\n⚖️ Loading Itacasehold con metadata...")

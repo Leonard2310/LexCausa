@@ -368,7 +368,7 @@ class Settings(BaseSettings):
         description="AQA weight for Semantics.",
     )
     aqa_attack_top_k: int = Field(
-        default=3,
+        default=2,
         alias="AQA_ATTACK_TOP_K",
         description="Top-K cross-attacks to keep per link for explainability.",
     )
@@ -385,7 +385,7 @@ class Settings(BaseSettings):
         "Ensures only meaningfully stronger arguments can inflict damage.",
     )
     aqa_damage_factor: float = Field(
-        default=0.5,
+        default=0.4,
         alias="AQA_DAMAGE_FACTOR",
         description="Scaling factor applied to the excess damage (attacker_base - target_base). "
         "Lower values make attacks less destructive.",
@@ -432,29 +432,28 @@ class Settings(BaseSettings):
         default_factory=lambda: {
             "contradiction": 2.0,  # Contraddizione logica totale
             "exception": 1.7,  # Limita fortemente applicabilità
-            "derogation": 2.2,  # Invalida direttamente la norma citata
-            "extinction": 2.5,  # Estingue completamente l'argomento
-            "factual_impediment": 1.5,  # Impedimento fattuale serio
-            "general_opposition": 1.3,  # Opposizione generica ma rilevante
+            "derogation": 2.0,  # Invalida direttamente la norma citata
+            "extinction": 2.3,  # Estingue completamente l'argomento
+            "factual_impediment": 1.2,  # Impedimento fattuale serio
+            "general_opposition": 1.05,  # Opposizione generica ma rilevante
         },
         alias="AQA_ATTACK_TYPE_MULTIPLIERS",
         description="Damage multipliers by attack type.",
     )
     aqa_strength_ratio_by_type: dict = Field(
         default_factory=lambda: {
-            "contradiction": 0.0,
-            "exception": 0.0,
+            "contradiction": 0.05,
+            "exception": 0.05,
             "derogation": 0.0,
             "extinction": 0.0,
-            "factual_impediment": 0.5,
-            "general_opposition": 0.5,
+            "factual_impediment": 0.55,
+            "general_opposition": 0.55,
         },
         alias="AQA_STRENGTH_RATIO_BY_TYPE",
         description="Per-attack-type strength ratio thresholds. "
         "An attack of a given type needs attacker_base >= ratio * target_base. "
-        "Types classified by the LLM as specific (contradiction, exception, "
-        "derogation, extinction) have ratio=0.0, so they always pass. "
-        "Only general_opposition and factual_impediment are gated.",
+        "Specific attack types can use near-zero ratios, while general_opposition "
+        "and factual_impediment stay more selective.",
     )
 
     aqa_severity_book_map: dict = Field(

@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software in academic work, please cite it as below."
+title: "LexCausa"
+type: software
+authors:
+  - family-names: "Catello"
+    given-names: "Leonardo"
+    email: "leonardo.catello@hotmail.com"
+  - family-names: "Maione"
+    given-names: "Salvatore"
+    email: "salvatore22maione@gmail.com"
+license: "AGPL-3.0"
+repository-code: "https://github.com/Leonard2310/LexCausa"
+keywords:
+  - "legal reasoning"
+  - "argumentation"
+  - "knowledge graph"
+  - "Neo4j"
+  - "LLM"
+  - "Italian law"
+preferred-citation:
+  type: software
+  title: "LexCausa: Framework for Causal-Aware Structured Multi-Step Reasoning in Legal Argument Generation"
+  authors:
+    - family-names: "Catello"
+      given-names: "Leonardo"
+    - family-names: "Maione"
+      given-names: "Salvatore"
+  year: 2026
+  version: "1.0.0"
+  url: "https://github.com/Leonard2310/LexCausa"

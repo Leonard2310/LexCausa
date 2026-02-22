@@ -515,8 +515,7 @@ Email: salvatore22maione@gmail.com
 ## 🧾 Citation
 
 If you use LexCausa in academic work, please cite the repository.  
-This repository includes a `CITATION.cff` file to make citation easier via GitHub.
-
+See [CITATION.cff](CITATION.cff).
 ---
 
 *This project is part of a Master's thesis and is not intended for production legal use.*

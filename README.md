@@ -94,8 +94,8 @@
 │  Polisher-Evaluator (4 Mixins):                                         │
 │    ├─ ConsistencyChecker: KB verification → citation repair/drop        │
 │    ├─ ScoringMixin: readability, coherence, argument quality            │
-│    ├─ NLPUtilsMixin: Flesch/FOG/SMOG, NLI via LLM                      │
-│    └─ AQAEngine: Cogency(α)+NormSupport(β)+Semantics(γ)→verdict        │
+│    ├─ NLPUtilsMixin: Flesch/FOG/SMOG, NLI via LLM                       │
+│    └─ AQAEngine: Cogency(α)+NormSupport(β)+Semantics(γ)→verdict         │
 │         └─ Cross-attacks (6 types) + precedent influence → net_plaus.   │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -103,11 +103,11 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                   Neo4j Knowledge Base + Taxonomy                       │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  📚 Italian statutes KB (Normattiva): Civil + Penal + Administrative      │
-│     (L. 7 agosto 1990, n. 241)                                           │
+│  📚 Italian statutes KB (Normattiva): Civil + Penal + Administrative    │
+│     (L. 7 agosto 1990, n. 241)                                          │
 │  ⚖️  9112 precedent chunks from 792 rulings (ITA-CaseHold)              │
 │  📊 768-dim Vector Index (Legal-BERT) on statutes                       │
-│  🔗 Statute citation edges: `CITES` from normalized reference fields      │
+│  🔗 Statute citation edges: `CITES` from normalized reference fields    │
 │  🔗 Causality taxonomy (Material, Legal, Concurrent)                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -468,16 +468,19 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Precedent ingestion and fulltext search (ITA-CaseHold)
 - [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
 - [x] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)
+- [x] Supervised Tuning Domain-specific retrieval parameters (metodology weights, overlap multipliers and counts)
+- [x] Supervised Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
+
 
 ### 🚧 In Progress
-- [ ] Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
+- [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
+- [ ] Claim-level caching: persist retrieval results (statutes, precedents, classification, stance) per claim to skip redundant searches on re-execution
+
 
 ### 📋 Planned
 - [ ] Extend statutory/procedural coverage with additional corpora: c.p.a., c.p.p., c.p.c., labour law corpus, health liability corpus, consumer law corpus, military disciplinary corpus, and industrial property corpus
-- [ ] Claim-level caching: persist retrieval results (statutes, precedents, classification, stance) per claim to skip redundant searches on re-execution
 - [ ] LLM memory layer: maintain conversational context across pipeline steps to improve coherence and reduce redundant reasoning
 - [ ] Full argumentation framework (Dung-style grounded semantics visualization)
-- [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
 - [ ] Multi-turn dialogue with context retention
 
 

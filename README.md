@@ -475,18 +475,25 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 ### 🚧 In Progress
 - [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
 - [ ] Claim-level caching: persist retrieval results (statutes, precedents, classification, stance) per claim to skip redundant searches on re-execution
-
+- [ ] Explainability layer: generate a final, user-facing explanation of the reasoning and verdict (with traceable links to retrieved statutes/precedents and attack outcomes)
 
 ### 📋 Planned
 - [ ] Extend statutory/procedural coverage with additional corpora: c.p.a., c.p.p., c.p.c., labour law corpus, health liability corpus, consumer law corpus, military disciplinary corpus, and industrial property corpus
 - [ ] LLM memory layer: maintain conversational context across pipeline steps to improve coherence and reduce redundant reasoning
 - [ ] Full argumentation framework (Dung-style grounded semantics visualization)
 - [ ] Multi-turn dialogue with context retention
+- [ ] Multi-jurisdiction support: extend statutory coverage to additional countries and decouple the framework from Italy-specific statutes (pluggable statute loaders + jurisdiction configs)
 
 
 ## 📄 License
 
-This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for details.
+**Open Source**: This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).  
+See the [LICENSE](LICENSE) file for details.
+
+### Commercial licensing
+
+A commercial license is available for organizations that want to use LexCausa in proprietary and/or commercial products **without** AGPL-3.0 obligations.  
+See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for details and contacts.
 
 
 ## 📚 References
@@ -503,6 +510,12 @@ Email: leonardo.catello@hotmail.com
 **Salvatore Maione**  
 Master's Thesis in Computer Engineering  
 Email: salvatore22maione@gmail.com
+
+
+## 🧾 Citation
+
+If you use LexCausa in academic work, please cite the repository.  
+This repository includes a `CITATION.cff` file to make citation easier via GitHub.
 
 ---
 

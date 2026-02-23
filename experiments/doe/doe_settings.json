@@ -1,0 +1,35 @@
+{
+  "endpoint": "http://127.0.0.1:8000/api/pipeline",
+  "timeout_sec": 1800,
+  "max_retries": 3,
+  "retry_backoff_sec": 20,
+  "include_precedents": true,
+  "max_statutes": 100,
+  "max_precedents": 5,
+  "settings": {
+    "reasoner_model": "groq_llama_scout_17b",
+    "counter_model": "groq_llama_scout_17b",
+    "llm_temperature": 0.3,
+    "llm_max_tokens": 3500,
+    "chain_min_steps": 3,
+    "chain_max_steps": 6,
+    "search_min_kept_statutes": 10,
+    "aqa_alpha": 0.3,
+    "aqa_beta": 0.4,
+    "aqa_gamma": 0.3,
+    "aqa_min_semantic_overlap": 0.35,
+    "aqa_min_strength_ratio": 0.2,
+    "aqa_damage_factor": 0.4,
+    "aqa_allow_factual_attacks": true,
+    "aqa_allow_cross_codice": false,
+    "aqa_strength_ratio_by_type": {
+      "contradiction": 0.05,
+      "exception": 0.05,
+      "derogation": 0.0,
+      "extinction": 0.0,
+      "factual_impediment": 0.55,
+      "general_opposition": 0.55
+    },
+    "enable_causality": true
+  }
+}

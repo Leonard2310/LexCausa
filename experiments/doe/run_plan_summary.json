@@ -1,0 +1,22 @@
+{
+  "total_runs": 72,
+  "total_pairs": 36,
+  "domains": {
+    "AMMINISTRATIVO": {
+      "runs": 24,
+      "unique_claims": 6
+    },
+    "CIVILE": {
+      "runs": 24,
+      "unique_claims": 6
+    },
+    "PENALE": {
+      "runs": 24,
+      "unique_claims": 6
+    }
+  },
+  "conditions": {
+    "A": 36,
+    "B": 36
+  }
+}

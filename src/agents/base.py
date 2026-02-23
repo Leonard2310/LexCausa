@@ -92,6 +92,7 @@ class BaseAgent(ABC):
         """
         self.config = config or AgentConfig()
         self._llm: Optional[ChatGroq] = None
+        self._fact_lock_check_cache: dict[tuple[str, str], tuple[bool, str]] = {}
 
     @property
     def llm(self) -> ChatGroq:
@@ -232,6 +233,73 @@ class BaseAgent(ABC):
             if jaccard >= threshold:
                 return True
         return False
+
+    @staticmethod
+    def _is_step_self_consistent(step_text: str) -> bool:
+        """Reject obvious internal contradictions inside a single reasoning step.
+
+        This check is intentionally claim-orientation-agnostic (no pro/anti polarity).
+        """
+        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
+        if not text:
+            return False
+        contradictory_pairs = [
+            (r"\bsussiste\b", r"\bnon\s+sussiste\b"),
+            (r"\bsi\s+applica\b", r"\bnon\s+si\s+applica\b"),
+            (r"\bapplicabil", r"\bnon\s+applicabil"),
+            (r"\bresponsabil(?:e|ità)\b", r"\bnon\s+responsabil(?:e|ità)\b"),
+            (r"\blegittim(?:o|a|ità)\b", r"\billegittim(?:o|a|ità)\b"),
+            (r"\bcolpos[oa]\b", r"\bnon\s+colpos[oa]\b"),
+            (r"\bcausa\b", r"\bnon\s+(?:è\s+)?causa\b"),
+        ]
+        for positive, negative in contradictory_pairs:
+            if re.search(positive, text) and re.search(negative, text):
+                return False
+        return True
+
+    def _is_step_fact_consistent_with_claim(
+        self,
+        *,
+        claim: str,
+        candidate_step: str,
+        actor_label: str = "Agent",
+    ) -> tuple[bool, str]:
+        """Reject steps that contradict explicit facts stated in the claim.
+
+        Shared helper used by Reasoner and CounterReasoner.
+        """
+        claim_text = (claim or "").strip()
+        step_text = (candidate_step or "").strip()
+        if not claim_text or not step_text:
+            return True, ""
+
+        cache_key = (claim_text, step_text)
+        cached = self._fact_lock_check_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        prompt = render_prompt(
+            "base.fact_lock_check",
+            claim=claim_text,
+            candidate_step=step_text,
+        )
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+            if "CONTRADICT" in answer:
+                result = (False, "contradicts explicit claim fact")
+            else:
+                result = (True, "")
+        except Exception as exc:
+            # Do not fail closed on checker outages/rate limits.
+            self._log(
+                f"⚠️ {actor_label} fact-lock check failed (fallback keep): {exc}",
+                "warning",
+            )
+            result = (True, "")
+
+        self._fact_lock_check_cache[cache_key] = result
+        return result
 
     def _extract_reasoning_chain(self, response: str) -> list[str]:
         """Extract reasoning chain from response with improved pattern matching."""
@@ -391,8 +459,6 @@ class BaseAgent(ABC):
         self._log(f"🔍 Filtering relevance: {len(statutes)} statutes initially")
 
         relevant_statutes = []
-        max_item_logs = max(0, settings.search_filter_log_top_n)
-
         for idx, statute in enumerate(statutes, start=1):
             article_number = statute.get("articolo", "N/A")
             article_title = statute.get("titolo", "Untitled")
@@ -420,26 +486,16 @@ class BaseAgent(ABC):
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
-            should_log_item = idx <= max_item_logs
             if keep:
                 relevant_statutes.append(statute)
-                if should_log_item:
-                    self._log(
-                        f"✅ Keeping article [{idx}] {article_number} - {article_title}"
-                    )
+                self._log(
+                    f"✅ Keeping article [{idx}] {article_number} - {article_title}"
+                )
             else:
-                if should_log_item:
-                    self._log(
-                        f"❌ Discarding article [{idx}] {article_number} - {article_title}",
-                        "warning",
-                    )
-
-        if len(statutes) > max_item_logs:
-            self._log(
-                f"… per-item filter logs truncated: {len(statutes) - max_item_logs} articoli omessi "
-                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
-                "info",
-            )
+                self._log(
+                    f"❌ Discarding article [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
 
         self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
         return relevant_statutes
@@ -479,8 +535,6 @@ class BaseAgent(ABC):
 
         self._log(f"🎯 Checking applicability: {len(statutes)} statutes")
         applicable_statutes: list[dict] = []
-        max_item_logs = max(0, settings.search_filter_log_top_n)
-
         for idx, statute in enumerate(statutes, start=1):
             article_number = statute.get("articolo", "N/A")
             article_title = statute.get("titolo", "Untitled")
@@ -510,26 +564,14 @@ class BaseAgent(ABC):
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
-            should_log_item = idx <= max_item_logs
             if keep:
                 applicable_statutes.append(statute)
-                if should_log_item:
-                    self._log(
-                        f"✅ APPLICABLE [{idx}] {article_number} - {article_title}"
-                    )
+                self._log(f"✅ APPLICABLE [{idx}] {article_number} - {article_title}")
             else:
-                if should_log_item:
-                    self._log(
-                        f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
-                        "warning",
-                    )
-
-        if len(statutes) > max_item_logs:
-            self._log(
-                f"… per-item applicability logs truncated: {len(statutes) - max_item_logs} articoli omessi "
-                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
-                "info",
-            )
+                self._log(
+                    f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
 
         self._log(
             f"📊 Applicability result: {len(applicable_statutes)}/{len(statutes)} kept"
@@ -554,8 +596,6 @@ class BaseAgent(ABC):
         self._log(f"🔍 Filtering {len(precedents)} precedents (relevance mode)")
 
         relevant: list[dict] = []
-        max_item_logs = max(0, settings.search_filter_log_top_n)
-
         for idx, precedent in enumerate(precedents, start=1):
             title = precedent.get("title", "Untitled")
             summary = precedent.get("summary", "")
@@ -586,21 +626,11 @@ class BaseAgent(ABC):
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
-            should_log_item = idx <= max_item_logs
             if keep:
                 relevant.append(precedent)
-                if should_log_item:
-                    self._log(f"✅ Kept [{idx}] {title}")
+                self._log(f"✅ Kept [{idx}] {title}")
             else:
-                if should_log_item:
-                    self._log(f"❌ Discarded [{idx}] {title}", "warning")
-
-        if len(precedents) > max_item_logs:
-            self._log(
-                f"… per-item precedent logs truncated: {len(precedents) - max_item_logs} elementi omessi "
-                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
-                "info",
-            )
+                self._log(f"❌ Discarded [{idx}] {title}", "warning")
 
         self._log(f"📊 Kept {len(relevant)}/{len(precedents)} precedents")
         return relevant

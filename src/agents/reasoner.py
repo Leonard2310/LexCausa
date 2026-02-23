@@ -3,7 +3,7 @@ LexCausa Reasoner Agent.
 
 The Reasoner is responsible for:
 1. Receiving a legal claim with pre-retrieved statutes and precedents
-2. Generating supporting arguments based on the provided knowledge base
+2. Generating a primary legal reasoning based on the provided knowledge base
 3. Building a reasoning chain that connects the claim to legal norms
 
 Uses LangGraph with Groq Cloud for LLM-powered reasoning.
@@ -81,7 +81,7 @@ class Reasoner(BaseAgent):
     Legal Reasoner Agent.
 
     Analyzes legal claims using pre-retrieved knowledge (statutes/precedents),
-    classifies causality type, and generates supporting arguments.
+    classifies causality type, and generates the primary reasoning chain.
 
     Flow:
     1. api_server pre-retrieves statutes and precedents
@@ -95,7 +95,6 @@ class Reasoner(BaseAgent):
         """Initialize the Reasoner agent."""
         super().__init__(config)
         self._react_agent = None
-        self._max_support_stance_rewrites = 1
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
 
@@ -154,7 +153,7 @@ class Reasoner(BaseAgent):
     ) -> ReasonerOutput:
         """
         Two-phase reasoning:
-        1) Generate initial reasoning from claim + supportive/neutral sources.
+        1) Generate initial reasoning from claim + retrieved sources.
         2) Classify causality on that reasoning (not on the claim), validate vs router claim-class.
            If validated, inject anchor norms/principle tests and refine reasoning (with cross-ref expansion).
         """
@@ -733,7 +732,7 @@ class Reasoner(BaseAgent):
         Flow:
         1. Build a reasoning plan (distinct steps) with one LLM call.
         2. Execute one LLM call per planned step.
-        3. Validate each produced step (stance, repetition, semantic novelty).
+        3. Validate each produced step (coherence, repetition, semantic novelty).
 
         No fallback to the previous auto-stop strategy is used.
         """
@@ -787,7 +786,7 @@ class Reasoner(BaseAgent):
             )
             if not step_text:
                 raise RuntimeError(
-                    f"Planned support step {idx} could not be generated with valid content"
+                    f"Planned reasoning step {idx} could not be generated with valid content"
                 )
 
             steps.append(step_text)
@@ -887,6 +886,10 @@ class Reasoner(BaseAgent):
             goal = str(item.get("goal", "")).strip()
             focus = str(item.get("focus", "")).strip()
             expected_norm = str(item.get("expected_norm", "")).strip() or "N/A"
+            citation_requirement = self._normalize_plan_citation_requirement(
+                expected_norm=expected_norm,
+                raw_value=item.get("citation_requirement"),
+            )
             if not goal or not focus:
                 continue
             cleaned.append(
@@ -895,6 +898,7 @@ class Reasoner(BaseAgent):
                     "goal": goal,
                     "focus": focus,
                     "expected_norm": expected_norm,
+                    "citation_requirement": citation_requirement,
                 }
             )
 
@@ -905,6 +909,52 @@ class Reasoner(BaseAgent):
         if self._has_overlapping_plan_steps(cleaned):
             raise ValueError("planner produced overlapping/repetitive steps")
         return cleaned
+
+    @staticmethod
+    def _normalize_plan_citation_requirement(
+        *,
+        expected_norm: str,
+        raw_value: object,
+    ) -> str:
+        """
+        Normalize planner citation policy for a step.
+
+        Backward-compatible behavior:
+        - if planner does not provide the field, require citations only when
+          ``expected_norm`` is a real article (not N/A).
+        """
+        value = str(raw_value or "").strip().lower()
+        aliases = {
+            "required": "required",
+            "must": "required",
+            "mandatory": "required",
+            "optional": "optional",
+            "if_possible": "optional",
+            "when_possible": "optional",
+            "none": "none",
+            "no": "none",
+        }
+        normalized = aliases.get(value)
+        if normalized:
+            return normalized
+
+        expected = str(expected_norm or "").strip().upper()
+        if expected and expected not in {"N/A", "NA", "NONE", "-"}:
+            return "required"
+        return "optional"
+
+    @staticmethod
+    def _step_requires_citation(
+        *, expected_norm: str, citation_requirement: str
+    ) -> bool:
+        """Decide citation requirement using planner metadata only (no keyword heuristics)."""
+        requirement = str(citation_requirement or "").strip().lower()
+        if requirement == "required":
+            return True
+        if requirement in {"optional", "none"}:
+            return False
+        expected = str(expected_norm or "").strip().upper()
+        return bool(expected and expected not in {"N/A", "NA", "NONE", "-"})
 
     def _has_overlapping_plan_steps(self, plan_steps: list[dict[str, str]]) -> bool:
         """Detect obvious overlap across planned goals/focuses."""
@@ -1012,6 +1062,8 @@ class Reasoner(BaseAgent):
                 candidate_step=candidate,
                 previous_steps=previous_steps,
                 claim=claim,
+                expected_norm=plan_step.get("expected_norm", "N/A"),
+                citation_requirement=plan_step.get("citation_requirement", "optional"),
             )
             if ok:
                 return candidate
@@ -1032,6 +1084,17 @@ class Reasoner(BaseAgent):
                 )
                 return candidate
             last_reason = reason
+            if stream_callback:
+                try:
+                    stream_callback(
+                        {
+                            "phase": "support",
+                            "action": "reset_step",
+                            "step": plan_index,
+                        }
+                    )
+                except Exception:
+                    pass
             self._log(
                 f"⚠️ Step {plan_index} rejected ({reason}) "
                 f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
@@ -1054,7 +1117,7 @@ class Reasoner(BaseAgent):
         previous_summaries: list[str],
         used_norms: list[str],
     ) -> str:
-        """Create prompt for one planned support step."""
+        """Create prompt for one planned reasoning step."""
         plan_lines = "\n".join(
             f"{idx}. {step.get('goal', '')} | focus: {step.get('focus', '')}"
             for idx, step in enumerate(plan, start=1)
@@ -1082,6 +1145,7 @@ class Reasoner(BaseAgent):
             plan_goal=plan_step.get("goal", ""),
             plan_focus=plan_step.get("focus", ""),
             plan_expected_norm=plan_step.get("expected_norm", "N/A"),
+            plan_citation_requirement=plan_step.get("citation_requirement", "optional"),
             summary_lines=summary_lines,
             used_norms_text=used_norms_text,
         )
@@ -1102,16 +1166,32 @@ class Reasoner(BaseAgent):
         candidate_step: str,
         previous_steps: list[str],
         claim: str,
+        expected_norm: str,
+        citation_requirement: str,
     ) -> tuple[bool, str]:
-        """Validation checks for one support step candidate."""
+        """Validation checks for one reasoning step candidate."""
         text = (candidate_step or "").strip()
         if not text or text.upper() == "DONE":
             return False, "empty step"
         if self._is_garbage_text(text):
             return False, "garbage output"
         if not self._is_support_step_consistent(text):
-            return False, "stance drift (not strictly pro-claim)"
-        if not self._extract_cited_articles(text):
+            return False, "reasoning inconsistency"
+        facts_ok, facts_reason = self._is_step_fact_consistent_with_claim(
+            claim=claim,
+            candidate_step=text,
+            actor_label="Reasoner",
+        )
+        if not facts_ok:
+            return False, facts_reason
+        citations = self._extract_cited_articles(text)
+        if (
+            self._step_requires_citation(
+                expected_norm=expected_norm,
+                citation_requirement=citation_requirement,
+            )
+            and not citations
+        ):
             return False, "missing statutory citation"
         if previous_steps and self._is_repetitive_step(text, previous_steps):
             return False, "lexical repetition"
@@ -1241,87 +1321,10 @@ class Reasoner(BaseAgent):
 
         return step_text
 
-    def _evaluate_should_continue(
-        self,
-        claim: str,
-        domain: str,
-        steps: list[str],
-        used_norms: list[str],
-        knowledge_base: str,
-        statutes_list: str,
-        role: str = "support",
-    ) -> bool:
-        """Dedicated evaluation call: should the chain continue?
-
-        A lightweight LLM call that inspects the current chain and
-        decides whether an additional step would meaningfully
-        strengthen the argument.
-
-        Returns ``True`` to continue, ``False`` to conclude.
-        """
-        prev_context = "\n".join(
-            f"  Step {i + 1}: {s[:300]}..." for i, s in enumerate(steps)
-        )
-        used_text = ", ".join(sorted(set(used_norms))) if used_norms else "none"
-        n_steps = len(steps)
-        n_unique_norms = len(set(used_norms)) if used_norms else 0
-
-        role_desc = "supporting" if role == "support" else "counter-"
-
-        eval_prompt = render_prompt(
-            "reasoner.evaluate_continue",
-            role_desc=role_desc,
-            n_steps=n_steps,
-            n_unique_norms=n_unique_norms,
-            total_citations=len(used_norms),
-            claim=claim,
-            domain=domain,
-            prev_context=prev_context,
-            used_text=used_text,
-            statutes_list=statutes_list,
-        )
-
-        try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
-            answer = (resp.content or "").strip().upper()
-        except Exception as e:
-            self._log(
-                f"⚠️ Evaluation call failed: {e}; defaulting to CONTINUE",
-                "warning",
-            )
-            return True
-
-        # Robust parsing
-        if "CONCLUD" in answer:
-            should_continue = False
-        elif "CONTINU" in answer:
-            should_continue = True
-        else:
-            # Ambiguous → default to CONCLUDE after enough steps
-            should_continue = n_steps < 5
-            self._log(
-                f"⚠️ Evaluator ambiguous: '{answer[:50]}'; "
-                f"defaulting to {'CONTINUE' if should_continue else 'CONCLUDE'}",
-                "warning",
-            )
-
-        self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
-        return should_continue
-
-    def _build_support_stance_rewrite_prompt(
-        self, original_prompt: str, invalid_step: str
-    ) -> str:
-        """Rewrite step text that drifted away from pro-claim stance."""
-        return render_prompt(
-            "reasoner.support_stance_rewrite",
-            original_prompt=original_prompt,
-            invalid_step=invalid_step,
-        )
-
     def _build_support_conclusion_rewrite_prompt(
         self, claim: str, chain_text: str, norms_text: str, invalid_conclusion: str
     ) -> str:
-        """Force a concise conclusion aligned with pro-claim stance."""
+        """Force a concise conclusion aligned with the reasoning chain."""
         return render_prompt(
             "reasoner.support_conclusion_rewrite",
             claim=claim,
@@ -1332,79 +1335,12 @@ class Reasoner(BaseAgent):
 
     def _is_support_step_consistent(self, step_text: str) -> bool:
         """
-        Heuristic guardrail against anti-claim drift in support generation.
+        Lightweight guardrail against self-contradictory legal reasoning text.
 
-        Returns False when the text contains strong anti-claim signals
-        not offset by explicit pro-claim language.
+        This intentionally does NOT enforce a pro/anti orientation on the claim.
+        It only rejects obvious internal contradictions inside a single step.
         """
-        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
-        if not text:
-            return False
-
-        pro_patterns = [
-            r"\bpretesa\b.*\bfondat",
-            r"\bricorso\b.*\bfondat",
-            r"\bdeve\s+essere\s+accolt",
-            r"\baccoglibil",
-            r"\bannullabil",
-            r"\b(il|lo)\s+atto\b.*\billegittim",
-            r"\bprovvedimento\b.*\billegittim",
-            r"\bviolazion",
-            r"\bdetermina\b.*\billegittimit",
-        ]
-        anti_patterns = [
-            r"\bpretesa\b.*\brigettat",
-            r"\bricorso\b.*\brigettat",
-            r"\binfondat",
-            r"\binammissibil",
-            r"\bnon\s+(?:e|è)?\s*annullabil",
-            r"\bnon\s+determina\b.*\billegittimit",
-            r"\b(?:atto|provvedimento)\b.{0,25}\blegittim",
-        ]
-
-        pro_score = 0
-        for p in pro_patterns:
-            if not re.search(p, text):
-                continue
-            if p == r"\bannullabil" and re.search(
-                r"\bnon\s+(?:e|è)?\s*annullabil", text
-            ):
-                continue
-            if p in (
-                r"\b(il|lo)\s+atto\b.*\billegittim",
-                r"\bprovvedimento\b.*\billegittim",
-                r"\bdetermina\b.*\billegittimit",
-            ) and re.search(
-                r"\bnon\s+(?:rende|determina)\b.*\billegittim",
-                text,
-            ):
-                continue
-            if p == r"\bviolazion" and re.search(r"\bnon\b.{0,12}\bviolazion", text):
-                continue
-            if p == r"\bpretesa\b.*\bfondat" and re.search(
-                r"\bnon\b.{0,12}\bfondat", text
-            ):
-                continue
-            pro_score += 1
-
-        anti_score = 0
-        for p in anti_patterns:
-            if not re.search(p, text):
-                continue
-            if p == r"\b(?:atto|provvedimento)\b.{0,25}\blegittim" and re.search(
-                r"\bnon\b.{0,15}\blegittim", text
-            ):
-                continue
-            anti_score += 1
-
-        if re.search(r"\baccolt", text) and re.search(r"\brigettat", text):
-            return False
-
-        if anti_score >= 2 and pro_score == 0:
-            return False
-        if anti_score > pro_score + 1:
-            return False
-        return True
+        return self._is_step_self_consistent(step_text)
 
     def _generate_conclusion(
         self,
@@ -1457,7 +1393,7 @@ class Reasoner(BaseAgent):
             if conclusion:
                 if not self._is_support_step_consistent(conclusion):
                     self._log(
-                        "⚠️ LLM conclusion drifts from pro-claim stance; rewriting",
+                        "⚠️ LLM conclusion appears internally inconsistent; rewriting",
                         "warning",
                     )
                     rewrite_prompt = self._build_support_conclusion_rewrite_prompt(
@@ -1492,16 +1428,28 @@ class Reasoner(BaseAgent):
                         )
                         conclusion = ""
                 if conclusion:
+                    facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                        claim=claim,
+                        candidate_step=conclusion,
+                        actor_label="Reasoner",
+                    )
+                    if not facts_ok:
+                        self._log(
+                            "⚠️ LLM conclusion contradicts explicit claim facts; using fallback",
+                            "warning",
+                        )
+                        conclusion = ""
+                if conclusion:
                     self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
                     return conclusion
         except Exception as e:
             self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
 
-        # Static fallback
+        # Static fallback (neutral with respect to claim orientation)
         return (
-            f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
-            f"Le norme richiamate ({norms_text}) trovano applicazione al caso di specie "
-            f"e supportano il fondamento giuridico della domanda."
+            f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
+            f"deve essere fondata sulle norme richiamate ({norms_text}) "
+            f"e sulla loro applicazione ai fatti esposti."
         )
 
     def _assemble_raw_response(
@@ -1527,28 +1475,41 @@ class Reasoner(BaseAgent):
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
 
-        if conclusion_text and not self._is_support_step_consistent(conclusion_text):
-            self._log(
-                "⚠️ Provided conclusion inconsistent with pro-claim stance; using fallback",
-                "warning",
-            )
-            conclusion_text = ""
+        if conclusion_text:
+            if not self._is_support_step_consistent(conclusion_text):
+                self._log(
+                    "⚠️ Provided conclusion is internally inconsistent; using fallback",
+                    "warning",
+                )
+                conclusion_text = ""
+            else:
+                facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                    claim=claim,
+                    candidate_step=conclusion_text,
+                    actor_label="Reasoner",
+                )
+                if not facts_ok:
+                    self._log(
+                        "⚠️ Provided conclusion contradicts explicit claim facts; using fallback",
+                        "warning",
+                    )
+                    conclusion_text = ""
 
         if not conclusion_text:
             norms_list = ", ".join(norms) if norms else "le norme applicabili"
             conclusion_text = (
-                f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
-                f"Le norme richiamate ({norms_list}) trovano applicazione al caso di specie "
-                f"e supportano il fondamento giuridico della domanda."
+                f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
+                f"dipende dall'applicazione delle norme richiamate ({norms_list}) "
+                f"ai fatti esposti nella catena di ragionamento."
             )
 
         raw = (
             f"**Premessa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale**: La connessione tra le norme citate e la pretesa "
+            f"**Nesso Causale**: La connessione tra le norme citate e la questione giuridica posta dal claim "
             f"emerge dalla catena di ragionamento sottostante, dove ciascun passo "
-            f"costruisce logicamente sul precedente per dimostrare il fondamento "
-            f"giuridico della domanda.\n\n"
+            f"costruisce logicamente sul precedente per motivare la valutazione "
+            f"giuridica finale.\n\n"
             f"**Conclusione**: {conclusion_text}\n\n"
             f"{chain_section}"
         )

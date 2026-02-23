@@ -5,6 +5,19 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+_UNICODE_CITATION_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",  # hyphen
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2012": "-",  # figure dash
+        "\u2013": "-",  # en dash
+        "\u2014": "-",  # em dash
+        "\u2212": "-",  # minus sign
+        "\u00a0": " ",  # no-break space
+        "\u202f": " ",  # narrow no-break space
+    }
+)
+
 _SUFFIX_TOKENS = (
     "noviesdecies",
     "octiesdecies",
@@ -56,7 +69,7 @@ class ArticleMention:
 
 def normalize_article_id(raw: str) -> str:
     """Normalize article identifiers (e.g., ``62 bis`` -> ``62-bis``)."""
-    text = (raw or "").strip().lower()
+    text = (raw or "").translate(_UNICODE_CITATION_TRANSLATION).strip().lower()
     if not text:
         return ""
     text = re.sub(r"^art(?:icolo|icoli)?\.?\s*", "", text, flags=re.IGNORECASE)
@@ -110,8 +123,9 @@ def extract_article_mentions(
     mentions: list[ArticleMention] = []
     if not text:
         return mentions
+    normalized_text = text.translate(_UNICODE_CITATION_TRANSLATION)
 
-    for match in _ARTICLE_REF_PATTERN.finditer(text):
+    for match in _ARTICLE_REF_PATTERN.finditer(normalized_text):
         raw_article = match.group("article") or ""
         raw_code = (match.group("code") or "").strip()
         if require_code and not raw_code:

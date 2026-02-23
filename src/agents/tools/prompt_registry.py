@@ -23,8 +23,7 @@ class PromptKey(StrEnum):
     BASE_EXTRACT_LEGAL_CONTEXT = "base.extract_legal_context"
     BASE_FILTER_APPLICABLE_STATUTES = "base.filter_applicable_statutes"
     BASE_FILTER_PRECEDENTS = "base.filter_precedents"
-    STANCE_CLASSIFIER_STATUTE = "stance_classifier.statute"
-    STANCE_CLASSIFIER_PRECEDENT = "stance_classifier.precedent"
+    BASE_FACT_LOCK_CHECK = "base.fact_lock_check"
     LEGAL_SEARCH_QUERY_TERMS_SYSTEM = "legal_search.query_terms_system"
     LEGAL_SEARCH_QUERY_TERMS_USER = "legal_search.query_terms_user"
     NEO4J_TOOLS_EXTRACT_KEYWORDS = "neo4j_tools.extract_keywords"
@@ -37,8 +36,6 @@ class PromptKey(StrEnum):
     REASONER_SUPPORT_STEP = "reasoner.support_step"
     REASONER_SUPPORT_PLAN_REWRITE = "reasoner.support_plan_rewrite"
     REASONER_SEMANTIC_REDUNDANCY = "reasoner.semantic_redundancy"
-    REASONER_EVALUATE_CONTINUE = "reasoner.evaluate_continue"
-    REASONER_SUPPORT_STANCE_REWRITE = "reasoner.support_stance_rewrite"
     REASONER_SUPPORT_CONCLUSION_REWRITE = "reasoner.support_conclusion_rewrite"
     REASONER_GENERATE_CONCLUSION = "reasoner.generate_conclusion"
     REASONER_REASONING_WITH_CONTEXT = "reasoner.reasoning_with_context"
@@ -48,7 +45,7 @@ class PromptKey(StrEnum):
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
     COUNTER_REASONER_SEMANTIC_REDUNDANCY = "counter_reasoner.semantic_redundancy"
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
-    COUNTER_REASONER_EVALUATE_CONTINUE = "counter_reasoner.evaluate_continue"
+    COUNTER_REASONER_STEP_OPPOSITION_CHECK = "counter_reasoner.step_opposition_check"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
     AQA_ENGINE_ATTACK_TYPE_SYSTEM = "aqa_engine.attack_type_system"
     AQA_ENGINE_ATTACK_TYPE_USER = "aqa_engine.attack_type_user"
@@ -120,12 +117,12 @@ Claim:
 \"\"\"[[claim]]\"\"\"
 
 Domain options:
-- CIVILE: responsabilità civile, risarcimento danni, inadempimento contrattuale, illecito extracontrattuale
-- PENALE: reati, responsabilità penale, nesso causale tra condotta e evento lesivo
-- AMMINISTRATIVO: procedimento amministrativo, accesso agli atti, termini, motivazione, vizi del provvedimento (L. 241/1990)
-- ENTRAMBI: casi che coinvolgono più domini tra civile, penale e amministrativo
+- CIVILE: civil liability, damages, breach of contract, tort liability
+- PENALE: crimes, criminal liability, causal nexus between conduct and harmful event
+- AMMINISTRATIVO: administrative procedure, access to documents, deadlines, motivation, defects of administrative acts (L. 241/1990)
+- ENTRAMBI: cases involving more than one domain among civil, criminal, administrative
 
-Rispondi con JSON compatto.""",
+Respond with compact JSON.""",
     # ---------------------------------------------------------------------
     # Base Agent (shared retrieval filters)
     # ---------------------------------------------------------------------
@@ -220,54 +217,30 @@ Answer NO when:
 If uncertain, answer YES.
 
 Respond with EXACTLY one token: YES or NO.""",
-    # ---------------------------------------------------------------------
-    # Stance Classifier
-    # ---------------------------------------------------------------------
-    PromptKey.STANCE_CLASSIFIER_STATUTE: """Task: Binary legal relevance check for one stance axis.
+    PromptKey.BASE_FACT_LOCK_CHECK: """You are a factual consistency checker for legal reasoning steps.
 
-CLAIM (Legal thesis):
-"[[claim]]"
+CLAIM (all explicit facts are fixed and true):
+\"\"\"[[claim]]\"\"\"
 
-ARTICLE (Art. [[article_num]] [[source]] - [[title]]):
-"[[text]]"
+CANDIDATE STEP:
+\"\"\"[[candidate_step]]\"\"\"
 
-AXIS TO EVALUATE:
-[[stance_axis]]
+Task:
+Decide whether the candidate step CONTRADICTS any explicit fact stated in the claim.
 
-DECISION RULES:
-- If axis is SUPPORT: answer YES only if the article provides an explicit legal basis that reinforces the claim.
-- If axis is AGAINST: answer YES only if the article provides an explicit legal basis that challenges, limits, or contradicts the claim.
-- Use only the provided article text.
-- Do not use external assumptions.
-- If applicability is unclear, mixed, or only generic, answer NO.
+Important rules:
+- The step MAY discuss legal qualification, applicability of norms, causal inference, or legal conclusions.
+- The step MAY NOT deny, reverse, or weaken an explicit factual statement in the claim.
+- If the claim reports a factual finding/perizia as given, the step cannot claim that the finding is absent or says the opposite.
+- If doubtful, choose CONSISTENT unless there is a clear factual contradiction.
 
-Respond with EXACTLY one word: YES or NO
-No punctuation. No explanations.""",
-    PromptKey.STANCE_CLASSIFIER_PRECEDENT: """Task: Binary precedent relevance check for one stance axis.
-
-CLAIM (Legal thesis):
-"[[claim]]"
-
-PRECEDENT ([[title]]):
-"[[summary]]"
-
-AXIS TO EVALUATE:
-[[stance_axis]]
-
-DECISION RULES:
-- If axis is SUPPORT: answer YES only if the precedent clearly reinforces the claim.
-- If axis is AGAINST: answer YES only if the precedent clearly challenges or limits the claim.
-- Use only the provided summary.
-- Do not use external assumptions.
-- If applicability is unclear, mixed, or only generic, answer NO.
-
-Respond with EXACTLY one word: YES or NO
-No punctuation. No explanations.""",
+Answer with EXACTLY one word: CONSISTENT or CONTRADICTS.
+""",
     # ---------------------------------------------------------------------
     # Legal Search & Neo4j keyword extraction
     # ---------------------------------------------------------------------
-    PromptKey.LEGAL_SEARCH_QUERY_TERMS_SYSTEM: """Sei un assistente di information retrieval legale. Dato un claim, estrai SOLO parole chiave giuridiche utili al search (reati, istituti, qualificazioni, elementi fattuali decisivi). Output: sola lista separata da virgole, senza spiegazioni.""",
-    PromptKey.LEGAL_SEARCH_QUERY_TERMS_USER: """Estrai fino a [[max_terms]] keyword.
+    PromptKey.LEGAL_SEARCH_QUERY_TERMS_SYSTEM: """You are a legal information-retrieval assistant. Given a claim, extract ONLY legal keywords useful for search (offenses, legal institutes, qualifications, decisive factual elements). Output: only a comma-separated list, with no explanations.""",
+    PromptKey.LEGAL_SEARCH_QUERY_TERMS_USER: """Extract up to [[max_terms]] keywords.
 CLAIM:
 [[query_text]]""",
     PromptKey.NEO4J_TOOLS_EXTRACT_KEYWORDS: """Extract the most important legal keywords from this claim.
@@ -311,13 +284,13 @@ CONTEXT (if available)
     PromptKey.TAXONOMY_TOOLS_FILTER_NORM: """Legal Claim:
 "[[claim]]"
 
-Norma dalla tassonomia:
+Norm from taxonomy:
 "[[ref]]" - "[[role]]"
 
-Istruzione:
-Valuta se questa norma è rilevante per il claim. Rispondi YES a meno che la norma sia chiaramente fuori dominio rispetto ai fatti e agli istituti del claim. Se incerto, YES.
+Instruction:
+Assess whether this norm is relevant to the claim. Answer YES unless the norm is clearly outside the domain of the facts and legal institutes in the claim. If uncertain, YES.
 
-Rispondi con un solo token: YES o NO.""",
+Respond with a single token: YES or NO.""",
     # ---------------------------------------------------------------------
     # Reasoner
     # ---------------------------------------------------------------------
@@ -328,8 +301,8 @@ Do NOT re-classify. Use these as structural constraints:
 - anchor_norms (core + accessory) from config
 - principle_tests for the causal type
 
-You receive a pre-retrieved KNOWLEDGE BASE (statutes/precedents) filtered as supportive/neutral.
-Build ONLY supporting arguments for the claim using the provided sources.
+You receive a pre-retrieved KNOWLEDGE BASE (statutes/precedents) filtered for relevance.
+Build the primary legal reasoning on the claim using the provided sources.
 
 Critical rules:
 - Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
@@ -364,7 +337,7 @@ REASONING CHAIN (for context):
 """,
     PromptKey.REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian law.
 
-Create a step-by-step plan to SUPPORT the claim.
+Create a step-by-step plan to analyze the claim and build a primary legal thesis.
 The plan must be executable in sequence and each step must be materially different.
 Return ONLY valid JSON (no markdown, no prose) with this schema:
 {
@@ -373,7 +346,8 @@ Return ONLY valid JSON (no markdown, no prose) with this schema:
       "id": "P1",
       "goal": "specific legal objective for this step",
       "focus": "single legal/factual focus",
-      "expected_norm": "article expected to be cited or 'N/A'"
+      "expected_norm": "article expected to be cited or 'N/A'",
+      "citation_requirement": "required | optional | none"
     }
   ]
 }
@@ -400,14 +374,19 @@ KNOWLEDGE BASE:
 RULES:
 - Number of steps must be between [[min_steps]] and [[max_steps]].
 - Each step must address a DIFFERENT objective (no overlap/rephrasing).
-- Steps must be ordered logically (premise -> legal qualification -> applicability -> consequence -> final support).
-- Every step must be pro-claim.
+- Steps must be ordered logically (premise -> legal qualification -> applicability -> consequence -> resulting legal assessment).
 - Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
+- Treat explicit claim facts (including explicit factual findings/perizie stated in the claim) as fixed and true; attack legal implications, not the given facts.
 - Prefer using different statutes across steps when possible.
+- Set "citation_requirement" to:
+  * "required" for norm-application / legal-qualification steps
+  * "optional" for inferential bridge or factual-application steps
+  * "none" only for pure synthesis/transition steps
+- If "expected_norm" is not "N/A", "citation_requirement" should normally be "required".
 - Keep each 'goal' and 'focus' concise (max 25 words each).
 """,
     PromptKey.REASONER_SUPPORT_STEP: """You are an expert Italian jurist.
-You must execute ONLY one planned SUPPORT step, keeping strict pro-claim stance.
+You must execute ONLY one planned reasoning step.
 
 CLAIM:
 "[[claim]]"
@@ -433,6 +412,7 @@ CURRENT STEP TO EXECUTE: [[plan_index]]
 - Goal: [[plan_goal]]
 - Focus: [[plan_focus]]
 - Expected norm: [[plan_expected_norm]]
+- Citation requirement: [[plan_citation_requirement]]
 
 ALREADY GENERATED STEP SUMMARIES:
 [[summary_lines]]
@@ -442,10 +422,12 @@ NORMS ALREADY USED: [[used_norms_text]]
 HARD RULES:
 - Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
 - It must advance the plan and add NEW information, not paraphrase prior steps.
-- It must support the claim only (no doubts, no balancing, no anti-claim hints).
+- It must materially advance the legal analysis of the claim.
 - Use only facts explicitly in claim.
 - Do not infer unprovided facts (no assumptions, no hypothetical completions of the factual scenario).
-- Cite at least one statute when legally possible.
+- If citation requirement is "required", cite at least one statute.
+- If citation requirement is "optional", citation is recommended but not mandatory.
+- If citation requirement is "none", do not force a citation.
 - If citing a precedent, include its full exact title from allowed list.
 
 RESPONSE FORMAT:
@@ -459,79 +441,29 @@ INVALID STEP:
 [[invalid_step]]
 
 Rewrite only this step. Keep the same planned objective, but produce NEW,
-non-redundant, strict pro-claim content.
+non-redundant and logically consistent content.
 RESPONSE FORMAT:
 STEP: [italian atomic step]""",
-    PromptKey.REASONER_SEMANTIC_REDUNDANCY: """Valuta se il NUOVO passo aggiunge davvero informazione giuridica nuova.
+    PromptKey.REASONER_SEMANTIC_REDUNDANCY: """Assess whether the NEW step truly adds new legal information.
 
 CLAIM:
 [[claim]]
 
-RUOLO ARGOMENTATIVO: [[role]]
+ARGUMENTATIVE ROLE: [[role]]
 
-PASSI PRECEDENTI:
+PREVIOUS STEPS:
 [[context_prev]]
 
-NUOVO PASSO:
+NEW STEP:
 [[candidate_step]]
 
-Regola:
-- Rispondi REPEAT se il nuovo passo è sostanzialmente parafrasi/duplicazione dei precedenti.
-- Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
+Rule:
+- Answer REPEAT if the new step is substantially a paraphrase/duplication of previous steps.
+- Answer NEW if it introduces a genuinely different legal/factual point.
 
-Rispondi con UNA SOLA parola: NEW oppure REPEAT.
+Answer with EXACTLY one word: NEW or REPEAT.
 """,
-    PromptKey.REASONER_EVALUATE_CONTINUE: """You are a senior Italian jurist evaluating whether a legal argument needs more steps.
-
-A [[role_desc]]argument for the claim below has [[n_steps]] steps so far.
-It cites [[n_unique_norms]] unique norms out of [[total_citations]] total citations.
-
-CLAIM: "[[claim]]"
-DOMAIN: [[domain]]
-
-Steps so far:
-[[prev_context]]
-
-Norms already cited: [[used_text]]
-
-AVAILABLE STATUTES (not yet used):
-[[statutes_list]]
-
-EVALUATION GUIDELINES:
-- A well-constructed legal argument typically needs 3-6 distinct steps covering
-  different legal aspects or applying norms to different facts.
-- With only [[n_steps]] step(s), consider whether there are still pertinent aspects to cover.
-- Each step should add NEW reasoning: a new norm, or a new application of an existing norm to a different fact.
-
-CRITICAL — REPETITION DETECTION:
-- REPETITION = two steps make the SAME legal point about the SAME factual aspect. This is BAD.
-- GOOD COVERAGE = each step addresses a DIFFERENT legal aspect or applies a norm to a DIFFERENT fact.
-- Re-citing an article is OK if applied to a genuinely different aspect of the case.
-- If the last step simply rephrases or restates what a previous step already said, answer CONCLUDE.
-
-DECISION RULES:
-- Answer CONTINUE if ALL of these are true:
-  (1) each step so far addresses a DIFFERENT legal aspect or fact (no repetition), AND
-  (2) there is at least one pertinent unused norm OR a new factual aspect to cover, AND
-  (3) fewer than 6 steps have been generated.
-- Answer CONCLUDE if ANY of these is true:
-  (a) any two steps make the SAME legal point about the SAME fact (repetition), OR
-  (b) all pertinent legal aspects have been covered, OR
-  (c) 6+ steps have already been generated.
-
-YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):""",
-    PromptKey.REASONER_SUPPORT_STANCE_REWRITE: """[[original_prompt]]
-
-YOUR PREVIOUS STEP WAS INVALID because it weakens or contradicts the claim.
-INVALID STEP:
-"[[invalid_step]]"
-
-Rewrite the SAME legal point with STRICT pro-claim stance.
-Do not add new facts. Do not balance pros and cons.
-
-RESPONSE FORMAT:
-STEP: [Italian text, max 4 sentences, strictly pro-claim]""",
-    PromptKey.REASONER_SUPPORT_CONCLUSION_REWRITE: """You are an expert Italian jurist. Rewrite the conclusion below so it STRICTLY supports the claim.
+    PromptKey.REASONER_SUPPORT_CONCLUSION_REWRITE: """You are an expert Italian jurist. Rewrite the conclusion below so it is strictly consistent with the reasoning chain.
 
 CLAIM:
 "[[claim]]"
@@ -547,8 +479,8 @@ INVALID CONCLUSION TO REWRITE:
 RULES:
 - Keep it in Italian.
 - 2-4 sentences max.
-- Must clearly state the claim is legally founded.
-- Must not include language suggesting rigetto/infondatezza/non annullabilita/legittimita dell'atto.
+- Must clearly synthesize the legal assessment emerging from the chain.
+- It may conclude in favor of or against liability/right depending on the chain, but it must not contradict the chain.
 - Do not add facts or norms outside the chain.
 
 CONCLUSION:""",
@@ -565,13 +497,13 @@ CITED NORMS: [[norms_text]]
 INSTRUCTIONS:
 - Write a conclusion of 2-4 sentences in Italian.
 - The conclusion must SYNTHESIZE the result of the legal analysis, not repeat the individual steps.
-- Clearly state whether the claim is legally founded or not and WHY, based on the norms analyzed.
+- Clearly state the resulting legal assessment/qualification and WHY, based on the norms analyzed.
 - Do NOT introduce norms or facts not mentioned in the reasoning chain.
 - Be direct and assertive in the final verdict.
 - Your ENTIRE response must be written in Italian.
 
         CONCLUSION:""",
-    PromptKey.REASONER_REASONING_WITH_CONTEXT: """Analyze the following claim and build SUPPORTING arguments.
+    PromptKey.REASONER_REASONING_WITH_CONTEXT: """Analyze the following claim and build a primary legal reasoning.
 
 CLAIM:
 "[[claim]]"
@@ -647,15 +579,15 @@ MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT
     # ---------------------------------------------------------------------
     PromptKey.COUNTER_REASONER_SYSTEM: """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
 
-You are the Counter-Reasoner. Dismantle the claim independently.
+You are the Counter-Reasoner. Build a counter-reasoning that opposes the primary legal thesis on the claim and the Reasoner's conclusion.
 You receive:
 - causal_type_id and theory_id fixed by the Router (do not re-classify)
 - selected_attack_ids chosen from the config attack pool
-- KNOWLEDGE BASE with contrary/neutral statutes and precedents
+- KNOWLEDGE BASE with relevant statutes and precedents
 
 Critical rules:
 - Use ONLY the sources in the KNOWLEDGE BASE; do not invent statutes or precedents.
-- Do not reference the Reasoner or its reasoning; produce a standalone counter-argument.
+- Oppose the provided Reasoner conclusion substantively (without quoting it verbatim).
 - If a helpful statute is missing from the knowledge base, omit the citation instead of inventing it.
 - Always cite the statute number/code when available (e.g., "Art. 41 c.p.").
 - Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
@@ -687,15 +619,16 @@ Rules:
 """,
     PromptKey.COUNTER_REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian counter-argumentation.
 
-Create a step-by-step plan to ATTACK and REJECT the claim.
+Create a step-by-step plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
 Return ONLY valid JSON (no markdown, no prose) with this schema:
 {
   "steps": [
     {
       "id": "C1",
-      "goal": "specific objective to weaken claim",
+      "goal": "specific objective to weaken the primary thesis",
       "focus": "single weak point for this step",
       "expected_norm": "article expected to be cited or 'N/A'",
+      "citation_requirement": "required | optional | none",
       "attack_id": "one of the selected attack ids"
     }
   ]
@@ -723,14 +656,19 @@ KNOWLEDGE BASE:
 RULES:
 - Number of steps must be between [[min_steps]] and [[max_steps]].
 - Each step must be materially different (no overlap/rephrasing).
-- Steps must be anti-claim only.
+- Steps must function as counter-argument steps (they must weaken the primary thesis / Reasoner conclusion).
 - Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
 - Each step must include one attack_id from the selected attack ids.
 - Distribute selected attacks across the plan whenever possible.
+- Set "citation_requirement" using the same policy:
+  * "required" for norm-based attacks / legal qualification attacks
+  * "optional" for inferential bridge or factual elaboration steps
+  * "none" only for pure synthesis/transition steps
+- If "expected_norm" is not "N/A", "citation_requirement" should normally be "required".
 - Keep each 'goal' and 'focus' concise (max 25 words each).
 """,
     PromptKey.COUNTER_REASONER_STEP_PROMPT: """You are an expert Italian jurist.
-You must execute ONLY one planned COUNTER step, keeping strict anti-claim stance.
+You must execute ONLY one planned COUNTER step.
 
 CLAIM:
 "[[claim]]"
@@ -755,6 +693,7 @@ CURRENT STEP TO EXECUTE: [[plan_index]]
 - Goal: [[plan_goal]]
 - Focus: [[plan_focus]]
 - Expected norm: [[plan_expected_norm]]
+- Citation requirement: [[plan_citation_requirement]]
 - Attack id for this step: [[plan_attack_id]]
 
 ALREADY GENERATED STEP SUMMARIES:
@@ -765,36 +704,39 @@ NORMS ALREADY USED: [[used_norms_text]]
 HARD RULES:
 - Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
 - It must advance the plan and add NEW information, not paraphrase prior steps.
-- It must attack the claim only (no balancing, no claim-friendly language).
+- It must function as a counter-step (weakening or challenging the primary thesis / Reasoner conclusion).
 - Never invent facts outside claim.
 - Never assume or complete missing factual details beyond what is explicitly stated in the claim.
+- Treat explicit claim facts (including explicit factual findings/perizie stated in the claim) as fixed and true; do not deny or reverse them.
 - Never contradict previous accepted steps.
-- Cite at least one statute when legally possible.
+- If citation requirement is "required", cite at least one statute.
+- If citation requirement is "optional", citation is recommended but not mandatory.
+- If citation requirement is "none", do not force a citation.
 - Align this step explicitly to attack "[[plan_attack_id]]".
 
 RESPONSE FORMAT:
 STEP: [italian atomic counter-step]
 """,
-    PromptKey.COUNTER_REASONER_SEMANTIC_REDUNDANCY: """Valuta se il NUOVO passo aggiunge davvero informazione giuridica nuova.
+    PromptKey.COUNTER_REASONER_SEMANTIC_REDUNDANCY: """Assess whether the NEW step truly adds new legal information.
 
 CLAIM:
 [[claim]]
 
-RUOLO ARGOMENTATIVO: [[role]]
+ARGUMENTATIVE ROLE: [[role]]
 
-PASSI PRECEDENTI:
+PREVIOUS STEPS:
 [[context_prev]]
 
-NUOVO PASSO:
+NEW STEP:
 [[candidate_step]]
 
-Regola:
-- Rispondi REPEAT se il nuovo passo è sostanzialmente parafrasi/duplicazione dei precedenti.
-- Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
+Rule:
+- Answer REPEAT if the new step is substantially a paraphrase/duplication of previous steps.
+- Answer NEW if it introduces a genuinely different legal/factual point.
 
-Rispondi con UNA SOLA parola: NEW oppure REPEAT.
+Answer with EXACTLY one word: NEW or REPEAT.
 """,
-    PromptKey.COUNTER_REASONER_ATTACK_ALIGNMENT: """Valuta se il seguente passo di contro-argomentazione è ALLINEATO all'attacco pianificato.
+    PromptKey.COUNTER_REASONER_ATTACK_ALIGNMENT: """Assess whether the following counter-argument step is ALIGNED with the planned attack.
 
 CLAIM:
 [[claim]]
@@ -802,61 +744,44 @@ CLAIM:
 ATTACK ID:
 [[attack_id]]
 
-ATTACK DESCRIZIONE:
+ATTACK DESCRIPTION:
 [[attack_desc]]
 
-FOCUS DEL PIANO:
+PLAN FOCUS:
 [[plan_focus]]
 
-PASSO CANDIDATO:
+STEP CANDIDATE:
 [[candidate_step]]
 
-Regole:
-- Rispondi ALIGNED solo se il passo applica chiaramente l'attacco indicato e il focus del piano.
-- Rispondi MISALIGNED se il passo è generico, fuori focus, o non riflette davvero l'attacco.
-- Il passo deve restare anti-claim; se è ambiguo o bilanciato, è MISALIGNED.
+Rules:
+- Answer ALIGNED only if the step clearly applies the specified attack and the plan focus.
+- Answer MISALIGNED if the step is generic, off-focus, or does not really implement the attack.
+- The step must remain a genuine counter-step for the targeted thesis; if it is generic, merely descriptive, or agrees with the targeted thesis, it is MISALIGNED.
 
-Rispondi con UNA SOLA parola: ALIGNED oppure MISALIGNED.
+Answer with EXACTLY one word: ALIGNED or MISALIGNED.
 """,
-    PromptKey.COUNTER_REASONER_EVALUATE_CONTINUE: """You are a senior Italian jurist evaluating whether a legal argument needs more steps.
+    PromptKey.COUNTER_REASONER_STEP_OPPOSITION_CHECK: """You are checking whether a counter-argument step actually opposes the primary legal thesis.
 
-A [[role_desc]]argument for the claim below has [[n_steps]] steps so far.
-It cites [[n_unique_norms]] unique norms out of [[total_citations]] total citations.
+CLAIM:
+\"\"\"[[claim]]\"\"\"
 
-CLAIM: "[[claim]]"
-DOMAIN: [[domain]]
+REASONER CONCLUSION TO OPPOSE:
+\"\"\"[[reasoner_conclusion]]\"\"\"
 
-Steps so far:
-[[prev_context]]
+CANDIDATE COUNTER STEP:
+\"\"\"[[candidate_step]]\"\"\"
 
-Norms already cited: [[used_text]]
+Task:
+- Answer AGREEING if the candidate step supports, confirms, or materially reinforces the Reasoner conclusion.
+- Answer OPPOSING if the candidate step weakens, disputes, or limits the Reasoner conclusion.
+- Answer UNCLEAR if the relation is not clear from the text.
 
-AVAILABLE STATUTES (not yet used):
-[[statutes_list]]
+Important:
+- Use the claim only as factual context.
+- Do not require the step to restate the final opposite outcome explicitly; attacking a key premise of the conclusion still counts as OPPOSING.
 
-EVALUATION GUIDELINES:
-- A well-constructed legal argument typically needs 3-6 distinct steps covering
-  different legal aspects or applying norms to different facts.
-- With only [[n_steps]] step(s), consider whether there are still pertinent aspects to cover.
-- Each step should add NEW reasoning: a new norm, or a new application of an existing norm to a different fact.
-
-CRITICAL — REPETITION DETECTION:
-- REPETITION = two steps make the SAME legal point about the SAME factual aspect. This is BAD.
-- GOOD COVERAGE = each step addresses a DIFFERENT legal aspect or applies a norm to a DIFFERENT fact.
-- Re-citing an article is OK if applied to a genuinely different aspect of the case.
-- If the last step simply rephrases or restates what a previous step already said, answer CONCLUDE.
-
-DECISION RULES:
-- Answer CONTINUE if ALL of these are true:
-  (1) each step so far addresses a DIFFERENT legal aspect or fact (no repetition), AND
-  (2) there is at least one pertinent unused norm OR a new factual aspect to cover, AND
-  (3) fewer than 6 steps have been generated.
-- Answer CONCLUDE if ANY of these is true:
-  (a) any two steps make the SAME legal point about the SAME fact (repetition), OR
-  (b) all pertinent legal aspects have been covered, OR
-  (c) 6+ steps have already been generated.
-
-YOUR ANSWER (exactly one word — CONTINUE or CONCLUDE):""",
+Answer with EXACTLY one word: OPPOSING or AGREEING or UNCLEAR.
+""",
     PromptKey.COUNTER_REASONER_STANCE_REWRITE: """[[original_prompt]]
 
 YOUR PREVIOUS STEP WAS INVALID.
@@ -864,12 +789,12 @@ REASON: [[invalid_reason]]
 INVALID STEP:
 "[[invalid_step]]"
 
-Rewrite the SAME legal point with STRICT anti-claim stance and full consistency.
-Do not add new facts. Do not balance pros and cons.
-The rewritten step must clearly weaken the claim.
+Rewrite the SAME legal point as a coherent counter-step.
+Do not add new facts. Do not make it agree with the targeted thesis / Reasoner conclusion.
+The rewritten step must clearly weaken or limit the opposing thesis.
 
 RESPONSE FORMAT:
-STEP: [Italian text, max 4 sentences, strictly anti-claim]""",
+STEP: [Italian text, max 4 sentences]""",
     # ---------------------------------------------------------------------
     # AQA / NLP / Polisher
     # ---------------------------------------------------------------------

@@ -23,7 +23,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET = Path(
     r"C:\Users\salva\Downloads\tuning_dataset_aqa_with_gold_threshold_hint.jsonl"
@@ -119,16 +118,26 @@ def _macro_f1(y_true: list[str], y_pred: list[str], labels: list[str]) -> float:
         fn = sum(1 for yt, yp in zip(y_true, y_pred) if yt == lbl and yp != lbl)
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+        f1 = (
+            (2 * precision * recall / (precision + recall))
+            if (precision + recall) > 0
+            else 0.0
+        )
         f1s.append(f1)
     return sum(f1s) / len(f1s) if f1s else 0.0
 
 
 def _accuracy(y_true: list[str], y_pred: list[str]) -> float:
-    return sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true) if y_true else 0.0
+    return (
+        sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true)
+        if y_true
+        else 0.0
+    )
 
 
-def _confusion(y_true: list[str], y_pred: list[str], labels: list[str]) -> dict[str, dict[str, int]]:
+def _confusion(
+    y_true: list[str], y_pred: list[str], labels: list[str]
+) -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {t: {p: 0 for p in labels} for t in labels}
     for yt, yp in zip(y_true, y_pred):
         if yt not in out:
@@ -153,7 +162,9 @@ def _load_gold_dataset(path: Path) -> list[GoldSample]:
                     run_id=str(item.get("run_id") or "").strip(),
                     gold_label=_map_gold_label(item.get("gold_verdict")),
                     hint_threshold=(
-                        float(hint["T"]) if isinstance(hint.get("T"), (int, float)) else None
+                        float(hint["T"])
+                        if isinstance(hint.get("T"), (int, float))
+                        else None
                     ),
                     hint_region=(
                         str(hint.get("expected_region")).strip().lower()
@@ -202,8 +213,8 @@ def _replay_single_report(
             link["_base_new"] = base_new
 
     # attacker base lookups
-    pro_by_id = {str(l.get("link_id")): l for l in links["pro"]}
-    contra_by_id = {str(l.get("link_id")): l for l in links["contra"]}
+    pro_by_id = {str(link.get("link_id")): link for link in links["pro"]}
+    contra_by_id = {str(link.get("link_id")): link for link in links["contra"]}
 
     # 2) Recompute attacks from stored attempts
     for side in ("pro", "contra"):
@@ -248,11 +259,20 @@ def _replay_single_report(
                     else float(rec.get("attacker_base_score", 0.0) or 0.0)
                 )
 
-                atk_type = str(rec.get("attack_type", "general_opposition") or "general_opposition").strip().lower()
+                atk_type = (
+                    str(
+                        rec.get("attack_type", "general_opposition")
+                        or "general_opposition"
+                    )
+                    .strip()
+                    .lower()
+                )
                 if atk_type not in attack_params.multipliers:
                     atk_type = "general_opposition"
 
-                nli_bypass = bool(rec.get("nli_bypass", False)) or nli_label == "contradiction"
+                nli_bypass = (
+                    bool(rec.get("nli_bypass", False)) or nli_label == "contradiction"
+                )
                 if not nli_bypass:
                     ratio = float(
                         attack_params.ratio_by_type.get(
@@ -284,12 +304,15 @@ def _replay_single_report(
                 rec["attack_value"] = attack_value
                 recomputed.append(rec)
 
-            recomputed.sort(key=lambda x: float(x.get("attack_value", 0.0) or 0.0), reverse=True)
+            recomputed.sort(
+                key=lambda x: float(x.get("attack_value", 0.0) or 0.0), reverse=True
+            )
 
             active = [
                 a
                 for a in recomputed
-                if not a.get("filtered", False) and float(a.get("attack_value", 0.0) or 0.0) >= 0.01
+                if not a.get("filtered", False)
+                and float(a.get("attack_value", 0.0) or 0.0) >= 0.01
             ]
             if len(active) > attack_params.top_k:
                 for overflow in active[attack_params.top_k :]:
@@ -299,7 +322,8 @@ def _replay_single_report(
             attacks_sum = sum(
                 float(a.get("attack_value", 0.0) or 0.0)
                 for a in recomputed
-                if not a.get("filtered", False) and float(a.get("attack_value", 0.0) or 0.0) > 0.0
+                if not a.get("filtered", False)
+                and float(a.get("attack_value", 0.0) or 0.0) > 0.0
             )
             delta = float(target.get("precedent_delta", 0.0) or 0.0)
             nesso = _clamp01(target_base - attacks_sum + delta)
@@ -320,7 +344,9 @@ def _replay_single_report(
     all_links = links["pro"] + links["contra"]
     if not all_links:
         return final_score, 0.0
-    overkill = sum(1 for l in all_links if float(l.get("_nesso_new", 0.0) or 0.0) <= 1e-12)
+    overkill = sum(
+        1 for link in all_links if float(link.get("_nesso_new", 0.0) or 0.0) <= 1e-12
+    )
     overkill_rate = overkill / len(all_links)
     return final_score, overkill_rate
 
@@ -375,7 +401,9 @@ def _evaluate(
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tune AQA weights + threshold from gold JSONL.")
+    parser = argparse.ArgumentParser(
+        description="Tune AQA weights + threshold from gold JSONL."
+    )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--reports-dir", type=Path, default=REPORTS_DIR)
     parser.add_argument("--lambda-overkill", type=float, default=0.25)
@@ -400,7 +428,7 @@ def main() -> None:
     # STEP A: tune attack parameters with fixed threshold T=0.20
     # ------------------------------------------------------------
     fixed_threshold = 0.20
-    step_a_rows = []
+    step_a_rows: list[dict[str, Any]] = []
     for top_k in (2, 3):
         for damage in (0.40, 0.50):
             for m_contr in (1.8, 2.0):
@@ -437,7 +465,9 @@ def main() -> None:
                                                 multipliers=multipliers,
                                                 ratio_by_type=ratios,
                                             )
-                                            s_params = ScoreParams(*DEFAULT_ALPHA_BETA_GAMMA)
+                                            s_params = ScoreParams(
+                                                *DEFAULT_ALPHA_BETA_GAMMA
+                                            )
                                             ev = _evaluate(
                                                 samples=samples,
                                                 reports_map=reports_map,
@@ -468,9 +498,12 @@ def main() -> None:
         (0.30, 0.35, 0.35),
         (0.25, 0.40, 0.35),
     ]
-    step_a2_rows = []
+    step_a2_rows: list[dict[str, Any]] = []
     for row in top_attack_rows:
-        ap = AttackParams(**row["attack_params"])
+        attack_params_row = row["attack_params"]
+        if not isinstance(attack_params_row, dict):
+            continue
+        ap = AttackParams(**attack_params_row)
         for abg in abg_candidates:
             sp = ScoreParams(*abg)
             ev = _evaluate(
@@ -496,11 +529,17 @@ def main() -> None:
     # ------------------------------------------------------------
     # STEP B: threshold sweep for top joint configs
     # ------------------------------------------------------------
-    final_rows = []
+    final_rows: list[dict[str, Any]] = []
     for row in top_joint:
-        ap = AttackParams(**row["attack_params"])
-        sp = ScoreParams(**row["score_params"])
-        best_for_cfg = None
+        attack_params_row = row["attack_params"]
+        score_params_row = row["score_params"]
+        if not isinstance(attack_params_row, dict) or not isinstance(
+            score_params_row, dict
+        ):
+            continue
+        ap = AttackParams(**attack_params_row)
+        sp = ScoreParams(**score_params_row)
+        best_for_cfg: dict[str, Any] | None = None
         for t in (0.15, 0.20, 0.25, 0.30):
             ev = _evaluate(
                 samples=samples,
@@ -510,13 +549,16 @@ def main() -> None:
                 threshold=t,
                 lambda_overkill=args.lambda_overkill,
             )
-            candidate = {
+            candidate: dict[str, Any] = {
                 "attack_params": asdict(ap),
                 "score_params": asdict(sp),
                 "threshold": t,
                 "eval": asdict(ev),
             }
-            if best_for_cfg is None or candidate["eval"]["objective"] > best_for_cfg["eval"]["objective"]:
+            if best_for_cfg is None or (
+                isinstance(best_for_cfg.get("eval"), dict)
+                and candidate["eval"]["objective"] > best_for_cfg["eval"]["objective"]
+            ):
                 best_for_cfg = candidate
         if best_for_cfg:
             final_rows.append(best_for_cfg)
@@ -586,10 +628,11 @@ def main() -> None:
         },
     }
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    latest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"\nSaved:\n- {out}\n- {latest}")
 
 
 if __name__ == "__main__":
     main()
-

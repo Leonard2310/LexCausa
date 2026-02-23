@@ -25,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REAL_DATASET = Path(
     r"C:\Users\salva\Downloads\tuning_dataset_aqa_with_gold_threshold_hint.jsonl"
@@ -132,16 +131,26 @@ def _macro_f1(y_true: list[str], y_pred: list[str], labels: list[str]) -> float:
         fn = sum(1 for yt, yp in zip(y_true, y_pred) if yt == lbl and yp != lbl)
         precision = tp / (tp + fp) if (tp + fp) else 0.0
         recall = tp / (tp + fn) if (tp + fn) else 0.0
-        f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        f1 = (
+            (2.0 * precision * recall / (precision + recall))
+            if (precision + recall)
+            else 0.0
+        )
         scores.append(f1)
     return sum(scores) / len(scores) if scores else 0.0
 
 
 def _accuracy(y_true: list[str], y_pred: list[str]) -> float:
-    return sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true) if y_true else 0.0
+    return (
+        sum(1 for a, b in zip(y_true, y_pred) if a == b) / len(y_true)
+        if y_true
+        else 0.0
+    )
 
 
-def _confusion(y_true: list[str], y_pred: list[str], labels: list[str]) -> dict[str, dict[str, int]]:
+def _confusion(
+    y_true: list[str], y_pred: list[str], labels: list[str]
+) -> dict[str, dict[str, int]]:
     out = {t: {p: 0 for p in labels} for t in labels}
     for yt, yp in zip(y_true, y_pred):
         if yt not in out:
@@ -219,8 +228,8 @@ def _replay_real_report(
                 + score_params.gamma * sem
             )
 
-    pro_by_id = {str(l.get("link_id")): l for l in links["pro"]}
-    contra_by_id = {str(l.get("link_id")): l for l in links["contra"]}
+    pro_by_id = {str(link.get("link_id")): link for link in links["pro"]}
+    contra_by_id = {str(link.get("link_id")): link for link in links["contra"]}
 
     for side in ("pro", "contra"):
         for target in links[side]:
@@ -263,14 +272,25 @@ def _replay_real_report(
                     else float(rec.get("attacker_base_score", 0.0) or 0.0)
                 )
 
-                atk_type = str(rec.get("attack_type", "general_opposition") or "general_opposition").strip().lower()
+                atk_type = (
+                    str(
+                        rec.get("attack_type", "general_opposition")
+                        or "general_opposition"
+                    )
+                    .strip()
+                    .lower()
+                )
                 if atk_type not in attack_params.multipliers:
                     atk_type = "general_opposition"
 
-                nli_bypass = bool(rec.get("nli_bypass", False)) or nli_label == "contradiction"
+                nli_bypass = (
+                    bool(rec.get("nli_bypass", False)) or nli_label == "contradiction"
+                )
                 if not nli_bypass:
                     ratio = float(
-                        attack_params.ratio_by_type.get(atk_type, attack_params.min_strength_ratio)
+                        attack_params.ratio_by_type.get(
+                            atk_type, attack_params.min_strength_ratio
+                        )
                     )
                     if ratio > 0.0 and attacker_base < ratio * target_base:
                         rec["filtered"] = True
@@ -296,11 +316,14 @@ def _replay_real_report(
                 rec["attack_value"] = attack_value
                 updated.append(rec)
 
-            updated.sort(key=lambda x: float(x.get("attack_value", 0.0) or 0.0), reverse=True)
+            updated.sort(
+                key=lambda x: float(x.get("attack_value", 0.0) or 0.0), reverse=True
+            )
             active = [
                 a
                 for a in updated
-                if not a.get("filtered", False) and float(a.get("attack_value", 0.0) or 0.0) >= 0.01
+                if not a.get("filtered", False)
+                and float(a.get("attack_value", 0.0) or 0.0) >= 0.01
             ]
             if len(active) > attack_params.top_k:
                 for overflow in active[attack_params.top_k :]:
@@ -310,7 +333,8 @@ def _replay_real_report(
             attacks_sum = sum(
                 float(a.get("attack_value", 0.0) or 0.0)
                 for a in updated
-                if not a.get("filtered", False) and float(a.get("attack_value", 0.0) or 0.0) > 0.0
+                if not a.get("filtered", False)
+                and float(a.get("attack_value", 0.0) or 0.0) > 0.0
             )
             target["_attacks_sum_new"] = attacks_sum
             delta = float(target.get("precedent_delta", 0.0) or 0.0)
@@ -318,12 +342,19 @@ def _replay_real_report(
 
     def _avg(side: str, field: str) -> float:
         arr = links[side]
-        return sum(float(x.get(field, 0.0) or 0.0) for x in arr) / len(arr) if arr else 0.0
+        return (
+            sum(float(x.get(field, 0.0) or 0.0) for x in arr) / len(arr) if arr else 0.0
+        )
 
     final_score = _avg("pro", "_nesso_new") - _avg("contra", "_nesso_new")
     all_links = links["pro"] + links["contra"]
     overkill = (
-        sum(1 for l in all_links if float(l.get("_nesso_new", 0.0) or 0.0) <= 1e-12) / len(all_links)
+        sum(
+            1
+            for link in all_links
+            if float(link.get("_nesso_new", 0.0) or 0.0) <= 1e-12
+        )
+        / len(all_links)
         if all_links
         else 0.0
     )
@@ -337,14 +368,14 @@ def _replay_synthetic_sample(
     support = [copy.deepcopy(x) for x in sample.support_links]
     counter = [copy.deepcopy(x) for x in sample.counter_links]
     links = {
-        "support": {str(l.get("link_id")): l for l in support},
-        "counter": {str(l.get("link_id")): l for l in counter},
+        "support": {str(link.get("link_id")): link for link in support},
+        "counter": {str(link.get("link_id")): link for link in counter},
     }
     all_by_id = {**links["support"], **links["counter"]}
 
-    for l in all_by_id.values():
-        l["_base_new"] = float(l.get("base", 0.0) or 0.0)
-        l["_attacks_received"] = []
+    for link in all_by_id.values():
+        link["_base_new"] = float(link.get("base", 0.0) or 0.0)
+        link["_attacks_received"] = []
 
     # Build attack candidates from synthetic edges
     for atk in sample.attacks:
@@ -364,9 +395,17 @@ def _replay_synthetic_sample(
         source_base = float(src.get("_base_new", 0.0))
         target_base = float(tgt.get("_base_new", 0.0))
 
-        ratio = float(attack_params.ratio_by_type.get(atk_type, attack_params.min_strength_ratio))
+        ratio = float(
+            attack_params.ratio_by_type.get(atk_type, attack_params.min_strength_ratio)
+        )
         if ratio > 0.0 and source_base < ratio * target_base:
-            tgt["_attacks_received"].append({"attack_value": 0.0, "filtered": True, "filter_stage": "strength_ratio"})
+            tgt["_attacks_received"].append(
+                {
+                    "attack_value": 0.0,
+                    "filtered": True,
+                    "filter_stage": "strength_ratio",
+                }
+            )
             continue
 
         mult = float(attack_params.multipliers.get(atk_type, 1.0))
@@ -388,16 +427,17 @@ def _replay_synthetic_sample(
         )
 
     # top-k per target
-    for l in all_by_id.values():
+    for link in all_by_id.values():
         arr = sorted(
-            l["_attacks_received"],
+            link["_attacks_received"],
             key=lambda x: float(x.get("attack_value", 0.0) or 0.0),
             reverse=True,
         )
         active = [
             a
             for a in arr
-            if not a.get("filtered", False) and float(a.get("attack_value", 0.0) or 0.0) >= 0.01
+            if not a.get("filtered", False)
+            and float(a.get("attack_value", 0.0) or 0.0) >= 0.01
         ]
         if len(active) > attack_params.top_k:
             for overflow in active[attack_params.top_k :]:
@@ -406,17 +446,27 @@ def _replay_synthetic_sample(
         attacks_sum = sum(
             float(a.get("attack_value", 0.0) or 0.0)
             for a in arr
-            if not a.get("filtered", False) and float(a.get("attack_value", 0.0) or 0.0) > 0.0
+            if not a.get("filtered", False)
+            and float(a.get("attack_value", 0.0) or 0.0) > 0.0
         )
-        l["_nesso_new"] = _clamp01(float(l.get("_base_new", 0.0)) - attacks_sum)
+        link["_nesso_new"] = _clamp01(float(link.get("_base_new", 0.0)) - attacks_sum)
 
     def _avg(arr: list[dict[str, Any]]) -> float:
-        return sum(float(x.get("_nesso_new", 0.0) or 0.0) for x in arr) / len(arr) if arr else 0.0
+        return (
+            sum(float(x.get("_nesso_new", 0.0) or 0.0) for x in arr) / len(arr)
+            if arr
+            else 0.0
+        )
 
     final_score = _avg(support) - _avg(counter)
     all_links = support + counter
     overkill = (
-        sum(1 for l in all_links if float(l.get("_nesso_new", 0.0) or 0.0) <= 1e-12) / len(all_links)
+        sum(
+            1
+            for link in all_links
+            if float(link.get("_nesso_new", 0.0) or 0.0) <= 1e-12
+        )
+        / len(all_links)
         if all_links
         else 0.0
     )
@@ -494,7 +544,9 @@ def _evaluate_synth(
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Tune AQA with real + synthetic datasets.")
+    parser = argparse.ArgumentParser(
+        description="Tune AQA with real + synthetic datasets."
+    )
     parser.add_argument("--real-dataset", type=Path, default=DEFAULT_REAL_DATASET)
     parser.add_argument("--synthetic-dataset", type=Path, default=DEFAULT_SYNTH_DATASET)
     parser.add_argument("--reports-dir", type=Path, default=REPORTS_DIR)
@@ -510,7 +562,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     reports_map = _load_reports_map(args.reports_dir)
-    real_samples = [s for s in _load_real_dataset(args.real_dataset) if s.run_id in reports_map]
+    real_samples = [
+        s for s in _load_real_dataset(args.real_dataset) if s.run_id in reports_map
+    ]
     synth_samples = _load_synth_dataset(args.synthetic_dataset)
 
     if not real_samples:
@@ -519,9 +573,13 @@ def main() -> None:
         raise SystemExit("Synthetic dataset is empty.")
 
     print(f"Real samples used: {len(real_samples)}")
-    print(f"Real gold distribution: {dict(Counter(s.gold_label for s in real_samples))}")
+    print(
+        f"Real gold distribution: {dict(Counter(s.gold_label for s in real_samples))}"
+    )
     print(f"Synthetic samples used: {len(synth_samples)}")
-    print(f"Synthetic gold distribution: {dict(Counter(s.gold_label for s in synth_samples))}")
+    print(
+        f"Synthetic gold distribution: {dict(Counter(s.gold_label for s in synth_samples))}"
+    )
 
     # ------------------------------------------------------------
     # STEP A: attack params @ fixed T=0.20
@@ -626,7 +684,10 @@ def main() -> None:
                 fixed_threshold,
                 args.lambda_overkill_synth,
             )
-            obj = args.weight_real * ev_real.objective + args.weight_synth * ev_synth.objective
+            obj = (
+                args.weight_real * ev_real.objective
+                + args.weight_synth * ev_synth.objective
+            )
             step_a2.append(
                 {
                     "attack_params": asdict(ap),
@@ -664,7 +725,10 @@ def main() -> None:
                 t,
                 args.lambda_overkill_synth,
             )
-            obj = args.weight_real * ev_real.objective + args.weight_synth * ev_synth.objective
+            obj = (
+                args.weight_real * ev_real.objective
+                + args.weight_synth * ev_synth.objective
+            )
             candidate = {
                 "attack_params": asdict(ap),
                 "score_params": asdict(sp),
@@ -673,7 +737,10 @@ def main() -> None:
                 "eval_real": asdict(ev_real),
                 "eval_synth": asdict(ev_synth),
             }
-            if best_for_cfg is None or candidate["objective_combined"] > best_for_cfg["objective_combined"]:
+            if (
+                best_for_cfg is None
+                or candidate["objective_combined"] > best_for_cfg["objective_combined"]
+            ):
                 best_for_cfg = candidate
         if best_for_cfg:
             final_rows.append(best_for_cfg)
@@ -710,10 +777,11 @@ def main() -> None:
         "best": best,
     }
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    latest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(f"\nSaved:\n- {out}\n- {latest}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -48,7 +48,6 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     search_precedents_tool,
 )
 from config import settings  # noqa: E402
-from services.stance_classifier import StanceClassifier  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -204,7 +203,6 @@ def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
 reasoner = None
 counter_reasoner = None
 polisher_evaluator = None
-stance_classifier = None
 router_agent = None
 retrieval_filter_agent = None
 
@@ -523,16 +521,6 @@ def get_polisher_evaluator():
     return polisher_evaluator
 
 
-def get_stance_classifier():
-    """Lazy load dello Stance Classifier NLI."""
-    global stance_classifier
-    if stance_classifier is None:
-        print("🔧 Inizializzazione Stance Classifier (NLI)...")
-        stance_classifier = StanceClassifier()
-        print("✅ Stance Classifier pronto!")
-    return stance_classifier
-
-
 def resolve_routing_decision(
     claim: str, payload: dict | None = None
 ) -> RoutingDecision:
@@ -565,43 +553,9 @@ def resolve_routing_decision(
     return router.route(claim)
 
 
-def classify_stance_for_agents(
-    claim: str,
-    statutes: list[dict],
-    precedents: list[dict],
-) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-    """
-    Classify statutes and precedents as supporting or opposing the claim.
-
-    Returns:
-        Tuple of (support_statutes, against_statutes, support_precedents, against_precedents)
-    """
-    sc = get_stance_classifier()
-
-    print(f"\n{'─'*70}")
-    print("🎯 STANCE CLASSIFICATION (NLI)...")
-    print(f"{'─'*70}")
-
-    support_statutes, against_statutes, neutral_statutes = sc.classify_statutes_batch(
-        claim, statutes
-    )
-    support_precedents, against_precedents, neutral_precedents = (
-        sc.classify_precedents_batch(claim, precedents)
-    )
-
-    # Re-introduce neutrals to both agents to avoid starving them of context
-    support_statutes = support_statutes + neutral_statutes
-    against_statutes = against_statutes + neutral_statutes
-    support_precedents = support_precedents + neutral_precedents
-    against_precedents = against_precedents + neutral_precedents
-
-    print("\n📊 Risultato stance classification:")
-    print("   - Articoli a SUPPORTO: " + str(len(support_statutes)))
-    print("   - Articoli CONTRO: " + str(len(against_statutes)))
-    print("   - Precedenti a SUPPORTO: " + str(len(support_precedents)))
-    print("   - Precedenti CONTRO: " + str(len(against_precedents)))
-
-    return support_statutes, against_statutes, support_precedents, against_precedents
+def _clone_context_items(items: list[dict]) -> list[dict]:
+    """Shallow-copy retrieved context items so agents can annotate independently."""
+    return [dict(item) for item in (items or [])]
 
 
 @app.route("/health", methods=["GET"])
@@ -786,6 +740,7 @@ def counter_reason():
     Riceve:
     - claim: il claim legale
     - (opzionale) causal_type_id/theory_id: se assenti, vengono scelti dal Router
+    - reasoner_conclusion: conclusione del Reasoner da contestare
 
     Restituisce contro-argomenti basati sulla config di causalità.
     """
@@ -795,9 +750,19 @@ def counter_reason():
         include_precedents = data.get("include_precedents", True)
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+        reasoner_conclusion = (data.get("reasoner_conclusion", "") or "").strip()
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+        if not reasoner_conclusion:
+            return (
+                jsonify(
+                    {
+                        "error": 'Campo "reasoner_conclusion" obbligatorio per il Counter-Reasoner'
+                    }
+                ),
+                400,
+            )
 
         routing_decision = resolve_routing_decision(claim, data)
         statutes, precedents = prepare_claim_context(
@@ -807,19 +772,15 @@ def counter_reason():
             max_precedents=max_precedents,
         )
 
-        # Classifica stance per fornire al counter norme contrarie/neutral
-        _, against_statutes, _, against_precedents = classify_stance_for_agents(
-            claim, statutes, precedents
-        )
-
         cr = get_counter_reasoner()
 
         # Esegui il counter-reasoning con contesto pre-retrieved
         result = cr.run(
             claim=claim,
             routing_decision=routing_decision,
-            pre_retrieved_statutes=against_statutes,
-            pre_retrieved_precedents=against_precedents,
+            pre_retrieved_statutes=_clone_context_items(statutes),
+            pre_retrieved_precedents=_clone_context_items(precedents),
+            reasoner_conclusion=reasoner_conclusion,
         )
 
         return jsonify(result.to_dict())
@@ -960,27 +921,18 @@ def _run_full_pipeline(
             max_precedents=max_precedents,
             progress_callback=_emit_context_detail,
         )
-        _emit_phase(
-            "context_setup",
-            "active",
-            68,
-            "Classificazione stance NLI (norme e precedenti)",
-        )
+        _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
+        reasoner_statutes = _clone_context_items(statutes)
+        counter_statutes = _clone_context_items(statutes)
+        reasoner_precedents = _clone_context_items(precedents)
+        counter_precedents = _clone_context_items(precedents)
 
-        # Classify stance using NLI to separate support vs against
-        (
-            support_statutes,
-            against_statutes,
-            support_precedents,
-            against_precedents,
-        ) = classify_stance_for_agents(claim, statutes, precedents)
-
-        # STEP 1: main supportive reasoning
+        # STEP 1: primary reasoning on the claim
         print(f"\n{'─'*70}")
-        print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
+        print("📊 STEP 1: Reasoner execution (shared retrieved context)...")
         print(f"{'─'*70}")
         print(
-            f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
+            f"   📚 Knowledge base: {len(reasoner_statutes)} statutes, {len(reasoner_precedents)} precedents"
         )
         _emit_phase("context_setup", "done", 100, "Contesto pronto")
         _emit_phase("support", "active", 8, "Generazione ragionamento")
@@ -995,8 +947,8 @@ def _run_full_pipeline(
         reasoner_result = reas.run(
             claim=claim,
             routing_decision=routing_decision,
-            pre_retrieved_statutes=support_statutes,
-            pre_retrieved_precedents=support_precedents,
+            pre_retrieved_statutes=reasoner_statutes,
+            pre_retrieved_precedents=reasoner_precedents,
             enable_causality=fe_enable_causality,
             stream_callback=token_callback,
         )
@@ -1028,10 +980,10 @@ def _run_full_pipeline(
 
         # STEP 2: counter reasoning
         print(f"\n{'─'*70}")
-        print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
+        print("⚔️  STEP 2: Counter-Reasoner execution (shared retrieved context)...")
         print(f"{'─'*70}")
         print(
-            f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
+            f"   📚 Knowledge base: {len(counter_statutes)} statutes, {len(counter_precedents)} precedents"
         )
         status_callback("Generazione argomentazione contraria in corso...")
 
@@ -1045,21 +997,19 @@ def _run_full_pipeline(
         # Opposition consistency is validated by the Polisher gate.
         reasoner_conclusion = reasoner_result.conclusion or ""
         if not reasoner_conclusion:
-            print(
-                "ℹ️ Reasoner conclusion unavailable: no fallback applied. "
-                "Opposition check is delegated to Polisher gate."
+            raise RuntimeError(
+                "Reasoner conclusion is required before Counter-Reasoner execution"
             )
-        else:
-            print(
-                "ℹ️ Reasoner conclusion captured for Counter traceability: "
-                f"{reasoner_conclusion[:120]}..."
-            )
+        print(
+            "ℹ️ Reasoner conclusion captured for Counter traceability: "
+            f"{reasoner_conclusion[:120]}..."
+        )
 
         counter_result = cr.run(
             claim=claim,
             routing_decision=final_routing_decision,
-            pre_retrieved_statutes=against_statutes,
-            pre_retrieved_precedents=against_precedents,
+            pre_retrieved_statutes=counter_statutes,
+            pre_retrieved_precedents=counter_precedents,
             enable_causality=fe_enable_causality,
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,

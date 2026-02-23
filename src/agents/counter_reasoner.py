@@ -1,9 +1,10 @@
 """
 LexCausa Counter-Reasoner Agent.
 
-Generates independent counter-arguments, without using the Reasoner's chain.
-Receives ONLY the claim + causal_type_id/theory_id from the Router and the
-pre-retrieved contrary/neutral sources.
+Generates counter-arguments on the same claim, optionally targeting the
+Reasoner's conclusion when available.
+Receives the claim + causal_type_id/theory_id from the Router and the
+pre-retrieved relevant sources.
 """
 
 from __future__ import annotations
@@ -102,7 +103,7 @@ _DEFAULT_ATTACK_DESCRIPTION_EN = (
     "Counter-argument to weaken causal/legal support of the claim."
 )
 _DEFAULT_ATTACK_DESCRIPTION_IT = (
-    "le norme citate indeboliscono il fondamento giuridico della pretesa"
+    "le norme citate indeboliscono la tesi giuridica principale"
 )
 
 
@@ -110,13 +111,14 @@ class CounterReasoner(BaseAgent):
     """
     Legal Counter-Reasoner Agent.
 
-    Generates counter-arguments to challenge the claim independently of the Reasoner.
+    Generates counter-arguments against the primary legal thesis,
+    using the Reasoner's conclusion when available.
     Selects multiple attacks from config (counter_attack_pool) based on causal_type_id/theory_id.
 
     Flow:
     1. api_server pre-retrieves statutes and precedents
     2. CounterReasoner.run() receives the Router decision + pre-retrieved knowledge
-    3. ReAct agent builds counter-arguments using only contrary/neutral sources
+    3. ReAct agent builds counter-arguments using the retrieved relevant sources
     """
 
     def __init__(self, config: Optional[AgentConfig] = None):
@@ -132,9 +134,11 @@ class CounterReasoner(BaseAgent):
             self._config,
             locale="it",
         )
-        self._max_stance_rewrites = 2
         self._max_plan_retries = 3
         self._max_step_rewrites = 3
+        self._reasoner_opposition_check_cache: Dict[
+            tuple[str, str], tuple[bool, str]
+        ] = {}
 
     def _known_attack_ids(self) -> List[str]:
         """Return all known attack IDs from taxonomy metadata."""
@@ -475,8 +479,8 @@ class CounterReasoner(BaseAgent):
         routing_decision: RoutingDecision,
         pre_retrieved_statutes: List[dict],
         pre_retrieved_precedents: List[dict],
+        reasoner_conclusion: str,
         enable_causality: bool = True,
-        reasoner_conclusion: str = "",
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> CounterReasonerOutput:
         """
@@ -501,6 +505,10 @@ class CounterReasoner(BaseAgent):
         if enable_causality and not routing_decision.causal_type_id:
             raise ValueError(
                 "routing_decision with causal_type_id/theory_id is required when causality is enabled"
+            )
+        if not (reasoner_conclusion or "").strip():
+            raise ValueError(
+                "reasoner_conclusion is required for CounterReasoner (counter must oppose the Reasoner thesis)"
             )
 
         if enable_causality:
@@ -529,21 +537,10 @@ class CounterReasoner(BaseAgent):
                     f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
                     "info",
                 )
-            hard_against_count = sum(
-                1
-                for s in pre_retrieved_statutes
-                if str(s.get("_stance_label", "")).lower() == "against"
-            )
-            self._log(
-                "📊 Counter input stance mix: "
-                f"hard_against={hard_against_count}, total_received={len(pre_retrieved_statutes)}",
-                "info",
-            )
             boosted_counter_statutes = self._retrieve_targeted_counter_boost(
                 claim=claim,
                 attack_ids=attack_selection.attack_ids,
                 existing_statutes=pre_retrieved_statutes,
-                hard_against_count=hard_against_count,
             )
         else:
             self._log(
@@ -760,17 +757,17 @@ class CounterReasoner(BaseAgent):
         claim: str,
         attack_ids: List[str],
         existing_statutes: List[dict],
-        hard_against_count: Optional[int] = None,
+        context_statutes_count: Optional[int] = None,
     ) -> List[dict]:
         """Run a second-pass retrieval guided by selected counter attacks."""
         if not settings.counter_second_pass_enabled:
             return []
-        effective_against = (
-            hard_against_count
-            if hard_against_count is not None
+        effective_context_size = (
+            context_statutes_count
+            if context_statutes_count is not None
             else len(existing_statutes)
         )
-        if effective_against >= settings.counter_second_pass_min_against_statutes:
+        if effective_context_size >= settings.counter_second_pass_min_against_statutes:
             return []
 
         hints: List[str] = []
@@ -856,7 +853,6 @@ class CounterReasoner(BaseAgent):
             legal_context = self._extract_legal_context(claim)
             boosted = self.filter_irrelevant_statutes(claim, boosted)
             boosted = self.filter_applicable_statutes(claim, boosted, legal_context)
-            boosted = self._filter_boosted_statutes_for_counter_stance(claim, boosted)
 
             self._log(
                 f"✅ Counter second-pass: {len(boosted)} articoli aggiuntivi kept",
@@ -868,62 +864,6 @@ class CounterReasoner(BaseAgent):
             self._log(f"⚠️ Counter second-pass retrieval failed: {exc}", "warning")
             return []
 
-    def _filter_boosted_statutes_for_counter_stance(
-        self,
-        claim: str,
-        statutes: List[dict],
-    ) -> List[dict]:
-        """
-        Re-classify second-pass statutes by stance and keep counter-useful ones.
-
-        Preference order:
-        1) AGAINST statutes
-        2) If none found, a small NEUTRAL fallback to avoid starvation.
-        """
-        if not statutes:
-            return statutes
-        try:
-            from services.stance_classifier import StanceClassifier
-        except Exception as exc:
-            self._log(
-                f"⚠️ Counter second-pass stance filter unavailable: {exc}",
-                "warning",
-            )
-            return statutes
-
-        try:
-            classifier = StanceClassifier()
-            _, opposing, neutral = classifier.classify_statutes_batch(claim, statutes)
-        except Exception as exc:
-            self._log(
-                f"⚠️ Counter second-pass stance filtering failed: {exc}",
-                "warning",
-            )
-            return statutes
-
-        if opposing:
-            self._log(
-                "🎯 Counter second-pass stance filter: "
-                f"{len(opposing)} AGAINST kept, {len(statutes) - len(opposing)} discarded",
-                "info",
-            )
-            return opposing
-
-        neutral_fallback = neutral[: min(3, len(neutral))]
-        if neutral_fallback:
-            self._log(
-                "⚠️ Counter second-pass stance filter: no AGAINST found, "
-                f"keeping {len(neutral_fallback)} NEUTRAL fallback statutes",
-                "warning",
-            )
-            return neutral_fallback
-
-        self._log(
-            "⚠️ Counter second-pass stance filter: no usable statutes after reclassification",
-            "warning",
-        )
-        return []
-
     def _generate_counter_chain_iteratively(
         self,
         claim: str,
@@ -933,7 +873,7 @@ class CounterReasoner(BaseAgent):
         allowed_statutes: List[str],
         available_statutes: List[dict],
         allowed_precedents: List[str],
-        reasoner_conclusion: str = "",
+        reasoner_conclusion: str,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str], List[str]]:
         """Generate counter-reasoning chain with plan -> execute workflow."""
@@ -1060,11 +1000,7 @@ class CounterReasoner(BaseAgent):
         max_steps: int,
     ) -> List[Dict[str, str]]:
         """Generate and validate an execution plan for counter reasoning."""
-        reasoner_block = (
-            f"\nReasoner conclusion to oppose:\n{reasoner_conclusion}\n"
-            if reasoner_conclusion
-            else ""
-        )
+        reasoner_block = f"\nReasoner conclusion to oppose:\n{reasoner_conclusion}\n"
         prompt = render_prompt(
             "counter_reasoner.generate_plan",
             claim=claim,
@@ -1127,6 +1063,10 @@ class CounterReasoner(BaseAgent):
             goal = str(item.get("goal", "")).strip()
             focus = str(item.get("focus", "")).strip()
             expected_norm = str(item.get("expected_norm", "")).strip() or "N/A"
+            citation_requirement = self._normalize_plan_citation_requirement(
+                expected_norm=expected_norm,
+                raw_value=item.get("citation_requirement"),
+            )
             attack_id = str(item.get("attack_id", "")).strip()
             if not goal or not focus or not attack_id:
                 continue
@@ -1138,6 +1078,7 @@ class CounterReasoner(BaseAgent):
                     "goal": goal,
                     "focus": focus,
                     "expected_norm": expected_norm,
+                    "citation_requirement": citation_requirement,
                     "attack_id": attack_id,
                 }
             )
@@ -1156,6 +1097,46 @@ class CounterReasoner(BaseAgent):
                 "counter planner did not distribute attacks across planned steps"
             )
         return cleaned
+
+    @staticmethod
+    def _normalize_plan_citation_requirement(
+        *,
+        expected_norm: str,
+        raw_value: object,
+    ) -> str:
+        """Normalize planner citation policy with backward-compatible defaults."""
+        value = str(raw_value or "").strip().lower()
+        aliases = {
+            "required": "required",
+            "must": "required",
+            "mandatory": "required",
+            "optional": "optional",
+            "if_possible": "optional",
+            "when_possible": "optional",
+            "none": "none",
+            "no": "none",
+        }
+        normalized = aliases.get(value)
+        if normalized:
+            return normalized
+
+        expected = str(expected_norm or "").strip().upper()
+        if expected and expected not in {"N/A", "NA", "NONE", "-"}:
+            return "required"
+        return "optional"
+
+    @staticmethod
+    def _step_requires_citation(
+        *, expected_norm: str, citation_requirement: str
+    ) -> bool:
+        """Decide citation requirement from planner metadata only."""
+        requirement = str(citation_requirement or "").strip().lower()
+        if requirement == "required":
+            return True
+        if requirement in {"optional", "none"}:
+            return False
+        expected = str(expected_norm or "").strip().upper()
+        return bool(expected and expected not in {"N/A", "NA", "NONE", "-"})
 
     def _has_overlapping_plan_steps(self, plan_steps: List[Dict[str, str]]) -> bool:
         """Detect obvious overlap across planned goals/focuses."""
@@ -1254,7 +1235,9 @@ class CounterReasoner(BaseAgent):
                 candidate_step=candidate,
                 previous_steps=previous_steps,
                 claim=claim,
+                reasoner_conclusion=reasoner_conclusion,
                 expected_norm=plan_step.get("expected_norm", "N/A"),
+                citation_requirement=plan_step.get("citation_requirement", "optional"),
                 allowed_statute_index=allowed_statute_index,
                 attack_id=plan_step.get("attack_id", attack_id),
                 attack_desc=attack_desc,
@@ -1263,6 +1246,17 @@ class CounterReasoner(BaseAgent):
             if ok:
                 return candidate
             last_reason = reason
+            if stream_callback:
+                try:
+                    stream_callback(
+                        {
+                            "phase": "counter",
+                            "action": "reset_step",
+                            "step": plan_index,
+                        }
+                    )
+                except Exception:
+                    pass
             self._log(
                 f"⚠️ Counter-step {plan_index} rejected ({reason}) "
                 f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
@@ -1300,11 +1294,7 @@ class CounterReasoner(BaseAgent):
             else "- none"
         )
         used_norms_text = ", ".join(used_norms) if used_norms else "none"
-        reasoner_block = (
-            f"\nCONCLUSION TO OPPOSE:\n{reasoner_conclusion}\n"
-            if reasoner_conclusion
-            else ""
-        )
+        reasoner_block = f"\nCONCLUSION TO OPPOSE:\n{reasoner_conclusion}\n"
         return render_prompt(
             "counter_reasoner.step_prompt",
             claim=claim,
@@ -1322,6 +1312,7 @@ class CounterReasoner(BaseAgent):
             plan_goal=plan_step.get("goal", ""),
             plan_focus=plan_step.get("focus", ""),
             plan_expected_norm=plan_step.get("expected_norm", "N/A"),
+            plan_citation_requirement=plan_step.get("citation_requirement", "optional"),
             plan_attack_id=plan_step.get("attack_id", attack_id),
             summary_lines=summary_lines,
             used_norms_text=used_norms_text,
@@ -1332,7 +1323,9 @@ class CounterReasoner(BaseAgent):
         candidate_step: str,
         previous_steps: List[str],
         claim: str,
+        reasoner_conclusion: str,
         expected_norm: str,
+        citation_requirement: str,
         allowed_statute_index: Dict[str, set[str]],
         attack_id: str,
         attack_desc: str,
@@ -1345,22 +1338,42 @@ class CounterReasoner(BaseAgent):
         if self._is_garbage_text(text):
             return False, "garbage output"
         if not self._is_counter_step_consistent(text):
-            return False, "stance drift (not strictly anti-claim)"
+            return False, "reasoning inconsistency"
+        facts_ok, facts_reason = self._is_counter_step_fact_consistent_with_claim(
+            claim=claim,
+            candidate_step=text,
+        )
+        if not facts_ok:
+            return False, facts_reason
+        opposes_ok, opposes_reason = self._is_counter_step_opposed_to_reasoner(
+            claim=claim,
+            reasoner_conclusion=reasoner_conclusion,
+            candidate_step=text,
+        )
+        if not opposes_ok:
+            return False, opposes_reason
         mention_matches = extract_article_mentions(text, require_code=False)
-        if not mention_matches:
+        if (
+            self._step_requires_citation(
+                expected_norm=expected_norm,
+                citation_requirement=citation_requirement,
+            )
+            and not mention_matches
+        ):
             return False, "missing statutory citation"
-        grounded, grounded_reason = self._has_grounded_citation(
-            mentions=mention_matches,
-            allowed_statute_index=allowed_statute_index,
-        )
-        if not grounded:
-            return False, grounded_reason
-        expected_ok, expected_reason = self._matches_expected_norm(
-            mentions=mention_matches,
-            expected_norm=expected_norm,
-        )
-        if not expected_ok:
-            return False, expected_reason
+        if mention_matches:
+            grounded, grounded_reason = self._has_grounded_citation(
+                mentions=mention_matches,
+                allowed_statute_index=allowed_statute_index,
+            )
+            if not grounded:
+                return False, grounded_reason
+            expected_ok, expected_reason = self._matches_expected_norm(
+                mentions=mention_matches,
+                expected_norm=expected_norm,
+            )
+            if not expected_ok:
+                return False, expected_reason
         compatible, reason = self._is_counter_step_compatible_with_history(
             candidate_step=text,
             previous_steps=previous_steps,
@@ -1388,6 +1401,72 @@ class CounterReasoner(BaseAgent):
             return False, alignment_reason
         return True, ""
 
+    def _is_counter_step_fact_consistent_with_claim(
+        self,
+        *,
+        claim: str,
+        candidate_step: str,
+    ) -> tuple[bool, str]:
+        """Reject counter-steps that contradict explicit facts stated in the claim.
+
+        The counter can attack legal qualification and inference, but must not
+        negate factual premises expressly given in the claim text.
+        """
+        return self._is_step_fact_consistent_with_claim(
+            claim=claim,
+            candidate_step=candidate_step,
+            actor_label="CounterReasoner",
+        )
+
+    def _is_counter_step_opposed_to_reasoner(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        candidate_step: str,
+    ) -> tuple[bool, str]:
+        """Reject candidate counter-steps that materially agree with the Reasoner conclusion.
+
+        This is a semantic check relative to the opposing thesis, not a polarity
+        check on the claim itself.
+        """
+        reasoner_text = (reasoner_conclusion or "").strip()
+        if not reasoner_text:
+            return False, "missing reasoner conclusion context"
+
+        step_text = (candidate_step or "").strip()
+        if not step_text:
+            return False, "empty step"
+
+        cache_key = (reasoner_text, step_text)
+        cached = self._reasoner_opposition_check_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        prompt = render_prompt(
+            "counter_reasoner.step_opposition_check",
+            claim=claim,
+            reasoner_conclusion=reasoner_text,
+            candidate_step=step_text,
+        )
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+            if "AGREE" in answer:
+                result = (False, "agrees with reasoner conclusion")
+            else:
+                # UNCLEAR is accepted here to avoid over-rejecting premise-level attacks.
+                result = (True, "")
+        except Exception as exc:
+            self._log(
+                f"⚠️ Counter opposition check failed (fallback keep): {exc}",
+                "warning",
+            )
+            result = (True, "")
+
+        self._reasoner_opposition_check_cache[cache_key] = result
+        return result
+
     @staticmethod
     def _normalize_source_for_match(source_raw: str) -> str:
         """Normalize source labels to internal statute-source keys."""
@@ -1408,9 +1487,7 @@ class CounterReasoner(BaseAgent):
             return "codice_penale"
         return source
 
-    def _build_allowed_statute_index(
-        self, statutes: List[dict]
-    ) -> Dict[str, set[str]]:
+    def _build_allowed_statute_index(self, statutes: List[dict]) -> Dict[str, set[str]]:
         """
         Build article->source index for grounding checks.
 
@@ -1501,7 +1578,9 @@ class CounterReasoner(BaseAgent):
 
         expected_mentions = extract_article_mentions(expected, require_code=False)
         expected_ids = {
-            normalize_article_id(m.article_id) for m in expected_mentions if m.article_id
+            normalize_article_id(m.article_id)
+            for m in expected_mentions
+            if m.article_id
         }
         if not expected_ids:
             # Planner can emit non-parseable labels; don't hard-fail in that case.
@@ -1555,7 +1634,9 @@ class CounterReasoner(BaseAgent):
         # Conservative lexical fallback when LLM output is unavailable/ambiguous.
         focus_terms = {
             t
-            for t in re.findall(r"[a-zàèéìòù]{5,}", f"{attack_desc} {plan_focus}".lower())
+            for t in re.findall(
+                r"[a-zàèéìòù]{5,}", f"{attack_desc} {plan_focus}".lower()
+            )
             if t not in {"normativa", "giuridica", "procedimento", "provvedimento"}
         }
         if not focus_terms:
@@ -1690,78 +1771,11 @@ class CounterReasoner(BaseAgent):
 
         return step_text
 
-    def _evaluate_should_continue(
-        self,
-        claim: str,
-        domain: str,
-        steps: List[str],
-        used_norms: List[str],
-        knowledge_base: str,
-        statutes_list: str,
-        role: str = "counter",
-    ) -> bool:
-        """Dedicated evaluation call: should the chain continue?
-
-        A lightweight LLM call that inspects the current chain and
-        decides whether an additional step would meaningfully
-        strengthen the argument.
-
-        Returns ``True`` to continue, ``False`` to conclude.
-        """
-        prev_context = "\n".join(
-            f"  Step {i + 1}: {s[:300]}..." for i, s in enumerate(steps)
-        )
-        used_text = ", ".join(sorted(set(used_norms))) if used_norms else "none"
-        n_steps = len(steps)
-        n_unique_norms = len(set(used_norms)) if used_norms else 0
-
-        role_desc = "supporting" if role == "support" else "counter-"
-
-        eval_prompt = render_prompt(
-            "counter_reasoner.evaluate_continue",
-            role_desc=role_desc,
-            n_steps=n_steps,
-            n_unique_norms=n_unique_norms,
-            total_citations=len(used_norms),
-            claim=claim,
-            domain=domain,
-            prev_context=prev_context,
-            used_text=used_text,
-            statutes_list=statutes_list,
-        )
-
-        try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
-            answer = (resp.content or "").strip().upper()
-        except Exception as e:
-            self._log(
-                f"⚠️ Evaluation call failed: {e}; defaulting to CONTINUE",
-                "warning",
-            )
-            return True
-
-        # Robust parsing
-        if "CONCLUD" in answer:
-            should_continue = False
-        elif "CONTINU" in answer:
-            should_continue = True
-        else:
-            # Ambiguous → default to CONCLUDE after enough steps
-            should_continue = n_steps < 5
-            self._log(
-                f"⚠️ Evaluator ambiguous: '{answer[:50]}'; "
-                f"defaulting to {'CONTINUE' if should_continue else 'CONCLUDE'}",
-                "warning",
-            )
-
-        self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
-        return should_continue
-
     def _build_stance_rewrite_prompt(
         self, original_prompt: str, invalid_step: str, invalid_reason: str = ""
     ) -> str:
-        """Ask the model to rewrite a step that violates stance/consistency rules."""
-        reason_text = invalid_reason or "it partially supports the claim."
+        """Ask the model to rewrite a step that violates counter-step consistency rules."""
+        reason_text = invalid_reason or "it is not a coherent counter-step."
         return render_prompt(
             "counter_reasoner.stance_rewrite",
             original_prompt=original_prompt,
@@ -1771,66 +1785,12 @@ class CounterReasoner(BaseAgent):
 
     def _is_counter_step_consistent(self, step_text: str) -> bool:
         """
-        Heuristic guardrail against semantic drift.
+        Lightweight guardrail against self-contradictory legal reasoning text.
 
-        Returns False when the step contains strong pro-claim signals
-        that are not counter-balanced by explicit anti-claim language.
+        This intentionally does NOT enforce claim-polarity framing. Opposition to the
+        Reasoner conclusion (when available) is checked separately.
         """
-        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
-        if not text:
-            return False
-
-        anti_patterns = [
-            r"\bpretesa\b.*\brigettat",
-            r"\bricorso\b.*\brigettat",
-            r"\bnon\s+(?:e|è)?\s*annullabil",
-            r"\bnon\s+determina\b.*\billegittimit",
-            r"\bnon\s+rende\b.*\billegittim",
-            r"\bnon\s+incide\b.*\blegittimit",
-            r"\binfondat",
-            r"\binammissibil",
-        ]
-        pro_patterns = [
-            r"\bpretesa\b.*\bfondat",
-            r"\bricorso\b.*\bfondat",
-            r"\bdeve\s+essere\s+accolt",
-            r"\brende\b.*\billegittim",
-            r"\bdetermina\b.*\billegittimit",
-            r"\bincide\b.*\blegittimit",
-            r"\bprovvedimento\b.*\billegittim",
-            r"\bcomunicazione\b.*\b(?:necessaria|obbligatoria)\b",
-            r"\bannullabil",
-        ]
-
-        anti_score = sum(1 for p in anti_patterns if re.search(p, text))
-        pro_score = 0
-        for p in pro_patterns:
-            if not re.search(p, text):
-                continue
-            if p == r"\bannullabil" and re.search(
-                r"\bnon\s+(?:e|è)?\s*annullabil", text
-            ):
-                anti_score += 1
-                continue
-            if p in (
-                r"\brende\b.*\billegittim",
-                r"\bdetermina\b.*\billegittimit",
-                r"\bprovvedimento\b.*\billegittim",
-            ) and re.search(r"\bnon\s+(?:rende|determina)\b.*\billegittim", text):
-                anti_score += 1
-                continue
-            pro_score += 1
-
-        # Explicit contradiction pattern seen in faulty outputs.
-        if re.search(r"\brigettat", text) and re.search(r"\billegittim", text):
-            if not re.search(r"\bnon\b.{0,25}\billegittim", text):
-                return False
-
-        if pro_score >= 2 and anti_score == 0:
-            return False
-        if pro_score > anti_score + 1:
-            return False
-        return True
+        return self._is_step_self_consistent(step_text)
 
     @staticmethod
     def _extract_step_signals(text: str) -> Dict[str, int]:
@@ -1969,7 +1929,7 @@ class CounterReasoner(BaseAgent):
         return True, ""
 
     def _derive_counter_conclusion_ground(self, steps: List[str]) -> str:
-        """Pick a final anti-claim rationale from the last stance-consistent step."""
+        """Pick a final counter-rationale from the last coherent step."""
         for step in reversed(steps):
             if not self._is_counter_step_consistent(step):
                 continue
@@ -1984,8 +1944,8 @@ class CounterReasoner(BaseAgent):
             if first_sentence:
                 return first_sentence
         return (
-            "le norme richiamate e i fatti allegati non rendono fondata "
-            "la domanda del ricorrente"
+            "le norme richiamate e i fatti allegati non giustificano "
+            "in modo univoco la tesi principale"
         )
 
     def _assemble_counter_raw_response(
@@ -1994,10 +1954,7 @@ class CounterReasoner(BaseAgent):
         steps: List[str],
         step_attack_ids: List[str],
     ) -> str:
-        """Assemble counter-argument raw response from iterative steps.
-
-        Ensures the conclusion is framed as OPPOSING the claim, not supporting it.
-        """
+        """Assemble counter-argument raw response from iterative steps."""
         chain_section = "**Catena di ragionamento**:\n"
         for i, step in enumerate(steps, 1):
             chain_section += f"{i}. {step}\n"
@@ -2022,9 +1979,9 @@ class CounterReasoner(BaseAgent):
             attack_desc_list = [_DEFAULT_ATTACK_DESCRIPTION_IT]
         attack_desc_it = "; ".join(attack_desc_list[:3])
 
-        # Ensure the conclusion opposes the claim without reusing drifted text.
         conclusion_text = (
-            "Pertanto, la pretesa deve essere RIGETTATA poiché " f"{conclusion_ground}."
+            "Pertanto, la tesi giuridica principale deve essere contestata o "
+            f"ridimensionata poiché {conclusion_ground}."
         )
 
         raw = (
@@ -2032,8 +1989,8 @@ class CounterReasoner(BaseAgent):
             f"**Norma**:\n{norms_text}\n\n"
             f"**Nesso Causale Alternativo**: L'analisi giuridica dimostra che "
             f"{attack_desc_it}. La catena argomentativa evidenzia come "
-            f"le norme applicabili al caso non supportino la pretesa del ricorrente, "
-            f"ma anzi ne rivelino l'infondatezza giuridica.\n\n"
+            f"le norme applicabili al caso consentano una ricostruzione alternativa "
+            f"o limitativa rispetto alla tesi principale.\n\n"
             f"**Conclusione Contraria**: {conclusion_text}\n\n"
             f"{chain_section}"
         )

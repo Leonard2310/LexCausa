@@ -26,10 +26,10 @@
 - **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
 - **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
 - **Unified Pipeline**: All functionalities (Search, Reasoning, Full Pipeline) share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
-- **Stance Classifier (NLI)**: Classifies statutes and precedents as SUPPORT, AGAINST, or NEUTRAL relative to the claim using NLI-style prompting
+- **Shared Retrieved Context**: Both Reasoner and CounterReasoner receive the same retrieved statutes/precedents and build opposing arguments from the same evidence base
 - **Planned Iterative Chain Generation**: Reasoner and Counter-Reasoner first create an execution plan (3-10 steps), then generate one LLM step per planned objective with anti-repetition and consistency checks
 - **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations
-- **Counter-Reasoner Agent**: Generates independent counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, and enforces strict anti-claim consistency with claim-fact lock (no inversion of explicit facts)
+- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, and enforces claim-fact lock (no inversion of explicit facts) while opposing the primary thesis/reasoner conclusion
 - **Repetition Detection**: Jaccard similarity-based detection (threshold 0.70) prevents duplicate reasoning steps across the chain
 - **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, and verdict generation
 - **Consistency Checker**: Verifies statute and precedent citations against Neo4j KB, classifies articles as core/peripheral, repairs mismatches via LLM-constrained rewriting (with verbatim quote validation), and drops unreliable citations
@@ -81,7 +81,7 @@
 │  Model fallback + down cache │  │  Hybrid retrieval (vector + fulltext)│
 │  Smart error classification  │  │  Progressive + CITES expansion       │
 │  Exponential backoff         │  │  Pre-retrieval LLM filtering         │
-│                              │  │  StanceClassifier (NLI)              │
+│                              │  │  Shared Retrieved Context            │
 └──────────────────────────────┘  └────────────────┬─────────────────────┘
                     │                              │
                     │         ┌────────────────────┘
@@ -89,8 +89,8 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │              Reasoner / Counter-Reasoner / Polisher-Evaluator           │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  Reasoner: iterative chain on SUPPORT articles (ASPIC+)                 │
-│  Counter-Reasoner: iterative attack chain on AGAINST articles (ASPIC+)  │
+│  Reasoner: iterative primary chain on shared retrieved context (ASPIC+)  │
+│  Counter-Reasoner: iterative attack chain on shared retrieved context    │
 │  Polisher-Evaluator (4 Mixins):                                         │
 │    ├─ ConsistencyChecker: KB verification → citation repair/drop        │
 │    ├─ ScoringMixin: readability, coherence, argument quality            │
@@ -247,7 +247,6 @@ LexCausa/
 │   ├── services/                  # Core services
 │   │   ├── groq_client.py        # Resilient Groq client (dynamic key discovery, rotation)
 │   │   ├── claim_classifier.py   # LLM claim classification
-│   │   ├── stance_classifier.py  # NLI stance classification
 │   │   └── legal_search.py       # Hybrid legal search pipeline (vector + fulltext fusion)
 │   ├── db/                        # Database management
 │   │   ├── db_orchestrator.py    # Full DB lifecycle (clean/schema/load/verify)
@@ -440,10 +439,10 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Neo4j `CITES` graph: citation edges built from statute references and used in pre-filter retrieval expansion
 - [x] Claim classification and book routing via LLM
 - [x] Domain Router Agent (CIVILE / PENALE / ENTRAMBI)
-- [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering, stance)
+- [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering)
 - [x] Progressive search with adaptive expansion when post-filtering yields too few results
 - [x] Pre-retrieval LLM filtering for statutes and precedents (default-YES soft filter)
-- [x] Stance Classifier (NLI): SUPPORT / AGAINST / NEUTRAL classification for statutes and precedents
+- [x] Shared context retrieval for both Reasoner and CounterReasoner
 - [x] Reasoner Agent: plan-then-execute generation (ASPIC+) with 3-10 planned steps and anti-repetition validation
 - [x] Counter-Reasoner Agent: plan-then-execute counter-generation (ASPIC+) with multi-attack selection and per-step attack assignment
 - [x] Explicit precedent citation by full title in Reasoner and Counter-Reasoner prompts

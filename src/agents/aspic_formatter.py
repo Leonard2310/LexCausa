@@ -650,7 +650,7 @@ def _build_precedent_graph(
                 "bindingness": p.get("bindingness"),
                 "recency": p.get("recency"),
                 "score": p.get("score"),
-                # Stance metadata injected by StanceClassifier
+                # Optional stance metadata (legacy runs may include it)
                 "_stance_label": p.get("_stance_label"),
                 "_stance_confidence": p.get("_stance_confidence"),
             }

@@ -504,6 +504,26 @@ export default function App() {
       });
     };
 
+    const resetPhaseStepLive = (phase, stepNumber = null) => {
+      if (stepNumber == null) return;
+      updateLivePipeline((prev) => {
+        const next = {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            support_steps: { ...(prev._stream?.support_steps || {}) },
+            counter_steps: { ...(prev._stream?.counter_steps || {}) },
+          },
+        };
+        if (phase === 'support') {
+          next._stream.support_steps[stepNumber] = '';
+        } else if (phase === 'counter') {
+          next._stream.counter_steps[stepNumber] = '';
+        }
+        return next;
+      });
+    };
+
     const requestBody = JSON.stringify({
       claim,
       include_precedents: pipelineSettings.include_precedents,
@@ -617,6 +637,10 @@ export default function App() {
 
           if (eventName === 'token') {
             const phase = payload.phase || 'generic';
+            if (payload?.action === 'reset_step') {
+              resetPhaseStepLive(phase, payload?.step ?? null);
+              continue;
+            }
             if (phase === 'support' || phase === 'support_conclusion') {
               setPhaseStatus('context_setup', 'done');
               setPhaseStatus('support', 'active');

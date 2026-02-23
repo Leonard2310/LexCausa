@@ -47,6 +47,7 @@ class PromptKey(StrEnum):
     COUNTER_REASONER_GENERATE_PLAN = "counter_reasoner.generate_plan"
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
     COUNTER_REASONER_SEMANTIC_REDUNDANCY = "counter_reasoner.semantic_redundancy"
+    COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
     COUNTER_REASONER_EVALUATE_CONTINUE = "counter_reasoner.evaluate_continue"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
     AQA_ENGINE_ATTACK_TYPE_SYSTEM = "aqa_engine.attack_type_system"
@@ -222,7 +223,7 @@ Respond with EXACTLY one token: YES or NO.""",
     # ---------------------------------------------------------------------
     # Stance Classifier
     # ---------------------------------------------------------------------
-    PromptKey.STANCE_CLASSIFIER_STATUTE: """Task: Classify whether this legal article SUPPORTS or OPPOSES the claim.
+    PromptKey.STANCE_CLASSIFIER_STATUTE: """Task: Binary legal relevance check for one stance axis.
 
 CLAIM (Legal thesis):
 "[[claim]]"
@@ -230,20 +231,19 @@ CLAIM (Legal thesis):
 ARTICLE (Art. [[article_num]] [[source]] - [[title]]):
 "[[text]]"
 
-CLASSIFICATION RULES:
-- SUPPORT: The article provides legal basis that REINFORCES or VALIDATES the claim, or sets formal requirements whose violation strengthens the claim.
-- AGAINST: The article provides grounds to CHALLENGE, LIMIT, or CONTRADICT the claim.
-- NEUTRAL: The article is equally applicable to both positions or irrelevant.
-- DEFAULT TO SUPPORT unless the article clearly limits/contradicts the claim.
+AXIS TO EVALUATE:
+[[stance_axis]]
 
-Consider:
-- Does the article establish rights that support the claimant?
-- Does the article impose limits, exceptions, or defenses against the claim?
-- Does the article define conditions that may not be met?
+DECISION RULES:
+- If axis is SUPPORT: answer YES only if the article provides an explicit legal basis that reinforces the claim.
+- If axis is AGAINST: answer YES only if the article provides an explicit legal basis that challenges, limits, or contradicts the claim.
+- Use only the provided article text.
+- Do not use external assumptions.
+- If applicability is unclear, mixed, or only generic, answer NO.
 
-Respond with EXACTLY one word: SUPPORT, AGAINST, or NEUTRAL
+Respond with EXACTLY one word: YES or NO
 No punctuation. No explanations.""",
-    PromptKey.STANCE_CLASSIFIER_PRECEDENT: """Task: Classify whether this judicial precedent SUPPORTS or OPPOSES the claim.
+    PromptKey.STANCE_CLASSIFIER_PRECEDENT: """Task: Binary precedent relevance check for one stance axis.
 
 CLAIM (Legal thesis):
 "[[claim]]"
@@ -251,12 +251,17 @@ CLAIM (Legal thesis):
 PRECEDENT ([[title]]):
 "[[summary]]"
 
-CLASSIFICATION RULES:
-- SUPPORT: The precedent establishes principles that REINFORCE the claim
-- AGAINST: The precedent establishes principles that CHALLENGE or LIMIT the claim
-- NEUTRAL: The precedent is not clearly applicable to either position
+AXIS TO EVALUATE:
+[[stance_axis]]
 
-Respond with EXACTLY one word: SUPPORT, AGAINST, or NEUTRAL
+DECISION RULES:
+- If axis is SUPPORT: answer YES only if the precedent clearly reinforces the claim.
+- If axis is AGAINST: answer YES only if the precedent clearly challenges or limits the claim.
+- Use only the provided summary.
+- Do not use external assumptions.
+- If applicability is unclear, mixed, or only generic, answer NO.
+
+Respond with EXACTLY one word: YES or NO
 No punctuation. No explanations.""",
     # ---------------------------------------------------------------------
     # Legal Search & Neo4j keyword extraction
@@ -788,6 +793,30 @@ Regola:
 - Rispondi NEW se introduce un punto giuridico/fattuale realmente diverso.
 
 Rispondi con UNA SOLA parola: NEW oppure REPEAT.
+""",
+    PromptKey.COUNTER_REASONER_ATTACK_ALIGNMENT: """Valuta se il seguente passo di contro-argomentazione è ALLINEATO all'attacco pianificato.
+
+CLAIM:
+[[claim]]
+
+ATTACK ID:
+[[attack_id]]
+
+ATTACK DESCRIZIONE:
+[[attack_desc]]
+
+FOCUS DEL PIANO:
+[[plan_focus]]
+
+PASSO CANDIDATO:
+[[candidate_step]]
+
+Regole:
+- Rispondi ALIGNED solo se il passo applica chiaramente l'attacco indicato e il focus del piano.
+- Rispondi MISALIGNED se il passo è generico, fuori focus, o non riflette davvero l'attacco.
+- Il passo deve restare anti-claim; se è ambiguo o bilanciato, è MISALIGNED.
+
+Rispondi con UNA SOLA parola: ALIGNED oppure MISALIGNED.
 """,
     PromptKey.COUNTER_REASONER_EVALUATE_CONTINUE: """You are a senior Italian jurist evaluating whether a legal argument needs more steps.
 

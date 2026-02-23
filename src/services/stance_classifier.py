@@ -99,12 +99,31 @@ class StanceClassifier:
         else:
             source = str(source_key or "codice")
 
-        prompt = self._build_statute_prompt(claim, article_num, source, title, text)
-
         try:
-            response = resilient_chat_call(self.llm, [HumanMessage(content=prompt)])
-            answer = response.content.strip().upper()
-            return self._parse_response(statute, answer)
+            support_answer = self._ask_statute_axis(
+                claim=claim,
+                article_num=article_num,
+                source=source,
+                title=title,
+                text=text,
+                axis="SUPPORT",
+            )
+            against_answer = self._ask_statute_axis(
+                claim=claim,
+                article_num=article_num,
+                source=source,
+                title=title,
+                text=text,
+                axis="AGAINST",
+            )
+            return self._combine_axis_votes(
+                item=statute,
+                support_vote=self._parse_yes_no(support_answer),
+                against_vote=self._parse_yes_no(against_answer),
+                source_label=f"Art. {article_num}",
+                raw_support=support_answer,
+                raw_against=against_answer,
+            )
         except Exception as e:
             print(f"⚠️ Stance classification failed for Art. {article_num}: {e}")
             return StanceResult(
@@ -128,12 +147,27 @@ class StanceClassifier:
         title = precedent.get("title", "Untitled")
         summary = precedent.get("summary", "")[: settings.truncation_summary]
 
-        prompt = self._build_precedent_prompt(claim, title, summary)
-
         try:
-            response = resilient_chat_call(self.llm, [HumanMessage(content=prompt)])
-            answer = response.content.strip().upper()
-            return self._parse_response(precedent, answer)
+            support_answer = self._ask_precedent_axis(
+                claim=claim,
+                title=title,
+                summary=summary,
+                axis="SUPPORT",
+            )
+            against_answer = self._ask_precedent_axis(
+                claim=claim,
+                title=title,
+                summary=summary,
+                axis="AGAINST",
+            )
+            return self._combine_axis_votes(
+                item=precedent,
+                support_vote=self._parse_yes_no(support_answer),
+                against_vote=self._parse_yes_no(against_answer),
+                source_label=f"precedent '{title[:50]}'",
+                raw_support=support_answer,
+                raw_against=against_answer,
+            )
         except Exception as e:
             print(f"⚠️ Stance classification failed for precedent '{title[:50]}': {e}")
             return StanceResult(
@@ -165,6 +199,10 @@ class StanceClassifier:
         for statute in statutes:
             result = self.classify_statute(claim, statute)
             article = statute.get("articolo", "N/A")
+            statute["_stance_label"] = result.stance.value
+            statute["_stance_confidence"] = CONFIDENCE_TO_FLOAT.get(
+                result.confidence.lower(), 0.5
+            )
 
             if result.stance == Stance.SUPPORT:
                 supporting.append(statute)
@@ -227,9 +265,15 @@ class StanceClassifier:
         return supporting, opposing, neutral
 
     def _build_statute_prompt(
-        self, claim: str, article_num: str, source: str, title: str, text: str
+        self,
+        claim: str,
+        article_num: str,
+        source: str,
+        title: str,
+        text: str,
+        stance_axis: str,
     ) -> str:
-        """Build NLI prompt for statute classification."""
+        """Build binary NLI prompt for statute classification on one axis."""
         return render_prompt(
             "stance_classifier.statute",
             claim=claim,
@@ -237,42 +281,110 @@ class StanceClassifier:
             source=source,
             title=title,
             text=text,
+            stance_axis=stance_axis,
         )
 
-    def _build_precedent_prompt(self, claim: str, title: str, summary: str) -> str:
-        """Build NLI prompt for precedent classification."""
+    def _build_precedent_prompt(
+        self, claim: str, title: str, summary: str, stance_axis: str
+    ) -> str:
+        """Build binary NLI prompt for precedent classification on one axis."""
         return render_prompt(
             "stance_classifier.precedent",
             claim=claim,
             title=title,
             summary=summary,
+            stance_axis=stance_axis,
         )
 
-    def _parse_response(self, item: dict, answer: str) -> StanceResult:
-        """Parse LLM response into StanceResult."""
-        # Extract first word
-        token = answer.split()[0] if answer else ""
+    def _ask_statute_axis(
+        self,
+        claim: str,
+        article_num: str,
+        source: str,
+        title: str,
+        text: str,
+        axis: str,
+    ) -> str:
+        prompt = self._build_statute_prompt(
+            claim=claim,
+            article_num=article_num,
+            source=source,
+            title=title,
+            text=text,
+            stance_axis=axis,
+        )
+        response = resilient_chat_call(self.llm, [HumanMessage(content=prompt)])
+        return (response.content or "").strip()
 
-        if "SUPPORT" in token or "SUPPORTO" in token:
+    def _ask_precedent_axis(
+        self, claim: str, title: str, summary: str, axis: str
+    ) -> str:
+        prompt = self._build_precedent_prompt(
+            claim=claim,
+            title=title,
+            summary=summary,
+            stance_axis=axis,
+        )
+        response = resilient_chat_call(self.llm, [HumanMessage(content=prompt)])
+        return (response.content or "").strip()
+
+    @staticmethod
+    def _parse_yes_no(answer: str) -> bool | None:
+        token = (answer or "").strip().upper().split()
+        head = token[0] if token else ""
+        if head in {"YES", "SI", "SÌ"}:
+            return True
+        if head in {"NO"}:
+            return False
+
+        upper = (answer or "").upper()
+        if "YES" in upper:
+            return True
+        if " NO" in f" {upper}":
+            return False
+        return None
+
+    def _combine_axis_votes(
+        self,
+        item: dict,
+        support_vote: bool | None,
+        against_vote: bool | None,
+        source_label: str,
+        raw_support: str,
+        raw_against: str,
+    ) -> StanceResult:
+        """
+        Map dual binary votes into a neutral, symmetric 3-way stance.
+
+        Mapping:
+        - YES/NO  -> SUPPORT
+        - NO/YES  -> AGAINST
+        - NO/NO   -> NEUTRAL
+        - YES/YES -> NEUTRAL (conflict)
+        - any None -> NEUTRAL (unparseable)
+        """
+        if support_vote is None or against_vote is None:
+            return StanceResult(
+                item=item,
+                stance=Stance.NEUTRAL,
+                confidence="low",
+                reasoning=(
+                    f"Unparseable binary stance output for {source_label}: "
+                    f"SUPPORT='{raw_support}' | AGAINST='{raw_against}'"
+                ),
+            )
+
+        if support_vote and not against_vote:
             return StanceResult(item=item, stance=Stance.SUPPORT, confidence="high")
-        elif "AGAINST" in token or "CONTRO" in token:
+        if against_vote and not support_vote:
             return StanceResult(item=item, stance=Stance.AGAINST, confidence="high")
-        elif "NEUTRAL" in token or "NEUTRALE" in token:
-            return StanceResult(item=item, stance=Stance.NEUTRAL, confidence="medium")
-        else:
-            # Fallback: check for keywords in full response
-            if "SUPPORT" in answer or "SUPPORTO" in answer:
-                return StanceResult(
-                    item=item, stance=Stance.SUPPORT, confidence="medium"
-                )
-            elif "AGAINST" in answer or "CONTRO" in answer:
-                return StanceResult(
-                    item=item, stance=Stance.AGAINST, confidence="medium"
-                )
-            else:
-                return StanceResult(
-                    item=item,
-                    stance=Stance.NEUTRAL,
-                    confidence="low",
-                    reasoning=f"Unparseable response: {answer}",
-                )
+        if support_vote and against_vote:
+            return StanceResult(
+                item=item,
+                stance=Stance.NEUTRAL,
+                confidence="low",
+                reasoning=(
+                    f"Conflicting binary stance for {source_label}: both SUPPORT and AGAINST are YES"
+                ),
+            )
+        return StanceResult(item=item, stance=Stance.NEUTRAL, confidence="medium")

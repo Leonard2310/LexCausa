@@ -20,7 +20,12 @@ from langgraph.prebuilt import create_react_agent
 
 from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
-from .citation_utils import extract_article_mentions, format_article_citation
+from .citation_utils import (
+    extract_article_mentions,
+    format_article_citation,
+    infer_source_hint,
+    normalize_article_id,
+)
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
@@ -129,7 +134,7 @@ class CounterReasoner(BaseAgent):
         )
         self._max_stance_rewrites = 2
         self._max_plan_retries = 3
-        self._max_step_rewrites = 2
+        self._max_step_rewrites = 3
 
     def _known_attack_ids(self) -> List[str]:
         """Return all known attack IDs from taxonomy metadata."""
@@ -524,10 +529,21 @@ class CounterReasoner(BaseAgent):
                     f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
                     "info",
                 )
+            hard_against_count = sum(
+                1
+                for s in pre_retrieved_statutes
+                if str(s.get("_stance_label", "")).lower() == "against"
+            )
+            self._log(
+                "📊 Counter input stance mix: "
+                f"hard_against={hard_against_count}, total_received={len(pre_retrieved_statutes)}",
+                "info",
+            )
             boosted_counter_statutes = self._retrieve_targeted_counter_boost(
                 claim=claim,
                 attack_ids=attack_selection.attack_ids,
                 existing_statutes=pre_retrieved_statutes,
+                hard_against_count=hard_against_count,
             )
         else:
             self._log(
@@ -589,6 +605,7 @@ class CounterReasoner(BaseAgent):
                         attack_selection=attack_selection,
                         knowledge_base=knowledge_base,
                         allowed_statutes=allowed_statutes,
+                        available_statutes=deduped_statutes,
                         allowed_precedents=allowed_precedents,
                         reasoner_conclusion=reasoner_conclusion,
                         stream_callback=stream_callback,
@@ -743,11 +760,17 @@ class CounterReasoner(BaseAgent):
         claim: str,
         attack_ids: List[str],
         existing_statutes: List[dict],
+        hard_against_count: Optional[int] = None,
     ) -> List[dict]:
         """Run a second-pass retrieval guided by selected counter attacks."""
         if not settings.counter_second_pass_enabled:
             return []
-        if len(existing_statutes) >= settings.counter_second_pass_min_against_statutes:
+        effective_against = (
+            hard_against_count
+            if hard_against_count is not None
+            else len(existing_statutes)
+        )
+        if effective_against >= settings.counter_second_pass_min_against_statutes:
             return []
 
         hints: List[str] = []
@@ -833,6 +856,7 @@ class CounterReasoner(BaseAgent):
             legal_context = self._extract_legal_context(claim)
             boosted = self.filter_irrelevant_statutes(claim, boosted)
             boosted = self.filter_applicable_statutes(claim, boosted, legal_context)
+            boosted = self._filter_boosted_statutes_for_counter_stance(claim, boosted)
 
             self._log(
                 f"✅ Counter second-pass: {len(boosted)} articoli aggiuntivi kept",
@@ -844,6 +868,62 @@ class CounterReasoner(BaseAgent):
             self._log(f"⚠️ Counter second-pass retrieval failed: {exc}", "warning")
             return []
 
+    def _filter_boosted_statutes_for_counter_stance(
+        self,
+        claim: str,
+        statutes: List[dict],
+    ) -> List[dict]:
+        """
+        Re-classify second-pass statutes by stance and keep counter-useful ones.
+
+        Preference order:
+        1) AGAINST statutes
+        2) If none found, a small NEUTRAL fallback to avoid starvation.
+        """
+        if not statutes:
+            return statutes
+        try:
+            from services.stance_classifier import StanceClassifier
+        except Exception as exc:
+            self._log(
+                f"⚠️ Counter second-pass stance filter unavailable: {exc}",
+                "warning",
+            )
+            return statutes
+
+        try:
+            classifier = StanceClassifier()
+            _, opposing, neutral = classifier.classify_statutes_batch(claim, statutes)
+        except Exception as exc:
+            self._log(
+                f"⚠️ Counter second-pass stance filtering failed: {exc}",
+                "warning",
+            )
+            return statutes
+
+        if opposing:
+            self._log(
+                "🎯 Counter second-pass stance filter: "
+                f"{len(opposing)} AGAINST kept, {len(statutes) - len(opposing)} discarded",
+                "info",
+            )
+            return opposing
+
+        neutral_fallback = neutral[: min(3, len(neutral))]
+        if neutral_fallback:
+            self._log(
+                "⚠️ Counter second-pass stance filter: no AGAINST found, "
+                f"keeping {len(neutral_fallback)} NEUTRAL fallback statutes",
+                "warning",
+            )
+            return neutral_fallback
+
+        self._log(
+            "⚠️ Counter second-pass stance filter: no usable statutes after reclassification",
+            "warning",
+        )
+        return []
+
     def _generate_counter_chain_iteratively(
         self,
         claim: str,
@@ -851,6 +931,7 @@ class CounterReasoner(BaseAgent):
         attack_selection: AttackSelection,
         knowledge_base: str,
         allowed_statutes: List[str],
+        available_statutes: List[dict],
         allowed_precedents: List[str],
         reasoner_conclusion: str = "",
         stream_callback: Optional[Callable[[dict], None]] = None,
@@ -894,6 +975,7 @@ class CounterReasoner(BaseAgent):
         step_summaries: List[str] = []
         used_norms: List[str] = []
         step_attacks: List[str] = []
+        allowed_statute_index = self._build_allowed_statute_index(available_statutes)
 
         for idx, plan_step in enumerate(plan, start=1):
             step_attack_id = plan_step.get("attack_id", selected_attack_ids[0])
@@ -924,6 +1006,7 @@ class CounterReasoner(BaseAgent):
                 previous_steps=steps,
                 previous_summaries=step_summaries,
                 used_norms=used_norms,
+                allowed_statute_index=allowed_statute_index,
                 stream_callback=stream_callback,
             )
             if not step_text:
@@ -1110,6 +1193,7 @@ class CounterReasoner(BaseAgent):
         previous_steps: List[str],
         previous_summaries: List[str],
         used_norms: List[str],
+        allowed_statute_index: Dict[str, set[str]],
         stream_callback: Optional[Callable[[dict], None]],
     ) -> str:
         """Execute one planned counter step with validation + retries."""
@@ -1170,24 +1254,13 @@ class CounterReasoner(BaseAgent):
                 candidate_step=candidate,
                 previous_steps=previous_steps,
                 claim=claim,
+                expected_norm=plan_step.get("expected_norm", "N/A"),
+                allowed_statute_index=allowed_statute_index,
+                attack_id=plan_step.get("attack_id", attack_id),
+                attack_desc=attack_desc,
+                plan_focus=plan_step.get("focus", ""),
             )
             if ok:
-                return candidate
-            if (
-                reason == "semantic repetition"
-                and attempt == self._max_step_rewrites + 1
-                and candidate
-                and self._is_counter_step_consistent(candidate)
-                and not self._is_garbage_text(candidate)
-                and (
-                    not previous_steps
-                    or not self._is_repetitive_step(candidate, previous_steps)
-                )
-            ):
-                self._log(
-                    f"⚠️ Counter-step {plan_index}: accepting semantically-close step after retries",
-                    "warning",
-                )
                 return candidate
             last_reason = reason
             self._log(
@@ -1259,6 +1332,11 @@ class CounterReasoner(BaseAgent):
         candidate_step: str,
         previous_steps: List[str],
         claim: str,
+        expected_norm: str,
+        allowed_statute_index: Dict[str, set[str]],
+        attack_id: str,
+        attack_desc: str,
+        plan_focus: str,
     ) -> tuple[bool, str]:
         """Validation checks for one counter step candidate."""
         text = (candidate_step or "").strip()
@@ -1268,8 +1346,21 @@ class CounterReasoner(BaseAgent):
             return False, "garbage output"
         if not self._is_counter_step_consistent(text):
             return False, "stance drift (not strictly anti-claim)"
-        if not self._extract_cited_articles(text):
+        mention_matches = extract_article_mentions(text, require_code=False)
+        if not mention_matches:
             return False, "missing statutory citation"
+        grounded, grounded_reason = self._has_grounded_citation(
+            mentions=mention_matches,
+            allowed_statute_index=allowed_statute_index,
+        )
+        if not grounded:
+            return False, grounded_reason
+        expected_ok, expected_reason = self._matches_expected_norm(
+            mentions=mention_matches,
+            expected_norm=expected_norm,
+        )
+        if not expected_ok:
+            return False, expected_reason
         compatible, reason = self._is_counter_step_compatible_with_history(
             candidate_step=text,
             previous_steps=previous_steps,
@@ -1286,7 +1377,193 @@ class CounterReasoner(BaseAgent):
             role="counter",
         ):
             return False, "semantic repetition"
+        aligned, alignment_reason = self._is_step_aligned_with_attack(
+            claim=claim,
+            candidate_step=text,
+            attack_id=attack_id,
+            attack_desc=attack_desc,
+            plan_focus=plan_focus,
+        )
+        if not aligned:
+            return False, alignment_reason
         return True, ""
+
+    @staticmethod
+    def _normalize_source_for_match(source_raw: str) -> str:
+        """Normalize source labels to internal statute-source keys."""
+        source = (source_raw or "").strip().lower()
+        if not source:
+            return ""
+        if source in {"codice_amministrativo", "amministrativo"}:
+            return "codice_amministrativo"
+        if source in {"codice_civile", "civile"}:
+            return "codice_civile"
+        if source in {"codice_penale", "penale"}:
+            return "codice_penale"
+        if "241" in source or "l. 241/1990" in source or "amm" in source:
+            return "codice_amministrativo"
+        if "c.c" in source or ("cod" in source and "civ" in source):
+            return "codice_civile"
+        if "c.p" in source or ("cod" in source and "pen" in source):
+            return "codice_penale"
+        return source
+
+    def _build_allowed_statute_index(
+        self, statutes: List[dict]
+    ) -> Dict[str, set[str]]:
+        """
+        Build article->source index for grounding checks.
+
+        Example:
+            {"21-octies": {"codice_amministrativo"}}
+        """
+        index: Dict[str, set[str]] = {}
+        for statute in statutes:
+            article = normalize_article_id(str(statute.get("articolo", "")))
+            if not article:
+                continue
+            source = self._normalize_source_for_match(str(statute.get("source", "")))
+            if article not in index:
+                index[article] = set()
+            if source:
+                index[article].add(source)
+        return index
+
+    def _has_grounded_citation(
+        self,
+        mentions: List,
+        allowed_statute_index: Dict[str, set[str]],
+    ) -> tuple[bool, str]:
+        """
+        Ensure cited articles are grounded in the allowed counter statute set.
+        """
+        if not mentions:
+            return False, "missing statutory citation"
+        if not allowed_statute_index:
+            return True, ""
+
+        grounded = 0
+        ungrounded_details: List[str] = []
+        seen_keys = set()
+
+        for mention in mentions:
+            article_id = normalize_article_id(getattr(mention, "article_id", ""))
+            if not article_id:
+                continue
+            mention_source = self._normalize_source_for_match(
+                getattr(mention, "source_hint", "")
+                or infer_source_hint(getattr(mention, "raw_code", ""))
+            )
+            key = (article_id, mention_source)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            allowed_sources = allowed_statute_index.get(article_id)
+            if not allowed_sources:
+                ungrounded_details.append(f"Art. {article_id} not in allowed set")
+                continue
+            if mention_source:
+                if mention_source in allowed_sources:
+                    grounded += 1
+                else:
+                    ungrounded_details.append(
+                        f"Art. {article_id} source mismatch ({mention_source})"
+                    )
+                continue
+
+            # No source provided in text: allow only if article is unambiguous.
+            if len(allowed_sources) == 1:
+                grounded += 1
+            else:
+                ungrounded_details.append(
+                    f"Art. {article_id} ambiguous source (missing code)"
+                )
+
+        if grounded == 0:
+            return False, "citation not grounded in allowed statutes"
+        if ungrounded_details:
+            return (
+                False,
+                "contains ungrounded citation(s): " + "; ".join(ungrounded_details[:2]),
+            )
+        return True, ""
+
+    def _matches_expected_norm(
+        self,
+        mentions: List,
+        expected_norm: str,
+    ) -> tuple[bool, str]:
+        """Check whether candidate cites the expected norm planned for this step."""
+        expected = (expected_norm or "").strip()
+        if not expected or expected.upper() in {"N/A", "NA", "NONE", "-"}:
+            return True, ""
+
+        expected_mentions = extract_article_mentions(expected, require_code=False)
+        expected_ids = {
+            normalize_article_id(m.article_id) for m in expected_mentions if m.article_id
+        }
+        if not expected_ids:
+            # Planner can emit non-parseable labels; don't hard-fail in that case.
+            return True, ""
+
+        cited_ids = {
+            normalize_article_id(getattr(m, "article_id", ""))
+            for m in mentions
+            if getattr(m, "article_id", "")
+        }
+        if expected_ids & cited_ids:
+            return True, ""
+        return (
+            False,
+            "step does not cite expected norm "
+            f"({expected_norm}); cited={', '.join(sorted(cited_ids)) or 'none'}",
+        )
+
+    def _is_step_aligned_with_attack(
+        self,
+        claim: str,
+        candidate_step: str,
+        attack_id: str,
+        attack_desc: str,
+        plan_focus: str,
+    ) -> tuple[bool, str]:
+        """
+        Verify that the generated step actually executes the assigned attack.
+        """
+        prompt = render_prompt(
+            "counter_reasoner.attack_alignment",
+            claim=claim,
+            attack_id=attack_id,
+            attack_desc=attack_desc,
+            plan_focus=plan_focus,
+            candidate_step=candidate_step,
+        )
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+            if "MISALIGNED" in answer:
+                return False, "attack-plan misalignment"
+            if "ALIGNED" in answer:
+                return True, ""
+        except Exception as exc:
+            self._log(
+                f"⚠️ Attack alignment check failed, fallback heuristic in use: {exc}",
+                "warning",
+            )
+
+        # Conservative lexical fallback when LLM output is unavailable/ambiguous.
+        focus_terms = {
+            t
+            for t in re.findall(r"[a-zàèéìòù]{5,}", f"{attack_desc} {plan_focus}".lower())
+            if t not in {"normativa", "giuridica", "procedimento", "provvedimento"}
+        }
+        if not focus_terms:
+            return True, ""
+        step_text = (candidate_step or "").lower()
+        if any(term in step_text for term in focus_terms):
+            return True, ""
+        return False, "attack-plan misalignment (focus not reflected in step)"
 
     def _is_semantically_redundant_step(
         self,
@@ -1671,11 +1948,23 @@ class CounterReasoner(BaseAgent):
             for key, value in sig.items():
                 history_sum[key] += value
 
-        for key in history_sum:
+        # Hard-consistency on factual premises only.
+        for key in ("complexity", "contestation"):
             h_sig = history_sum.get(key, 0)
             s_sig = candidate.get(key, 0)
             if h_sig and s_sig and (h_sig * s_sig < 0):
                 return False, f"candidate contradicts chain on '{key}'"
+
+        # Soft dimensions can legitimately vary across different counter-angles.
+        for key in ("communication_need", "legitimacy_effect"):
+            h_sig = history_sum.get(key, 0)
+            s_sig = candidate.get(key, 0)
+            if h_sig and s_sig and (h_sig * s_sig < 0):
+                self._log(
+                    f"ℹ️ Counter-step soft divergence on '{key}' accepted "
+                    "(different attack angle).",
+                    "info",
+                )
 
         return True, ""
 

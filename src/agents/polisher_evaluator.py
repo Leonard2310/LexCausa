@@ -584,7 +584,13 @@ class PolisherEvaluator(
             )
             return gate
 
-        if re.search(r"\bOPPOSING\b", verdict):
+        # Accept both full opposition and materially limitative opposition.
+        if re.search(r"\bOPPOSING_LIMITATIVE\b", verdict):
+            gate["label"] = "OPPOSING_LIMITATIVE"
+            self._log("✅ Counter gate: opposizione limitativa confermata")
+            return gate
+        if re.search(r"\bOPPOSING(?:_STRONG)?\b", verdict):
+            gate["label"] = "OPPOSING_STRONG"
             self._log("✅ Counter gate: opposizione confermata")
             return gate
 

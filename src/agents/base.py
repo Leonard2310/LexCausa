@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 from .tools.prompt_registry import render_prompt
@@ -93,6 +93,7 @@ class BaseAgent(ABC):
         self.config = config or AgentConfig()
         self._llm: Optional[ChatGroq] = None
         self._fact_lock_check_cache: dict[tuple[str, str], tuple[bool, str]] = {}
+        self._nli_relation_cache: dict[tuple[str, str], str] = {}
 
     @property
     def llm(self) -> ChatGroq:
@@ -265,26 +266,57 @@ class BaseAgent(ABC):
         return False
 
     @staticmethod
-    def _is_step_self_consistent(step_text: str) -> bool:
-        """Reject obvious internal contradictions inside a single reasoning step.
+    def _split_reasoning_clauses(step_text: str) -> list[str]:
+        """Split a step into comparable clauses for semantic self-consistency checks."""
+        text = re.sub(r"\s+", " ", (step_text or "").strip())
+        if not text:
+            return []
+        sentences = re.split(r"(?<=[.!?;])\s+", text)
+        clauses: list[str] = []
+        for sentence in sentences:
+            sentence = sentence.strip(" -")
+            if not sentence:
+                continue
+            parts = re.split(
+                r"\b(?:ma|tuttavia|per[oò]|invece|al contrario|nondimeno)\b",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+            for part in parts:
+                chunk = part.strip(" ,.-")
+                if len(chunk) >= 20:
+                    clauses.append(chunk)
+        return clauses
 
-        This check is intentionally claim-orientation-agnostic (no pro/anti polarity).
-        """
-        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
+    def _is_step_self_consistent(self, step_text: str) -> bool:
+        """Reject internal contradictions using semantic (NLI) checks across clauses."""
+        text = re.sub(r"\s+", " ", (step_text or "").strip())
         if not text:
             return False
-        contradictory_pairs = [
-            (r"\bsussiste\b", r"\bnon\s+sussiste\b"),
-            (r"\bsi\s+applica\b", r"\bnon\s+si\s+applica\b"),
-            (r"\bapplicabil", r"\bnon\s+applicabil"),
-            (r"\bresponsabil(?:e|ità)\b", r"\bnon\s+responsabil(?:e|ità)\b"),
-            (r"\blegittim(?:o|a|ità)\b", r"\billegittim(?:o|a|ità)\b"),
-            (r"\bcolpos[oa]\b", r"\bnon\s+colpos[oa]\b"),
-            (r"\bcausa\b", r"\bnon\s+(?:è\s+)?causa\b"),
-        ]
-        for positive, negative in contradictory_pairs:
-            if re.search(positive, text) and re.search(negative, text):
-                return False
+
+        clauses = self._split_reasoning_clauses(text)
+        if len(clauses) < 2:
+            return True
+
+        clauses = clauses[:5]  # keep latency bounded
+        for i in range(len(clauses)):
+            for j in range(i + 1, len(clauses)):
+                a = clauses[i]
+                b = clauses[j]
+                rel_ab = self._nli_relation(
+                    target_text=a,
+                    attacker_text=b,
+                    actor_label="BaseAgent",
+                )
+                if rel_ab != "contradiction":
+                    continue
+                rel_ba = self._nli_relation(
+                    target_text=b,
+                    attacker_text=a,
+                    actor_label="BaseAgent",
+                )
+                if rel_ba == "contradiction":
+                    return False
         return True
 
     def _is_step_fact_consistent_with_claim(
@@ -330,6 +362,63 @@ class BaseAgent(ABC):
 
         self._fact_lock_check_cache[cache_key] = result
         return result
+
+    def _nli_relation(
+        self,
+        *,
+        target_text: str,
+        attacker_text: str,
+        actor_label: str = "Agent",
+    ) -> str:
+        """
+        Classify semantic relation between two passages using the shared legal NLI prompt.
+
+        Returns one of: ``contradiction``, ``entailment``, ``neutral``.
+        """
+        target = re.sub(r"\s+", " ", (target_text or "").strip())[
+            : settings.truncation_nli_text
+        ]
+        attacker = re.sub(r"\s+", " ", (attacker_text or "").strip())[
+            : settings.truncation_nli_text
+        ]
+        if not target or not attacker:
+            return "neutral"
+
+        cache_key = (target, attacker)
+        cached = self._nli_relation_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        system_prompt = render_prompt("nlp_utils.nli_system")
+        user_prompt = render_prompt(
+            "nlp_utils.nli_user",
+            target_text=target,
+            attacker_text=attacker,
+        )
+
+        try:
+            resp = self._resilient_llm_invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ]
+            )
+            answer = (resp.content or "").strip().upper()
+            if "CONTRADICTION" in answer:
+                label = "contradiction"
+            elif "ENTAILMENT" in answer:
+                label = "entailment"
+            else:
+                label = "neutral"
+        except Exception as exc:
+            self._log(
+                f"⚠️ {actor_label} NLI relation check failed (fallback neutral): {exc}",
+                "warning",
+            )
+            label = "neutral"
+
+        self._nli_relation_cache[cache_key] = label
+        return label
 
     def _extract_reasoning_chain(self, response: str) -> list[str]:
         """Extract reasoning chain from response with improved pattern matching."""

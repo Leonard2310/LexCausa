@@ -57,8 +57,8 @@ export default function AttackTextDetails({ aqaReport }) {
   const roleLabel = (role) => {
     if (!role) return '?';
     const r = role.toLowerCase();
-    if (r === 'support' || r === 'pro') return 'PRO';
-    if (r === 'counter' || r === 'contra') return 'CONTRO';
+    if (r === 'support' || r === 'pro') return 'TESI';
+    if (r === 'counter' || r === 'contra') return 'CONTROTESI';
     return role.toUpperCase();
   };
 

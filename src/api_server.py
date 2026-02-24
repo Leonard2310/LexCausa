@@ -564,8 +564,15 @@ def resolve_routing_decision(
 
     if ct:
         ct_valid, th_valid = config_loader.validate_ids(ct, th)
+        domain = str(routing_hint.get("domain", "")).strip().upper()
+        if domain not in ("CIVILE", "PENALE", "AMMINISTRATIVO", "ENTRAMBI"):
+            try:
+                domain = router.route(claim).domain
+            except Exception:
+                domain = "ENTRAMBI"
         return RoutingDecision(
             claim=claim,
+            domain=domain,
             causal_type_id=ct_valid,
             theory_id=th_valid or "",
             anchor_norms=config_loader.anchor_norms_for(ct_valid),
@@ -1148,18 +1155,29 @@ def _run_full_pipeline(
         # Re-emit after evaluator in case the counter gate updated abstention fields.
         _emit_progress("counter_result", counter_result.to_dict())
 
-        # Derive winning_side and confidence from AQA verdict
+        # Derive winning_side and confidence from AQA verdict.
+        # Keep backward-compatible labels in `winning_side` while also exposing
+        # canonical thesis labels for new consumers.
         aqa = evaluation_result.aqa_report or {}
         aqa_verdict = aqa.get("verdict", "uncertain")
         aqa_net = aqa.get("net_plausibility", {})
-        verdict_map = {
+        legacy_verdict_map = {
             "plausible": "support",
             "implausible": "counter",
             "uncertain": "undecided",
         }
-        evaluation_result.winning_side = verdict_map.get(aqa_verdict, "undecided")
+        canonical_verdict_map = {
+            "plausible": "primary_thesis",
+            "implausible": "counter_thesis",
+            "uncertain": "undecided",
+        }
+        winning_side_legacy = legacy_verdict_map.get(aqa_verdict, "undecided")
+        winning_side_canonical = canonical_verdict_map.get(aqa_verdict, "undecided")
+
+        evaluation_result.winning_side = winning_side_legacy
         evaluation_result.confidence = abs(aqa_net.get("final", 0.0))
         evaluation_payload = evaluation_result.to_dict()
+        evaluation_payload["winning_side_canonical"] = winning_side_canonical
         repaired_aspic_files = _persist_repaired_aspic_files(claim, evaluation_payload)
         if repaired_aspic_files:
             evaluation_payload["repaired_aspic_files"] = repaired_aspic_files
@@ -1174,7 +1192,10 @@ def _run_full_pipeline(
         _emit_progress("evaluation_result", evaluation_payload)
 
         print("✅ Polisher-Evaluator completed")
-        print(f"   - Winning side: {evaluation_result.winning_side}")
+        print(
+            f"   - Winning side: {evaluation_result.winning_side} "
+            f"(canonical: {winning_side_canonical})"
+        )
         print(f"   - Confidence: {evaluation_result.confidence:.2f}")
         print(
             f"   - AQA verdict: {aqa_verdict} "

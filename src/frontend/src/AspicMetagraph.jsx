@@ -209,7 +209,7 @@ function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight, isCapped }) 
 function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
   const title = prec.title || prec.precedent_id || 'Precedente';
   const shortTitle = title.length > 28 ? title.slice(0, 25) + '…' : title;
-  const stanceLabel = prec._stance === 1 ? '✅ support' : prec._stance === -1 ? '❌ against' : '⚖️ neutral';
+  const stanceLabel = prec._stance === 1 ? '✅ favorevole' : prec._stance === -1 ? '❌ contrario' : '⚖️ neutro';
   const titleClipId = `prec-title-clip-${String(prec.precedent_id || title)
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 24)}-${Math.round(x)}-${Math.round(y)}`;
@@ -779,28 +779,28 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
             className="metagraph-legend-swatch"
             style={{ background: COLORS.proBg, border: `2px solid ${COLORS.proBorder}` }}
           />
-          PRO (Reasoner)
+          Tesi primaria (Reasoner)
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.contraBg, border: `2px solid ${COLORS.contraBorder}` }}
           />
-          CONTRA (Counter)
+          Controtesi (Counter)
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.attackProStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
           />
-          Attacco PRO
+          Attacco Tesi primaria
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.attackContraStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
           />
-          Attacco CONTRA
+          Attacco Controtesi
         </span>
         <span className="metagraph-legend-item">
           <span
@@ -912,7 +912,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
               fontSize="14"
               fill={COLORS.proText}
             >
-              PRO (Reasoner) — net {f2(proNet)}
+              Tesi primaria (Reasoner) — net {f2(proNet)}
             </text>
             <text
               x={nodeX(1) + NODE_W / 2}
@@ -922,7 +922,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
               fontSize="14"
               fill={COLORS.contraText}
             >
-              CONTRA (Counter) — net {f2(contraNet)}
+              Controtesi (Counter) — net {f2(contraNet)}
             </text>
 
             {/* PRO chain arrows */}

@@ -41,12 +41,15 @@ class PromptKey(StrEnum):
     REASONER_REASONING_WITH_CONTEXT = "reasoner.reasoning_with_context"
     COUNTER_REASONER_SYSTEM = "counter_reasoner.system"
     COUNTER_REASONER_PICK_ATTACKS = "counter_reasoner.pick_attacks"
+    COUNTER_REASONER_OPEN_ATTACKS = "counter_reasoner.open_attacks"
     COUNTER_REASONER_GENERATE_PLAN = "counter_reasoner.generate_plan"
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
     COUNTER_REASONER_SEMANTIC_REDUNDANCY = "counter_reasoner.semantic_redundancy"
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
+    COUNTER_REASONER_ATTACK_FEASIBILITY = "counter_reasoner.attack_feasibility"
     COUNTER_REASONER_STEP_OPPOSITION_CHECK = "counter_reasoner.step_opposition_check"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
+    COUNTER_REASONER_NO_NEW_FACTS = "counter_reasoner.no_new_facts"
     AQA_ENGINE_ATTACK_TYPE_SYSTEM = "aqa_engine.attack_type_system"
     AQA_ENGINE_ATTACK_TYPE_USER = "aqa_engine.attack_type_user"
     NLP_UTILS_NLI_SYSTEM = "nlp_utils.nli_system"
@@ -318,9 +321,18 @@ Allowed causal_type_id values (domain=[[domain]]):
 [[type_descriptions]]
 
 Classification criteria (based on cited articles):
-- If articles are from codice civile (c.c.) like Art. 2043, 2056, 1223, 1226, 1227 → civil causality types
-- If articles are from codice penale (c.p.) like Art. 40, 41 → criminal causality types
-- If articles are from L. 241/1990 / procedimento amministrativo (e.g. Art. 1, 2, 3, 10-bis, 21-octies) → administrative causality/procedural types
+- If articles include Art. 646/640/624/624-bis/625 c.p. -> PEN_PROPERTY_QUALIFICATION
+- If articles include Art. 595/51/610/392/393 c.p. -> PEN_RIGHTS_BALANCING
+- If articles include Art. 42/43/61/62-bis/113/133 c.p. -> PEN_COLPA_GRADATION
+- If articles include Art. 40/41 c.p. (without stronger signature above) -> PEN_FACTUAL or PEN_INTERVENING
+- If articles include Art. 1490-1495 c.c. -> CIV_SALE_DEFECTS
+- If articles include Art. 1218/1453/1455/1457/1460/1385/1382/1384 c.c. -> CIV_CONTRACT_REMEDIES
+- If articles include Art. 2051/2052/1117/1123/1126 c.c. -> CIV_CUSTODY_DAMAGE
+- If articles include Art. 1223/1225/1226/1227/2056 c.c. (without stronger signature above) -> CIV_REMOTENESS
+- If articles include Art. 21-novies/21-quinquies L. 241/1990 -> AMM_AUTOTUTELA_BALANCE
+- If articles include Art. 2-bis L. 241/1990 -> AMM_DELAY_REMEDIES
+- If articles are from L. 241/1990 (without stronger signature above) -> AMM_PROCEDURAL_LEGITIMACY
+- If both c.p. and c.c. signatures are strong in the same chain -> MIXED_PEN_CIV_CONCURRENCE
 - Consider the combination of articles to determine the most specific causal type
 
 If uncertain, choose the closest from the allowed list.
@@ -347,7 +359,9 @@ Return ONLY valid JSON (no markdown, no prose) with this schema:
       "goal": "specific legal objective for this step",
       "focus": "single legal/factual focus",
       "expected_norm": "article expected to be cited or 'N/A'",
-      "citation_requirement": "required | optional | none"
+      "citation_requirement": "required | optional | none",
+      "step_type": "FACTS | QUALIFICATION | CAUSAL_LINK | ELEMENTS | BALANCING | CONSEQUENCE | SYNTHESIS | OTHER",
+      "novelty_key": "short unique key for this step objective (snake_case)"
     }
   ]
 }
@@ -371,6 +385,11 @@ ALLOWED PRECEDENTS:
 KNOWLEDGE BASE:
 [[knowledge_base]]
 
+PLANNER MODE: [[planner_mode]]
+RESUME FROM LOGICAL STEP: [[resume_from_step]]
+ALREADY ACCEPTED STEPS (do not duplicate):
+[[existing_steps]]
+
 RULES:
 - Number of steps must be between [[min_steps]] and [[max_steps]].
 - Each step must address a DIFFERENT objective (no overlap/rephrasing).
@@ -383,6 +402,9 @@ RULES:
   * "optional" for inferential bridge or factual-application steps
   * "none" only for pure synthesis/transition steps
 - If "expected_norm" is not "N/A", "citation_requirement" should normally be "required".
+- "step_type" must be coherent with the objective and should not repeat unless strictly necessary.
+- "novelty_key" must be unique across steps and must summarize what is NEW in that step.
+- If ALREADY ACCEPTED STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
 """,
     PromptKey.REASONER_SUPPORT_STEP: """You are an expert Italian jurist.
@@ -413,6 +435,8 @@ CURRENT STEP TO EXECUTE: [[plan_index]]
 - Focus: [[plan_focus]]
 - Expected norm: [[plan_expected_norm]]
 - Citation requirement: [[plan_citation_requirement]]
+- Step type: [[plan_step_type]]
+- Novelty key: [[plan_novelty_key]]
 
 ALREADY GENERATED STEP SUMMARIES:
 [[summary_lines]]
@@ -423,6 +447,7 @@ HARD RULES:
 - Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
 - It must advance the plan and add NEW information, not paraphrase prior steps.
 - It must materially advance the legal analysis of the claim.
+- It must realize the declared novelty key by adding a distinct legal point.
 - Use only facts explicitly in claim.
 - Do not infer unprovided facts (no assumptions, no hypothetical completions of the factual scenario).
 - If citation requirement is "required", cite at least one statute.
@@ -617,6 +642,32 @@ Rules:
 
 [[options_text]]
 """,
+    PromptKey.COUNTER_REASONER_OPEN_ATTACKS: """You are a legal counter-argument strategist.
+
+Generate a compact set of NON-TAXONOMIC counter-attacks that can challenge the Reasoner conclusion
+using ONLY the facts explicitly present in the claim.
+
+CLAIM:
+"[[claim]]"
+
+REASONER CONCLUSION TO OPPOSE:
+"[[reasoner_conclusion]]"
+
+Rules:
+- Propose between [[min_attacks]] and [[max_attacks]] attacks.
+- Do NOT invent new facts and do NOT contradict explicit claim facts.
+- Attacks must be materially distinct (no paraphrase duplicates).
+- Favor legally meaningful lines (evidence weight, legal qualification boundaries, subjective element, balancing/aggravanti-attenuanti, burden/sufficiency of proof).
+- Keep each description short (max 22 words).
+
+Return ONLY JSON in this exact format:
+{
+  "attacks": [
+    {"id": "open_attack_1", "description": "short description"},
+    {"id": "open_attack_2", "description": "short description"}
+  ]
+}
+""",
     PromptKey.COUNTER_REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian counter-argumentation.
 
 Create a step-by-step plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
@@ -629,7 +680,9 @@ Return ONLY valid JSON (no markdown, no prose) with this schema:
       "focus": "single weak point for this step",
       "expected_norm": "article expected to be cited or 'N/A'",
       "citation_requirement": "required | optional | none",
-      "attack_id": "one of the selected attack ids"
+      "attack_id": "one of the selected attack ids",
+      "step_type": "TARGET_FACTS | TARGET_CAUSAL_LINK | TARGET_LEGAL_QUALIFICATION | TARGET_ELEMENT | TARGET_BALANCING | TARGET_OUTCOME | OTHER",
+      "novelty_key": "short unique key for this counter objective (snake_case)"
     }
   ]
 }
@@ -653,11 +706,18 @@ ALLOWED PRECEDENTS:
 KNOWLEDGE BASE:
 [[knowledge_base]]
 
+PLANNER MODE: [[planner_mode]]
+RESUME FROM LOGICAL STEP: [[resume_from_step]]
+ALREADY ACCEPTED COUNTER STEPS (do not duplicate):
+[[existing_steps]]
+
 RULES:
 - Number of steps must be between [[min_steps]] and [[max_steps]].
 - Each step must be materially different (no overlap/rephrasing).
 - Steps must function as counter-argument steps (they must weaken the primary thesis / Reasoner conclusion).
 - Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
+- Never introduce hypothetical external events not in claim (e.g., mechanical failure, weather conditions, third-party interventions) as if they were case facts.
+- For causal-alternative attacks, contest certainty/weight/completeness of the existing evidence or legal imputability; do NOT fabricate alternative factual scenarios.
 - Each step must include one attack_id from the selected attack ids.
 - Distribute selected attacks across the plan whenever possible.
 - Set "citation_requirement" using the same policy:
@@ -665,6 +725,9 @@ RULES:
   * "optional" for inferential bridge or factual elaboration steps
   * "none" only for pure synthesis/transition steps
 - If "expected_norm" is not "N/A", "citation_requirement" should normally be "required".
+- "step_type" must be coherent with the target being attacked and should not repeat unless strictly necessary.
+- "novelty_key" must be unique across steps and must summarize what is NEW in the counter-attack.
+- If ALREADY ACCEPTED COUNTER STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
 """,
     PromptKey.COUNTER_REASONER_STEP_PROMPT: """You are an expert Italian jurist.
@@ -695,6 +758,8 @@ CURRENT STEP TO EXECUTE: [[plan_index]]
 - Expected norm: [[plan_expected_norm]]
 - Citation requirement: [[plan_citation_requirement]]
 - Attack id for this step: [[plan_attack_id]]
+- Step type: [[plan_step_type]]
+- Novelty key: [[plan_novelty_key]]
 
 ALREADY GENERATED STEP SUMMARIES:
 [[summary_lines]]
@@ -704,9 +769,12 @@ NORMS ALREADY USED: [[used_norms_text]]
 HARD RULES:
 - Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
 - It must advance the plan and add NEW information, not paraphrase prior steps.
+- It must realize the declared novelty key by adding a distinct counter-argument point.
 - It must function as a counter-step (weakening or challenging the primary thesis / Reasoner conclusion).
 - Never invent facts outside claim.
 - Never assume or complete missing factual details beyond what is explicitly stated in the claim.
+- Never introduce hypothetical external events (e.g., mechanical failures, weather events, unknown third-party causes) unless explicitly stated in the claim.
+- If you need to counter causal certainty, argue about uncertainty or insufficiency of existing evidence/perizia, not by adding new events.
 - Treat explicit claim facts (including explicit factual findings/perizie stated in the claim) as fixed and true; do not deny or reverse them.
 - Never contradict previous accepted steps.
 - If citation requirement is "required", cite at least one statute.
@@ -760,6 +828,35 @@ Rules:
 
 Answer with EXACTLY one word: ALIGNED or MISALIGNED.
 """,
+    PromptKey.COUNTER_REASONER_ATTACK_FEASIBILITY: """You are evaluating whether a counter-attack type is feasible under strict factual grounding.
+
+CLAIM (facts are fixed):
+[[claim]]
+
+REASONER CONCLUSION TO OPPOSE:
+[[reasoner_conclusion]]
+
+ATTACK ID:
+[[attack_id]]
+
+ATTACK DESCRIPTION:
+[[attack_desc]]
+
+Constraints:
+- Counter steps may challenge legal inference, norm application, evidentiary sufficiency, or imputability.
+- Counter steps MUST NOT contradict explicit claim facts.
+- Counter steps MUST NOT add new factual allegations not present in the claim.
+
+Task:
+Classify feasibility of using this attack under the constraints above.
+
+Labels:
+- FEASIBLE: can be used without needing new facts or factual contradiction.
+- LOW_FEASIBILITY: only limited use is possible; high risk of violating constraints.
+- INFEASIBLE: would almost inevitably require new facts or contradiction of explicit claim facts.
+
+Answer with EXACTLY one word: FEASIBLE or LOW_FEASIBILITY or INFEASIBLE.
+""",
     PromptKey.COUNTER_REASONER_STEP_OPPOSITION_CHECK: """You are checking whether a counter-argument step actually opposes the primary legal thesis.
 
 CLAIM:
@@ -795,6 +892,25 @@ The rewritten step must clearly weaken or limit the opposing thesis.
 
 RESPONSE FORMAT:
 STEP: [Italian text, max 4 sentences]""",
+    PromptKey.COUNTER_REASONER_NO_NEW_FACTS: """You are a factual grounding checker for legal counter-argument steps.
+
+CLAIM (all explicit facts are fixed and exhaustive):
+\"\"\"[[claim]]\"\"\"
+
+CANDIDATE STEP:
+\"\"\"[[candidate_step]]\"\"\"
+
+Task:
+Decide whether the candidate step introduces NEW FACTUAL ALLEGATIONS that are not explicitly stated in the claim.
+
+Important:
+- Legal interpretations, normative qualifications, and evidentiary criticism are allowed.
+- It is NOT allowed to add hypothetical events/causes/conditions as case facts.
+- If a factual element is merely possible but not in the claim, this counts as ADDS_FACTS.
+- If doubtful, prefer GROUNDED unless there is a clear added factual allegation.
+
+Answer with EXACTLY one word: GROUNDED or ADDS_FACTS.
+""",
     # ---------------------------------------------------------------------
     # AQA / NLP / Polisher
     # ---------------------------------------------------------------------
@@ -839,7 +955,7 @@ PASSAGE B (attacker):
 
 Relationship?""",
     PromptKey.POLISHER_COUNTER_GATE: """You are a legal dialectical verifier.
-Compare two reasoning chains on the same claim and determine whether the COUNTER chain reaches a genuinely opposite legal outcome from the REASONER chain.
+Compare two reasoning chains on the same claim and determine whether the COUNTER chain is materially oppositional to the REASONER chain.
 
 CLAIM:
 \"\"\"[[claim]]\"\"\"
@@ -851,9 +967,10 @@ COUNTER CHAIN:
 [[counter_chain]]
 
 Respond with EXACTLY ONE label:
-- OPPOSING (the COUNTER chain reaches the opposite outcome)
-- AGREEING (the COUNTER chain supports or converges with the REASONER)
-- UNCLEAR (the COUNTER chain is not clearly opposite)
+- OPPOSING_STRONG (the COUNTER chain reaches a clearly opposite outcome)
+- OPPOSING_LIMITATIVE (the COUNTER chain does not fully negate liability but materially LIMITS the REASONER outcome, e.g. excludes aggravants, lowers blameworthiness, reduces sanction range, contests certainty threshold)
+- AGREEING (the COUNTER chain supports or converges with the REASONER outcome without material limitation)
+- UNCLEAR (the relation is not clear)
 """,
     # ---------------------------------------------------------------------
     # Consistency Checker (citation verification & repair)

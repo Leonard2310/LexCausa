@@ -239,7 +239,12 @@ Answer with EXACTLY one word: CONSISTENT or CONTRADICTS.
     # ---------------------------------------------------------------------
     # Legal Search & Neo4j keyword extraction
     # ---------------------------------------------------------------------
-    PromptKey.LEGAL_SEARCH_QUERY_TERMS_SYSTEM: """You are a legal information-retrieval assistant. Given a claim, extract ONLY legal keywords useful for search (offenses, legal institutes, qualifications, decisive factual elements). Output: only a comma-separated list, with no explanations.""",
+    PromptKey.LEGAL_SEARCH_QUERY_TERMS_SYSTEM: """You are a legal information-retrieval assistant.
+Given a claim, extract ONLY legal keywords useful for search (offenses, legal institutes, qualifications, decisive factual elements).
+Prioritize legal concepts over narrative details.
+Avoid generic words that create lexical noise (e.g., "problem", "situation", "event") unless legally meaningful.
+
+Output format: only a comma-separated list, with no explanations.""",
     PromptKey.LEGAL_SEARCH_QUERY_TERMS_USER: """Extract up to [[max_terms]] keywords.
 CLAIM:
 [[query_text]]""",

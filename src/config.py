@@ -62,10 +62,21 @@ class Settings(BaseSettings):
         "groq_llama_scout_17b": "meta-llama/llama-4-scout-17b-16e-instruct",
         "groq_llama_maverick_17b": "meta-llama/llama-4-maverick-17b-128e-instruct",
         "gpt_oss_120b": "openai/gpt-oss-120b",
+        "gpt_oss_20b": "openai/gpt-oss-20b",
+        "groq_llama_3_3_70b_versatile": "llama-3.3-70b-versatile",
+        "groq_llama_3_1_8b_instant": "llama-3.1-8b-instant",
+        "qwen_qwen3_32b": "qwen/qwen3-32b",
     }
+    # Used by retrieval-side components (claim classifier, keyword extraction,
+    # legal-context extraction, relevance/applicability filters, precedents keywording).
+    RETRIEVAL_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
+        "groq_llama_maverick_17b",
+        "groq_llama_3_1_8b_instant",
+    ]
+    # Used by the rest of the pipeline helpers (router, evaluator/polisher).
     PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
         "groq_llama_maverick_17b",
-        "groq_llama_scout_17b",
+        "gpt_oss_20b",
     ]
     REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
     COUNTER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
@@ -169,12 +180,12 @@ class Settings(BaseSettings):
         description="Weight of fulltext-ranked candidates in hybrid statute retrieval score fusion.",
     )
     search_hybrid_admin_vector_weight: float = Field(
-        default=0.20,
+        default=0.35,
         alias="SEARCH_HYBRID_ADMIN_VECTOR_WEIGHT",
         description="Vector weight used for administrative-code hybrid retrieval.",
     )
     search_hybrid_admin_fulltext_weight: float = Field(
-        default=0.80,
+        default=0.65,
         alias="SEARCH_HYBRID_ADMIN_FULLTEXT_WEIGHT",
         description="Fulltext weight used for administrative-code hybrid retrieval.",
     )
@@ -239,17 +250,17 @@ class Settings(BaseSettings):
         description="Minimum number of query-term overlaps required before adding keyword bonus (general).",
     )
     search_hybrid_penale_keyword_min_overlap_count: int = Field(
-        default=2,
+        default=1,
         alias="SEARCH_HYBRID_PENALE_KEYWORD_MIN_OVERLAP_COUNT",
         description="Minimum number of query-term overlaps required before adding keyword bonus for criminal code.",
     )
     search_hybrid_civile_keyword_min_overlap_count: int = Field(
-        default=3,
+        default=2,
         alias="SEARCH_HYBRID_CIVILE_KEYWORD_MIN_OVERLAP_COUNT",
         description="Minimum number of query-term overlaps required before adding keyword bonus for civil code.",
     )
     search_hybrid_admin_keyword_min_overlap_count: int = Field(
-        default=3,
+        default=2,
         alias="SEARCH_HYBRID_ADMIN_KEYWORD_MIN_OVERLAP_COUNT",
         description="Minimum number of query-term overlaps required before adding keyword bonus for administrative code.",
     )
@@ -259,7 +270,7 @@ class Settings(BaseSettings):
         description="Score multiplier for criminal-code results with zero lexical overlap against claim terms.",
     )
     search_hybrid_penale_low_overlap_multiplier: float = Field(
-        default=0.94,
+        default=0.88,
         alias="SEARCH_HYBRID_PENALE_LOW_OVERLAP_MULTIPLIER",
         description="Score multiplier for criminal-code results with overlap below bonus threshold.",
     )
@@ -269,17 +280,17 @@ class Settings(BaseSettings):
         description="Score multiplier for civil-code results with zero lexical overlap against claim terms.",
     )
     search_hybrid_civile_low_overlap_multiplier: float = Field(
-        default=1.0,
+        default=0.9,
         alias="SEARCH_HYBRID_CIVILE_LOW_OVERLAP_MULTIPLIER",
         description="Score multiplier for civil-code results with overlap below bonus threshold.",
     )
     search_hybrid_admin_zero_overlap_multiplier: float = Field(
-        default=0.95,
+        default=0.85,
         alias="SEARCH_HYBRID_ADMIN_ZERO_OVERLAP_MULTIPLIER",
         description="Score multiplier for administrative-code results with zero lexical overlap against claim terms.",
     )
     search_hybrid_admin_low_overlap_multiplier: float = Field(
-        default=1.0,
+        default=0.95,
         alias="SEARCH_HYBRID_ADMIN_LOW_OVERLAP_MULTIPLIER",
         description="Score multiplier for administrative-code results with overlap below bonus threshold.",
     )
@@ -901,6 +912,15 @@ class Settings(BaseSettings):
         return list(self.model_alias_map.keys())
 
     @property
+    def retrieval_model_order_aliases(self) -> list[str]:
+        """Ordered model aliases used in retrieval-side resilient runtime calls."""
+        deduped: list[str] = []
+        for alias in self.RETRIEVAL_MODEL_ORDER_ALIASES:
+            if alias not in deduped:
+                deduped.append(alias)
+        return deduped
+
+    @property
     def pipeline_model_order_aliases(self) -> list[str]:
         """Ordered model aliases used in resilient runtime calls."""
         deduped: list[str] = []
@@ -924,9 +944,20 @@ class Settings(BaseSettings):
         return self._resolve_model_alias_order(self.reasoner_model_fallback_aliases)
 
     @property
+    def retrieval_model_fallback_order(self) -> list[str]:
+        """Provider model ids used by retrieval-side resilient calls."""
+        return self._resolve_model_alias_order(self.retrieval_model_order_aliases)
+
+    @property
     def counter_model_fallback_order(self) -> list[str]:
         """Provider model ids used by Counter-Reasoner resilient fallback."""
         return self._resolve_model_alias_order(self.counter_model_fallback_aliases)
+
+    @property
+    def retrieval_default_model(self) -> str:
+        """Primary provider model id for retrieval-side components."""
+        models = self.retrieval_model_fallback_order
+        return models[0] if models else self.resolve_model_name("gpt_oss_20b")
 
     @property
     def reasoner_default_model(self) -> str:

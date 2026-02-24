@@ -17,6 +17,7 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
+from types import SimpleNamespace
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
@@ -206,6 +207,11 @@ polisher_evaluator = None
 router_agent = None
 retrieval_filter_agent = None
 
+# Non-reasoning pipeline helpers must be deterministic and not affected by the
+# frontend temperature slider. Reasoner/CounterReasoner receive their own
+# per-request temperature explicitly.
+PIPELINE_AUX_LLM_TEMPERATURE = 0.0
+
 
 def get_pipeline():
     """Get the shared LegalSearchPipeline singleton."""
@@ -217,7 +223,13 @@ def get_retrieval_filter_agent():
     global retrieval_filter_agent
     if retrieval_filter_agent is None:
         print("🔧 Inizializzazione Motore Retrieval...")
-        retrieval_filter_agent = RetrievalFilterAgent()
+        retrieval_filter_agent = RetrievalFilterAgent(
+            config=AgentConfig(
+                model_name=settings.retrieval_default_model,
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
         print("✅ Motore Retrieval pronto!")
     return retrieval_filter_agent
 
@@ -232,6 +244,7 @@ def _articles_to_dicts(articles) -> list[dict]:
             "testo": art.testo,
             "libro": art.libro,
             "source": art.source,
+            "score": float(getattr(art, "score", 0.0)),
         }
         for art in articles
     ]
@@ -506,7 +519,12 @@ def get_router():
     global router_agent
     if router_agent is None:
         print("🔧 Inizializzazione Router...")
-        router_agent = Router()
+        router_agent = Router(
+            config=AgentConfig(
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
         print("✅ Router pronto!")
     return router_agent
 
@@ -516,7 +534,12 @@ def get_polisher_evaluator():
     global polisher_evaluator
     if polisher_evaluator is None:
         print("🔧 Inizializzazione Polisher-Evaluator...")
-        polisher_evaluator = PolisherEvaluator()
+        polisher_evaluator = PolisherEvaluator(
+            config=AgentConfig(
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
         print("✅ Polisher-Evaluator pronto!")
     return polisher_evaluator
 
@@ -636,6 +659,8 @@ def chat():
         data = request.get_json()
         claim = data.get("message", "").strip()
         top_k = data.get("top_k", settings.search_top_k_default)
+        include_precedents = data.get("include_precedents", True)
+        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
         fe_settings = data.get("settings", {}) or {}
         fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
 
@@ -647,29 +672,52 @@ def chat():
             if mode == "llm":
                 settings.search_query_terms_mode = mode
 
-        result = pipe.search(claim, top_k=top_k)
-        response_text = format_search_result(result)
+        # Align /api/chat retrieval with the full pipeline retrieval stack:
+        # hybrid retrieval + CITES expansion + relevance filter + applicability filter
+        statutes, precedents = prepare_claim_context(
+            claim=claim,
+            include_precedents=bool(include_precedents),
+            max_statutes=int(top_k),
+            max_precedents=int(max_precedents),
+        )
+        classification = pipe.classifier.classify(claim)
+        chat_result = SimpleNamespace(
+            claim=claim,
+            classification=classification,
+            articles=[
+                SimpleNamespace(
+                    source=art.get("source"),
+                    articolo=art.get("articolo"),
+                    titolo=art.get("titolo"),
+                    testo=art.get("testo"),
+                    libro=art.get("libro"),
+                    score=float(art.get("score", 0.0)),
+                )
+                for art in statutes
+            ],
+        )
+        response_text = format_search_result(chat_result)
 
         return jsonify(
             {
                 "response": response_text,
                 "classification": {
-                    "categories": result.classification.categories,
-                    "descriptions": result.classification.descriptions,
-                    "libro_mappings": result.classification.libro_mappings,
+                    "categories": classification.categories,
+                    "descriptions": classification.descriptions,
+                    "libro_mappings": classification.libro_mappings,
                 },
                 "articles": [
                     {
-                        "source": art.source,
-                        "articolo": art.articolo,
-                        "titolo": art.titolo,
-                        "testo": art.testo,
-                        "libro": art.libro,
-                        "score": art.score,
+                        "source": art.get("source"),
+                        "articolo": art.get("articolo"),
+                        "titolo": art.get("titolo"),
+                        "testo": art.get("testo"),
+                        "libro": art.get("libro"),
+                        "score": float(art.get("score", 0.0)),
                     }
-                    for art in result.articles
+                    for art in statutes
                 ],
-                "precedents": [],
+                "precedents": precedents,
             }
         )
 

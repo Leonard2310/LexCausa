@@ -1,18 +1,20 @@
-"""
-LexCausa Agents Module.
+"""LexCausa agents module (lazy exports to avoid package import cycles)."""
 
-Questo modulo contiene gli agenti LangChain per il ragionamento legale:
-- Reasoner: Genera argomenti a supporto del claim
-- CounterReasoner: Genera contro-argomenti basati sul tipo di causalità
-- PolisherEvaluator: Valuta e raffina gli argomenti generati
-"""
+from __future__ import annotations
 
-from .base import AgentConfig, BaseAgent, ReasoningResult
-from .counter_reasoner import CounterArgument, CounterReasoner, CounterReasonerOutput
-from .polisher_evaluator import EvaluationResult, PolisherEvaluator
-from .reasoner import Reasoner, ReasonerOutput
-from .retrieval_filter_agent import RetrievalFilterAgent
-from .router import Router, RoutingDecision
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .base import AgentConfig, BaseAgent, ReasoningResult
+    from .counter_reasoner import (
+        CounterArgument,
+        CounterReasoner,
+        CounterReasonerOutput,
+    )
+    from .polisher_evaluator import EvaluationResult, PolisherEvaluator
+    from .reasoner import Reasoner, ReasonerOutput
+    from .retrieval_filter_agent import RetrievalFilterAgent
+    from .router import Router, RoutingDecision
 
 __all__ = [
     # Base
@@ -35,3 +37,31 @@ __all__ = [
     "PolisherEvaluator",
     "EvaluationResult",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"BaseAgent", "AgentConfig", "ReasoningResult"}:
+        from . import base
+
+        return getattr(base, name)
+    if name in {"Reasoner", "ReasonerOutput"}:
+        from . import reasoner
+
+        return getattr(reasoner, name)
+    if name in {"CounterReasoner", "CounterReasonerOutput", "CounterArgument"}:
+        from . import counter_reasoner
+
+        return getattr(counter_reasoner, name)
+    if name in {"PolisherEvaluator", "EvaluationResult"}:
+        from . import polisher_evaluator
+
+        return getattr(polisher_evaluator, name)
+    if name in {"RetrievalFilterAgent"}:
+        from . import retrieval_filter_agent
+
+        return getattr(retrieval_filter_agent, name)
+    if name in {"Router", "RoutingDecision"}:
+        from . import router
+
+        return getattr(router, name)
+    raise AttributeError(name)

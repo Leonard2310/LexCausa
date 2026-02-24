@@ -125,6 +125,36 @@ class BaseAgent(ABC):
             **kwargs,
         )
 
+    def _resilient_retrieval_llm_invoke(self, messages, **kwargs):
+        """Invoke LLM for retrieval-side filtering with dedicated deterministic temperature."""
+        stream_callback = kwargs.pop("stream_callback", None)
+        model_order = self._resilient_model_order()
+        retrieval_temp = 0.0
+        max_tokens = getattr(self.config, "max_tokens", settings.llm_max_tokens)
+
+        def _llm_factory(api_key: str, model: str):
+            return get_chat_groq(
+                model=model,
+                temperature=retrieval_temp,
+                max_tokens=max_tokens,
+                api_key=api_key or None,
+            )
+
+        if stream_callback is not None:
+            return resilient_chat_stream(
+                _llm_factory,
+                messages,
+                on_token=stream_callback,
+                model_order=model_order,
+                **kwargs,
+            )
+        return resilient_chat_call(
+            _llm_factory,
+            messages,
+            model_order=model_order,
+            **kwargs,
+        )
+
     def _resilient_model_order(self) -> list[str] | None:
         """Optional per-agent model fallback order override for resilient calls."""
         return None
@@ -473,7 +503,9 @@ class BaseAgent(ABC):
             )
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(
@@ -509,7 +541,9 @@ class BaseAgent(ABC):
         prompt = render_prompt("base.extract_legal_context", claim=claim)
 
         try:
-            response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            response = self._resilient_retrieval_llm_invoke(
+                [HumanMessage(content=prompt)]
+            )
             context = (response.content or "").strip().replace("\n", " ")
             context = re.sub(r"\s+", " ", context)
             if context:
@@ -550,7 +584,9 @@ class BaseAgent(ABC):
             )
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = (response.content or "").strip().upper()
             except Exception as e:
                 self._log(
@@ -612,7 +648,9 @@ class BaseAgent(ABC):
             )
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(

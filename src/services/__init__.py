@@ -1,7 +1,29 @@
-"""Services module for LexCausa."""
+"""Services module for LexCausa.
 
-from .claim_classifier import ClaimClassifier
-from .legal_search import LegalSearchPipeline, SearchResult
-from .stance_classifier import StanceClassifier
+Lazy exports avoid circular imports between ``services`` and ``agents.tools``.
+"""
 
-__all__ = ["ClaimClassifier", "LegalSearchPipeline", "SearchResult", "StanceClassifier"]
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+__all__ = ["ClaimClassifier", "LegalSearchPipeline", "SearchResult"]
+
+if TYPE_CHECKING:
+    from .claim_classifier import ClaimClassifier
+    from .legal_search import LegalSearchPipeline, SearchResult
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ClaimClassifier":
+        from .claim_classifier import ClaimClassifier
+
+        return ClaimClassifier
+    if name in {"LegalSearchPipeline", "SearchResult"}:
+        from .legal_search import LegalSearchPipeline, SearchResult
+
+        return {
+            "LegalSearchPipeline": LegalSearchPipeline,
+            "SearchResult": SearchResult,
+        }[name]
+    raise AttributeError(name)

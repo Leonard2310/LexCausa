@@ -17,6 +17,7 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
+from types import SimpleNamespace
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
@@ -48,7 +49,6 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     search_precedents_tool,
 )
 from config import settings  # noqa: E402
-from services.stance_classifier import StanceClassifier  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -204,9 +204,13 @@ def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
 reasoner = None
 counter_reasoner = None
 polisher_evaluator = None
-stance_classifier = None
 router_agent = None
 retrieval_filter_agent = None
+
+# Non-reasoning pipeline helpers must be deterministic and not affected by the
+# frontend temperature slider. Reasoner/CounterReasoner receive their own
+# per-request temperature explicitly.
+PIPELINE_AUX_LLM_TEMPERATURE = 0.0
 
 
 def get_pipeline():
@@ -219,7 +223,13 @@ def get_retrieval_filter_agent():
     global retrieval_filter_agent
     if retrieval_filter_agent is None:
         print("🔧 Inizializzazione Motore Retrieval...")
-        retrieval_filter_agent = RetrievalFilterAgent()
+        retrieval_filter_agent = RetrievalFilterAgent(
+            config=AgentConfig(
+                model_name=settings.retrieval_default_model,
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
         print("✅ Motore Retrieval pronto!")
     return retrieval_filter_agent
 
@@ -234,6 +244,7 @@ def _articles_to_dicts(articles) -> list[dict]:
             "testo": art.testo,
             "libro": art.libro,
             "source": art.source,
+            "score": float(getattr(art, "score", 0.0)),
         }
         for art in articles
     ]
@@ -508,7 +519,12 @@ def get_router():
     global router_agent
     if router_agent is None:
         print("🔧 Inizializzazione Router...")
-        router_agent = Router()
+        router_agent = Router(
+            config=AgentConfig(
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
         print("✅ Router pronto!")
     return router_agent
 
@@ -518,19 +534,14 @@ def get_polisher_evaluator():
     global polisher_evaluator
     if polisher_evaluator is None:
         print("🔧 Inizializzazione Polisher-Evaluator...")
-        polisher_evaluator = PolisherEvaluator()
+        polisher_evaluator = PolisherEvaluator(
+            config=AgentConfig(
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
         print("✅ Polisher-Evaluator pronto!")
     return polisher_evaluator
-
-
-def get_stance_classifier():
-    """Lazy load dello Stance Classifier NLI."""
-    global stance_classifier
-    if stance_classifier is None:
-        print("🔧 Inizializzazione Stance Classifier (NLI)...")
-        stance_classifier = StanceClassifier()
-        print("✅ Stance Classifier pronto!")
-    return stance_classifier
 
 
 def resolve_routing_decision(
@@ -553,8 +564,15 @@ def resolve_routing_decision(
 
     if ct:
         ct_valid, th_valid = config_loader.validate_ids(ct, th)
+        domain = str(routing_hint.get("domain", "")).strip().upper()
+        if domain not in ("CIVILE", "PENALE", "AMMINISTRATIVO", "ENTRAMBI"):
+            try:
+                domain = router.route(claim).domain
+            except Exception:
+                domain = "ENTRAMBI"
         return RoutingDecision(
             claim=claim,
+            domain=domain,
             causal_type_id=ct_valid,
             theory_id=th_valid or "",
             anchor_norms=config_loader.anchor_norms_for(ct_valid),
@@ -565,43 +583,9 @@ def resolve_routing_decision(
     return router.route(claim)
 
 
-def classify_stance_for_agents(
-    claim: str,
-    statutes: list[dict],
-    precedents: list[dict],
-) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-    """
-    Classify statutes and precedents as supporting or opposing the claim.
-
-    Returns:
-        Tuple of (support_statutes, against_statutes, support_precedents, against_precedents)
-    """
-    sc = get_stance_classifier()
-
-    print(f"\n{'─'*70}")
-    print("🎯 STANCE CLASSIFICATION (NLI)...")
-    print(f"{'─'*70}")
-
-    support_statutes, against_statutes, neutral_statutes = sc.classify_statutes_batch(
-        claim, statutes
-    )
-    support_precedents, against_precedents, neutral_precedents = (
-        sc.classify_precedents_batch(claim, precedents)
-    )
-
-    # Re-introduce neutrals to both agents to avoid starving them of context
-    support_statutes = support_statutes + neutral_statutes
-    against_statutes = against_statutes + neutral_statutes
-    support_precedents = support_precedents + neutral_precedents
-    against_precedents = against_precedents + neutral_precedents
-
-    print("\n📊 Risultato stance classification:")
-    print("   - Articoli a SUPPORTO: " + str(len(support_statutes)))
-    print("   - Articoli CONTRO: " + str(len(against_statutes)))
-    print("   - Precedenti a SUPPORTO: " + str(len(support_precedents)))
-    print("   - Precedenti CONTRO: " + str(len(against_precedents)))
-
-    return support_statutes, against_statutes, support_precedents, against_precedents
+def _clone_context_items(items: list[dict]) -> list[dict]:
+    """Shallow-copy retrieved context items so agents can annotate independently."""
+    return [dict(item) for item in (items or [])]
 
 
 @app.route("/health", methods=["GET"])
@@ -682,6 +666,8 @@ def chat():
         data = request.get_json()
         claim = data.get("message", "").strip()
         top_k = data.get("top_k", settings.search_top_k_default)
+        include_precedents = data.get("include_precedents", True)
+        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
         fe_settings = data.get("settings", {}) or {}
         fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
 
@@ -693,29 +679,52 @@ def chat():
             if mode == "llm":
                 settings.search_query_terms_mode = mode
 
-        result = pipe.search(claim, top_k=top_k)
-        response_text = format_search_result(result)
+        # Align /api/chat retrieval with the full pipeline retrieval stack:
+        # hybrid retrieval + CITES expansion + relevance filter + applicability filter
+        statutes, precedents = prepare_claim_context(
+            claim=claim,
+            include_precedents=bool(include_precedents),
+            max_statutes=int(top_k),
+            max_precedents=int(max_precedents),
+        )
+        classification = pipe.classifier.classify(claim)
+        chat_result = SimpleNamespace(
+            claim=claim,
+            classification=classification,
+            articles=[
+                SimpleNamespace(
+                    source=art.get("source"),
+                    articolo=art.get("articolo"),
+                    titolo=art.get("titolo"),
+                    testo=art.get("testo"),
+                    libro=art.get("libro"),
+                    score=float(art.get("score", 0.0)),
+                )
+                for art in statutes
+            ],
+        )
+        response_text = format_search_result(chat_result)
 
         return jsonify(
             {
                 "response": response_text,
                 "classification": {
-                    "categories": result.classification.categories,
-                    "descriptions": result.classification.descriptions,
-                    "libro_mappings": result.classification.libro_mappings,
+                    "categories": classification.categories,
+                    "descriptions": classification.descriptions,
+                    "libro_mappings": classification.libro_mappings,
                 },
                 "articles": [
                     {
-                        "source": art.source,
-                        "articolo": art.articolo,
-                        "titolo": art.titolo,
-                        "testo": art.testo,
-                        "libro": art.libro,
-                        "score": art.score,
+                        "source": art.get("source"),
+                        "articolo": art.get("articolo"),
+                        "titolo": art.get("titolo"),
+                        "testo": art.get("testo"),
+                        "libro": art.get("libro"),
+                        "score": float(art.get("score", 0.0)),
                     }
-                    for art in result.articles
+                    for art in statutes
                 ],
-                "precedents": [],
+                "precedents": precedents,
             }
         )
 
@@ -786,6 +795,7 @@ def counter_reason():
     Riceve:
     - claim: il claim legale
     - (opzionale) causal_type_id/theory_id: se assenti, vengono scelti dal Router
+    - reasoner_conclusion: conclusione del Reasoner da contestare
 
     Restituisce contro-argomenti basati sulla config di causalità.
     """
@@ -795,9 +805,19 @@ def counter_reason():
         include_precedents = data.get("include_precedents", True)
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+        reasoner_conclusion = (data.get("reasoner_conclusion", "") or "").strip()
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+        if not reasoner_conclusion:
+            return (
+                jsonify(
+                    {
+                        "error": 'Campo "reasoner_conclusion" obbligatorio per il Counter-Reasoner'
+                    }
+                ),
+                400,
+            )
 
         routing_decision = resolve_routing_decision(claim, data)
         statutes, precedents = prepare_claim_context(
@@ -807,19 +827,15 @@ def counter_reason():
             max_precedents=max_precedents,
         )
 
-        # Classifica stance per fornire al counter norme contrarie/neutral
-        _, against_statutes, _, against_precedents = classify_stance_for_agents(
-            claim, statutes, precedents
-        )
-
         cr = get_counter_reasoner()
 
         # Esegui il counter-reasoning con contesto pre-retrieved
         result = cr.run(
             claim=claim,
             routing_decision=routing_decision,
-            pre_retrieved_statutes=against_statutes,
-            pre_retrieved_precedents=against_precedents,
+            pre_retrieved_statutes=_clone_context_items(statutes),
+            pre_retrieved_precedents=_clone_context_items(precedents),
+            reasoner_conclusion=reasoner_conclusion,
         )
 
         return jsonify(result.to_dict())
@@ -960,27 +976,18 @@ def _run_full_pipeline(
             max_precedents=max_precedents,
             progress_callback=_emit_context_detail,
         )
-        _emit_phase(
-            "context_setup",
-            "active",
-            68,
-            "Classificazione stance NLI (norme e precedenti)",
-        )
+        _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
+        reasoner_statutes = _clone_context_items(statutes)
+        counter_statutes = _clone_context_items(statutes)
+        reasoner_precedents = _clone_context_items(precedents)
+        counter_precedents = _clone_context_items(precedents)
 
-        # Classify stance using NLI to separate support vs against
-        (
-            support_statutes,
-            against_statutes,
-            support_precedents,
-            against_precedents,
-        ) = classify_stance_for_agents(claim, statutes, precedents)
-
-        # STEP 1: main supportive reasoning
+        # STEP 1: primary reasoning on the claim
         print(f"\n{'─'*70}")
-        print("📊 STEP 1: Reasoner execution (SUPPORT articles)...")
+        print("📊 STEP 1: Reasoner execution (shared retrieved context)...")
         print(f"{'─'*70}")
         print(
-            f"   📚 Knowledge base: {len(support_statutes)} statutes, {len(support_precedents)} precedents"
+            f"   📚 Knowledge base: {len(reasoner_statutes)} statutes, {len(reasoner_precedents)} precedents"
         )
         _emit_phase("context_setup", "done", 100, "Contesto pronto")
         _emit_phase("support", "active", 8, "Generazione ragionamento")
@@ -995,8 +1002,8 @@ def _run_full_pipeline(
         reasoner_result = reas.run(
             claim=claim,
             routing_decision=routing_decision,
-            pre_retrieved_statutes=support_statutes,
-            pre_retrieved_precedents=support_precedents,
+            pre_retrieved_statutes=reasoner_statutes,
+            pre_retrieved_precedents=reasoner_precedents,
             enable_causality=fe_enable_causality,
             stream_callback=token_callback,
         )
@@ -1028,10 +1035,10 @@ def _run_full_pipeline(
 
         # STEP 2: counter reasoning
         print(f"\n{'─'*70}")
-        print("⚔️  STEP 2: Counter-Reasoner execution (AGAINST articles)...")
+        print("⚔️  STEP 2: Counter-Reasoner execution (shared retrieved context)...")
         print(f"{'─'*70}")
         print(
-            f"   📚 Knowledge base: {len(against_statutes)} statutes, {len(against_precedents)} precedents"
+            f"   📚 Knowledge base: {len(counter_statutes)} statutes, {len(counter_precedents)} precedents"
         )
         status_callback("Generazione argomentazione contraria in corso...")
 
@@ -1045,21 +1052,19 @@ def _run_full_pipeline(
         # Opposition consistency is validated by the Polisher gate.
         reasoner_conclusion = reasoner_result.conclusion or ""
         if not reasoner_conclusion:
-            print(
-                "ℹ️ Reasoner conclusion unavailable: no fallback applied. "
-                "Opposition check is delegated to Polisher gate."
+            raise RuntimeError(
+                "Reasoner conclusion is required before Counter-Reasoner execution"
             )
-        else:
-            print(
-                "ℹ️ Reasoner conclusion captured for Counter traceability: "
-                f"{reasoner_conclusion[:120]}..."
-            )
+        print(
+            "ℹ️ Reasoner conclusion captured for Counter traceability: "
+            f"{reasoner_conclusion[:120]}..."
+        )
 
         counter_result = cr.run(
             claim=claim,
             routing_decision=final_routing_decision,
-            pre_retrieved_statutes=against_statutes,
-            pre_retrieved_precedents=against_precedents,
+            pre_retrieved_statutes=counter_statutes,
+            pre_retrieved_precedents=counter_precedents,
             enable_causality=fe_enable_causality,
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,
@@ -1150,18 +1155,29 @@ def _run_full_pipeline(
         # Re-emit after evaluator in case the counter gate updated abstention fields.
         _emit_progress("counter_result", counter_result.to_dict())
 
-        # Derive winning_side and confidence from AQA verdict
+        # Derive winning_side and confidence from AQA verdict.
+        # Keep backward-compatible labels in `winning_side` while also exposing
+        # canonical thesis labels for new consumers.
         aqa = evaluation_result.aqa_report or {}
         aqa_verdict = aqa.get("verdict", "uncertain")
         aqa_net = aqa.get("net_plausibility", {})
-        verdict_map = {
+        legacy_verdict_map = {
             "plausible": "support",
             "implausible": "counter",
             "uncertain": "undecided",
         }
-        evaluation_result.winning_side = verdict_map.get(aqa_verdict, "undecided")
+        canonical_verdict_map = {
+            "plausible": "primary_thesis",
+            "implausible": "counter_thesis",
+            "uncertain": "undecided",
+        }
+        winning_side_legacy = legacy_verdict_map.get(aqa_verdict, "undecided")
+        winning_side_canonical = canonical_verdict_map.get(aqa_verdict, "undecided")
+
+        evaluation_result.winning_side = winning_side_legacy
         evaluation_result.confidence = abs(aqa_net.get("final", 0.0))
         evaluation_payload = evaluation_result.to_dict()
+        evaluation_payload["winning_side_canonical"] = winning_side_canonical
         repaired_aspic_files = _persist_repaired_aspic_files(claim, evaluation_payload)
         if repaired_aspic_files:
             evaluation_payload["repaired_aspic_files"] = repaired_aspic_files
@@ -1176,7 +1192,10 @@ def _run_full_pipeline(
         _emit_progress("evaluation_result", evaluation_payload)
 
         print("✅ Polisher-Evaluator completed")
-        print(f"   - Winning side: {evaluation_result.winning_side}")
+        print(
+            f"   - Winning side: {evaluation_result.winning_side} "
+            f"(canonical: {winning_side_canonical})"
+        )
         print(f"   - Confidence: {evaluation_result.confidence:.2f}")
         print(
             f"   - AQA verdict: {aqa_verdict} "

@@ -3,7 +3,7 @@ Resilient Groq Client for LexCausa.
 
 Provides automatic retry, API key rotation, and model fallback for both:
 - groq.Groq (raw SDK, used by ClaimClassifier)
-- langchain_groq.ChatGroq (LangChain wrapper, used by agents and StanceClassifier)
+- langchain_groq.ChatGroq (LangChain wrapper, used by agents)
 
 Error-handling strategy:
 - Model over-capacity (503 "over capacity") → switch to fallback MODEL immediately

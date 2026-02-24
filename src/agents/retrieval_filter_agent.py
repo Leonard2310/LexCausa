@@ -9,11 +9,17 @@ Agent tecnico usato esclusivamente in fase di retrieval per:
 Non esegue ragionamento principale/counter.
 """
 
+from config import settings
+
 from .base import BaseAgent
 
 
 class RetrievalFilterAgent(BaseAgent):
     """Agent leggero per filtri retrieval con prefisso log dedicato."""
+
+    def _resilient_model_order(self) -> list[str] | None:
+        """Use retrieval-specific fallback chain (separate from router/evaluator)."""
+        return settings.retrieval_model_fallback_order
 
     def run(self, claim: str, *args, **kwargs):
         raise NotImplementedError(

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 from .tools.prompt_registry import render_prompt
@@ -92,6 +92,8 @@ class BaseAgent(ABC):
         """
         self.config = config or AgentConfig()
         self._llm: Optional[ChatGroq] = None
+        self._fact_lock_check_cache: dict[tuple[str, str], tuple[bool, str]] = {}
+        self._nli_relation_cache: dict[tuple[str, str], str] = {}
 
     @property
     def llm(self) -> ChatGroq:
@@ -119,6 +121,36 @@ class BaseAgent(ABC):
             )
         return resilient_chat_call(
             self.llm,
+            messages,
+            model_order=model_order,
+            **kwargs,
+        )
+
+    def _resilient_retrieval_llm_invoke(self, messages, **kwargs):
+        """Invoke LLM for retrieval-side filtering with dedicated deterministic temperature."""
+        stream_callback = kwargs.pop("stream_callback", None)
+        model_order = self._resilient_model_order()
+        retrieval_temp = 0.0
+        max_tokens = getattr(self.config, "max_tokens", settings.llm_max_tokens)
+
+        def _llm_factory(api_key: str, model: str):
+            return get_chat_groq(
+                model=model,
+                temperature=retrieval_temp,
+                max_tokens=max_tokens,
+                api_key=api_key or None,
+            )
+
+        if stream_callback is not None:
+            return resilient_chat_stream(
+                _llm_factory,
+                messages,
+                on_token=stream_callback,
+                model_order=model_order,
+                **kwargs,
+            )
+        return resilient_chat_call(
+            _llm_factory,
             messages,
             model_order=model_order,
             **kwargs,
@@ -232,6 +264,161 @@ class BaseAgent(ABC):
             if jaccard >= threshold:
                 return True
         return False
+
+    @staticmethod
+    def _split_reasoning_clauses(step_text: str) -> list[str]:
+        """Split a step into comparable clauses for semantic self-consistency checks."""
+        text = re.sub(r"\s+", " ", (step_text or "").strip())
+        if not text:
+            return []
+        sentences = re.split(r"(?<=[.!?;])\s+", text)
+        clauses: list[str] = []
+        for sentence in sentences:
+            sentence = sentence.strip(" -")
+            if not sentence:
+                continue
+            parts = re.split(
+                r"\b(?:ma|tuttavia|per[oò]|invece|al contrario|nondimeno)\b",
+                sentence,
+                flags=re.IGNORECASE,
+            )
+            for part in parts:
+                chunk = part.strip(" ,.-")
+                if len(chunk) >= 20:
+                    clauses.append(chunk)
+        return clauses
+
+    def _is_step_self_consistent(self, step_text: str) -> bool:
+        """Reject internal contradictions using semantic (NLI) checks across clauses."""
+        text = re.sub(r"\s+", " ", (step_text or "").strip())
+        if not text:
+            return False
+
+        clauses = self._split_reasoning_clauses(text)
+        if len(clauses) < 2:
+            return True
+
+        clauses = clauses[:5]  # keep latency bounded
+        for i in range(len(clauses)):
+            for j in range(i + 1, len(clauses)):
+                a = clauses[i]
+                b = clauses[j]
+                rel_ab = self._nli_relation(
+                    target_text=a,
+                    attacker_text=b,
+                    actor_label="BaseAgent",
+                )
+                if rel_ab != "contradiction":
+                    continue
+                rel_ba = self._nli_relation(
+                    target_text=b,
+                    attacker_text=a,
+                    actor_label="BaseAgent",
+                )
+                if rel_ba == "contradiction":
+                    return False
+        return True
+
+    def _is_step_fact_consistent_with_claim(
+        self,
+        *,
+        claim: str,
+        candidate_step: str,
+        actor_label: str = "Agent",
+    ) -> tuple[bool, str]:
+        """Reject steps that contradict explicit facts stated in the claim.
+
+        Shared helper used by Reasoner and CounterReasoner.
+        """
+        claim_text = (claim or "").strip()
+        step_text = (candidate_step or "").strip()
+        if not claim_text or not step_text:
+            return True, ""
+
+        cache_key = (claim_text, step_text)
+        cached = self._fact_lock_check_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        prompt = render_prompt(
+            "base.fact_lock_check",
+            claim=claim_text,
+            candidate_step=step_text,
+        )
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            answer = (resp.content or "").strip().upper()
+            if "CONTRADICT" in answer:
+                result = (False, "contradicts explicit claim fact")
+            else:
+                result = (True, "")
+        except Exception as exc:
+            # Do not fail closed on checker outages/rate limits.
+            self._log(
+                f"⚠️ {actor_label} fact-lock check failed (fallback keep): {exc}",
+                "warning",
+            )
+            result = (True, "")
+
+        self._fact_lock_check_cache[cache_key] = result
+        return result
+
+    def _nli_relation(
+        self,
+        *,
+        target_text: str,
+        attacker_text: str,
+        actor_label: str = "Agent",
+    ) -> str:
+        """
+        Classify semantic relation between two passages using the shared legal NLI prompt.
+
+        Returns one of: ``contradiction``, ``entailment``, ``neutral``.
+        """
+        target = re.sub(r"\s+", " ", (target_text or "").strip())[
+            : settings.truncation_nli_text
+        ]
+        attacker = re.sub(r"\s+", " ", (attacker_text or "").strip())[
+            : settings.truncation_nli_text
+        ]
+        if not target or not attacker:
+            return "neutral"
+
+        cache_key = (target, attacker)
+        cached = self._nli_relation_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        system_prompt = render_prompt("nlp_utils.nli_system")
+        user_prompt = render_prompt(
+            "nlp_utils.nli_user",
+            target_text=target,
+            attacker_text=attacker,
+        )
+
+        try:
+            resp = self._resilient_llm_invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ]
+            )
+            answer = (resp.content or "").strip().upper()
+            if "CONTRADICTION" in answer:
+                label = "contradiction"
+            elif "ENTAILMENT" in answer:
+                label = "entailment"
+            else:
+                label = "neutral"
+        except Exception as exc:
+            self._log(
+                f"⚠️ {actor_label} NLI relation check failed (fallback neutral): {exc}",
+                "warning",
+            )
+            label = "neutral"
+
+        self._nli_relation_cache[cache_key] = label
+        return label
 
     def _extract_reasoning_chain(self, response: str) -> list[str]:
         """Extract reasoning chain from response with improved pattern matching."""
@@ -391,8 +578,6 @@ class BaseAgent(ABC):
         self._log(f"🔍 Filtering relevance: {len(statutes)} statutes initially")
 
         relevant_statutes = []
-        max_item_logs = max(0, settings.search_filter_log_top_n)
-
         for idx, statute in enumerate(statutes, start=1):
             article_number = statute.get("articolo", "N/A")
             article_title = statute.get("titolo", "Untitled")
@@ -407,7 +592,9 @@ class BaseAgent(ABC):
             )
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(
@@ -420,26 +607,16 @@ class BaseAgent(ABC):
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
-            should_log_item = idx <= max_item_logs
             if keep:
                 relevant_statutes.append(statute)
-                if should_log_item:
-                    self._log(
-                        f"✅ Keeping article [{idx}] {article_number} - {article_title}"
-                    )
+                self._log(
+                    f"✅ Keeping article [{idx}] {article_number} - {article_title}"
+                )
             else:
-                if should_log_item:
-                    self._log(
-                        f"❌ Discarding article [{idx}] {article_number} - {article_title}",
-                        "warning",
-                    )
-
-        if len(statutes) > max_item_logs:
-            self._log(
-                f"… per-item filter logs truncated: {len(statutes) - max_item_logs} articoli omessi "
-                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
-                "info",
-            )
+                self._log(
+                    f"❌ Discarding article [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
 
         self._log(f"📊 Result: {len(relevant_statutes)}/{len(statutes)} statutes kept")
         return relevant_statutes
@@ -453,7 +630,9 @@ class BaseAgent(ABC):
         prompt = render_prompt("base.extract_legal_context", claim=claim)
 
         try:
-            response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            response = self._resilient_retrieval_llm_invoke(
+                [HumanMessage(content=prompt)]
+            )
             context = (response.content or "").strip().replace("\n", " ")
             context = re.sub(r"\s+", " ", context)
             if context:
@@ -479,8 +658,6 @@ class BaseAgent(ABC):
 
         self._log(f"🎯 Checking applicability: {len(statutes)} statutes")
         applicable_statutes: list[dict] = []
-        max_item_logs = max(0, settings.search_filter_log_top_n)
-
         for idx, statute in enumerate(statutes, start=1):
             article_number = statute.get("articolo", "N/A")
             article_title = statute.get("titolo", "Untitled")
@@ -496,7 +673,9 @@ class BaseAgent(ABC):
             )
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = (response.content or "").strip().upper()
             except Exception as e:
                 self._log(
@@ -510,26 +689,14 @@ class BaseAgent(ABC):
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
-            should_log_item = idx <= max_item_logs
             if keep:
                 applicable_statutes.append(statute)
-                if should_log_item:
-                    self._log(
-                        f"✅ APPLICABLE [{idx}] {article_number} - {article_title}"
-                    )
+                self._log(f"✅ APPLICABLE [{idx}] {article_number} - {article_title}")
             else:
-                if should_log_item:
-                    self._log(
-                        f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
-                        "warning",
-                    )
-
-        if len(statutes) > max_item_logs:
-            self._log(
-                f"… per-item applicability logs truncated: {len(statutes) - max_item_logs} articoli omessi "
-                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
-                "info",
-            )
+                self._log(
+                    f"❌ NOT APPLICABLE [{idx}] {article_number} - {article_title}",
+                    "warning",
+                )
 
         self._log(
             f"📊 Applicability result: {len(applicable_statutes)}/{len(statutes)} kept"
@@ -554,8 +721,6 @@ class BaseAgent(ABC):
         self._log(f"🔍 Filtering {len(precedents)} precedents (relevance mode)")
 
         relevant: list[dict] = []
-        max_item_logs = max(0, settings.search_filter_log_top_n)
-
         for idx, precedent in enumerate(precedents, start=1):
             title = precedent.get("title", "Untitled")
             summary = precedent.get("summary", "")
@@ -572,7 +737,9 @@ class BaseAgent(ABC):
             )
 
             try:
-                response = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)]
+                )
                 answer = response.content.strip().upper()
             except Exception as e:
                 self._log(
@@ -586,21 +753,11 @@ class BaseAgent(ABC):
                 token == "YES" or "YES" in answer or "NO" not in answer
             )
 
-            should_log_item = idx <= max_item_logs
             if keep:
                 relevant.append(precedent)
-                if should_log_item:
-                    self._log(f"✅ Kept [{idx}] {title}")
+                self._log(f"✅ Kept [{idx}] {title}")
             else:
-                if should_log_item:
-                    self._log(f"❌ Discarded [{idx}] {title}", "warning")
-
-        if len(precedents) > max_item_logs:
-            self._log(
-                f"… per-item precedent logs truncated: {len(precedents) - max_item_logs} elementi omessi "
-                f"(config SEARCH_FILTER_LOG_TOP_N={max_item_logs})",
-                "info",
-            )
+                self._log(f"❌ Discarded [{idx}] {title}", "warning")
 
         self._log(f"📊 Kept {len(relevant)}/{len(precedents)} precedents")
         return relevant

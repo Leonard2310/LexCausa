@@ -614,13 +614,13 @@ def _effective_link_type(raw_stance: str, role: str) -> str:
         against → "supports" (opposes the claim = supports the counter-chain),
         support → "attacks",  neutral → "neutral"
     """
-    raw = (raw_stance or "support").lower()
+    raw = (raw_stance or "neutral").lower()
     if role in ("counter", "counter_reasoner"):
         return {"support": "attacks", "against": "supports", "neutral": "neutral"}.get(
-            raw, "supports"
+            raw, "neutral"
         )
     return {"support": "supports", "against": "attacks", "neutral": "neutral"}.get(
-        raw, "supports"
+        raw, "neutral"
     )
 
 
@@ -650,7 +650,7 @@ def _build_precedent_graph(
                 "bindingness": p.get("bindingness"),
                 "recency": p.get("recency"),
                 "score": p.get("score"),
-                # Stance metadata injected by StanceClassifier
+                # Optional stance metadata (legacy runs may include it)
                 "_stance_label": p.get("_stance_label"),
                 "_stance_confidence": p.get("_stance_confidence"),
             }
@@ -659,7 +659,7 @@ def _build_precedent_graph(
 
     # Build a lookup so add_links can resolve each precedent's effective stance
     stance_by_id: dict[str, str] = {
-        p.get("precedent_id", ""): (p.get("_stance_label") or "support")
+        p.get("precedent_id", ""): (p.get("_stance_label") or "neutral")
         for p in summary
     }
 
@@ -699,7 +699,7 @@ def _build_precedent_graph(
             if key in seen_links:
                 continue
             seen_links.add(key)
-            link_type = _effective_link_type(stance_by_id.get(prec_id, "support"), role)
+            link_type = _effective_link_type(stance_by_id.get(prec_id, "neutral"), role)
             links.append({"from": node_id, "to": target_id, "type": link_type})
 
     for step in chain_steps:

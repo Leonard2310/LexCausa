@@ -451,12 +451,16 @@ def _extract_keywords_from_claim(claim: str) -> list[str]:
 
     try:
         llm = get_chat_groq(
-            model=settings.groq_models[0],
+            model=settings.retrieval_default_model,
             temperature=0.0,
             max_tokens=200,
             api_key=settings.groq_api_key or None,
         )
-        response = resilient_chat_call(llm, [HumanMessage(content=prompt)])
+        response = resilient_chat_call(
+            llm,
+            [HumanMessage(content=prompt)],
+            model_order=settings.retrieval_model_fallback_order,
+        )
         raw = response.content.strip()
         keywords = [
             kw.strip().strip("-•*").strip()

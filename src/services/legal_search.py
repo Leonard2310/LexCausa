@@ -789,7 +789,10 @@ class LegalSearchPipeline:
             return (completion.choices[0].message.content or "").strip()
 
         try:
-            llm_text = resilient_groq_call(_call)
+            llm_text = resilient_groq_call(
+                _call,
+                model_order=settings.retrieval_model_fallback_order,
+            )
         except Exception as exc:
             print(f"⚠️ [Retrieval] LLM keyword extraction failed: {exc}")
             return set()

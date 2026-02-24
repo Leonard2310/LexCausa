@@ -69,7 +69,7 @@ class ClaimClassifier:
             )
 
         self.client = get_groq_client(api_key=self.api_key)
-        self.model = model or settings.resolve_model_name("groq_llama_scout_17b")
+        self.model = model or settings.retrieval_default_model
         self._taxonomy_cfg = config_loader.claim_classifier_config()
         self._categories = config_loader.claim_classifier_categories()
         self._few_shots = config_loader.claim_classifier_few_shots()
@@ -200,7 +200,10 @@ class ClaimClassifier:
             )
             return completion.choices[0].message.content.strip()
 
-        response_text = resilient_groq_call(_call)
+        response_text = resilient_groq_call(
+            _call,
+            model_order=settings.retrieval_model_fallback_order,
+        )
         return self._parse_response(claim, response_text)
 
     def _classify_stream(
@@ -226,7 +229,10 @@ class ClaimClassifier:
                 response_text += content
             return response_text.strip()
 
-        response_text = resilient_groq_call(_call)
+        response_text = resilient_groq_call(
+            _call,
+            model_order=settings.retrieval_model_fallback_order,
+        )
         return self._parse_response(claim, response_text)
 
     def _parse_response(

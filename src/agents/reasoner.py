@@ -3,7 +3,7 @@ LexCausa Reasoner Agent.
 
 The Reasoner is responsible for:
 1. Receiving a legal claim with pre-retrieved statutes and precedents
-2. Generating supporting arguments based on the provided knowledge base
+2. Generating a primary legal reasoning based on the provided knowledge base
 3. Building a reasoning chain that connects the claim to legal norms
 
 Uses LangGraph with Groq Cloud for LLM-powered reasoning.
@@ -21,7 +21,11 @@ from langgraph.prebuilt import create_react_agent
 
 from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
-from .citation_utils import extract_article_mentions, format_article_citation
+from .citation_utils import (
+    extract_article_mentions,
+    format_article_citation,
+    normalize_article_id,
+)
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
@@ -81,7 +85,7 @@ class Reasoner(BaseAgent):
     Legal Reasoner Agent.
 
     Analyzes legal claims using pre-retrieved knowledge (statutes/precedents),
-    classifies causality type, and generates supporting arguments.
+    classifies causality type, and generates the primary reasoning chain.
 
     Flow:
     1. api_server pre-retrieves statutes and precedents
@@ -95,7 +99,6 @@ class Reasoner(BaseAgent):
         """Initialize the Reasoner agent."""
         super().__init__(config)
         self._react_agent = None
-        self._max_support_stance_rewrites = 1
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
 
@@ -154,7 +157,7 @@ class Reasoner(BaseAgent):
     ) -> ReasonerOutput:
         """
         Two-phase reasoning:
-        1) Generate initial reasoning from claim + supportive/neutral sources.
+        1) Generate initial reasoning from claim + retrieved sources.
         2) Classify causality on that reasoning (not on the claim), validate vs router claim-class.
            If validated, inject anchor norms/principle tests and refine reasoning (with cross-ref expansion).
         """
@@ -194,78 +197,37 @@ class Reasoner(BaseAgent):
         domain = routing_decision.domain
         self._log(f"🔬 Router domain: {domain}")
 
+        hint_causal_id = routing_decision.causal_type_id or ""
+        hint_theory_id = routing_decision.theory_id or ""
+
         if enable_causality:
-            # Phase 1: initial reasoning (no anchor injection)
-            base_statutes = self._expand_with_cross_references(pre_retrieved_statutes)
-            kb1 = self._format_context_for_prompt(
-                base_statutes, pre_retrieved_precedents
-            )
-            allowed_statutes1 = [
-                f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
-                for s in base_statutes
-            ]
-            allowed_precedents1 = [
-                p.get("title", "Untitled") for p in pre_retrieved_precedents
-            ]
-
-            input_prompt1 = self._build_reasoning_prompt_with_context(
-                claim,
-                routing_decision,
-                anchor_text="-",
-                principle_text="-",
-                knowledge_base=kb1,
-                allowed_statutes=allowed_statutes1,
-                allowed_precedents=allowed_precedents1,
-            )
-
-            raw_output1, _ = self._invoke_reasoner(input_prompt1)
-            reasoning_chain1 = self._extract_reasoning_chain(raw_output1)
-
-            # Phase 2: classify causality on reasoning chain filtered by domain
-            chain_class = self._classify_causality_from_reasoning(
-                claim, reasoning_chain1, raw_output1, domain
-            )
-
-            # DEBUG: log chain classification results
             self._log(
-                f"🔬 Chain classification: causal_type_id={chain_class.get('causal_type_id')}, theory_id={chain_class.get('theory_id')}"
+                "🔬 Causality ENABLED — classification runs post-chain and is passed to Counter"
             )
-
-            final_causal_id = chain_class.get("causal_type_id") or ""
-            final_theory_id = chain_class.get("theory_id") or ""
-
-            # Validate and get anchor norms for the classified causal type
-            if final_causal_id:
-                final_causal_id, final_theory_id = config_loader.validate_ids(
-                    final_causal_id, final_theory_id
-                )
-
-            causal_types_for_counter: list[str] = (
-                [final_causal_id] if final_causal_id else []
-            )
-            anchor_norms: dict = {}
-            anchor_statutes: list[dict] = []
-            principle_tests: list[dict] = []
-
-            if final_causal_id:
-                anchor_norms, anchor_statutes, principle_tests = (
-                    self._filtered_anchor_norms_for_types([final_causal_id], claim)
-                )
-                self._log(
-                    f"📋 Anchor norms retrieved: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
-                )
-                self._log(f"📋 Anchor statutes to inject: {len(anchor_statutes)}")
+            chain_class = {
+                "domain": domain,
+                "causal_type_id": "",
+                "theory_id": "",
+                "source": "pending_posthoc",
+            }
         else:
             self._log(
-                "🔬 Causality DISABLED — skipping classification and anchor norms"
+                "🔬 Causality DISABLED — no causal classification/attack taxonomy"
             )
-            chain_class = {}
-            final_causal_id = ""
-            final_theory_id = ""
-            causal_types_for_counter = []
-            anchor_norms = {}
-            anchor_statutes = []
-            principle_tests = []
+            chain_class = {
+                "domain": domain,
+                "causal_type_id": "",
+                "theory_id": "",
+                "source": "disabled",
+            }
+
+        # Post-hoc values are populated after the final reasoning chain is generated.
+        final_causal_id = ""
+        final_theory_id = ""
+        causal_types_for_counter: list[str] = []
+        anchor_norms: dict = {}
+        anchor_statutes: list[dict] = []
+        principle_tests: list[dict] = []
 
         # Phase 3: refine reasoning with anchor norms + cross-ref expansion
         self._log(
@@ -351,34 +313,101 @@ class Reasoner(BaseAgent):
                     claim, iterative_chain, conclusion_text=conclusion
                 )
 
-            output = ReasonerOutput(
-                claim=claim,
-                causality_classification={
-                    **chain_class,
-                    "domain": domain,
-                    "source": "reasoning_chain",
-                },
-                causal_type_id=final_causal_id,
-                theory_id=final_theory_id or "",
-                causal_type_ids_for_counter=causal_types_for_counter,
-                mismatch_status="",
-                anchor_norms=anchor_norms,
-                principle_tests=principle_tests,
-                relevant_statutes=deduped_statutes,
-                relevant_precedents=pre_retrieved_precedents,
-                raw_response=raw_output,
-                conclusion=conclusion,
-            )
-
             # Use iterative chain directly; fall back to extraction if empty
-            output.reasoning_chain = (
+            reasoning_chain = (
                 iterative_chain
                 if iterative_chain
                 else self._extract_reasoning_chain(raw_output)
             )
-            output.arguments = self._extract_arguments(raw_output)
-            output.reasoning_chain = self._sanitize_reasoning_chain(
-                output.reasoning_chain, pre_retrieved_precedents
+            reasoning_chain = self._sanitize_reasoning_chain(
+                reasoning_chain, pre_retrieved_precedents
+            )
+            arguments = self._extract_arguments(raw_output)
+
+            causality_classification = {
+                **chain_class,
+                "domain": domain,
+                "source": chain_class.get("source", "pending_posthoc"),
+            }
+            mismatch_status = ""
+            final_causal_id = ""
+            final_theory_id = ""
+            causal_types_for_counter = []
+            anchor_norms = {}
+            principle_tests = []
+
+            # Post-hoc causal classification on the FINAL chain.
+            if enable_causality and reasoning_chain:
+                try:
+                    post_chain_class = self._classify_causality_from_reasoning(
+                        claim=claim,
+                        reasoning_chain=reasoning_chain,
+                        raw_response=raw_output,
+                        domain=domain,
+                    )
+                    post_causal_id = post_chain_class.get("causal_type_id") or ""
+                    post_theory_id = post_chain_class.get("theory_id") or ""
+                    if post_causal_id:
+                        post_causal_id, post_theory_id = config_loader.validate_ids(
+                            post_causal_id, post_theory_id
+                        )
+                    final_causal_id = post_causal_id
+                    final_theory_id = post_theory_id or ""
+                    causality_classification = {
+                        **post_chain_class,
+                        "domain": domain,
+                        "source": "reasoning_chain_posthoc",
+                    }
+
+                    if final_causal_id:
+                        causal_types_for_counter = [final_causal_id]
+                        anchor_norms, _anchor_statutes_unused, principle_tests = (
+                            self._filtered_anchor_norms_for_types(
+                                causal_types_for_counter, claim
+                            )
+                        )
+                        self._log(
+                            f"📋 Post-hoc anchor norms: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+                        )
+
+                    # Optional diagnostics: compare eventual input hint vs post-hoc chain class.
+                    if hint_causal_id:
+                        causality_classification["input_hint_causal_type_id"] = (
+                            hint_causal_id
+                        )
+                        causality_classification["input_hint_theory_id"] = (
+                            hint_theory_id or ""
+                        )
+                        if final_causal_id and hint_causal_id != final_causal_id:
+                            mismatch_status = "hint_chain_drift"
+                            self._log(
+                                "⚠️ Post-hoc chain causality differs from input hint: "
+                                f"hint={hint_causal_id} vs chain={final_causal_id}",
+                                "warning",
+                            )
+                except Exception as class_exc:
+                    self._log(
+                        f"⚠️ Post-hoc causality classification failed: {class_exc}",
+                        "warning",
+                    )
+            elif enable_causality:
+                mismatch_status = "posthoc_unavailable_no_chain"
+
+            output = ReasonerOutput(
+                claim=claim,
+                causality_classification=causality_classification,
+                causal_type_id=final_causal_id,
+                theory_id=final_theory_id or "",
+                causal_type_ids_for_counter=causal_types_for_counter,
+                mismatch_status=mismatch_status,
+                anchor_norms=anchor_norms,
+                principle_tests=principle_tests,
+                relevant_statutes=deduped_statutes,
+                relevant_precedents=pre_retrieved_precedents,
+                arguments=arguments,
+                reasoning_chain=reasoning_chain,
+                raw_response=raw_output,
+                conclusion=conclusion,
             )
 
             formatter = AspicFormatter(
@@ -514,6 +543,97 @@ class Reasoner(BaseAgent):
                 unique.append(a)
         return unique
 
+    @staticmethod
+    def _article_ids_by_source(
+        mentions: list,
+    ) -> tuple[set[str], set[str], set[str]]:
+        """Group cited article ids by source hint (penale/civile/amministrativo)."""
+        pen: set[str] = set()
+        civ: set[str] = set()
+        amm: set[str] = set()
+        for mention in mentions:
+            article_id = normalize_article_id(getattr(mention, "article_id", ""))
+            source_hint = str(getattr(mention, "source_hint", "") or "").strip().lower()
+            if not article_id:
+                continue
+            if source_hint == "codice_penale":
+                pen.add(article_id)
+            elif source_hint == "codice_civile":
+                civ.add(article_id)
+            elif source_hint == "codice_amministrativo":
+                amm.add(article_id)
+        return pen, civ, amm
+
+    def _heuristic_causal_type_from_mentions(
+        self,
+        *,
+        mentions: list,
+        allowed_ids: list[str],
+    ) -> str:
+        """
+        Deterministic fallback classifier based on cited-article signatures.
+
+        This reduces over-fallback to the first allowed id and activates
+        finer causal types introduced in taxonomy.
+        """
+        allowed = set(allowed_ids)
+        pen, civ, amm = self._article_ids_by_source(mentions)
+
+        def can(ct_id: str) -> bool:
+            return ct_id in allowed
+
+        # Mixed civil+criminal profile
+        if pen and civ and can("MIXED_PEN_CIV_CONCURRENCE"):
+            return "MIXED_PEN_CIV_CONCURRENCE"
+
+        # Penal signatures
+        if can("PEN_RIGHTS_BALANCING") and pen.intersection(
+            {"51", "595", "610", "392", "393", "614"}
+        ):
+            return "PEN_RIGHTS_BALANCING"
+        if can("PEN_PROPERTY_QUALIFICATION") and pen.intersection(
+            {"646", "640", "624", "624-bis", "625"}
+        ):
+            return "PEN_PROPERTY_QUALIFICATION"
+        if can("PEN_COLPA_GRADATION") and pen.intersection(
+            {"42", "43", "61", "62-bis", "113", "133", "589-bis", "590"}
+        ):
+            return "PEN_COLPA_GRADATION"
+        if can("PEN_INTERVENING") and pen.intersection({"41", "45"}):
+            return "PEN_INTERVENING"
+        if can("IMPUTATION_FILTER") and "45" in pen:
+            return "IMPUTATION_FILTER"
+        if can("PEN_FACTUAL") and pen.intersection({"40", "41", "589-bis", "590"}):
+            return "PEN_FACTUAL"
+
+        # Civil signatures
+        if can("CIV_SALE_DEFECTS") and civ.intersection(
+            {"1490", "1491", "1492", "1494", "1495"}
+        ):
+            return "CIV_SALE_DEFECTS"
+        if can("CIV_CONTRACT_REMEDIES") and civ.intersection(
+            {"1218", "1453", "1455", "1457", "1460", "1385", "1382", "1384"}
+        ):
+            return "CIV_CONTRACT_REMEDIES"
+        if can("CIV_CUSTODY_DAMAGE") and civ.intersection(
+            {"2051", "2052", "1117", "1123", "1126"}
+        ):
+            return "CIV_CUSTODY_DAMAGE"
+        if can("CIV_REMOTENESS") and civ.intersection(
+            {"1223", "1225", "1226", "1227", "2056"}
+        ):
+            return "CIV_REMOTENESS"
+
+        # Administrative signatures
+        if can("AMM_AUTOTUTELA_BALANCE") and amm.intersection({"21-novies", "21-quinquies"}):
+            return "AMM_AUTOTUTELA_BALANCE"
+        if can("AMM_DELAY_REMEDIES") and amm.intersection({"2-bis"}):
+            return "AMM_DELAY_REMEDIES"
+        if can("AMM_PROCEDURAL_LEGITIMACY") and amm:
+            return "AMM_PROCEDURAL_LEGITIMACY"
+
+        return ""
+
     def _classify_causality_from_reasoning(
         self, claim: str, reasoning_chain: list[str], raw_response: str, domain: str
     ) -> dict:
@@ -540,6 +660,7 @@ class Reasoner(BaseAgent):
         self._log(f"🔬 Allowed causal_type_ids for domain '{domain}': {allowed_ids}")
 
         chain_text = "\n".join(reasoning_chain) or raw_response or ""
+        mentions = extract_article_mentions(chain_text, require_code=True)
 
         # Estrai gli articoli citati dalla catena di ragionamento
         cited_articles = self._extract_cited_articles(chain_text)
@@ -548,6 +669,16 @@ class Reasoner(BaseAgent):
         )
 
         self._log(f"🔬 Articoli citati nella catena di ragionamento: {articles_text}")
+
+        heuristic_id = self._heuristic_causal_type_from_mentions(
+            mentions=mentions,
+            allowed_ids=allowed_ids,
+        )
+        if heuristic_id:
+            theory_id = self._get_default_theory(heuristic_id, config)
+            result = {"causal_type_id": heuristic_id, "theory_id": theory_id}
+            self._log(f"🔬 Heuristic causality classification: {result}")
+            return result
 
         # Build causal type descriptions for prompt
         type_descriptions = []
@@ -728,15 +859,7 @@ class Reasoner(BaseAgent):
         allowed_precedents: list[str],
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, list[str]]:
-        """Generate the reasoning chain with plan -> execute workflow.
-
-        Flow:
-        1. Build a reasoning plan (distinct steps) with one LLM call.
-        2. Execute one LLM call per planned step.
-        3. Validate each produced step (stance, repetition, semantic novelty).
-
-        No fallback to the previous auto-stop strategy is used.
-        """
+        """Generate the reasoning chain with plan -> execute -> residual replan workflow."""
         max_steps = settings.chain_max_steps
         min_steps = settings.chain_min_steps
         statutes_list = (
@@ -746,30 +869,23 @@ class Reasoner(BaseAgent):
             "\n".join(f"- {p}" for p in allowed_precedents)
             or "- No precedents available"
         )
-
-        plan = self._generate_reasoning_plan(
-            claim=claim,
-            routing_decision=routing_decision,
-            anchor_text=anchor_text,
-            principle_text=principle_text,
-            knowledge_base=knowledge_base,
-            statutes_list=statutes_list,
-            precedents_list=precedents_list,
-            min_steps=min_steps,
-            max_steps=max_steps,
-        )
-        self._log(f"🧭 Reasoning plan generated: {len(plan)} step(s)")
-
         steps: list[str] = []
         step_summaries: list[str] = []
         used_norms: list[str] = []
+        plan_round = 0
+        stalled_rounds = 0
+        max_plan_rounds = max(1, self._max_plan_retries + 1)
 
-        for idx, plan_step in enumerate(plan, start=1):
-            self._log(
-                f"🔗 Generating planned step {idx}/{len(plan)}: "
-                f"{plan_step.get('goal', '')[:80]}"
-            )
-            step_text = self._generate_support_step_from_plan(
+        while len(steps) < min_steps and len(steps) < max_steps:
+            plan_round += 1
+            if plan_round > max_plan_rounds:
+                break
+
+            remaining_min = max(1, min_steps - len(steps))
+            remaining_max = max(1, max_steps - len(steps))
+            planner_mode = "RESUME" if steps else "FULL"
+
+            plan = self._generate_reasoning_plan(
                 claim=claim,
                 routing_decision=routing_decision,
                 anchor_text=anchor_text,
@@ -777,38 +893,106 @@ class Reasoner(BaseAgent):
                 knowledge_base=knowledge_base,
                 statutes_list=statutes_list,
                 precedents_list=precedents_list,
-                plan=plan,
-                plan_index=idx,
-                plan_step=plan_step,
-                previous_steps=steps,
-                previous_summaries=step_summaries,
-                used_norms=used_norms,
-                stream_callback=stream_callback,
+                min_steps=remaining_min,
+                max_steps=remaining_max,
+                planner_mode=planner_mode,
+                resume_from_step=len(steps) + 1,
+                existing_summaries=step_summaries,
             )
-            if not step_text:
-                raise RuntimeError(
-                    f"Planned support step {idx} could not be generated with valid content"
+            plan = self._coerce_plan_to_allowed_norms(
+                plan=plan,
+                allowed_statutes=allowed_statutes,
+            )
+            plan = self._prune_plan_against_existing_history(
+                plan=plan,
+                previous_summaries=step_summaries,
+            )
+
+            if not plan:
+                stalled_rounds += 1
+                self._log(
+                    "⚠️ Planner produced only redundant residual steps; retrying residual plan",
+                    "warning",
+                )
+                if stalled_rounds >= 2:
+                    break
+                continue
+
+            self._log(
+                f"🧭 Reasoning plan generated: {len(plan)} step(s) "
+                f"[round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
+            )
+
+            steps_before_round = len(steps)
+            round_failed = False
+
+            for local_idx, plan_step in enumerate(plan, start=1):
+                global_idx = len(steps) + 1
+                self._log(
+                    f"🔗 Generating planned step {global_idx}/{max_steps}: "
+                    f"{plan_step.get('goal', '')[:80]}"
+                )
+                step_text = self._generate_support_step_from_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    anchor_text=anchor_text,
+                    principle_text=principle_text,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    precedents_list=precedents_list,
+                    plan=plan,
+                    plan_index=local_idx,
+                    plan_step=plan_step,
+                    previous_steps=steps,
+                    previous_summaries=step_summaries,
+                    used_norms=used_norms,
+                    stream_callback=stream_callback,
+                )
+                if not step_text:
+                    round_failed = True
+                    self._log(
+                        f"⚠️ Planned reasoning step {global_idx} could not be generated; "
+                        "replanning residual steps from accepted prefix",
+                        "warning",
+                    )
+                    break
+
+                steps.append(step_text)
+                step_summaries.append(self._compact_step_summary(step_text))
+                new_norms = self._extract_cited_articles(step_text)
+                for norm in new_norms:
+                    if norm not in used_norms:
+                        used_norms.append(norm)
+
+                prec_mentions = [
+                    p for p in allowed_precedents if p.lower() in step_text.lower()
+                ]
+                prec_info = (
+                    f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
+                )
+                self._log(
+                    f"✅ Step {global_idx}: {step_text[:80]}... "
+                    f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
                 )
 
-            steps.append(step_text)
-            step_summaries.append(self._compact_step_summary(step_text))
-            new_norms = self._extract_cited_articles(step_text)
-            for norm in new_norms:
-                if norm not in used_norms:
-                    used_norms.append(norm)
+                if len(steps) >= max_steps:
+                    break
 
-            prec_mentions = [
-                p for p in allowed_precedents if p.lower() in step_text.lower()
-            ]
-            prec_info = f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
-            self._log(
-                f"✅ Step {idx}: {step_text[:80]}... "
-                f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
-            )
+            if len(steps) == steps_before_round:
+                stalled_rounds += 1
+            else:
+                stalled_rounds = 0
+
+            if stalled_rounds >= 2 and len(steps) < min_steps:
+                break
+
+            if not round_failed and len(steps) >= min_steps:
+                break
 
         if len(steps) < min_steps:
             raise RuntimeError(
-                "Planner/executor produced fewer steps than chain_min_steps"
+                "Planner/executor produced fewer steps than chain_min_steps "
+                "after residual replanning"
             )
 
         self._log(
@@ -828,8 +1012,19 @@ class Reasoner(BaseAgent):
         precedents_list: str,
         min_steps: int,
         max_steps: int,
+        planner_mode: str = "FULL",
+        resume_from_step: int = 1,
+        existing_summaries: Optional[list[str]] = None,
     ) -> list[dict[str, str]]:
         """Generate and validate an execution plan for support reasoning."""
+        existing_steps_text = (
+            "\n".join(
+                f"- Step {idx}: {summary}"
+                for idx, summary in enumerate(existing_summaries or [], start=1)
+            )
+            if existing_summaries
+            else "- none"
+        )
         prompt = render_prompt(
             "reasoner.generate_plan",
             claim=claim,
@@ -841,6 +1036,9 @@ class Reasoner(BaseAgent):
             knowledge_base=knowledge_base,
             min_steps=min_steps,
             max_steps=max_steps,
+            planner_mode=planner_mode,
+            resume_from_step=resume_from_step,
+            existing_steps=existing_steps_text,
         )
         last_error = "planner failed"
         for attempt in range(1, self._max_plan_retries + 1):
@@ -887,6 +1085,21 @@ class Reasoner(BaseAgent):
             goal = str(item.get("goal", "")).strip()
             focus = str(item.get("focus", "")).strip()
             expected_norm = str(item.get("expected_norm", "")).strip() or "N/A"
+            step_type = self._normalize_reasoner_step_type(item.get("step_type"))
+            novelty_key = (
+                re.sub(
+                    r"[^a-z0-9_]+",
+                    "_",
+                    str(item.get("novelty_key", "")).strip().lower(),
+                )
+                .strip("_")
+                or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[:48]
+                or f"step_{idx}"
+            )
+            citation_requirement = self._normalize_plan_citation_requirement(
+                expected_norm=expected_norm,
+                raw_value=item.get("citation_requirement"),
+            )
             if not goal or not focus:
                 continue
             cleaned.append(
@@ -895,6 +1108,9 @@ class Reasoner(BaseAgent):
                     "goal": goal,
                     "focus": focus,
                     "expected_norm": expected_norm,
+                    "citation_requirement": citation_requirement,
+                    "step_type": step_type,
+                    "novelty_key": novelty_key[:64],
                 }
             )
 
@@ -902,18 +1118,186 @@ class Reasoner(BaseAgent):
             raise ValueError(
                 f"invalid plan length {len(cleaned)} (expected {min_steps}-{max_steps})"
             )
+        novelty_keys = [step.get("novelty_key", "") for step in cleaned]
+        if len(set(novelty_keys)) != len(novelty_keys):
+            raise ValueError("planner produced duplicate novelty_key values")
+        if not self._has_min_plan_type_coverage(cleaned):
+            raise ValueError("planner produced poor step-type coverage")
         if self._has_overlapping_plan_steps(cleaned):
             raise ValueError("planner produced overlapping/repetitive steps")
         return cleaned
 
+    @staticmethod
+    def _normalize_reasoner_step_type(raw_value: object) -> str:
+        """Normalize planner step_type into a constrained enum-like value."""
+        value = str(raw_value or "").strip().upper()
+        allowed = {
+            "FACTS",
+            "QUALIFICATION",
+            "CAUSAL_LINK",
+            "ELEMENTS",
+            "BALANCING",
+            "CONSEQUENCE",
+            "SYNTHESIS",
+            "OTHER",
+        }
+        if value in allowed:
+            return value
+        aliases = {
+            "FACTUAL": "FACTS",
+            "FATTI": "FACTS",
+            "CLASSIFICATION": "QUALIFICATION",
+            "LEGAL_QUALIFICATION": "QUALIFICATION",
+            "NEXUS": "CAUSAL_LINK",
+            "CAUSALITY": "CAUSAL_LINK",
+            "SUBJECTIVE_ELEMENT": "ELEMENTS",
+            "PENAL_ELEMENT": "ELEMENTS",
+            "OUTCOME": "CONSEQUENCE",
+            "RESULT": "CONSEQUENCE",
+            "CONCLUSION": "SYNTHESIS",
+        }
+        return aliases.get(value, "OTHER")
+
+    @staticmethod
+    def _has_min_plan_type_coverage(plan_steps: list[dict[str, str]]) -> bool:
+        """Require at least minimal diversity of step types for non-trivial plans."""
+        if len(plan_steps) <= 2:
+            return True
+        concrete = [
+            str(step.get("step_type", "")).strip().upper()
+            for step in plan_steps
+            if str(step.get("step_type", "")).strip().upper() not in {"", "OTHER"}
+        ]
+        if len(concrete) < 2:
+            # Backward compatibility when planner does not provide step_type.
+            return True
+        min_required = 2 if len(plan_steps) <= 4 else 3
+        return len(set(concrete)) >= min_required
+
+    @staticmethod
+    def _normalize_plan_citation_requirement(
+        *,
+        expected_norm: str,
+        raw_value: object,
+    ) -> str:
+        """
+        Normalize planner citation policy for a step.
+
+        Backward-compatible behavior:
+        - if planner does not provide the field, require citations only when
+          ``expected_norm`` is a real article (not N/A).
+        """
+        value = str(raw_value or "").strip().lower()
+        aliases = {
+            "required": "required",
+            "must": "required",
+            "mandatory": "required",
+            "optional": "optional",
+            "if_possible": "optional",
+            "when_possible": "optional",
+            "none": "none",
+            "no": "none",
+        }
+        normalized = aliases.get(value)
+        if normalized:
+            return normalized
+
+        expected = str(expected_norm or "").strip().upper()
+        if expected and expected not in {"N/A", "NA", "NONE", "-"}:
+            return "required"
+        return "optional"
+
+    @staticmethod
+    def _step_requires_citation(
+        *, expected_norm: str, citation_requirement: str
+    ) -> bool:
+        """Decide citation requirement using planner metadata only (no keyword heuristics)."""
+        requirement = str(citation_requirement or "").strip().lower()
+        if requirement == "required":
+            return True
+        if requirement in {"optional", "none"}:
+            return False
+        expected = str(expected_norm or "").strip().upper()
+        return bool(expected and expected not in {"N/A", "NA", "NONE", "-"})
+
+    @staticmethod
+    def _extract_allowed_article_ids(allowed_statutes: list[str]) -> set[str]:
+        """
+        Parse normalized article ids from allowed statute labels.
+        """
+        ids: set[str] = set()
+        for label in allowed_statutes or []:
+            for match in re.findall(r"art\.?\s*([0-9]+(?:-[a-z]+)?)", label, re.IGNORECASE):
+                normalized = normalize_article_id(match)
+                if normalized:
+                    ids.add(normalized)
+        return ids
+
+    def _coerce_plan_to_allowed_norms(
+        self,
+        *,
+        plan: list[dict[str, str]],
+        allowed_statutes: list[str],
+    ) -> list[dict[str, str]]:
+        """
+        Downgrade impossible citation requirements when planner expects norms
+        not present in the allowed statute set.
+        """
+        allowed_ids = self._extract_allowed_article_ids(allowed_statutes)
+        if not allowed_ids:
+            return plan
+
+        adjusted = 0
+        for step in plan:
+            expected_norm = str(step.get("expected_norm", "")).strip()
+            if not expected_norm or expected_norm.upper() in {"N/A", "NA", "NONE", "-"}:
+                continue
+            mentions = extract_article_mentions(expected_norm, require_code=False)
+            expected_ids = {
+                normalize_article_id(m.article_id)
+                for m in mentions
+                if getattr(m, "article_id", None)
+            }
+            expected_ids = {eid for eid in expected_ids if eid}
+            if not expected_ids:
+                for match in re.findall(
+                    r"art\.?\s*([0-9]+(?:-[a-z]+)?)", expected_norm, re.IGNORECASE
+                ):
+                    normalized = normalize_article_id(match)
+                    if normalized:
+                        expected_ids.add(normalized)
+            if not expected_ids:
+                continue
+            if expected_ids & allowed_ids:
+                continue
+            step["expected_norm"] = "N/A"
+            if str(step.get("citation_requirement", "")).strip().lower() == "required":
+                step["citation_requirement"] = "optional"
+            adjusted += 1
+
+        if adjusted:
+            self._log(
+                f"⚠️ Planner normalization: downgraded {adjusted} step(s) with unavailable expected_norm",
+                "warning",
+            )
+        return plan
+
     def _has_overlapping_plan_steps(self, plan_steps: list[dict[str, str]]) -> bool:
-        """Detect obvious overlap across planned goals/focuses."""
+        """Detect overlap across planned goals/focuses (lexical + semantic)."""
         normalized = []
+        texts: list[str] = []
         for step in plan_steps:
             text = f"{step.get('goal', '')} {step.get('focus', '')}".lower()
-            text = re.sub(r"[^a-z0-9àèéìòù\s]", " ", text)
+            text = re.sub(r"[^a-z0-9\s]", " ", text)
             words = {w for w in text.split() if len(w) > 3}
             normalized.append(words)
+            texts.append(
+                re.sub(
+                    r"\s+",
+                    " ",
+                    f"{step.get('goal', '')}. {step.get('focus', '')}",
+                ).strip()
+            )
 
         for i in range(len(normalized)):
             for j in range(i + 1, len(normalized)):
@@ -924,7 +1308,66 @@ class Reasoner(BaseAgent):
                 overlap = len(a & b) / len(a | b)
                 if overlap >= 0.65:
                     return True
+                if overlap >= 0.40:
+                    rel_ab = self._nli_relation(
+                        target_text=texts[i],
+                        attacker_text=texts[j],
+                        actor_label="ReasonerPlanner",
+                    )
+                    rel_ba = self._nli_relation(
+                        target_text=texts[j],
+                        attacker_text=texts[i],
+                        actor_label="ReasonerPlanner",
+                    )
+                    if rel_ab == "entailment" and rel_ba == "entailment":
+                        return True
         return False
+
+    def _prune_plan_against_existing_history(
+        self,
+        *,
+        plan: list[dict[str, str]],
+        previous_summaries: list[str],
+    ) -> list[dict[str, str]]:
+        """Remove residual plan steps already covered by the accepted prefix."""
+        if not plan or not previous_summaries:
+            return plan
+        pruned: list[dict[str, str]] = []
+        removed = 0
+        for step in plan:
+            candidate = f"{step.get('goal', '')}. {step.get('focus', '')}".strip()
+            if not candidate:
+                removed += 1
+                continue
+            if self._is_repetitive_step(candidate, previous_summaries, threshold=0.45):
+                removed += 1
+                continue
+            redundant = False
+            for summary in previous_summaries[-4:]:
+                rel = self._nli_relation(
+                    target_text=summary,
+                    attacker_text=candidate,
+                    actor_label="ReasonerPlanner",
+                )
+                if rel == "entailment":
+                    rel_sym = self._nli_relation(
+                        target_text=candidate,
+                        attacker_text=summary,
+                        actor_label="ReasonerPlanner",
+                    )
+                    if rel_sym in {"entailment", "neutral"}:
+                        redundant = True
+                        break
+            if redundant:
+                removed += 1
+                continue
+            pruned.append(step)
+        if removed:
+            self._log(
+                f"⚠️ Planner normalization: pruned {removed} residual step(s) already covered by accepted prefix",
+                "warning",
+            )
+        return pruned
 
     def _generate_support_step_from_plan(
         self,
@@ -1012,26 +1455,23 @@ class Reasoner(BaseAgent):
                 candidate_step=candidate,
                 previous_steps=previous_steps,
                 claim=claim,
+                expected_norm=plan_step.get("expected_norm", "N/A"),
+                citation_requirement=plan_step.get("citation_requirement", "optional"),
             )
             if ok:
                 return candidate
-            if (
-                reason == "semantic repetition"
-                and attempt == self._max_step_rewrites + 1
-                and candidate
-                and self._is_support_step_consistent(candidate)
-                and not self._is_garbage_text(candidate)
-                and (
-                    not previous_steps
-                    or not self._is_repetitive_step(candidate, previous_steps)
-                )
-            ):
-                self._log(
-                    f"⚠️ Step {plan_index}: accepting semantically-close step after retries",
-                    "warning",
-                )
-                return candidate
             last_reason = reason
+            if stream_callback:
+                try:
+                    stream_callback(
+                        {
+                            "phase": "support",
+                            "action": "reset_step",
+                            "step": plan_index,
+                        }
+                    )
+                except Exception:
+                    pass
             self._log(
                 f"⚠️ Step {plan_index} rejected ({reason}) "
                 f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
@@ -1054,9 +1494,10 @@ class Reasoner(BaseAgent):
         previous_summaries: list[str],
         used_norms: list[str],
     ) -> str:
-        """Create prompt for one planned support step."""
+        """Create prompt for one planned reasoning step."""
         plan_lines = "\n".join(
-            f"{idx}. {step.get('goal', '')} | focus: {step.get('focus', '')}"
+            f"{idx}. {step.get('goal', '')} | focus: {step.get('focus', '')} | "
+            f"type: {step.get('step_type', 'OTHER')} | novelty: {step.get('novelty_key', '')}"
             for idx, step in enumerate(plan, start=1)
         )
         summary_lines = (
@@ -1082,6 +1523,9 @@ class Reasoner(BaseAgent):
             plan_goal=plan_step.get("goal", ""),
             plan_focus=plan_step.get("focus", ""),
             plan_expected_norm=plan_step.get("expected_norm", "N/A"),
+            plan_citation_requirement=plan_step.get("citation_requirement", "optional"),
+            plan_step_type=plan_step.get("step_type", "OTHER"),
+            plan_novelty_key=plan_step.get("novelty_key", ""),
             summary_lines=summary_lines,
             used_norms_text=used_norms_text,
         )
@@ -1090,28 +1534,59 @@ class Reasoner(BaseAgent):
         self, previous_prompt: str, invalid_step: str, invalid_reason: str
     ) -> str:
         """Prompt to rewrite a planned step that failed validation."""
-        return render_prompt(
+        base_prompt = render_prompt(
             "reasoner.support_plan_rewrite",
             previous_prompt=previous_prompt,
             invalid_reason=invalid_reason,
             invalid_step=invalid_step,
         )
+        if "missing statutory citation" in (invalid_reason or "").lower():
+            return (
+                f"{base_prompt}\n\n"
+                "MANDATORY FIX:\n"
+                "- Include at least one explicit statute citation from the ALLOWED STATUTES list already shown above.\n"
+                "- Use the citation in canonical form (e.g., Art. 589-bis c.p.).\n"
+            )
+        return base_prompt
 
     def _validate_support_step_candidate(
         self,
         candidate_step: str,
         previous_steps: list[str],
         claim: str,
+        expected_norm: str,
+        citation_requirement: str,
     ) -> tuple[bool, str]:
-        """Validation checks for one support step candidate."""
+        """Validation checks for one reasoning step candidate."""
         text = (candidate_step or "").strip()
         if not text or text.upper() == "DONE":
             return False, "empty step"
         if self._is_garbage_text(text):
             return False, "garbage output"
         if not self._is_support_step_consistent(text):
-            return False, "stance drift (not strictly pro-claim)"
-        if not self._extract_cited_articles(text):
+            return False, "reasoning inconsistency"
+        facts_ok, facts_reason = self._is_step_fact_consistent_with_claim(
+            claim=claim,
+            candidate_step=text,
+            actor_label="Reasoner",
+        )
+        if not facts_ok:
+            return False, facts_reason
+        compatible, compat_reason = self._is_support_step_compatible_with_history(
+            candidate_step=text,
+            previous_steps=previous_steps,
+            claim=claim,
+        )
+        if not compatible:
+            return False, compat_reason or "history incompatibility"
+        citations = self._extract_cited_articles(text)
+        if (
+            self._step_requires_citation(
+                expected_norm=expected_norm,
+                citation_requirement=citation_requirement,
+            )
+            and not citations
+        ):
             return False, "missing statutory citation"
         if previous_steps and self._is_repetitive_step(text, previous_steps):
             return False, "lexical repetition"
@@ -1241,87 +1716,10 @@ class Reasoner(BaseAgent):
 
         return step_text
 
-    def _evaluate_should_continue(
-        self,
-        claim: str,
-        domain: str,
-        steps: list[str],
-        used_norms: list[str],
-        knowledge_base: str,
-        statutes_list: str,
-        role: str = "support",
-    ) -> bool:
-        """Dedicated evaluation call: should the chain continue?
-
-        A lightweight LLM call that inspects the current chain and
-        decides whether an additional step would meaningfully
-        strengthen the argument.
-
-        Returns ``True`` to continue, ``False`` to conclude.
-        """
-        prev_context = "\n".join(
-            f"  Step {i + 1}: {s[:300]}..." for i, s in enumerate(steps)
-        )
-        used_text = ", ".join(sorted(set(used_norms))) if used_norms else "none"
-        n_steps = len(steps)
-        n_unique_norms = len(set(used_norms)) if used_norms else 0
-
-        role_desc = "supporting" if role == "support" else "counter-"
-
-        eval_prompt = render_prompt(
-            "reasoner.evaluate_continue",
-            role_desc=role_desc,
-            n_steps=n_steps,
-            n_unique_norms=n_unique_norms,
-            total_citations=len(used_norms),
-            claim=claim,
-            domain=domain,
-            prev_context=prev_context,
-            used_text=used_text,
-            statutes_list=statutes_list,
-        )
-
-        try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=eval_prompt)])
-            answer = (resp.content or "").strip().upper()
-        except Exception as e:
-            self._log(
-                f"⚠️ Evaluation call failed: {e}; defaulting to CONTINUE",
-                "warning",
-            )
-            return True
-
-        # Robust parsing
-        if "CONCLUD" in answer:
-            should_continue = False
-        elif "CONTINU" in answer:
-            should_continue = True
-        else:
-            # Ambiguous → default to CONCLUDE after enough steps
-            should_continue = n_steps < 5
-            self._log(
-                f"⚠️ Evaluator ambiguous: '{answer[:50]}'; "
-                f"defaulting to {'CONTINUE' if should_continue else 'CONCLUDE'}",
-                "warning",
-            )
-
-        self._log(f"🔍 Evaluator: {'CONTINUE' if should_continue else 'CONCLUDE'}")
-        return should_continue
-
-    def _build_support_stance_rewrite_prompt(
-        self, original_prompt: str, invalid_step: str
-    ) -> str:
-        """Rewrite step text that drifted away from pro-claim stance."""
-        return render_prompt(
-            "reasoner.support_stance_rewrite",
-            original_prompt=original_prompt,
-            invalid_step=invalid_step,
-        )
-
     def _build_support_conclusion_rewrite_prompt(
         self, claim: str, chain_text: str, norms_text: str, invalid_conclusion: str
     ) -> str:
-        """Force a concise conclusion aligned with pro-claim stance."""
+        """Force a concise conclusion aligned with the reasoning chain."""
         return render_prompt(
             "reasoner.support_conclusion_rewrite",
             claim=claim,
@@ -1332,79 +1730,45 @@ class Reasoner(BaseAgent):
 
     def _is_support_step_consistent(self, step_text: str) -> bool:
         """
-        Heuristic guardrail against anti-claim drift in support generation.
+        Lightweight guardrail against self-contradictory legal reasoning text.
 
-        Returns False when the text contains strong anti-claim signals
-        not offset by explicit pro-claim language.
+        This intentionally does NOT enforce a pro/anti orientation on the claim.
+        It only rejects obvious internal contradictions inside a single step.
         """
-        text = re.sub(r"\s+", " ", (step_text or "").strip().lower())
-        if not text:
-            return False
+        return self._is_step_self_consistent(step_text)
 
-        pro_patterns = [
-            r"\bpretesa\b.*\bfondat",
-            r"\bricorso\b.*\bfondat",
-            r"\bdeve\s+essere\s+accolt",
-            r"\baccoglibil",
-            r"\bannullabil",
-            r"\b(il|lo)\s+atto\b.*\billegittim",
-            r"\bprovvedimento\b.*\billegittim",
-            r"\bviolazion",
-            r"\bdetermina\b.*\billegittimit",
-        ]
-        anti_patterns = [
-            r"\bpretesa\b.*\brigettat",
-            r"\bricorso\b.*\brigettat",
-            r"\binfondat",
-            r"\binammissibil",
-            r"\bnon\s+(?:e|è)?\s*annullabil",
-            r"\bnon\s+determina\b.*\billegittimit",
-            r"\b(?:atto|provvedimento)\b.{0,25}\blegittim",
-        ]
-
-        pro_score = 0
-        for p in pro_patterns:
-            if not re.search(p, text):
+    def _is_support_step_compatible_with_history(
+        self,
+        *,
+        candidate_step: str,
+        previous_steps: list[str],
+        claim: str,
+    ) -> tuple[bool, str]:
+        """
+        Ensure candidate step is semantically compatible with accepted chain history.
+        """
+        if not previous_steps:
+            return True, ""
+        window = previous_steps[-3:]
+        start_idx = len(previous_steps) - len(window) + 1
+        for offset, prev_step in enumerate(window):
+            relation = self._nli_relation(
+                target_text=prev_step,
+                attacker_text=candidate_step,
+                actor_label="Reasoner",
+            )
+            if relation != "contradiction":
                 continue
-            if p == r"\bannullabil" and re.search(
-                r"\bnon\s+(?:e|è)?\s*annullabil", text
-            ):
-                continue
-            if p in (
-                r"\b(il|lo)\s+atto\b.*\billegittim",
-                r"\bprovvedimento\b.*\billegittim",
-                r"\bdetermina\b.*\billegittimit",
-            ) and re.search(
-                r"\bnon\s+(?:rende|determina)\b.*\billegittim",
-                text,
-            ):
-                continue
-            if p == r"\bviolazion" and re.search(r"\bnon\b.{0,12}\bviolazion", text):
-                continue
-            if p == r"\bpretesa\b.*\bfondat" and re.search(
-                r"\bnon\b.{0,12}\bfondat", text
-            ):
-                continue
-            pro_score += 1
-
-        anti_score = 0
-        for p in anti_patterns:
-            if not re.search(p, text):
-                continue
-            if p == r"\b(?:atto|provvedimento)\b.{0,25}\blegittim" and re.search(
-                r"\bnon\b.{0,15}\blegittim", text
-            ):
-                continue
-            anti_score += 1
-
-        if re.search(r"\baccolt", text) and re.search(r"\brigettat", text):
-            return False
-
-        if anti_score >= 2 and pro_score == 0:
-            return False
-        if anti_score > pro_score + 1:
-            return False
-        return True
+            # Reject only when contradiction is stable in both directions.
+            relation_sym = self._nli_relation(
+                target_text=candidate_step,
+                attacker_text=prev_step,
+                actor_label="Reasoner",
+            )
+            if relation_sym == "contradiction":
+                step_no = start_idx + offset
+                return False, f"candidate contradicts previous step {step_no}"
+        return True, ""
 
     def _generate_conclusion(
         self,
@@ -1457,7 +1821,7 @@ class Reasoner(BaseAgent):
             if conclusion:
                 if not self._is_support_step_consistent(conclusion):
                     self._log(
-                        "⚠️ LLM conclusion drifts from pro-claim stance; rewriting",
+                        "⚠️ LLM conclusion appears internally inconsistent; rewriting",
                         "warning",
                     )
                     rewrite_prompt = self._build_support_conclusion_rewrite_prompt(
@@ -1492,16 +1856,28 @@ class Reasoner(BaseAgent):
                         )
                         conclusion = ""
                 if conclusion:
+                    facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                        claim=claim,
+                        candidate_step=conclusion,
+                        actor_label="Reasoner",
+                    )
+                    if not facts_ok:
+                        self._log(
+                            "⚠️ LLM conclusion contradicts explicit claim facts; using fallback",
+                            "warning",
+                        )
+                        conclusion = ""
+                if conclusion:
                     self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
                     return conclusion
         except Exception as e:
             self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
 
-        # Static fallback
+        # Static fallback (neutral with respect to claim orientation)
         return (
-            f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
-            f"Le norme richiamate ({norms_text}) trovano applicazione al caso di specie "
-            f"e supportano il fondamento giuridico della domanda."
+            f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
+            f"deve essere fondata sulle norme richiamate ({norms_text}) "
+            f"e sulla loro applicazione ai fatti esposti."
         )
 
     def _assemble_raw_response(
@@ -1527,28 +1903,41 @@ class Reasoner(BaseAgent):
         norms = self._extract_cited_articles(" ".join(steps))
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
 
-        if conclusion_text and not self._is_support_step_consistent(conclusion_text):
-            self._log(
-                "⚠️ Provided conclusion inconsistent with pro-claim stance; using fallback",
-                "warning",
-            )
-            conclusion_text = ""
+        if conclusion_text:
+            if not self._is_support_step_consistent(conclusion_text):
+                self._log(
+                    "⚠️ Provided conclusion is internally inconsistent; using fallback",
+                    "warning",
+                )
+                conclusion_text = ""
+            else:
+                facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                    claim=claim,
+                    candidate_step=conclusion_text,
+                    actor_label="Reasoner",
+                )
+                if not facts_ok:
+                    self._log(
+                        "⚠️ Provided conclusion contradicts explicit claim facts; using fallback",
+                        "warning",
+                    )
+                    conclusion_text = ""
 
         if not conclusion_text:
             norms_list = ", ".join(norms) if norms else "le norme applicabili"
             conclusion_text = (
-                f"Sulla base dell'analisi giuridica svolta, la pretesa risulta fondata. "
-                f"Le norme richiamate ({norms_list}) trovano applicazione al caso di specie "
-                f"e supportano il fondamento giuridico della domanda."
+                f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
+                f"dipende dall'applicazione delle norme richiamate ({norms_list}) "
+                f"ai fatti esposti nella catena di ragionamento."
             )
 
         raw = (
             f"**Premessa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale**: La connessione tra le norme citate e la pretesa "
+            f"**Nesso Causale**: La connessione tra le norme citate e la questione giuridica posta dal claim "
             f"emerge dalla catena di ragionamento sottostante, dove ciascun passo "
-            f"costruisce logicamente sul precedente per dimostrare il fondamento "
-            f"giuridico della domanda.\n\n"
+            f"costruisce logicamente sul precedente per motivare la valutazione "
+            f"giuridica finale.\n\n"
             f"**Conclusione**: {conclusion_text}\n\n"
             f"{chain_section}"
         )

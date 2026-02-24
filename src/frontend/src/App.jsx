@@ -20,7 +20,7 @@ const TAB_WELCOME_MESSAGES = {
   [TABS.REASON]:
     'Ciao! Sono LexCausa, il tuo assistente per il ragionamento giuridico. Inserisci un claim e costruirò un percorso argomentativo strutturato, passo dopo passo.',
   [TABS.PIPELINE]:
-    'Ciao! Sono LexCausa, il tuo assistente per l’analisi completa del caso. Inserisci un claim e riceverai una valutazione strutturata con argomentazioni a favore e contro, più un esito finale.',
+    'Ciao! Sono LexCausa, il tuo assistente per l’analisi completa del caso. Inserisci un claim e riceverai una valutazione strutturata con tesi principale e controtesi, più un esito finale.',
 };
 
 const PIPELINE_PHASES = [
@@ -504,6 +504,26 @@ export default function App() {
       });
     };
 
+    const resetPhaseStepLive = (phase, stepNumber = null) => {
+      if (stepNumber == null) return;
+      updateLivePipeline((prev) => {
+        const next = {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            support_steps: { ...(prev._stream?.support_steps || {}) },
+            counter_steps: { ...(prev._stream?.counter_steps || {}) },
+          },
+        };
+        if (phase === 'support') {
+          next._stream.support_steps[stepNumber] = '';
+        } else if (phase === 'counter') {
+          next._stream.counter_steps[stepNumber] = '';
+        }
+        return next;
+      });
+    };
+
     const requestBody = JSON.stringify({
       claim,
       include_precedents: pipelineSettings.include_precedents,
@@ -617,6 +637,10 @@ export default function App() {
 
           if (eventName === 'token') {
             const phase = payload.phase || 'generic';
+            if (payload?.action === 'reset_step') {
+              resetPhaseStepLive(phase, payload?.step ?? null);
+              continue;
+            }
             if (phase === 'support' || phase === 'support_conclusion') {
               setPhaseStatus('context_setup', 'done');
               setPhaseStatus('support', 'active');
@@ -2655,8 +2679,8 @@ export default function App() {
                               <span className={`aqa-badge ${histAqaVerdictClass}`}>
                                 Verdetto: {histAqaVerdictLabel}
                               </span>
-                              <span className="stat-item stat-valid">Pro: {(histAqaProScore * 100).toFixed(0)}%</span>
-                              <span className="stat-item stat-text">Contro: {(histAqaContraScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-valid">Tesi primaria: {(histAqaProScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-text">Controtesi: {(histAqaContraScore * 100).toFixed(0)}%</span>
                               <span className="stat-item stat-repaired">Finale: {(histAqaFinalScore * 100).toFixed(0)}%</span>
                             </div>
                             {(histAqaProLinks.length > 0 || histAqaContraLinks.length > 0) && (
@@ -2769,7 +2793,7 @@ export default function App() {
                   <div className="result-section pipeline-section">
                     <h3 className="section-header">
                       <CheckCircle2 size={20} style={{ color: '#10b981' }} />
-                      1. REASONER - Argomenti a Favore
+                      1. REASONER - Tesi Principale
                     </h3>
 
                     {pipelineResult.reasoner?.causality && (
@@ -2835,7 +2859,7 @@ export default function App() {
                   <div className="result-section pipeline-section">
                     <h3 className="section-header">
                       <XCircle size={20} style={{ color: '#ef4444' }} />
-                      2. COUNTER-REASONER - Argomenti Contrari
+                      2. COUNTER-REASONER - Controtesi
                     </h3>
 
                     {pipelineResult.counter_reasoner?.abstained && (
@@ -3250,18 +3274,18 @@ export default function App() {
                               Verdetto: {aqaVerdictLabel}
                             </span>
                             <span className="stat-item stat-valid">
-                              Pro: {(aqaProScore * 100).toFixed(0)}%
+                              Tesi primaria: {(aqaProScore * 100).toFixed(0)}%
                             </span>
                             <span className="stat-item stat-text">
-                              Contro: {(aqaContraScore * 100).toFixed(0)}%
+                              Controtesi: {(aqaContraScore * 100).toFixed(0)}%
                             </span>
                             <span className="stat-item stat-repaired">
                               Finale: {(aqaFinalScore * 100).toFixed(0)}%
                             </span>
                           </div>
                           <div className="aqa-meta">
-                            <span>Link pro: {aqaProLinks.length}</span>
-                            <span>Link contro: {aqaContraLinks.length}</span>
+                            <span>Link tesi primaria: {aqaProLinks.length}</span>
+                            <span>Link controtesi: {aqaContraLinks.length}</span>
                             {aqaReport.weights && (
                               <span>
                                 Pesi: α {aqaReport.weights.alpha.toFixed(2)}, β {aqaReport.weights.beta.toFixed(2)}, γ {aqaReport.weights.gamma.toFixed(2)}
@@ -3279,19 +3303,19 @@ export default function App() {
                           {aqaReport.chain_scores && (
                             <div className="aqa-meta" style={{ marginTop: '0.5rem' }}>
                               <span className="stat-item stat-valid">
-                                📚 Norm Pro: {((aqaReport.chain_scores.pro?.norm_support_avg ?? 0) * 100).toFixed(0)}%
+                                📚 Norm Tesi primaria: {((aqaReport.chain_scores.pro?.norm_support_avg ?? 0) * 100).toFixed(0)}%
                               </span>
                               <span className="stat-item stat-text">
-                                📚 Norm Contro: {((aqaReport.chain_scores.contra?.norm_support_avg ?? 0) * 100).toFixed(0)}%
+                                📚 Norm Controtesi: {((aqaReport.chain_scores.contra?.norm_support_avg ?? 0) * 100).toFixed(0)}%
                               </span>
                               {aqaReport.chain_scores.pro?.attacks_avg > 0 && (
                                 <span className="stat-item stat-repaired">
-                                  ⚔️ Attacchi Pro: {((aqaReport.chain_scores.pro?.attacks_avg ?? 0)).toFixed(3)}
+                                  ⚔️ Attacchi Tesi primaria: {((aqaReport.chain_scores.pro?.attacks_avg ?? 0)).toFixed(3)}
                                 </span>
                               )}
                               {aqaReport.chain_scores.contra?.attacks_avg > 0 && (
                                 <span className="stat-item stat-repaired">
-                                  ⚔️ Attacchi Contro: {((aqaReport.chain_scores.contra?.attacks_avg ?? 0)).toFixed(3)}
+                                  ⚔️ Attacchi Controtesi: {((aqaReport.chain_scores.contra?.attacks_avg ?? 0)).toFixed(3)}
                                 </span>
                               )}
                             </div>
@@ -3350,7 +3374,7 @@ export default function App() {
                               <h5>Dettaglio valutazioni per link</h5>
                               {aqaProLinks.length > 0 && (
                                 <div className="aqa-link-group">
-                                  <h6>Reasoner (Pro)</h6>
+                                  <h6>Reasoner (Tesi primaria)</h6>
                                   <div className="aqa-link-list">
                                     {aqaProLinks.map((link, idx) => (
                                       <div key={idx} className="aqa-link-card">
@@ -3378,7 +3402,7 @@ export default function App() {
 
                               {aqaContraLinks.length > 0 && (
                                 <div className="aqa-link-group">
-                                  <h6>Counter-Reasoner (Contro)</h6>
+                                  <h6>Counter-Reasoner (Controtesi)</h6>
                                   <div className="aqa-link-list">
                                     {aqaContraLinks.map((link, idx) => (
                                       <div key={idx} className="aqa-link-card">

@@ -319,6 +319,7 @@ def prepare_claim_context(
     max_statutes: int,
     max_precedents: int,
     progress_callback=None,
+    cancel_checker=None,
 ) -> tuple[list[dict], list[dict]]:
     """Pre-retrieve statutes and precedents before reasoning.
 
@@ -328,6 +329,11 @@ def prepare_claim_context(
     rounds) until the minimum is met or no more articles can be found.
     """
     progress_callback = progress_callback or (lambda _detail, _progress: None)
+    cancel_checker = cancel_checker or (lambda: False)
+
+    def _check_cancel() -> None:
+        if cancel_checker():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
 
     min_kept = settings.search_min_kept_statutes
     expansion_step = settings.search_expansion_step
@@ -341,8 +347,10 @@ def prepare_claim_context(
 
     pipe = get_pipeline()
     retrieval_agent = get_retrieval_filter_agent()
+    retrieval_agent.set_cancel_checker(cancel_checker)
 
     # ── Step 1: classify + embed once ──────────────────────────────────
+    _check_cancel()
     progress_callback("Classificazione claim e embedding query", 18)
     classification = pipe.classifier.classify(claim)
     embedding = pipe.embed_text(claim)
@@ -351,6 +359,7 @@ def prepare_claim_context(
     )
 
     # ── Step 2: initial hybrid retrieval ───────────────────────────────
+    _check_cancel()
     progress_callback("Recupero norme candidate (vettoriale + fulltext)", 28)
     current_top_k = max_statutes
     articles = pipe.vector_search(
@@ -367,6 +376,7 @@ def prepare_claim_context(
     )
     article_by_id = {a.statute_id: a for a in articles}
     statutes = _articles_to_dicts(articles)
+    _check_cancel()
     legal_context = retrieval_agent._extract_legal_context(claim)
     progress_callback("Filtro rilevanza norme", 38)
     kept_statutes = retrieval_agent.filter_irrelevant_statutes(claim, statutes)
@@ -377,6 +387,7 @@ def prepare_claim_context(
     seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
 
     if kept_statutes:
+        _check_cancel()
         seed_articles = [
             article_by_id[s["statute_id"]]
             for s in kept_statutes
@@ -405,6 +416,7 @@ def prepare_claim_context(
                 if d["statute_id"] not in seen_ids
             ]
             if expanded_statutes:
+                _check_cancel()
                 seen_ids.update(s["statute_id"] for s in expanded_statutes)
                 progress_callback("Filtro rilevanza norme (CITES)", 49)
                 kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
@@ -429,6 +441,7 @@ def prepare_claim_context(
     expansion = 0
     zero_gain_rounds = 0
     while len(kept_statutes) < min_kept and expansion < max_expansions:
+        _check_cancel()
         expansion += 1
         current_top_k += expansion_step
         progress_callback(
@@ -472,6 +485,7 @@ def prepare_claim_context(
 
         kept_from_cites = []
         if new_kept:
+            _check_cancel()
             seed_articles = [
                 article_by_id[s["statute_id"]]
                 for s in new_kept
@@ -502,6 +516,7 @@ def prepare_claim_context(
                     if d["statute_id"] not in seen_ids
                 ]
                 if expanded_statutes:
+                    _check_cancel()
                     seen_ids.update(s["statute_id"] for s in expanded_statutes)
                     progress_callback("Filtro rilevanza norme (CITES esp.)", 63)
                     kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
@@ -553,6 +568,7 @@ def prepare_claim_context(
     # ── Precedents (unchanged) ─────────────────────────────────────────
     precedents: list[dict] = []
     if include_precedents:
+        _check_cancel()
         progress_callback("Recupero precedenti", 64)
         try:
             result = search_precedents_tool.invoke(
@@ -563,6 +579,7 @@ def prepare_claim_context(
         except Exception as e:
             print(f"⚠️ Errore recupero precedenti: {e}")
 
+    _check_cancel()
     progress_callback("Filtro precedenti", 66)
     precedents = retrieval_agent.filter_irrelevant_precedents(claim, precedents)
 
@@ -620,13 +637,15 @@ def get_polisher_evaluator():
 
 
 def resolve_routing_decision(
-    claim: str, payload: dict | None = None
+    claim: str, payload: dict | None = None, cancel_checker=None
 ) -> RoutingDecision:
     """
     Determina il routing (causal_type_id/theory_id) usando eventuali hint del payload,
     altrimenti invoca il Router.
     """
     router = get_router()
+    cancel_checker = cancel_checker or (lambda: False)
+    router.set_cancel_checker(cancel_checker)
     payload = payload or {}
     routing_hint = payload.get("routing") or payload.get("causality") or payload
 
@@ -641,6 +660,8 @@ def resolve_routing_decision(
         ct_valid, th_valid = config_loader.validate_ids(ct, th)
         domain = str(routing_hint.get("domain", "")).strip().upper()
         if domain not in ("CIVILE", "PENALE", "AMMINISTRATIVO", "ENTRAMBI"):
+            if cancel_checker():
+                raise PipelineCancelled("Esecuzione interrotta manualmente.")
             try:
                 domain = router.route(claim).domain
             except Exception:
@@ -655,6 +676,8 @@ def resolve_routing_decision(
             additional_causal_types=[],
         )
 
+    if cancel_checker():
+        raise PipelineCancelled("Esecuzione interrotta manualmente.")
     return router.route(claim)
 
 
@@ -948,6 +971,9 @@ def _run_full_pipeline(
         if cancel_event is not None and cancel_event.is_set():
             raise PipelineCancelled("Esecuzione interrotta manualmente.")
 
+    def _is_cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     def _emit_progress(event_name: str, payload: dict) -> None:
         _check_cancel()
         try:
@@ -1049,7 +1075,11 @@ def _run_full_pipeline(
         _check_cancel()
         status_callback("Preparazione contesto giuridico...")
         _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
-        routing_decision = resolve_routing_decision(claim, data)
+        routing_decision = resolve_routing_decision(
+            claim,
+            data,
+            cancel_checker=_is_cancel_requested,
+        )
         _emit_phase("context_setup", "active", 20, "Avvio recupero contesto")
 
         # Preload context once for both reasoners
@@ -1062,6 +1092,7 @@ def _run_full_pipeline(
             max_statutes=max_statutes,
             max_precedents=max_precedents,
             progress_callback=_emit_context_detail,
+            cancel_checker=_is_cancel_requested,
         )
         _check_cancel()
         _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
@@ -1088,6 +1119,7 @@ def _run_full_pipeline(
             max_tokens=fe_max_tokens,
         )
         reas = Reasoner(config=reasoner_config)
+        reas.set_cancel_checker(_is_cancel_requested)
         reasoner_result = reas.run(
             claim=claim,
             routing_decision=routing_decision,
@@ -1139,6 +1171,7 @@ def _run_full_pipeline(
             max_tokens=fe_max_tokens,
         )
         cr = CounterReasoner(config=counter_config)
+        cr.set_cancel_checker(_is_cancel_requested)
 
         # Opposition consistency is validated by the Polisher gate.
         reasoner_conclusion = reasoner_result.conclusion or ""
@@ -1197,6 +1230,7 @@ def _run_full_pipeline(
 
         _check_cancel()
         pe = get_polisher_evaluator()
+        pe.set_cancel_checker(_is_cancel_requested)
 
         # Apply AQA weight overrides if provided by frontend
         if fe_aqa_alpha is not None:
@@ -1500,6 +1534,7 @@ def evaluate():
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
         pe = get_polisher_evaluator()
+        pe.set_cancel_checker(None)
         result = pe.run(
             claim=claim,
             domain=domain,

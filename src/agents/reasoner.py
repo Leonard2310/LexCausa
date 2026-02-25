@@ -575,6 +575,7 @@ class Reasoner(BaseAgent):
                 self._build_react_agent,
                 {"messages": messages},
                 model_order=self._resilient_model_order(),
+                cancel_checker=self._cancel_checker,
             )
         except Exception as e:
             # Handle Groq tool_use_failed: the model generated a valid response

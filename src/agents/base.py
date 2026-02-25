@@ -103,6 +103,11 @@ class BaseAgent(ABC):
         self._statute_applicability_cache: dict[
             tuple[str, str, str, str, str, str], bool
         ] = {}
+        self._cancel_checker = None
+
+    def set_cancel_checker(self, cancel_checker) -> None:
+        """Inject optional cooperative cancellation checker."""
+        self._cancel_checker = cancel_checker
 
     @property
     def llm(self) -> ChatGroq:
@@ -126,12 +131,14 @@ class BaseAgent(ABC):
                 messages,
                 on_token=stream_callback,
                 model_order=model_order,
+                cancel_checker=self._cancel_checker,
                 **kwargs,
             )
         return resilient_chat_call(
             self.llm,
             messages,
             model_order=model_order,
+            cancel_checker=self._cancel_checker,
             **kwargs,
         )
 
@@ -156,12 +163,14 @@ class BaseAgent(ABC):
                 messages,
                 on_token=stream_callback,
                 model_order=model_order,
+                cancel_checker=self._cancel_checker,
                 **kwargs,
             )
         return resilient_chat_call(
             _llm_factory,
             messages,
             model_order=model_order,
+            cancel_checker=self._cancel_checker,
             **kwargs,
         )
 

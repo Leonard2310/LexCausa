@@ -35,6 +35,7 @@ from .tools.taxonomy_tools import get_causality_theory_tool
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
+from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 # System prompt for the Reasoner (with pre-retrieved context)
 REASONER_SYSTEM_PROMPT = get_prompt("reasoner.system")
@@ -1904,6 +1905,8 @@ class Reasoner(BaseAgent):
                     ),
                 )
                 candidate = self._parse_step_text((resp.content or "").strip())
+            except PipelineCancelled:
+                raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
                 self._log(
@@ -1932,6 +1935,8 @@ class Reasoner(BaseAgent):
                             "step": plan_index,
                         }
                     )
+                except PipelineCancelled:
+                    raise
                 except Exception:
                     pass
             self._log(
@@ -2111,6 +2116,8 @@ class Reasoner(BaseAgent):
             payload["step"] = step
         try:
             stream_callback(payload)
+        except PipelineCancelled:
+            raise
         except Exception:
             # Streaming callback errors must never break reasoning generation.
             pass
@@ -2338,6 +2345,8 @@ class Reasoner(BaseAgent):
                 if conclusion:
                     self._log(f"LLM-generated conclusion: {conclusion[:120]}...")
                     return conclusion
+        except PipelineCancelled:
+            raise
         except Exception as e:
             self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
 

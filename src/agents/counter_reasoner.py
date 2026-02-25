@@ -36,6 +36,7 @@ from .tools.taxonomy_tools import get_causality_theory_tool
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq  # noqa: E402
+from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 
 @dataclass
@@ -1619,7 +1620,11 @@ class CounterReasoner(BaseAgent):
                     f"Generating planned counter-step {global_idx}/{max_steps}: "
                     f"{plan_step.get('goal', '')[:80]} | attack={step_attack_id}"
                 )
-                step_text, step_failure_reason = self._generate_counter_step_from_plan(
+                (
+                    step_text,
+                    step_failure_reason,
+                    hard_failure_count,
+                ) = self._generate_counter_step_from_plan(
                     claim=claim,
                     routing_decision=routing_decision,
                     attack_id=step_attack_id,
@@ -1643,7 +1648,11 @@ class CounterReasoner(BaseAgent):
                         attack_fail_count.get(step_attack_id, 0) + 1
                     )
 
-                    if self._is_hard_attack_failure(step_failure_reason):
+                    hard_failure_detected = (
+                        self._is_hard_attack_failure(step_failure_reason)
+                        or hard_failure_count >= 2
+                    )
+                    if hard_failure_detected:
                         if step_attack_id in selected_attack_ids:
                             selected_attack_ids = [
                                 aid
@@ -1652,7 +1661,9 @@ class CounterReasoner(BaseAgent):
                             ]
                         self._log(
                             f"Warning: rotating out attack {step_attack_id} "
-                            f"after hard failure ({step_failure_reason})",
+                            f"after hard failure pattern "
+                            f"(last_reason={step_failure_reason}, "
+                            f"hard_attempts={hard_failure_count})",
                             "warning",
                         )
 
@@ -2078,7 +2089,7 @@ class CounterReasoner(BaseAgent):
         used_norms: List[str],
         allowed_statute_index: Dict[str, set[str]],
         stream_callback: Optional[Callable[[dict], None]],
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int]:
         """Execute one planned counter step with validation + retries."""
         base_prompt = self._build_counter_step_prompt_from_plan(
             claim=claim,
@@ -2097,6 +2108,7 @@ class CounterReasoner(BaseAgent):
         )
         last_candidate = ""
         last_reason = "invalid output"
+        hard_failure_count = 0
         for attempt in range(1, self._max_step_rewrites + 2):
             prompt = (
                 base_prompt
@@ -2124,8 +2136,12 @@ class CounterReasoner(BaseAgent):
                     ),
                 )
                 candidate = self._parse_step_text((resp.content or "").strip())
+            except PipelineCancelled:
+                raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
+                if self._is_hard_attack_failure(last_reason):
+                    hard_failure_count += 1
                 self._log(
                     f"⚠️ Counter-step {plan_index} generation failed (attempt {attempt}): {exc}",
                     "warning",
@@ -2146,8 +2162,10 @@ class CounterReasoner(BaseAgent):
                 plan_focus=plan_step.get("focus", ""),
             )
             if ok:
-                return candidate, ""
+                return candidate, "", 0
             last_reason = reason
+            if self._is_hard_attack_failure(reason):
+                hard_failure_count += 1
             if stream_callback:
                 try:
                     stream_callback(
@@ -2157,6 +2175,8 @@ class CounterReasoner(BaseAgent):
                             "step": plan_index,
                         }
                     )
+                except PipelineCancelled:
+                    raise
                 except Exception:
                     pass
             self._log(
@@ -2164,7 +2184,7 @@ class CounterReasoner(BaseAgent):
                 f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
                 "warning",
             )
-        return "", last_reason
+        return "", last_reason, hard_failure_count
 
     def _build_counter_step_prompt_from_plan(
         self,
@@ -2736,6 +2756,8 @@ class CounterReasoner(BaseAgent):
             payload["step"] = step
         try:
             stream_callback(payload)
+        except PipelineCancelled:
+            raise
         except Exception:
             # Streaming callback errors must never break counter-generation.
             pass

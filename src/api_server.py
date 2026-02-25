@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
@@ -49,6 +50,7 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     search_precedents_tool,
 )
 from config import settings  # noqa: E402
+from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -56,6 +58,8 @@ CORS(app)
 
 # Prevent concurrent pipeline executions (interleaves logs & shared state)
 _pipeline_lock = threading.Lock()
+_active_stream_run_lock = threading.Lock()
+_active_stream_run: dict | None = None
 
 # ─── Pipeline file logging ──────────────────────────────────────────
 LOG_DIR = Path(project_root) / "logs"
@@ -930,6 +934,7 @@ def _run_full_pipeline(
     status_callback=None,
     token_callback=None,
     progress_callback=None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """Execute the full pipeline and optionally emit status/token callbacks."""
     if not isinstance(data, dict):
@@ -939,9 +944,16 @@ def _run_full_pipeline(
     token_callback = token_callback or (lambda _payload: None)
     progress_callback = progress_callback or (lambda _event, _payload: None)
 
+    def _check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
     def _emit_progress(event_name: str, payload: dict) -> None:
+        _check_cancel()
         try:
             progress_callback(event_name, payload)
+        except PipelineCancelled:
+            raise
         except Exception:
             # Progress streaming must never break pipeline execution.
             pass
@@ -949,6 +961,7 @@ def _run_full_pipeline(
     def _emit_phase(
         phase: str, status: str, progress: int, detail: str | None = None
     ) -> None:
+        _check_cancel()
         _emit_progress(
             "phase",
             {
@@ -997,6 +1010,7 @@ def _run_full_pipeline(
     if not claim:
         raise ValueError('Campo "claim" obbligatorio')
 
+    _check_cancel()
     status_callback("Avvio pipeline completa...")
     _emit_phase("context_setup", "active", 5, "Routing iniziale")
 
@@ -1011,6 +1025,7 @@ def _run_full_pipeline(
         if not fe_enable_causality:
             print("🔬 Causality taxonomy DISABLED by frontend settings")
 
+        _check_cancel()
         # Apply chain step overrides to global settings
         if fe_chain_min_steps is not None:
             settings.chain_min_steps = int(fe_chain_min_steps)
@@ -1031,6 +1046,7 @@ def _run_full_pipeline(
                 fe_search_query_terms_llm_max_tokens
             )
 
+        _check_cancel()
         status_callback("Preparazione contesto giuridico...")
         _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
         routing_decision = resolve_routing_decision(claim, data)
@@ -1047,6 +1063,7 @@ def _run_full_pipeline(
             max_precedents=max_precedents,
             progress_callback=_emit_context_detail,
         )
+        _check_cancel()
         _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
         reasoner_statutes = _clone_context_items(statutes)
         counter_statutes = _clone_context_items(statutes)
@@ -1064,6 +1081,7 @@ def _run_full_pipeline(
         _emit_phase("support", "active", 8, "Generazione ragionamento")
         status_callback("Generazione argomentazione principale in corso...")
 
+        _check_cancel()
         reasoner_config = _build_agent_config(
             model_override=fe_reasoner_model or settings.reasoner_default_model,
             temperature=fe_temperature,
@@ -1078,6 +1096,7 @@ def _run_full_pipeline(
             enable_causality=fe_enable_causality,
             stream_callback=token_callback,
         )
+        _check_cancel()
         _emit_phase("support", "active", 97, "Costruzione ASPIC+ e output finale")
         _emit_progress("reasoner_result", reasoner_result.to_dict())
         final_routing_decision = RoutingDecision(
@@ -1113,6 +1132,7 @@ def _run_full_pipeline(
         )
         status_callback("Generazione argomentazione contraria in corso...")
 
+        _check_cancel()
         counter_config = _build_agent_config(
             model_override=fe_counter_model or settings.counter_default_model,
             temperature=fe_temperature,
@@ -1140,6 +1160,7 @@ def _run_full_pipeline(
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,
         )
+        _check_cancel()
         _emit_phase("counter", "active", 97, "Costruzione ASPIC+ e output finale")
         counter_result.reasoner_conclusion_context = reasoner_conclusion
 
@@ -1174,6 +1195,7 @@ def _run_full_pipeline(
         print(f"{'─'*70}")
         status_callback("Verifica finale e valutazione in corso...")
 
+        _check_cancel()
         pe = get_polisher_evaluator()
 
         # Apply AQA weight overrides if provided by frontend
@@ -1197,6 +1219,7 @@ def _run_full_pipeline(
         if fe_aqa_strength_ratio_by_type is not None:
             settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 
+        _check_cancel()
         evaluation_result = pe.run(
             claim=claim,
             domain=final_routing_decision.domain,
@@ -1204,6 +1227,8 @@ def _run_full_pipeline(
             counter_reasoner_output=counter_result.to_dict(),
             progress_callback=_emit_progress,
         )
+
+        _check_cancel()
 
         # Apply Polisher counter gate to the returned counter output
         counter_gate = (
@@ -1279,6 +1304,7 @@ def _run_full_pipeline(
         print("✅ FULL PIPELINE - END")
         print(f"{'='*70}\n")
 
+    _check_cancel()
     status_callback("Pipeline completata.")
     _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
     return {
@@ -1329,28 +1355,50 @@ def pipeline_stream():
     data = request.get_json(silent=True) or {}
     event_queue: Queue = Queue()
     sentinel = object()
+    run_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        _active_stream_run = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "started_at": time.time(),
+        }
 
     def push_status(message: str) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
         event_queue.put(("status", {"message": message}))
 
     def push_token(payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
         event_queue.put(("token", payload))
 
     def push_progress(event_name: str, payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
         event_queue.put(("error", {"message": message, "code": code}))
 
     def _worker() -> None:
+        global _active_stream_run
         try:
             result = _run_full_pipeline(
                 data,
                 status_callback=push_status,
                 token_callback=push_token,
                 progress_callback=push_progress,
+                cancel_event=cancel_event,
             )
             event_queue.put(("final", result))
+        except PipelineCancelled as e:
+            event_queue.put(
+                ("cancelled", {"message": str(e), "run_id": run_id, "ok": True})
+            )
         except ValueError as e:
             push_error(str(e), 400)
         except Exception as e:
@@ -1365,9 +1413,16 @@ def pipeline_stream():
         finally:
             event_queue.put(("done", {"ok": True}))
             event_queue.put(sentinel)
+            with _active_stream_run_lock:
+                if (
+                    isinstance(_active_stream_run, dict)
+                    and _active_stream_run.get("run_id") == run_id
+                ):
+                    _active_stream_run = None
             _pipeline_lock.release()
 
     threading.Thread(target=_worker, daemon=True).start()
+    event_queue.put(("run_started", {"run_id": run_id}))
 
     @stream_with_context
     def generate():
@@ -1392,6 +1447,40 @@ def pipeline_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.route("/api/pipeline/stop", methods=["POST"])
+def pipeline_stop():
+    """
+    Richiede l'interruzione della pipeline SSE in esecuzione.
+    """
+    data = request.get_json(silent=True) or {}
+    requested_run_id = str(data.get("run_id", "") or "").strip()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        active = _active_stream_run if isinstance(_active_stream_run, dict) else None
+        if not active:
+            return jsonify({"ok": False, "error": "No active pipeline run."}), 404
+
+        active_run_id = str(active.get("run_id", "") or "")
+        if requested_run_id and active_run_id and requested_run_id != active_run_id:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Run id mismatch with active pipeline.",
+                        "active_run_id": active_run_id,
+                    }
+                ),
+                409,
+            )
+
+        cancel_event = active.get("cancel_event")
+        if isinstance(cancel_event, threading.Event):
+            cancel_event.set()
+
+    return jsonify({"ok": True, "run_id": active_run_id})
 
 
 @app.route("/api/evaluate", methods=["POST"])
@@ -1504,6 +1593,7 @@ if __name__ == "__main__":
     print("  • POST /api/counter_reason  - Contro-ragionamento")
     print("  • POST /api/pipeline        - Pipeline completa")
     print("  • POST /api/pipeline/stream - Pipeline completa (SSE token streaming)")
+    print("  • POST /api/pipeline/stop   - Interrompe pipeline SSE attiva")
     print("  • POST /api/evaluate        - Valutazione finale (stub)")
     print()
     print("=" * 70)

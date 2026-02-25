@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords, Download } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords, Download, Square } from 'lucide-react';
 import './App.css';
 import AspicMetagraph from './AspicMetagraph';
 import AttackTextDetails from './AttackTextDetails';
@@ -175,9 +175,13 @@ export default function App() {
   const messagesAreaRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef(null);
+  const pipelineAbortControllerRef = useRef(null);
+  const activePipelineRunIdRef = useRef(null);
+  const manualPipelineStopRef = useRef(false);
   const currentPipelinePdfRef = useRef(null);
   const historyPipelinePdfRefs = useRef({});
   const [exportingPdfKey, setExportingPdfKey] = useState(null);
+  const [isStoppingPipeline, setIsStoppingPipeline] = useState(false);
 
   const isNearBottom = () => {
     const el = messagesAreaRef.current;
@@ -335,10 +339,51 @@ export default function App() {
     }
   };
 
+  const handleStopPipeline = async () => {
+    if (!isLoading || activeTab !== TABS.PIPELINE) return;
+
+    manualPipelineStopRef.current = true;
+    setIsStoppingPipeline(true);
+    setPipelineResult((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            final_evaluation: 'Interruzione richiesta...',
+          },
+        },
+      };
+    });
+
+    const runId = activePipelineRunIdRef.current;
+    try {
+      await fetch(`${API_BASE}/pipeline/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(runId ? { run_id: runId } : {}),
+      });
+    } catch (err) {
+      console.warn('Stop pipeline request failed:', err);
+    }
+
+    try {
+      pipelineAbortControllerRef.current?.abort();
+    } catch (err) {
+      console.warn('Abort stream failed:', err);
+    }
+  };
+
   const handlePipelineSubmit = async () => {
     if (!input.trim() || isLoading) return;
 
     const claim = input.trim();
+    manualPipelineStopRef.current = false;
+    activePipelineRunIdRef.current = null;
+    pipelineAbortControllerRef.current = null;
+    setIsStoppingPipeline(false);
     const isCompletedRun = (run) => Boolean(
       run
       && !run.error
@@ -551,10 +596,13 @@ export default function App() {
     });
 
     const runPipelineStreamAttempt = async () => {
+      const controller = new AbortController();
+      pipelineAbortControllerRef.current = controller;
       const response = await fetch(`${API_BASE}/pipeline/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: requestBody,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -609,6 +657,11 @@ export default function App() {
           }
 
           if (eventName === 'heartbeat') {
+            continue;
+          }
+
+          if (eventName === 'run_started') {
+            activePipelineRunIdRef.current = payload?.run_id || null;
             continue;
           }
 
@@ -877,6 +930,10 @@ export default function App() {
             throw new Error(payload.message || 'Errore nella pipeline');
           }
 
+          if (eventName === 'cancelled') {
+            throw new Error(payload?.message || 'Esecuzione interrotta manualmente.');
+          }
+
           if (eventName === 'final') {
             finalPayload = payload;
             setPipelineResult((prev) => ({
@@ -921,9 +978,7 @@ export default function App() {
         || text.includes('networkerror')
         || text.includes('network error')
         || text.includes('load failed')
-        || text.includes('aborted')
         || text.includes('already running')
-        || text.includes('streaming interrotto')
       );
     };
 
@@ -946,7 +1001,11 @@ export default function App() {
           break;
         } catch (attemptError) {
           const errorMessage = attemptError?.message || 'Errore sconosciuto';
-          if (attempt < maxRetries && isRetriableStreamError(errorMessage)) {
+          if (
+            attempt < maxRetries
+            && !manualPipelineStopRef.current
+            && isRetriableStreamError(errorMessage)
+          ) {
             const waitMs = 1200 * (attempt + 1);
             setPhaseStatus('final_evaluation', 'active');
             setPhaseDetail(
@@ -966,15 +1025,52 @@ export default function App() {
     } catch (error) {
       console.error('Errore pipeline:', error);
       const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
-      setPipelineResult(null);
-      setPipelineMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Pipeline interrotta: ${errorMessage}. Ho eliminato i risultati parziali, puoi riprovare.`,
-        },
-      ]);
+      const isManualStop = (
+        manualPipelineStopRef.current
+        || error?.name === 'AbortError'
+        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+      );
+      if (isManualStop) {
+        setPipelineResult((prev) => {
+          if (!prev) return prev;
+          const previousPhases = prev._stream?.phases || {};
+          const normalizedPhases = {};
+          Object.entries(previousPhases).forEach(([phaseKey, status]) => {
+            normalizedPhases[phaseKey] = status === 'done' ? 'done' : 'pending';
+          });
+          return {
+            ...prev,
+            _stream: {
+              ...(prev._stream || {}),
+              phases: normalizedPhases,
+              phase_details: {
+                ...(prev._stream?.phase_details || {}),
+                final_evaluation: 'Esecuzione interrotta manualmente',
+              },
+            },
+          };
+        });
+        setPipelineMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: 'Pipeline interrotta manualmente. Puoi correggere i parametri e rilanciare.',
+          },
+        ]);
+      } else {
+        setPipelineResult(null);
+        setPipelineMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `Pipeline interrotta: ${errorMessage}. Ho eliminato i risultati parziali, puoi riprovare.`,
+          },
+        ]);
+      }
     } finally {
+      pipelineAbortControllerRef.current = null;
+      activePipelineRunIdRef.current = null;
+      setIsStoppingPipeline(false);
       setIsLoading(false);
     }
   };
@@ -3534,6 +3630,16 @@ export default function App() {
           >
             <Send size={20} />
           </button>
+          {activeTab === TABS.PIPELINE && isLoading && (
+            <button
+              onClick={handleStopPipeline}
+              disabled={isStoppingPipeline}
+              className="stop-button"
+              title="Interrompi esecuzione"
+            >
+              <Square size={18} />
+            </button>
+          )}
         </div>
         <p className="input-hint">
           Premi Invio per inviare, Shift+Invio per andare a capo

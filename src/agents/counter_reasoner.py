@@ -934,11 +934,18 @@ class CounterReasoner(BaseAgent):
         # ----------------------------------------------------------
         MAX_CHAIN_RETRIES = settings.chain_max_retries
         output = None
+        attack_blacklist: set[str] = set()
 
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
             self._log(
                 f"🔄 Counter-Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}"
             )
+            if attack_blacklist:
+                self._log(
+                    "⚠️ Counter attack blacklist active: "
+                    + ", ".join(sorted(attack_blacklist)),
+                    "warning",
+                )
 
             try:
                 raw_output, iterative_chain, step_attack_ids = (
@@ -951,6 +958,7 @@ class CounterReasoner(BaseAgent):
                         available_statutes=deduped_statutes,
                         allowed_precedents=allowed_precedents,
                         reasoner_conclusion=reasoner_conclusion,
+                        attack_blacklist=attack_blacklist,
                         stream_callback=stream_callback,
                     )
                 )
@@ -1450,6 +1458,7 @@ class CounterReasoner(BaseAgent):
         available_statutes: List[dict],
         allowed_precedents: List[str],
         reasoner_conclusion: str,
+        attack_blacklist: Optional[set[str]] = None,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str], List[str]]:
         """Generate counter-reasoning chain with plan -> execute -> residual replan workflow."""
@@ -1470,12 +1479,24 @@ class CounterReasoner(BaseAgent):
             )
             if aid
         ]
-        primary_pool = [aid for aid in dict.fromkeys(attack_selection.pool) if aid]
+        blacklist = attack_blacklist if attack_blacklist is not None else set()
+        selected_attack_ids = [
+            aid for aid in selected_attack_ids if aid not in blacklist
+        ]
+        primary_pool = [
+            aid
+            for aid in dict.fromkeys(attack_selection.pool)
+            if aid and aid not in blacklist
+        ]
         causal_pool = [
-            aid for aid in dict.fromkeys(attack_selection.causal_pool or []) if aid
+            aid
+            for aid in dict.fromkeys(attack_selection.causal_pool or [])
+            if aid and aid not in blacklist
         ]
         theory_pool = [
-            aid for aid in dict.fromkeys(attack_selection.theory_pool or []) if aid
+            aid
+            for aid in dict.fromkeys(attack_selection.theory_pool or [])
+            if aid and aid not in blacklist
         ]
         causal_residual = [aid for aid in causal_pool if aid not in primary_pool]
         theory_residual = [
@@ -1542,7 +1563,9 @@ class CounterReasoner(BaseAgent):
                         max_attacks=3,
                     )
                     open_ids = [
-                        aid for aid in dict.fromkeys(open_selection.attack_ids) if aid
+                        aid
+                        for aid in dict.fromkeys(open_selection.attack_ids)
+                        if aid and aid not in blacklist
                     ]
                     if not open_ids:
                         self._log(
@@ -1653,12 +1676,16 @@ class CounterReasoner(BaseAgent):
                         or hard_failure_count >= 2
                     )
                     if hard_failure_detected:
+                        blacklist.add(step_attack_id)
                         if step_attack_id in selected_attack_ids:
                             selected_attack_ids = [
                                 aid
                                 for aid in selected_attack_ids
                                 if aid != step_attack_id
                             ]
+                        backup_attack_ids = [
+                            aid for aid in backup_attack_ids if aid != step_attack_id
+                        ]
                         self._log(
                             f"Warning: rotating out attack {step_attack_id} "
                             f"after hard failure pattern "
@@ -1669,7 +1696,10 @@ class CounterReasoner(BaseAgent):
 
                     if backup_attack_ids and len(selected_attack_ids) < 2:
                         replacement = backup_attack_ids.pop(0)
-                        if replacement not in selected_attack_ids:
+                        if (
+                            replacement not in selected_attack_ids
+                            and replacement not in blacklist
+                        ):
                             selected_attack_ids.append(replacement)
                             self._log(
                                 f"Warning: injected backup attack {replacement} into active set",
@@ -2142,6 +2172,13 @@ class CounterReasoner(BaseAgent):
                 last_reason = f"generation error: {exc}"
                 if self._is_hard_attack_failure(last_reason):
                     hard_failure_count += 1
+                    if hard_failure_count >= 2:
+                        self._log(
+                            f"⚠️ Counter-step {plan_index}: hard-failure threshold reached during generation "
+                            f"(hard_attempts={hard_failure_count}), rotating attack immediately",
+                            "warning",
+                        )
+                        return "", last_reason, hard_failure_count
                 self._log(
                     f"⚠️ Counter-step {plan_index} generation failed (attempt {attempt}): {exc}",
                     "warning",
@@ -2166,6 +2203,13 @@ class CounterReasoner(BaseAgent):
             last_reason = reason
             if self._is_hard_attack_failure(reason):
                 hard_failure_count += 1
+                if hard_failure_count >= 2:
+                    self._log(
+                        f"⚠️ Counter-step {plan_index}: hard-failure threshold reached "
+                        f"(hard_attempts={hard_failure_count}), rotating attack immediately",
+                        "warning",
+                    )
+                    return "", last_reason, hard_failure_count
             if stream_callback:
                 try:
                     stream_callback(

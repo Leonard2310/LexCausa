@@ -1607,6 +1607,12 @@ class CounterReasoner(BaseAgent):
                 plan=plan,
                 previous_summaries=step_summaries,
             )
+            plan = self._filter_counter_plan_by_feasibility(
+                claim=claim,
+                reasoner_conclusion=reasoner_conclusion,
+                plan=plan,
+                previous_summaries=step_summaries,
+            )
             if not plan:
                 stalled_rounds += 1
                 self._log(
@@ -1627,9 +1633,22 @@ class CounterReasoner(BaseAgent):
 
             for local_idx, plan_step in enumerate(plan, start=1):
                 global_idx = len(steps) + 1
-                step_attack_id = plan_step.get("attack_id", selected_attack_ids[0])
-                if step_attack_id not in selected_attack_ids:
-                    step_attack_id = selected_attack_ids[0]
+                step_attack_id = self._pick_attack_for_plan_step(
+                    claim=claim,
+                    reasoner_conclusion=reasoner_conclusion,
+                    plan_step=plan_step,
+                    candidate_attack_ids=selected_attack_ids,
+                    attack_desc_map=attack_desc_map,
+                    attack_fail_count=attack_fail_count,
+                )
+                if not step_attack_id:
+                    round_failed = True
+                    self._log(
+                        f"Warning: no attack available for planned counter-step {global_idx}; replanning",
+                        "warning",
+                    )
+                    break
+                plan_step["attack_id"] = step_attack_id
                 step_attack_desc = attack_desc_map.get(
                     step_attack_id,
                     self._attack_description(
@@ -1871,10 +1890,10 @@ class CounterReasoner(BaseAgent):
                 raw_value=item.get("citation_requirement"),
             )
             attack_id = str(item.get("attack_id", "")).strip()
-            if not goal or not focus or not attack_id:
+            if not goal or not focus:
                 continue
-            if attack_id not in allowed_attack_ids:
-                continue
+            if attack_id and attack_id not in allowed_attack_ids:
+                attack_id = ""
             cleaned.append(
                 {
                     "id": str(item.get("id", f"C{idx}")).strip() or f"C{idx}",
@@ -1899,17 +1918,162 @@ class CounterReasoner(BaseAgent):
             raise ValueError("counter planner produced poor step-type coverage")
         if self._has_overlapping_plan_steps(cleaned):
             raise ValueError("counter planner produced overlapping/repetitive steps")
-
-        min_distinct_attacks = min(2, len(allowed_attack_ids))
-        distinct_attacks = {step.get("attack_id", "") for step in cleaned}
-        if (
-            len(cleaned) >= min_distinct_attacks
-            and len(distinct_attacks) < min_distinct_attacks
-        ):
-            raise ValueError(
-                "counter planner did not distribute attacks across planned steps"
-            )
         return cleaned
+
+    def _pick_attack_for_plan_step(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        plan_step: Dict[str, str],
+        candidate_attack_ids: List[str],
+        attack_desc_map: Dict[str, str],
+        attack_fail_count: Dict[str, int],
+    ) -> str:
+        """
+        Pick the best available attack for a planned step.
+
+        The plan structure is generated first (attack-neutral), then each step
+        gets the best compatible attack among currently active IDs.
+        """
+        if not candidate_attack_ids:
+            return ""
+
+        hinted = str(plan_step.get("attack_id", "")).strip()
+        if hinted and hinted in candidate_attack_ids:
+            return hinted
+
+        goal = str(plan_step.get("goal", "")).strip()
+        focus = str(plan_step.get("focus", "")).strip()
+        step_type = str(plan_step.get("step_type", "OTHER")).strip()
+        step_signature = f"{goal}. {focus}. type={step_type}"
+        step_reasoner_context = (
+            f"{reasoner_conclusion}\nTarget step focus: {goal}. {focus}"
+        )
+
+        scored: List[tuple[float, str]] = []
+        for attack_id in candidate_attack_ids:
+            attack_desc = attack_desc_map.get(
+                attack_id,
+                self._attack_description(
+                    attack_id,
+                    locale="en",
+                    default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+                ),
+            )
+            score = 0.0
+
+            rel = self._nli_relation(
+                target_text=attack_desc,
+                attacker_text=step_signature,
+                actor_label="CounterPlanner",
+            )
+            if rel == "entailment":
+                score += 1.2
+            elif rel == "contradiction":
+                score -= 1.2
+
+            feasibility = self._attack_feasibility_label(
+                claim=claim,
+                reasoner_conclusion=step_reasoner_context,
+                attack_id=attack_id,
+                attack_desc=attack_desc,
+            )
+            if feasibility == "FEASIBLE":
+                score += 2.5
+            elif feasibility == "LOW_FEASIBILITY":
+                score += 0.4
+            else:
+                score -= 2.0
+
+            score -= 0.5 * float(attack_fail_count.get(attack_id, 0))
+            scored.append((score, attack_id))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1] if scored else candidate_attack_ids[0]
+
+    def _is_counter_plan_step_feasible(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        plan_step: Dict[str, str],
+        previous_summaries: List[str],
+    ) -> tuple[bool, str]:
+        """
+        Feasibility gate for planner steps before step text generation.
+        """
+        goal = str(plan_step.get("goal", "")).strip()
+        focus = str(plan_step.get("focus", "")).strip()
+        if not goal or not focus:
+            return False, "incomplete plan step"
+
+        candidate = f"{goal}. {focus}".strip()
+        if self._is_garbage_text(candidate, min_words=8):
+            return False, "degenerate plan step"
+        if not self._is_counter_step_consistent(candidate):
+            return False, "reasoning inconsistency in plan step"
+        if previous_summaries and self._is_repetitive_step(
+            candidate, previous_summaries, threshold=0.45
+        ):
+            return False, "plan step redundant with accepted history"
+
+        facts_ok, facts_reason = self._is_counter_step_fact_consistent_with_claim(
+            claim=claim,
+            candidate_step=candidate,
+        )
+        if not facts_ok:
+            return False, facts_reason
+
+        grounded_ok, grounded_reason = self._is_counter_step_grounded_in_claim_facts(
+            claim=claim,
+            candidate_step=candidate,
+        )
+        if not grounded_ok:
+            return False, grounded_reason
+
+        opposed_ok, opposed_reason = self._is_counter_step_opposed_to_reasoner(
+            claim=claim,
+            reasoner_conclusion=reasoner_conclusion,
+            candidate_step=candidate,
+        )
+        if not opposed_ok:
+            return False, opposed_reason
+
+        return True, ""
+
+    def _filter_counter_plan_by_feasibility(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        plan: List[Dict[str, str]],
+        previous_summaries: List[str],
+    ) -> List[Dict[str, str]]:
+        """
+        Drop planner steps that are impossible under fact-lock/opposition constraints.
+        """
+        if not plan:
+            return []
+        kept: List[Dict[str, str]] = []
+        dropped = 0
+        for step in plan:
+            ok, _ = self._is_counter_plan_step_feasible(
+                claim=claim,
+                reasoner_conclusion=reasoner_conclusion,
+                plan_step=step,
+                previous_summaries=previous_summaries,
+            )
+            if ok:
+                kept.append(step)
+            else:
+                dropped += 1
+        if dropped:
+            self._log(
+                f"Warning: counter plan feasibility gate pruned {dropped} step(s)",
+                "warning",
+            )
+        return kept
 
     @staticmethod
     def _normalize_counter_step_type(raw_value: object) -> str:
@@ -2194,7 +2358,7 @@ class CounterReasoner(BaseAgent):
                 expected_norm=plan_step.get("expected_norm", "N/A"),
                 citation_requirement=plan_step.get("citation_requirement", "optional"),
                 allowed_statute_index=allowed_statute_index,
-                attack_id=plan_step.get("attack_id", attack_id),
+                attack_id=(plan_step.get("attack_id") or attack_id),
                 attack_desc=attack_desc,
                 plan_focus=plan_step.get("focus", ""),
             )
@@ -2281,7 +2445,7 @@ class CounterReasoner(BaseAgent):
             plan_focus=plan_step.get("focus", ""),
             plan_expected_norm=plan_step.get("expected_norm", "N/A"),
             plan_citation_requirement=plan_step.get("citation_requirement", "optional"),
-            plan_attack_id=plan_step.get("attack_id", attack_id),
+            plan_attack_id=(plan_step.get("attack_id") or attack_id),
             plan_step_type=plan_step.get("step_type", "OTHER"),
             plan_novelty_key=plan_step.get("novelty_key", ""),
             summary_lines=summary_lines,

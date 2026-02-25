@@ -2018,9 +2018,10 @@ class Reasoner(BaseAgent):
             if conclusion:
                 if not self._is_support_step_consistent(conclusion):
                     self._log(
-                        "⚠️ LLM conclusion appears internally inconsistent; rewriting",
+                        "Warning: LLM conclusion appears internally inconsistent; trying rewrite (non-blocking)",
                         "warning",
                     )
+                    original_conclusion = conclusion
                     rewrite_prompt = self._build_support_conclusion_rewrite_prompt(
                         claim=claim,
                         chain_text=chain_text,
@@ -2038,20 +2039,25 @@ class Reasoner(BaseAgent):
                             rewritten,
                             flags=re.IGNORECASE,
                         ).strip()
-                        if rewritten and self._is_support_step_consistent(rewritten):
+                        if rewritten:
                             conclusion = rewritten
+                            if not self._is_support_step_consistent(conclusion):
+                                self._log(
+                                    "Warning: rewritten conclusion is still internally inconsistent; keeping rewritten anyway (fact-lock enforced)",
+                                    "warning",
+                                )
                         else:
                             self._log(
-                                "⚠️ Rewritten conclusion still inconsistent; using fallback",
+                                "Warning: rewritten conclusion is empty; keeping original conclusion",
                                 "warning",
                             )
-                            conclusion = ""
+                            conclusion = original_conclusion
                     except Exception as rewrite_exc:
                         self._log(
-                            f"⚠️ Conclusion rewrite failed: {rewrite_exc}",
+                            f"Warning: conclusion rewrite failed: {rewrite_exc}; keeping original conclusion",
                             "warning",
                         )
-                        conclusion = ""
+                        conclusion = original_conclusion
                 if conclusion:
                     facts_ok, _ = self._is_step_fact_consistent_with_claim(
                         claim=claim,
@@ -2060,12 +2066,12 @@ class Reasoner(BaseAgent):
                     )
                     if not facts_ok:
                         self._log(
-                            "⚠️ LLM conclusion contradicts explicit claim facts; using fallback",
+                            "Warning: LLM conclusion contradicts explicit claim facts; using fallback",
                             "warning",
                         )
                         conclusion = ""
                 if conclusion:
-                    self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
+                    self._log(f"LLM-generated conclusion: {conclusion[:120]}...")
                     return conclusion
         except Exception as e:
             self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
@@ -2103,22 +2109,20 @@ class Reasoner(BaseAgent):
         if conclusion_text:
             if not self._is_support_step_consistent(conclusion_text):
                 self._log(
-                    "⚠️ Provided conclusion is internally inconsistent; using fallback",
+                    "Warning: provided conclusion appears internally inconsistent (non-blocking); enforcing only fact-lock",
+                    "warning",
+                )
+            facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                claim=claim,
+                candidate_step=conclusion_text,
+                actor_label="Reasoner",
+            )
+            if not facts_ok:
+                self._log(
+                    "Warning: provided conclusion contradicts explicit claim facts; using fallback",
                     "warning",
                 )
                 conclusion_text = ""
-            else:
-                facts_ok, _ = self._is_step_fact_consistent_with_claim(
-                    claim=claim,
-                    candidate_step=conclusion_text,
-                    actor_label="Reasoner",
-                )
-                if not facts_ok:
-                    self._log(
-                        "⚠️ Provided conclusion contradicts explicit claim facts; using fallback",
-                        "warning",
-                    )
-                    conclusion_text = ""
 
         if not conclusion_text:
             norms_list = ", ".join(norms) if norms else "le norme applicabili"

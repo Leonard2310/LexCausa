@@ -28,8 +28,8 @@
 - **Unified Pipeline**: All functionalities (Search, Reasoning, Full Pipeline) share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
 - **Shared Retrieved Context**: Both Reasoner and CounterReasoner receive the same retrieved statutes/precedents and build opposing arguments from the same evidence base
 - **Planned Iterative Chain Generation**: Reasoner and Counter-Reasoner first create an execution plan (3-10 steps), then generate one LLM step per planned objective with anti-repetition and consistency checks
-- **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations
-- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, and enforces claim-fact lock (no inversion of explicit facts) while opposing the primary thesis/reasoner conclusion
+- **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations, and a provisional causality bootstrap (plan → taxonomy anchors → enriched KB) before expensive step generation
+- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, applies attack blacklisting/feasibility filtering to stabilize generation, and enforces claim-fact lock (no inversion of explicit facts) while opposing the primary thesis/reasoner conclusion
 - **Repetition Detection**: Jaccard similarity-based detection (threshold 0.70) prevents duplicate reasoning steps across the chain
 - **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, and verdict generation
 - **Consistency Checker**: Verifies statute and precedent citations against Neo4j KB, classifies articles as core/peripheral, repairs mismatches via LLM-constrained rewriting (with verbatim quote validation), and drops unreliable citations
@@ -39,13 +39,16 @@
 - **ASPIC+ Metagraph Visualization**: Interactive SVG frontend component displaying the dialectical meta-graph with PRO/CONTRA columns, curved attack arrows with damage values, chain flow arrows, and detail panel for selected links
 - **Attack Text Details**: Expandable frontend panel showing full attacker/target text for each active cross-attack with type, multiplier, NLI label, overlap, and damage
 - **Resilient Groq Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient)
+- **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction and statute applicability decisions, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
+- **Cancellation & Interruptibility**: Pipeline stop endpoint and cooperative cancellation propagation across API, agents, and long-running generation/retrieval loops
 - **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
 - **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
 - **Centralized Configuration**: All parameters (90+ settings: models, retries, AQA weights, search, truncation, attack params, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
 - **Frontend Settings Panel**: Collapsible panel to configure per-step LLM model, temperature, max tokens, search parameters, AQA weights, chain min/max steps, and attack parameters — without touching code
 - **Per-Claim Pipeline Logging**: Every pipeline run is logged to `logs/<timestamp>_<slug>.log` for full auditability
+- **Pre-Retrieval Claim Context Memory (SQLite)**: Optional cache of final applicable statutes and precedents per claim (reusable across Search/Reasoner/Counter/Pipeline runs and warmable via script)
 - **React Frontend**: Modern three-tab interface (Search, Reasoning, Full Pipeline) with ASPIC+ Metagraph visualization on Vite + React 18
-- **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation, and live evaluation/AQA status updates
+- **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation (including retry attempts), refinement phase control events (`reasoner_refinement_started/completed`) with live chain reset/replace behavior in the frontend, and live evaluation/AQA status updates with pipeline stop support (`/api/pipeline/stop`)
 
 
 
@@ -62,13 +65,15 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     Flask API Server (:8000)                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  GET  /api/settings  → defaults & available models                      │
-│  POST /api/chat      → LegalSearchPipeline (unified retrieval)          │
-│  POST /api/reason    → Reasoner (iterative chain generation)            │
-│  POST /api/counter   → Counter-Reasoner (iterative counter-chain)       │
-│  POST /api/pipeline  → Full Pipeline (Router→Reasoner→Counter→AQA)      │
-│  POST /api/evaluate  → Polisher-Evaluator (standalone evaluation)       │
-│  GET  /api/health    → Health check with API version                    │
+│  GET  /health              → Health check with API version               │
+│  GET  /api/settings        → Defaults & available models                │
+│  POST /api/chat            → LegalSearchPipeline (unified retrieval)    │
+│  POST /api/reason          → Reasoner (iterative chain generation)      │
+│  POST /api/counter_reason  → Counter-Reasoner (iterative counter-chain) │
+│  POST /api/pipeline        → Full Pipeline (Router→Reasoner→Counter→AQA)│
+│  POST /api/pipeline/stream → Full Pipeline SSE token streaming          │
+│  POST /api/pipeline/stop   → Stop active SSE pipeline run               │
+│  POST /api/evaluate        → Polisher-Evaluator (standalone evaluation) │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
                     ┌─────────────┴─────────────┐
@@ -225,7 +230,7 @@ The frontend will be available at `http://localhost:5173` and the API at `http:/
 LexCausa/
 ├── src/
 │   ├── config.py                  # Centralized configuration (90+ Pydantic Settings)
-│   ├── api_server.py              # Flask API server (8 endpoints)
+│   ├── api_server.py              # Flask API server (10 endpoints incl. SSE stop)
 │   ├── agents/                    # LangChain/LangGraph agents
 │   │   ├── base.py               # Base agent class + progressive search + filters
 │   │   ├── router.py             # Domain router (CIVILE/PENALE/ENTRAMBI)
@@ -247,6 +252,8 @@ LexCausa/
 │   ├── services/                  # Core services
 │   │   ├── groq_client.py        # Resilient Groq client (dynamic key discovery, rotation)
 │   │   ├── claim_classifier.py   # LLM claim classification
+│   │   ├── claim_context_memory.py # SQLite pre-retrieval claim context cache
+│   │   ├── pipeline_control.py   # Cooperative cancellation primitives/exceptions
 │   │   └── legal_search.py       # Hybrid legal search pipeline (vector + fulltext fusion)
 │   ├── db/                        # Database management
 │   │   ├── db_orchestrator.py    # Full DB lifecycle (clean/schema/load/verify)
@@ -304,6 +311,13 @@ Configurable areas:
 - Hybrid retrieval tuning (vector/fulltext weights, candidate pool sizes, priority decay, keyword bonus)
 - Citation expansion tuning (`SEARCH_CITES_ENABLED`, per-seed limit, max added, score decay, multi-seed bonus)
 - Progressive search thresholds/steps for expansion rounds
+
+Pre-retrieval claim context memory (SQLite):
+
+- Optional per-claim cache for the **final applicable** statutes and precedents produced by `prepare_claim_context(...)`
+- Reused by `/api/chat`, `/api/reason`, `/api/counter_reason`, and full pipeline endpoints when enabled
+- Can be toggled from the frontend Pipeline input (Use memory / Overwrite memory)
+- Can be pre-populated in batch using `scripts/capture_api_chat_retrieval_memory.py --claim-context-memory`
 
 Debug support:
 
@@ -444,7 +458,10 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Pre-retrieval LLM filtering for statutes and precedents (default-YES soft filter)
 - [x] Shared context retrieval for both Reasoner and CounterReasoner
 - [x] Reasoner Agent: plan-then-execute generation (ASPIC+) with 3-10 planned steps and anti-repetition validation
-- [x] Counter-Reasoner Agent: plan-then-execute counter-generation (ASPIC+) with multi-attack selection and per-step attack assignment
+- [x] Counter-Reasoner Agent: plan-then-execute counter-generation (ASPIC+) with multi-attack selection, per-step attack assignment, attack blacklist, and feasibility filtering for more stable counter plans
+- [x] CounterReasoner second-pass targeted retrieval with improved filtering discipline and attack-coverage-based activation
+- [x] Taxonomy anchor filtering with claim-aware applicability (soft core / hard accessory) for Reasoner and CounterReasoner
+- [x] BaseAgent caching for legal context extraction and statute applicability decisions (reduces duplicate LLM calls and improves consistency)
 - [x] Explicit precedent citation by full title in Reasoner and Counter-Reasoner prompts
 - [x] Repetition detection in reasoning steps (Jaccard similarity, threshold 0.70)
 - [x] Polisher-Evaluator Agent: modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin)
@@ -457,12 +474,16 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Attack Text Details: expandable panel with full attacker/target text, type, multiplier, NLI label, overlap, damage
 - [x] Resilient Groq Client: retry + dynamic API key discovery (V1…V99) + model fallback + model-down cache with TTL
 - [x] Smart error classification: model-down (503) vs. rate-limit (429) vs. transient errors
+- [x] Cooperative cancellation across API, agents, and pipeline services + `/api/pipeline/stop` endpoint for interrupting active SSE runs
 - [x] NLI contradiction detection via LLM (replaces local DeBERTa model)
 - [x] ASPIC+ IR formatting for Reasoner and Counter-Reasoner
 - [x] Prescriptive prompts and structured output for all agents
 - [x] Centralized configuration via Pydantic Settings (90+ parameters including truncation, attack, chain settings)
 - [x] Frontend Settings Panel: per-step model selection, temperature, max tokens, search params, AQA weights, chain min/max steps, attack parameters
 - [x] Per-claim pipeline logging (`logs/` directory)
+- [x] Optional pre-retrieval claim context memory (SQLite) with frontend toggles and script-based warmup
+- [x] Reasoner provisional causality bootstrap (plan draft → provisional classification → taxonomy anchors → enriched KB before step generation)
+- [x] Reasoner post-hoc anchor refinement fallback with streaming control events and frontend live reset/replace of the support chain
 - [x] React frontend (Vite) with three tabs + ASPIC+ Metagraph + Attack Details + settings panel
 - [x] Precedent ingestion and fulltext search (ITA-CaseHold)
 - [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
@@ -473,7 +494,7 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 
 ### 🚧 In Progress
 - [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
-- [ ] Claim-level caching: persist retrieval results (statutes, precedents, classification, stance) per claim to skip redundant searches on re-execution
+- [ ] Extended claim-level caching: persist additional pipeline artifacts (e.g., classification/stance/evaluation outputs) beyond pre-retrieval statutes/precedents
 - [ ] Explainability layer: generate a final, user-facing explanation of the reasoning and verdict (with traceable links to retrieved statutes/precedents and attack outcomes)
 
 ### 📋 Planned

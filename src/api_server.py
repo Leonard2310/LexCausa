@@ -50,6 +50,7 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     search_precedents_tool,
 )
 from config import settings  # noqa: E402
+from services.claim_context_memory import get_claim_context_memory  # noqa: E402
 from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 # Initialize Flask app
@@ -313,11 +314,56 @@ def _log_retrieval_debug(
         )
 
 
+def _build_claim_context_memory_signature() -> dict:
+    """Versioned signature for pre-retrieval cache invalidation."""
+    return {
+        "algo_version": "pre_retrieval_claim_context_v1",
+        "search_min_kept_statutes": int(settings.search_min_kept_statutes),
+        "search_expansion_step": int(settings.search_expansion_step),
+        "search_max_expansions": int(settings.search_max_expansions),
+        "search_expansion_max_zero_gain_rounds": int(
+            settings.search_expansion_max_zero_gain_rounds
+        ),
+        "search_use_top_n_libri": int(settings.search_use_top_n_libri),
+        "search_query_terms_mode": str(settings.search_query_terms_mode),
+        "search_query_terms_llm_max_terms": int(
+            settings.search_query_terms_llm_max_terms
+        ),
+        "search_query_terms_llm_max_tokens": int(
+            settings.search_query_terms_llm_max_tokens
+        ),
+        "search_cites_per_article_limit": int(settings.search_cites_per_article_limit),
+        "search_cites_max_additional": int(settings.search_cites_max_additional),
+        "search_cites_score_decay": float(settings.search_cites_score_decay),
+        "search_hybrid_penale_vector_weight": float(
+            settings.search_hybrid_penale_vector_weight
+        ),
+        "search_hybrid_penale_fulltext_weight": float(
+            settings.search_hybrid_penale_fulltext_weight
+        ),
+        "search_hybrid_civile_vector_weight": float(
+            settings.search_hybrid_civile_vector_weight
+        ),
+        "search_hybrid_civile_fulltext_weight": float(
+            settings.search_hybrid_civile_fulltext_weight
+        ),
+        "search_hybrid_admin_vector_weight": float(
+            settings.search_hybrid_admin_vector_weight
+        ),
+        "search_hybrid_admin_fulltext_weight": float(
+            settings.search_hybrid_admin_fulltext_weight
+        ),
+        "retrieval_model_order_aliases": list(settings.retrieval_model_order_aliases),
+    }
+
+
 def prepare_claim_context(
     claim: str,
     include_precedents: bool,
     max_statutes: int,
     max_precedents: int,
+    claim_context_memory_enabled: bool = False,
+    claim_context_memory_overwrite: bool = False,
     progress_callback=None,
     cancel_checker=None,
 ) -> tuple[list[dict], list[dict]]:
@@ -338,12 +384,51 @@ def prepare_claim_context(
     min_kept = settings.search_min_kept_statutes
     expansion_step = settings.search_expansion_step
     max_expansions = settings.search_max_expansions
+    memory_enabled = bool(claim_context_memory_enabled)
+    memory_overwrite = bool(claim_context_memory_overwrite)
+    if memory_overwrite and not memory_enabled:
+        memory_enabled = True
 
     print(
         f"🔎 Pre-retrieval config: top_k_statutes={max_statutes}, "
         f"min_kept={min_kept}, max_precedents={max_precedents}, "
         f"query_terms_mode={settings.search_query_terms_mode}"
     )
+    if memory_enabled:
+        print(
+            "💾 [Retrieval] Claim-context memory enabled"
+            + (" (overwrite requested)" if memory_overwrite else "")
+        )
+
+    cache_signature = _build_claim_context_memory_signature() if memory_enabled else {}
+    cache_client = get_claim_context_memory() if memory_enabled else None
+    if memory_enabled and not memory_overwrite and cache_client is not None:
+        _check_cancel()
+        progress_callback("Controllo memoria contesto claim", 12)
+        cached = cache_client.get(
+            claim=claim,
+            include_precedents=bool(include_precedents),
+            max_statutes=int(max_statutes),
+            max_precedents=int(max_precedents),
+            signature=cache_signature,
+        )
+        if isinstance(cached, dict):
+            cached_statutes = [
+                dict(item)
+                for item in (cached.get("statutes") or [])
+                if isinstance(item, dict)
+            ]
+            cached_precedents = [
+                dict(item)
+                for item in (cached.get("precedents") or [])
+                if isinstance(item, dict)
+            ]
+            print(
+                "💾 [Retrieval] Claim-context memory HIT: "
+                f"{len(cached_statutes)} statutes, {len(cached_precedents)} precedents"
+            )
+            progress_callback("Memoria contesto claim: cache hit", 66)
+            return cached_statutes, cached_precedents
 
     pipe = get_pipeline()
     retrieval_agent = get_retrieval_filter_agent()
@@ -583,6 +668,26 @@ def prepare_claim_context(
     progress_callback("Filtro precedenti", 66)
     precedents = retrieval_agent.filter_irrelevant_precedents(claim, precedents)
 
+    if memory_enabled and cache_client is not None:
+        try:
+            cache_key = cache_client.put(
+                claim=claim,
+                include_precedents=bool(include_precedents),
+                max_statutes=int(max_statutes),
+                max_precedents=int(max_precedents),
+                signature=cache_signature,
+                statutes=statutes,
+                precedents=precedents,
+            )
+            print(
+                "💾 [Retrieval] Claim-context memory "
+                f"{'REFRESHED' if memory_overwrite else 'SAVED'}: "
+                f"{len(statutes)} statutes, {len(precedents)} precedents "
+                f"(key={cache_key[:10]}...)"
+            )
+        except Exception as e:
+            print(f"⚠️ [Retrieval] Claim-context memory save failed: {e}")
+
     return statutes, precedents
 
 
@@ -686,6 +791,15 @@ def _clone_context_items(items: list[dict]) -> list[dict]:
     return [dict(item) for item in (items or [])]
 
 
+def _parse_claim_context_memory_flags(data: dict | None) -> tuple[bool, bool]:
+    payload = data if isinstance(data, dict) else {}
+    enabled = bool(payload.get("claim_context_memory_enabled", False))
+    overwrite = bool(payload.get("claim_context_memory_overwrite", False))
+    if overwrite and not enabled:
+        enabled = True
+    return enabled, overwrite
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
@@ -766,6 +880,9 @@ def chat():
         top_k = data.get("top_k", settings.search_top_k_default)
         include_precedents = data.get("include_precedents", True)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+        claim_memory_enabled, claim_memory_overwrite = (
+            _parse_claim_context_memory_flags(data)
+        )
         fe_settings = data.get("settings", {}) or {}
         fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
 
@@ -784,6 +901,8 @@ def chat():
             include_precedents=bool(include_precedents),
             max_statutes=int(top_k),
             max_precedents=int(max_precedents),
+            claim_context_memory_enabled=claim_memory_enabled,
+            claim_context_memory_overwrite=claim_memory_overwrite,
         )
         classification = pipe.classifier.classify(claim)
         chat_result = SimpleNamespace(
@@ -845,6 +964,9 @@ def reason():
         include_precedents = data.get("include_precedents", True)
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+        claim_memory_enabled, claim_memory_overwrite = (
+            _parse_claim_context_memory_flags(data)
+        )
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
@@ -854,6 +976,8 @@ def reason():
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
+            claim_context_memory_enabled=claim_memory_enabled,
+            claim_context_memory_overwrite=claim_memory_overwrite,
         )
         reas = get_reasoner()
 
@@ -904,6 +1028,9 @@ def counter_reason():
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
         reasoner_conclusion = (data.get("reasoner_conclusion", "") or "").strip()
+        claim_memory_enabled, claim_memory_overwrite = (
+            _parse_claim_context_memory_flags(data)
+        )
 
         if not claim:
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
@@ -923,6 +1050,8 @@ def counter_reason():
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
+            claim_context_memory_enabled=claim_memory_enabled,
+            claim_context_memory_overwrite=claim_memory_overwrite,
         )
 
         cr = get_counter_reasoner()
@@ -1002,6 +1131,9 @@ def _run_full_pipeline(
     include_precedents = data.get("include_precedents", True)
     max_statutes = data.get("max_statutes", settings.search_top_k_default)
     max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+    claim_memory_enabled, claim_memory_overwrite = _parse_claim_context_memory_flags(
+        data
+    )
 
     # ── Frontend-configurable settings ────────────────────────────────
     fe_settings = data.get("settings", {}) or {}
@@ -1050,6 +1182,11 @@ def _run_full_pipeline(
             print(f"⚙️  Frontend settings override: {fe_settings}")
         if not fe_enable_causality:
             print("🔬 Causality taxonomy DISABLED by frontend settings")
+        if claim_memory_enabled:
+            print(
+                "💾 Claim-context memory ENABLED"
+                + (" (overwrite requested)" if claim_memory_overwrite else "")
+            )
 
         _check_cancel()
         # Apply chain step overrides to global settings
@@ -1091,6 +1228,8 @@ def _run_full_pipeline(
             include_precedents=include_precedents,
             max_statutes=max_statutes,
             max_precedents=max_precedents,
+            claim_context_memory_enabled=claim_memory_enabled,
+            claim_context_memory_overwrite=claim_memory_overwrite,
             progress_callback=_emit_context_detail,
             cancel_checker=_is_cancel_requested,
         )

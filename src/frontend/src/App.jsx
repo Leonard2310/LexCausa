@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords, Download, Square } from 'lucide-react';
+import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords, Download, Square, Plus } from 'lucide-react';
 import './App.css';
 import AspicMetagraph from './AspicMetagraph';
 import AttackTextDetails from './AttackTextDetails';
@@ -170,6 +170,8 @@ export default function App() {
     aqa_allow_factual_attacks: true,
     aqa_allow_cross_codice: true,
     enable_causality: true,
+    claim_context_memory_enabled: false,
+    claim_context_memory_overwrite: false,
   });
   const messagesEndRef = useRef(null);
   const messagesAreaRef = useRef(null);
@@ -182,6 +184,7 @@ export default function App() {
   const historyPipelinePdfRefs = useRef({});
   const [exportingPdfKey, setExportingPdfKey] = useState(null);
   const [isStoppingPipeline, setIsStoppingPipeline] = useState(false);
+  const [claimMemoryMenuOpen, setClaimMemoryMenuOpen] = useState(false);
 
   const isNearBottom = () => {
     const el = messagesAreaRef.current;
@@ -202,6 +205,12 @@ export default function App() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, reasonMessages, pipelineMessages, reasoningResult, pipelineResult]);
+
+  useEffect(() => {
+    if (activeTab !== TABS.PIPELINE) {
+      setClaimMemoryMenuOpen(false);
+    }
+  }, [activeTab]);
 
   // Load default settings from backend on mount
   useEffect(() => {
@@ -380,6 +389,7 @@ export default function App() {
     if (!input.trim() || isLoading) return;
 
     const claim = input.trim();
+    setClaimMemoryMenuOpen(false);
     manualPipelineStopRef.current = false;
     activePipelineRunIdRef.current = null;
     pipelineAbortControllerRef.current = null;
@@ -622,6 +632,10 @@ export default function App() {
       include_precedents: pipelineSettings.include_precedents,
       max_statutes: pipelineSettings.search_top_k_default,
       max_precedents: pipelineSettings.precedents_limit_default,
+      claim_context_memory_enabled: !!pipelineSettings.claim_context_memory_enabled,
+      claim_context_memory_overwrite:
+        !!pipelineSettings.claim_context_memory_enabled &&
+        !!pipelineSettings.claim_context_memory_overwrite,
       settings: {
         reasoner_model: pipelineSettings.reasoner_model,
         counter_model: pipelineSettings.counter_model,
@@ -3696,9 +3710,80 @@ export default function App() {
               }}
               placeholder={getPlaceholder()}
               rows={1}
-              className="input-textarea"
+              className={`input-textarea ${activeTab === TABS.PIPELINE ? 'has-inline-tool' : ''}`}
               disabled={isLoading}
             />
+            {activeTab === TABS.PIPELINE && (
+              <div className="input-tools">
+                <button
+                  type="button"
+                  className={`input-plus-button ${claimMemoryMenuOpen ? 'is-open' : ''}`}
+                  title="Opzioni memoria pre-retrieval"
+                  aria-label="Apri opzioni memoria pre-retrieval"
+                  aria-expanded={claimMemoryMenuOpen}
+                  onClick={() => setClaimMemoryMenuOpen((prev) => !prev)}
+                  disabled={isLoading}
+                >
+                  <Plus size={18} />
+                </button>
+                {claimMemoryMenuOpen && (
+                  <div className="input-tools-menu" role="dialog" aria-label="Opzioni memoria">
+                    <div className="input-tools-menu-header">Memoria pre-retrieval</div>
+
+                    <div className="ios-toggle-row">
+                      <div className="ios-toggle-copy">
+                        <div className="ios-toggle-title">Usa memoria</div>
+                        <div className="ios-toggle-subtitle">
+                          Riusa statuti e precedenti già filtrati per questo claim
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={!!pipelineSettings.claim_context_memory_enabled}
+                        className={`ios-switch ${pipelineSettings.claim_context_memory_enabled ? 'is-on' : ''}`}
+                        onClick={() => {
+                          const checked = !pipelineSettings.claim_context_memory_enabled;
+                          setPipelineSettings((prev) => ({
+                            ...prev,
+                            claim_context_memory_enabled: checked,
+                            claim_context_memory_overwrite: checked
+                              ? prev.claim_context_memory_overwrite
+                              : false,
+                          }));
+                        }}
+                      >
+                        <span className="ios-switch-knob" />
+                      </button>
+                    </div>
+
+                    <div className={`ios-toggle-row ${!pipelineSettings.claim_context_memory_enabled ? 'is-disabled' : ''}`}>
+                      <div className="ios-toggle-copy">
+                        <div className="ios-toggle-title">Sovrascrivi</div>
+                        <div className="ios-toggle-subtitle">
+                          Rigenera e aggiorna la memoria per il claim corrente
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={!!pipelineSettings.claim_context_memory_overwrite}
+                        className={`ios-switch ${pipelineSettings.claim_context_memory_overwrite ? 'is-on' : ''}`}
+                        onClick={() =>
+                          updateSetting(
+                            'claim_context_memory_overwrite',
+                            !pipelineSettings.claim_context_memory_overwrite,
+                          )
+                        }
+                        disabled={!pipelineSettings.claim_context_memory_enabled}
+                      >
+                        <span className="ios-switch-knob" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <button
             onClick={handleSubmit}

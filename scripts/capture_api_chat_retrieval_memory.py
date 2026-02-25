@@ -2,6 +2,10 @@
 """
 Capture /api/chat retrieval outputs for all covered claims and persist them.
 
+Can also warm the backend claim-context memory (SQLite pre-retrieval cache)
+because /api/chat reuses the same `prepare_claim_context(...)` path as the
+Reasoner/Counter pipeline.
+
 For each claim in claims.md (covered sections), this script calls the local API
 endpoint /api/chat with precedents enabled and stores:
 - filtered statutes returned by the endpoint
@@ -158,6 +162,8 @@ def _call_api_chat(
     max_precedents: int,
     timeout_s: float | None,
     settings_payload: dict[str, Any] | None = None,
+    claim_context_memory_enabled: bool = False,
+    claim_context_memory_overwrite: bool = False,
 ) -> requests.Response:
     url = f"{base_url.rstrip('/')}/api/chat"
     payload: dict[str, Any] = {
@@ -168,6 +174,10 @@ def _call_api_chat(
     }
     if settings_payload:
         payload["settings"] = settings_payload
+    if claim_context_memory_enabled:
+        payload["claim_context_memory_enabled"] = True
+    if claim_context_memory_overwrite:
+        payload["claim_context_memory_overwrite"] = True
     return requests.post(url, json=payload, timeout=timeout_s)
 
 
@@ -210,7 +220,25 @@ def main() -> int:
         action="store_true",
         help="Skip claims that already have a saved file in logs/api_chat_memory/*_<CLAIM_ID>_*.json",
     )
+    parser.add_argument(
+        "--claim-context-memory",
+        action="store_true",
+        help="Enable backend SQLite claim-context memory while calling /api/chat (warm cache).",
+    )
+    parser.add_argument(
+        "--overwrite-claim-context-memory",
+        action="store_true",
+        help="Force overwrite of existing claim-context memory entries (implies --claim-context-memory).",
+    )
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Warm backend claim-context memory but skip writing per-claim JSON capture files.",
+    )
     args = parser.parse_args()
+
+    if args.overwrite_claim_context_memory:
+        args.claim_context_memory = True
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -244,6 +272,9 @@ def main() -> int:
             "settings": {"search_query_terms_mode": args.search_query_terms_mode},
             "timeout": None if args.timeout is None else float(args.timeout),
             "delay": float(args.delay),
+            "claim_context_memory_enabled": bool(args.claim_context_memory),
+            "claim_context_memory_overwrite": bool(args.overwrite_claim_context_memory),
+            "cache_only": bool(args.cache_only),
         },
         "counts": {"selected_claims": len(claims)},
         "results": [],
@@ -306,6 +337,10 @@ def main() -> int:
                 settings_payload={
                     "search_query_terms_mode": args.search_query_terms_mode
                 },
+                claim_context_memory_enabled=bool(args.claim_context_memory),
+                claim_context_memory_overwrite=bool(
+                    args.overwrite_claim_context_memory
+                ),
             )
             elapsed = round(time.time() - started, 3)
             record["elapsed_s"] = elapsed
@@ -326,38 +361,38 @@ def main() -> int:
                 if not isinstance(precedents, list):
                     precedents = []
 
-                claim_file = OUTPUT_DIR / (
-                    f"{ts}_{entry.claim_id}_{_slugify_filename(entry.title, max_len=40)}.json"
-                )
-                claim_payload = {
-                    "captured_at": datetime.now().isoformat(timespec="seconds"),
-                    "claim_meta": asdict(entry),
-                    "request": manifest["request"],
-                    "http_status": resp.status_code,
-                    "classification": payload.get("classification"),
-                    "articles": statutes,
-                    "precedents": precedents,
-                    "counts": {
-                        "articles": len(statutes),
-                        "precedents": len(precedents),
-                    },
-                }
-                claim_file.write_text(
-                    json.dumps(claim_payload, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-
                 record.update(
                     {
                         "status": "ok",
                         "articles_count": len(statutes),
                         "precedents_count": len(precedents),
-                        "file": {
-                            "absolute_path": str(claim_file),
-                            "relative_path": str(claim_file.relative_to(PROJECT_ROOT)),
-                        },
                     }
                 )
+                if not args.cache_only:
+                    claim_file = OUTPUT_DIR / (
+                        f"{ts}_{entry.claim_id}_{_slugify_filename(entry.title, max_len=40)}.json"
+                    )
+                    claim_payload = {
+                        "captured_at": datetime.now().isoformat(timespec="seconds"),
+                        "claim_meta": asdict(entry),
+                        "request": manifest["request"],
+                        "http_status": resp.status_code,
+                        "classification": payload.get("classification"),
+                        "articles": statutes,
+                        "precedents": precedents,
+                        "counts": {
+                            "articles": len(statutes),
+                            "precedents": len(precedents),
+                        },
+                    }
+                    claim_file.write_text(
+                        json.dumps(claim_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    record["file"] = {
+                        "absolute_path": str(claim_file),
+                        "relative_path": str(claim_file.relative_to(PROJECT_ROOT)),
+                    }
                 ok += 1
 
         except Exception as exc:

@@ -31,6 +31,7 @@ from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
 from .tools.prompt_registry import get_prompt, render_prompt
+from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
@@ -99,9 +100,7 @@ class CounterReasonerOutput:
 COUNTER_REASONER_SYSTEM_PROMPT = get_prompt("counter_reasoner.system")
 
 
-_DEFAULT_ATTACK_DESCRIPTION_EN = (
-    "Counter-argument to weaken the primary legal thesis."
-)
+_DEFAULT_ATTACK_DESCRIPTION_EN = "Counter-argument to weaken the primary legal thesis."
 _DEFAULT_ATTACK_DESCRIPTION_IT = (
     "le norme citate indeboliscono la tesi giuridica primaria"
 )
@@ -588,54 +587,105 @@ class CounterReasoner(BaseAgent):
         self, causal_types: List[str], claim: str
     ) -> List[dict]:
         """
-        Get taxonomy anchor norms for the given causal types.
+        Get taxonomy anchor statutes for the given causal types.
 
-        Reads directly from config_taxonomy.json using the correct keys:
-        - anchor_norms -> core_norms / accessory_norms
-        - Each norm has 'ref' and 'role' fields
+        Alignment with Reasoner:
+        - taxonomy claim-relevance filter via get_causality_theory_tool(claim=...)
+        - applicability filter on converted statutes (soft core / hard accessory)
         """
         statutes: List[dict] = []
         seen_refs = set()
         unique_cts = list(dict.fromkeys(ct for ct in causal_types if ct))
 
         for ct in unique_cts:
-            # Find causal_type block in config
-            causal_type_block = next(
-                (c for c in self._config.get("causal_types", []) if c.get("id") == ct),
-                None,
-            )
-            if not causal_type_block:
-                self._log(
-                    f"⚠️ [taxonomy] Causal type {ct} not found in config", "warning"
+            try:
+                theory = get_causality_theory_tool.invoke(
+                    {"causality_type": ct, "claim": claim}
                 )
+            except Exception as e:
+                self._log(f"⚠️ Failed to load theory for {ct}: {e}", "warning")
                 continue
 
-            anchor_norms = causal_type_block.get("anchor_norms", {})
-            core_norms = anchor_norms.get("core_norms", []) or []
-            accessory_norms = anchor_norms.get("accessory_norms", []) or []
-            all_norms = core_norms + accessory_norms
+            core_rel = theory.get("norme_core_rilevanti", []) or []
+            acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
+            core_full = theory.get("norme_core", []) or []
+            acc_full = theory.get("norme_accessorie", []) or []
 
+            if not core_rel and core_full:
+                core_rel = core_full
+            if not acc_rel and acc_full:
+                acc_rel = acc_full
+
+            taxonomy_norms = core_rel + acc_rel
+            kept_refs = [
+                n.get("ref") or n.get("riferimento")
+                for n in taxonomy_norms
+                if n.get("ref") or n.get("riferimento")
+            ]
+            kept_set = {r for r in kept_refs if r}
+            discarded_refs = [
+                n.get("ref") or n.get("riferimento")
+                for n in (core_full + acc_full)
+                if (n.get("ref") or n.get("riferimento"))
+                and (n.get("ref") or n.get("riferimento")) not in kept_set
+            ]
             self._log(
-                f"🔎 [taxonomy] Causality {ct}: core {len(core_norms)}/{len(core_norms)}, accessory {len(accessory_norms)}/{len(accessory_norms)}"
+                f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
             )
-
-            kept_refs = []
-            for n in all_norms:
-                ref = n.get("ref")
-                # role = n.get("role", "")
-                """
-                TODO: Valutarne l'inserimento futuro per rendere la contro-argomentazione più sofisticata
-                (ad esempio, distinguendo tra attacchi alle norme core e accessorie).
-                """
-                if not ref or ref in seen_refs:
-                    continue
-                seen_refs.add(ref)
-                kept_refs.append(ref)
-                # Convert to statute dict format
-                statutes.append(self._norm_to_statute_dict(n))
-
             if kept_refs:
                 self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
+            if discarded_refs:
+                self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
+
+            # Align with Reasoner:
+            # - taxonomy relevance (soft) from get_causality_theory_tool(claim=...)
+            # - applicability: hard on accessory, soft on core
+            core_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in core_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            acc_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in acc_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            core_statutes_raw = [st for _, st in core_pairs]
+            acc_statutes_raw = [st for _, st in acc_pairs]
+            (
+                _core_applicable,
+                acc_applicable,
+                _core_rejected,
+                _acc_rejected,
+            ) = self._filter_taxonomy_anchor_statutes_by_applicability(
+                claim,
+                core_statutes=core_statutes_raw,
+                accessory_statutes=acc_statutes_raw,
+                log_prefix=f"counter/taxonomy/{ct}",
+            )
+
+            acc_keep_keys = {self._statute_identity_key(st) for st in acc_applicable}
+            final_core_statutes = core_statutes_raw  # soft keep
+            final_acc_statutes = [
+                st
+                for st in acc_statutes_raw
+                if self._statute_identity_key(st) in acc_keep_keys
+            ]
+
+            for st in final_core_statutes:
+                ref = str(st.get("statute_id") or "")
+                if ref and ref not in seen_refs:
+                    seen_refs.add(ref)
+                    payload = dict(st)
+                    payload["_kb_origin"] = "taxonomy_core"
+                    statutes.append(payload)
+            for st in final_acc_statutes:
+                ref = str(st.get("statute_id") or "")
+                if ref and ref not in seen_refs:
+                    seen_refs.add(ref)
+                    payload = dict(st)
+                    payload["_kb_origin"] = "taxonomy_accessory"
+                    statutes.append(payload)
 
         return statutes
 
@@ -803,6 +853,18 @@ class CounterReasoner(BaseAgent):
         all_statutes = (
             pre_retrieved_statutes + boosted_counter_statutes + anchor_statutes
         )
+        statute_origin_map: dict[tuple[str, str], set[str]] = {}
+        for s in pre_retrieved_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add("pre_retrieval")
+        for s in boosted_counter_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add("counter_second_pass")
+        for s in anchor_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add(
+                str(s.get("_kb_origin") or "taxonomy_anchor")
+            )
         # Deduplicate
         seen_keys = set()
         deduped_statutes = []
@@ -813,12 +875,21 @@ class CounterReasoner(BaseAgent):
                 deduped_statutes.append(s)
 
         before_expand = len(deduped_statutes)
+        before_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
         deduped_statutes = self._expand_with_cross_references(deduped_statutes)
+        after_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
+        for k in after_expand_keys - before_expand_keys:
+            statute_origin_map.setdefault(k, set()).add("cross_ref")
         if len(deduped_statutes) > before_expand:
             self._log(
                 f"➕ Added {len(deduped_statutes) - before_expand} statutes via cross-ref",
                 "info",
             )
+        self._log_final_statute_origins(
+            deduped_statutes,
+            statute_origin_map,
+            label="Counter KB",
+        )
 
         # Format knowledge base for prompt
         knowledge_base = self._format_context_for_prompt(
@@ -977,7 +1048,9 @@ class CounterReasoner(BaseAgent):
             causal_type_id=routing_decision.causal_type_id,
             theory_id=routing_decision.theory_id,
             selected_attack_id=(attack_selection.attack_id if attack_selection else ""),
-            selected_attack_ids=(attack_selection.attack_ids if attack_selection else []),
+            selected_attack_ids=(
+                attack_selection.attack_ids if attack_selection else []
+            ),
             reasoner_causality={
                 "causal_type_id": routing_decision.causal_type_id,
                 "theory_id": routing_decision.theory_id,
@@ -1103,7 +1176,9 @@ class CounterReasoner(BaseAgent):
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             raw = (resp.content or "").strip().replace("```json", "").replace("```", "")
             data = json.loads(raw)
-            covered_raw = data.get("covered_attack_ids", []) if isinstance(data, dict) else []
+            covered_raw = (
+                data.get("covered_attack_ids", []) if isinstance(data, dict) else []
+            )
             covered_ids = [
                 str(x).strip()
                 for x in covered_raw
@@ -1146,8 +1221,7 @@ class CounterReasoner(BaseAgent):
             attack_ids=attack_ids,
         )
         size_gate = (
-            effective_context_size
-            < settings.counter_second_pass_min_against_statutes
+            effective_context_size < settings.counter_second_pass_min_against_statutes
         )
         quality_gate = coverage_ratio < 0.50
         self._log(
@@ -1533,8 +1607,7 @@ class CounterReasoner(BaseAgent):
                     r"[^a-z0-9_]+",
                     "_",
                     str(item.get("novelty_key", "")).strip().lower(),
-                )
-                .strip("_")
+                ).strip("_")
                 or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[:48]
                 or f"counter_step_{idx}"
             )
@@ -1574,7 +1647,10 @@ class CounterReasoner(BaseAgent):
 
         min_distinct_attacks = min(2, len(allowed_attack_ids))
         distinct_attacks = {step.get("attack_id", "") for step in cleaned}
-        if len(cleaned) >= min_distinct_attacks and len(distinct_attacks) < min_distinct_attacks:
+        if (
+            len(cleaned) >= min_distinct_attacks
+            and len(distinct_attacks) < min_distinct_attacks
+        ):
             raise ValueError(
                 "counter planner did not distribute attacks across planned steps"
             )
@@ -2122,12 +2198,17 @@ class CounterReasoner(BaseAgent):
             if heuristic_ok:
                 result = (True, "")
             else:
-                result = (False, "opposition check unavailable and heuristic not satisfied")
+                result = (
+                    False,
+                    "opposition check unavailable and heuristic not satisfied",
+                )
 
         self._reasoner_opposition_check_cache[cache_key] = result
         return result
 
-    def _heuristic_counter_opposition(self, *, reasoner_text: str, step_text: str) -> bool:
+    def _heuristic_counter_opposition(
+        self, *, reasoner_text: str, step_text: str
+    ) -> bool:
         """
         Best-effort opposition check when LLM verdict is UNCLEAR/unavailable.
         """

@@ -187,7 +187,16 @@ Rules:
   * legal domain
   * offense class
   * procedural phase
-- If uncertain but potentially on-point, answer YES.
+- Answer NO for merely topically related statutes that belong to a different
+  offense/legal institute (e.g., intentional homicide vs negligent road homicide;
+  healthcare malpractice vs road accident liability).
+- If the statute is a broad/general provision and a more specific statute clearly
+  governs the claim, answer NO unless the general provision is still directly
+  needed as a general principle to decide the case.
+- Generic labels shared across unrelated sectors (e.g., "aggravating circumstances")
+  are NOT enough for YES.
+- If uncertain but potentially on-point, answer YES only when a competent lawyer
+  could realistically use the statute in the main reasoning for this claim.
 
 Respond with EXACTLY one token: YES or NO.""",
     PromptKey.BASE_FILTER_PRECEDENTS: """You are a senior Italian legal expert.

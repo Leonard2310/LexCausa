@@ -361,19 +361,7 @@ def prepare_claim_context(
         articles=articles,
         stage=f"initial_top_k_{current_top_k}",
     )
-    expanded_articles = pipe.expand_with_cited_articles(articles)
-    if len(expanded_articles) > len(articles):
-        print(
-            "ℹ️ [Retrieval] 🔗 Citation expansion: "
-            f"+{len(expanded_articles) - len(articles)} articoli via CITES"
-        )
-        _log_retrieval_debug(
-            claim=claim,
-            filters=libri_filters,
-            articles=expanded_articles,
-            stage=f"initial_top_k_{current_top_k}_plus_cites",
-        )
-    articles = expanded_articles
+    article_by_id = {a.statute_id: a for a in articles}
     statutes = _articles_to_dicts(articles)
     legal_context = retrieval_agent._extract_legal_context(claim)
     progress_callback("Filtro rilevanza norme", 38)
@@ -384,8 +372,52 @@ def prepare_claim_context(
     )
     seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
 
+    if kept_statutes:
+        seed_articles = [
+            article_by_id[s["statute_id"]]
+            for s in kept_statutes
+            if s.get("statute_id") in article_by_id
+        ]
+        expanded_articles = pipe.expand_with_cited_articles(seed_articles)
+        expanded_only = [
+            a
+            for a in expanded_articles
+            if a.statute_id not in {s.statute_id for s in seed_articles}
+        ]
+        if expanded_only:
+            print(
+                "ℹ️ [Retrieval] 🔗 Citation expansion after filters (initial): "
+                f"seed={len(seed_articles)}, +{len(expanded_only)} candidates"
+            )
+            _log_retrieval_debug(
+                claim=claim,
+                filters=libri_filters,
+                articles=expanded_articles,
+                stage=f"initial_top_k_{current_top_k}_kept_seed_plus_cites",
+            )
+            expanded_statutes = [
+                d
+                for d in _articles_to_dicts(expanded_only)
+                if d["statute_id"] not in seen_ids
+            ]
+            if expanded_statutes:
+                seen_ids.update(s["statute_id"] for s in expanded_statutes)
+                progress_callback("Filtro rilevanza norme (CITES)", 49)
+                kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
+                    claim, expanded_statutes
+                )
+                progress_callback("Verifica applicabilità norme (CITES)", 50)
+                kept_from_cites = retrieval_agent.filter_applicable_statutes(
+                    claim, kept_from_cites, legal_context
+                )
+                kept_statutes.extend(kept_from_cites)
+                print(
+                    "ℹ️ [Retrieval] 📎 CITES filtered result (initial): "
+                    f"+{len(kept_from_cites)} kept from {len(expanded_statutes)} new candidates"
+                )
+
     print(
-        f"📊 Initial search: {len(statutes)} fetched, "
+        f"📊 Initial search: {len(statutes)} direct fetched, "
         f"{len(kept_statutes)} kept (min={min_kept})"
     )
 
@@ -417,19 +449,7 @@ def prepare_claim_context(
             articles=articles,
             stage=f"expansion_{expansion}_top_k_{current_top_k}",
         )
-        expanded_articles = pipe.expand_with_cited_articles(articles)
-        if len(expanded_articles) > len(articles):
-            print(
-                "ℹ️ [Retrieval] 🔗 Citation expansion: "
-                f"+{len(expanded_articles) - len(articles)} articoli via CITES"
-            )
-            _log_retrieval_debug(
-                claim=claim,
-                filters=libri_filters,
-                articles=expanded_articles,
-                stage=f"expansion_{expansion}_top_k_{current_top_k}_plus_cites",
-            )
-        articles = expanded_articles
+        article_by_id = {a.statute_id: a for a in articles}
         new_statutes = [
             d for d in _articles_to_dicts(articles) if d["statute_id"] not in seen_ids
         ]
@@ -445,14 +465,65 @@ def prepare_claim_context(
         new_kept = retrieval_agent.filter_applicable_statutes(
             claim, new_kept, legal_context
         )
+
+        kept_from_cites = []
+        if new_kept:
+            seed_articles = [
+                article_by_id[s["statute_id"]]
+                for s in new_kept
+                if s.get("statute_id") in article_by_id
+            ]
+            expanded_articles = pipe.expand_with_cited_articles(seed_articles)
+            seed_ids = {s.statute_id for s in seed_articles}
+            expanded_only = [
+                a for a in expanded_articles if a.statute_id not in seed_ids
+            ]
+            if expanded_only:
+                print(
+                    "ℹ️ [Retrieval] 🔗 Citation expansion after filters "
+                    f"(round {expansion}): seed={len(seed_articles)}, +{len(expanded_only)} candidates"
+                )
+                _log_retrieval_debug(
+                    claim=claim,
+                    filters=libri_filters,
+                    articles=expanded_articles,
+                    stage=(
+                        f"expansion_{expansion}_top_k_{current_top_k}"
+                        "_kept_seed_plus_cites"
+                    ),
+                )
+                expanded_statutes = [
+                    d
+                    for d in _articles_to_dicts(expanded_only)
+                    if d["statute_id"] not in seen_ids
+                ]
+                if expanded_statutes:
+                    seen_ids.update(s["statute_id"] for s in expanded_statutes)
+                    progress_callback("Filtro rilevanza norme (CITES esp.)", 63)
+                    kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
+                        claim, expanded_statutes
+                    )
+                    progress_callback("Verifica applicabilità norme (CITES esp.)", 64)
+                    kept_from_cites = retrieval_agent.filter_applicable_statutes(
+                        claim, kept_from_cites, legal_context
+                    )
+                    print(
+                        "ℹ️ [Retrieval] 📎 CITES filtered result "
+                        f"(round {expansion}): +{len(kept_from_cites)} kept from "
+                        f"{len(expanded_statutes)} new candidates"
+                    )
+
+        round_total_kept = len(new_kept) + len(kept_from_cites)
         kept_statutes.extend(new_kept)
+        kept_statutes.extend(kept_from_cites)
 
         print(
             f"   📊 +{len(new_statutes)} new fetched, "
-            f"+{len(new_kept)} kept → total kept={len(kept_statutes)}"
+            f"+{round_total_kept} kept (direct={len(new_kept)}, cites={len(kept_from_cites)}) "
+            f"→ total kept={len(kept_statutes)}"
         )
 
-        if len(new_kept) == 0:
+        if round_total_kept == 0:
             zero_gain_rounds += 1
         else:
             zero_gain_rounds = 0

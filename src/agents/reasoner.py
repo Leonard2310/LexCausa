@@ -234,6 +234,15 @@ class Reasoner(BaseAgent):
             f"📌 Phase 3: merging pre_retrieved ({len(pre_retrieved_statutes)}) + anchor ({len(anchor_statutes)}) statutes"
         )
         all_statutes = pre_retrieved_statutes + anchor_statutes
+        statute_origin_map: dict[tuple[str, str], set[str]] = {}
+        for s in pre_retrieved_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add("pre_retrieval")
+        for s in anchor_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add(
+                str(s.get("_kb_origin") or "taxonomy_anchor")
+            )
         seen_keys = set()
         deduped_statutes = []
         for s in all_statutes:
@@ -243,12 +252,21 @@ class Reasoner(BaseAgent):
                 deduped_statutes.append(s)
         self._log(f"📌 After dedup: {len(deduped_statutes)} statutes")
         before_expand = len(deduped_statutes)
+        before_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
         deduped_statutes = self._expand_with_cross_references(deduped_statutes)
+        after_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
+        for k in after_expand_keys - before_expand_keys:
+            statute_origin_map.setdefault(k, set()).add("cross_ref")
         if len(deduped_statutes) > before_expand:
             self._log(
                 f"➕ Added {len(deduped_statutes) - before_expand} statutes via cross-ref",
                 "info",
             )
+        self._log_final_statute_origins(
+            deduped_statutes,
+            statute_origin_map,
+            label="Reasoner KB",
+        )
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
@@ -360,7 +378,15 @@ class Reasoner(BaseAgent):
                     }
 
                     if final_causal_id:
-                        causal_types_for_counter = [final_causal_id]
+                        causal_types_for_counter = (
+                            self._build_causal_type_bundle_for_counter(
+                                claim=claim,
+                                domain=domain,
+                                primary_causal_type_id=final_causal_id,
+                                reasoning_chain=reasoning_chain,
+                                raw_response=raw_output,
+                            )
+                        )
                         anchor_norms, _anchor_statutes_unused, principle_tests = (
                             self._filtered_anchor_norms_for_types(
                                 causal_types_for_counter, claim
@@ -368,6 +394,11 @@ class Reasoner(BaseAgent):
                         )
                         self._log(
                             f"📋 Post-hoc anchor norms: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
+                        )
+                        self._log(
+                            "🔬 Counter causal-type bundle: "
+                            f"{causal_types_for_counter}",
+                            "info",
                         )
 
                     # Optional diagnostics: compare eventual input hint vs post-hoc chain class.
@@ -596,7 +627,7 @@ class Reasoner(BaseAgent):
         ):
             return "PEN_PROPERTY_QUALIFICATION"
         if can("PEN_COLPA_GRADATION") and pen.intersection(
-            {"42", "43", "61", "62-bis", "113", "133", "589-bis", "590"}
+            {"42", "43", "61", "62-bis", "113", "133"}
         ):
             return "PEN_COLPA_GRADATION"
         if can("PEN_INTERVENING") and pen.intersection({"41", "45"}):
@@ -625,7 +656,9 @@ class Reasoner(BaseAgent):
             return "CIV_REMOTENESS"
 
         # Administrative signatures
-        if can("AMM_AUTOTUTELA_BALANCE") and amm.intersection({"21-novies", "21-quinquies"}):
+        if can("AMM_AUTOTUTELA_BALANCE") and amm.intersection(
+            {"21-novies", "21-quinquies"}
+        ):
             return "AMM_AUTOTUTELA_BALANCE"
         if can("AMM_DELAY_REMEDIES") and amm.intersection({"2-bis"}):
             return "AMM_DELAY_REMEDIES"
@@ -633,6 +666,135 @@ class Reasoner(BaseAgent):
             return "AMM_PROCEDURAL_LEGITIMACY"
 
         return ""
+
+    def _build_causal_type_bundle_for_counter(
+        self,
+        *,
+        claim: str,
+        domain: str,
+        primary_causal_type_id: str,
+        reasoning_chain: list[str],
+        raw_response: str,
+        max_total: int = 3,
+    ) -> list[str]:
+        """Build a small multi-type bundle for counter anchor norms.
+
+        Keeps the post-hoc classified type as primary, then adds up to two
+        complementary causal types using article signatures and generic claim cues.
+        This is intentionally conservative and mainly targets mixed penal
+        causation/culpability patterns without changing the primary routing.
+        """
+        primary = (primary_causal_type_id or "").strip()
+        if not primary:
+            return []
+
+        config = config_loader.load_config()
+        ct_index = config_loader.causal_types_by_id(config)
+        domain_lower = (domain or "").strip().lower()
+        if domain_lower == "entrambi":
+            allowed_ids = list(ct_index.keys())
+        else:
+            allowed_ids = [
+                ct_id
+                for ct_id, ct in ct_index.items()
+                if str(ct.get("domain", "") or "").strip().lower() == domain_lower
+            ] or list(ct_index.keys())
+
+        allowed = set(allowed_ids)
+        selected: list[str] = []
+        reasons: list[str] = []
+
+        def add(ct_id: str, reason: str) -> None:
+            if not ct_id or ct_id not in allowed or ct_id in selected:
+                return
+            if len(selected) >= max_total:
+                return
+            selected.append(ct_id)
+            reasons.append(f"{ct_id}: {reason}")
+
+        add(primary, "primary post-hoc classification")
+
+        chain_text = "\n".join(reasoning_chain) or raw_response or ""
+        mentions = extract_article_mentions(chain_text, require_code=True)
+        pen, _civ, _amm = self._article_ids_by_source(mentions)
+
+        claim_text = (claim or "").lower()
+        chain_lower = chain_text.lower()
+        penal_text = f"{claim_text}\n{chain_lower}"
+
+        # Article-signature complements (deterministic)
+        if pen.intersection({"40", "41", "589", "589-bis", "590"}):
+            add("PEN_FACTUAL", "penal causal/factual article signature")
+        if pen.intersection({"41", "45", "54", "90"}):
+            add("PEN_INTERVENING", "intervening/imputation article signature")
+        if pen.intersection({"45", "54", "90"}):
+            add(
+                "IMPUTATION_FILTER", "fortuito/necessity/imputability article signature"
+            )
+        if pen.intersection({"42", "43", "61", "62-bis", "113", "133"}):
+            add("PEN_COLPA_GRADATION", "fault gradation/sanction article signature")
+
+        # Generic penal claim cues (used when cited articles are incomplete)
+        has_counterfactual_cues = any(
+            cue in penal_text
+            for cue in (
+                "nesso causale",
+                "controfatt",
+                "causa sopravven",
+                "si sarebbe verificat",
+                "perizi",
+            )
+        )
+        has_emergency_or_emotion_cues = any(
+            cue in penal_text
+            for cue in (
+                "stato emotiv",
+                "urgenza",
+                "parto",
+                "ospedal",
+                "fortuit",
+                "forza maggiore",
+                "stato di necessit",
+                "necessità",
+            )
+        )
+        has_fault_gradation_cues = any(
+            cue in penal_text
+            for cue in (
+                "colpa",
+                "prevedibil",
+                "evitabil",
+                "attenuan",
+                "aggravan",
+                "rimprover",
+                "commisur",
+            )
+        )
+
+        if has_counterfactual_cues:
+            add("PEN_FACTUAL", "counterfactual/causal cues in claim or chain")
+            add(
+                "PEN_INTERVENING",
+                "supervening-cause style causal cues in claim or chain",
+            )
+        if has_emergency_or_emotion_cues:
+            add("PEN_INTERVENING", "emergency/emotional-state cues in claim or chain")
+            add(
+                "IMPUTATION_FILTER",
+                "emergency/fortuitous/imputability cues in claim or chain",
+            )
+        if has_fault_gradation_cues:
+            add(
+                "PEN_COLPA_GRADATION", "fault gradation/sanction cues in claim or chain"
+            )
+
+        if reasons:
+            self._log(
+                "🔬 Counter causal-type bundle reasons: " + " | ".join(reasons),
+                "info",
+            )
+
+        return selected
 
     def _classify_causality_from_reasoning(
         self, claim: str, reasoning_chain: list[str], raw_response: str, domain: str
@@ -828,6 +990,40 @@ class Reasoner(BaseAgent):
                 self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
             if discarded_refs:
                 self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
+
+            # Second-stage applicability on taxonomy-derived statutes:
+            # - core norms: soft (flag but keep even if rejected)
+            # - accessory norms: hard (drop if rejected)
+            core_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in core_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            acc_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in acc_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            core_statutes_raw = [st for _, st in core_pairs]
+            acc_statutes_raw = [st for _, st in acc_pairs]
+            (
+                _core_applicable,
+                acc_applicable,
+                _core_rejected,
+                _acc_rejected,
+            ) = self._filter_taxonomy_anchor_statutes_by_applicability(
+                claim,
+                core_statutes=core_statutes_raw,
+                accessory_statutes=acc_statutes_raw,
+                log_prefix=f"reasoner/taxonomy/{ct}",
+            )
+            acc_keep_keys = {self._statute_identity_key(st) for st in acc_applicable}
+            acc_rel = [
+                norm
+                for norm, st in acc_pairs
+                if self._statute_identity_key(st) in acc_keep_keys
+            ]
+            taxonomy_norms = core_rel + acc_rel
 
             merged_core.extend(core_rel)
             merged_accessory.extend(acc_rel)
@@ -1091,8 +1287,7 @@ class Reasoner(BaseAgent):
                     r"[^a-z0-9_]+",
                     "_",
                     str(item.get("novelty_key", "")).strip().lower(),
-                )
-                .strip("_")
+                ).strip("_")
                 or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[:48]
                 or f"step_{idx}"
             )
@@ -1227,7 +1422,9 @@ class Reasoner(BaseAgent):
         """
         ids: set[str] = set()
         for label in allowed_statutes or []:
-            for match in re.findall(r"art\.?\s*([0-9]+(?:-[a-z]+)?)", label, re.IGNORECASE):
+            for match in re.findall(
+                r"art\.?\s*([0-9]+(?:-[a-z]+)?)", label, re.IGNORECASE
+            ):
                 normalized = normalize_article_id(match)
                 if normalized:
                     ids.add(normalized)

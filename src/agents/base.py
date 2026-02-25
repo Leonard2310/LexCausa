@@ -703,6 +703,108 @@ class BaseAgent(ABC):
         )
         return applicable_statutes
 
+    @staticmethod
+    def _statute_identity_key(statute: dict) -> tuple[str, str]:
+        """Normalized (article, source) key for statute dedup/provenance."""
+        articolo = str(statute.get("articolo", "") or "").strip()
+        source = str(statute.get("source", "") or "").strip()
+        return articolo, source
+
+    def _filter_taxonomy_anchor_statutes_by_applicability(
+        self,
+        claim: str,
+        *,
+        core_statutes: list[dict],
+        accessory_statutes: list[dict],
+        log_prefix: str = "taxonomy",
+    ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+        """Apply applicability to taxonomy-derived statutes (soft core, hard accessory).
+
+        Returns:
+            (core_applicable, accessory_applicable, core_rejected, accessory_rejected)
+        """
+        if not core_statutes and not accessory_statutes:
+            return [], [], [], []
+
+        legal_context = self._extract_legal_context(claim)
+
+        core_applicable = (
+            self.filter_applicable_statutes(claim, core_statutes, legal_context)
+            if core_statutes
+            else []
+        )
+        accessory_applicable = (
+            self.filter_applicable_statutes(claim, accessory_statutes, legal_context)
+            if accessory_statutes
+            else []
+        )
+
+        core_keep_keys = {self._statute_identity_key(s) for s in core_applicable}
+        accessory_keep_keys = {
+            self._statute_identity_key(s) for s in accessory_applicable
+        }
+        core_rejected = [
+            s
+            for s in core_statutes
+            if self._statute_identity_key(s) not in core_keep_keys
+        ]
+        accessory_rejected = [
+            s
+            for s in accessory_statutes
+            if self._statute_identity_key(s) not in accessory_keep_keys
+        ]
+
+        self._log(
+            f"🎯 [{log_prefix}] Anchor applicability: "
+            f"core applicable={len(core_applicable)}/{len(core_statutes)} "
+            f"(SOFT: rejected kept), "
+            f"accessory applicable={len(accessory_applicable)}/{len(accessory_statutes)} "
+            f"(HARD: rejected dropped)"
+        )
+
+        if core_rejected:
+            refs = ", ".join(
+                f"Art. {s.get('articolo')} {self._source_short_label(s.get('source', ''))}"
+                for s in core_rejected
+            )
+            self._log(
+                f"⚠️ [{log_prefix}] Core anchor(s) flagged NOT APPLICABLE but kept (soft): {refs}",
+                "warning",
+            )
+        if accessory_rejected:
+            refs = ", ".join(
+                f"Art. {s.get('articolo')} {self._source_short_label(s.get('source', ''))}"
+                for s in accessory_rejected
+            )
+            self._log(
+                f"❌ [{log_prefix}] Accessory anchor(s) dropped by applicability: {refs}",
+                "warning",
+            )
+
+        return core_applicable, accessory_applicable, core_rejected, accessory_rejected
+
+    def _log_final_statute_origins(
+        self,
+        statutes: list[dict],
+        origin_map: dict[tuple[str, str], set[str]],
+        *,
+        label: str,
+    ) -> None:
+        """Log provenance labels for final statute set."""
+        if not statutes:
+            self._log(f"🧬 {label}: no statutes", "info")
+            return
+
+        self._log(f"🧬 {label}: final statute provenance ({len(statutes)})")
+        for idx, statute in enumerate(statutes, start=1):
+            key = self._statute_identity_key(statute)
+            origins = sorted(origin_map.get(key, set())) or ["unknown"]
+            self._log(
+                f"   [{idx}] Art. {statute.get('articolo')} "
+                f"({self._source_short_label(statute.get('source', ''))}) "
+                f"<- {', '.join(origins)}"
+            )
+
     def filter_irrelevant_precedents(
         self, claim: str, precedents: list[dict]
     ) -> list[dict]:

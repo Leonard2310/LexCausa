@@ -83,6 +83,11 @@ class BaseAgent(ABC):
     All agents (Reasoner, CounterReasoner, PolisherEvaluator) inherit from this class.
     """
 
+    _shared_legal_context_cache: dict[str, str] = {}
+    _shared_statute_applicability_cache: dict[
+        tuple[str, str, str, str, str, str], bool
+    ] = {}
+
     def __init__(self, config: Optional[AgentConfig] = None):
         """
         Initialize the base agent.
@@ -94,6 +99,15 @@ class BaseAgent(ABC):
         self._llm: Optional[ChatGroq] = None
         self._fact_lock_check_cache: dict[tuple[str, str], tuple[bool, str]] = {}
         self._nli_relation_cache: dict[tuple[str, str], str] = {}
+        self._legal_context_cache: dict[str, str] = {}
+        self._statute_applicability_cache: dict[
+            tuple[str, str, str, str, str, str], bool
+        ] = {}
+        self._cancel_checker = None
+
+    def set_cancel_checker(self, cancel_checker) -> None:
+        """Inject optional cooperative cancellation checker."""
+        self._cancel_checker = cancel_checker
 
     @property
     def llm(self) -> ChatGroq:
@@ -117,12 +131,14 @@ class BaseAgent(ABC):
                 messages,
                 on_token=stream_callback,
                 model_order=model_order,
+                cancel_checker=self._cancel_checker,
                 **kwargs,
             )
         return resilient_chat_call(
             self.llm,
             messages,
             model_order=model_order,
+            cancel_checker=self._cancel_checker,
             **kwargs,
         )
 
@@ -147,12 +163,14 @@ class BaseAgent(ABC):
                 messages,
                 on_token=stream_callback,
                 model_order=model_order,
+                cancel_checker=self._cancel_checker,
                 **kwargs,
             )
         return resilient_chat_call(
             _llm_factory,
             messages,
             model_order=model_order,
+            cancel_checker=self._cancel_checker,
             **kwargs,
         )
 
@@ -627,6 +645,15 @@ class BaseAgent(ABC):
         Returns a compact line containing domain/party relationship/procedural
         posture so statute applicability can be evaluated more strictly.
         """
+        claim_key = re.sub(r"\s+", " ", (claim or "").strip())
+        if claim_key in self._legal_context_cache:
+            return self._legal_context_cache[claim_key]
+        shared_cached = self._shared_legal_context_cache.get(claim_key)
+        if shared_cached:
+            self._legal_context_cache[claim_key] = shared_cached
+            self._log(f"🧭 Legal context cache hit: {shared_cached[:120]}")
+            return shared_cached
+
         prompt = render_prompt("base.extract_legal_context", claim=claim)
 
         try:
@@ -636,17 +663,26 @@ class BaseAgent(ABC):
             context = (response.content or "").strip().replace("\n", " ")
             context = re.sub(r"\s+", " ", context)
             if context:
+                self._legal_context_cache[claim_key] = context[:200]
+                self._shared_legal_context_cache[claim_key] = context[:200]
                 self._log(f"🧭 Legal context extracted: {context[:120]}")
                 return context[:200]
         except Exception as e:
             self._log(f"⚠️ Legal context extraction failed: {e}", "warning")
 
         fallback = "General legal dispute context"
+        self._legal_context_cache[claim_key] = fallback
+        self._shared_legal_context_cache[claim_key] = fallback
         self._log(f"🧭 Legal context fallback: {fallback}")
         return fallback
 
     def filter_applicable_statutes(
-        self, claim: str, statutes: list[dict], legal_context: str
+        self,
+        claim: str,
+        statutes: list[dict],
+        legal_context: str,
+        *,
+        cache_scope: str = "general",
     ) -> list[dict]:
         """Second-stage filter: keep statutes that are legally applicable.
 
@@ -662,32 +698,77 @@ class BaseAgent(ABC):
             article_number = statute.get("articolo", "N/A")
             article_title = statute.get("titolo", "Untitled")
             article_text = statute.get("testo", "") or ""
-
-            prompt = render_prompt(
-                "base.filter_applicable_statutes",
-                claim=claim,
-                legal_context=legal_context,
-                article_number=article_number,
-                article_title=article_title,
-                article_text=article_text[:500],
+            article_source = str(statute.get("source", "") or "")
+            taxonomy_role = str(statute.get("role", "") or "").strip()
+            taxonomy_role_block = (
+                f'\nTaxonomy Role (candidate rationale): "{taxonomy_role}"'
+                if taxonomy_role
+                else ""
             )
 
-            try:
-                response = self._resilient_retrieval_llm_invoke(
-                    [HumanMessage(content=prompt)]
-                )
-                answer = (response.content or "").strip().upper()
-            except Exception as e:
+            cache_key = (
+                re.sub(r"\s+", " ", (claim or "").strip()),
+                re.sub(r"\s+", " ", (legal_context or "").strip()),
+                str(article_source).strip(),
+                str(article_number).strip(),
+                taxonomy_role,
+                cache_scope,
+            )
+            cached_keep = self._statute_applicability_cache.get(cache_key)
+            if cached_keep is None:
+                cached_keep = self._shared_statute_applicability_cache.get(cache_key)
+            if cached_keep is not None:
+                keep = cached_keep
                 self._log(
-                    f"⚠️ Applicability check failed for {article_number}: {e}",
-                    "warning",
+                    f"♻️ Applicability cache hit [{idx}] {article_number} - {article_title}: "
+                    f"{'YES' if keep else 'NO'}"
                 )
-                answer = "YES"  # safe default: keep on error
+            else:
+                prompt = render_prompt(
+                    "base.filter_applicable_statutes",
+                    claim=claim,
+                    legal_context=legal_context,
+                    article_number=article_number,
+                    article_title=article_title,
+                    article_text=article_text[:500],
+                    taxonomy_role_block=taxonomy_role_block,
+                )
 
-            token = answer.split()[0] if answer else ""
-            keep = token != "NO" and (
-                token == "YES" or "YES" in answer or "NO" not in answer
-            )
+                try:
+                    response = self._resilient_retrieval_llm_invoke(
+                        [HumanMessage(content=prompt)]
+                    )
+                    answer = (response.content or "").strip().upper()
+                except Exception as e:
+                    self._log(
+                        f"⚠️ Applicability check failed for {article_number}: {e}",
+                        "warning",
+                    )
+                    answer = "YES"  # safe default: keep on error
+
+                first_token = answer.split()[0] if answer else ""
+                token = re.sub(r"^[^A-Z]+|[^A-Z]+$", "", first_token)
+                leading_match = re.match(r"^\s*[\(\[\"'`]*\s*(YES|NO)\b", answer)
+                if token in {"YES", "NO"}:
+                    keep = token == "YES"
+                elif leading_match:
+                    keep = leading_match.group(1) == "YES"
+                else:
+                    # Non-canonical fallback:
+                    # - pre-retrieval/general path: fail-open (KEEP) to avoid empty-KB collapse
+                    # - taxonomy/counter-specific paths: keep stricter heuristic behavior
+                    if cache_scope == "general":
+                        keep = True
+                    else:
+                        keep = "NO" not in answer
+                    self._log(
+                        f"⚠️ Non-canonical applicability output for {article_number}: "
+                        f"{answer[:80]!r} -> {'KEEP' if keep else 'DROP'} "
+                        f"(scope={cache_scope})",
+                        "warning",
+                    )
+                self._statute_applicability_cache[cache_key] = keep
+                self._shared_statute_applicability_cache[cache_key] = keep
 
             if keep:
                 applicable_statutes.append(statute)
@@ -702,6 +783,118 @@ class BaseAgent(ABC):
             f"📊 Applicability result: {len(applicable_statutes)}/{len(statutes)} kept"
         )
         return applicable_statutes
+
+    @staticmethod
+    def _statute_identity_key(statute: dict) -> tuple[str, str]:
+        """Normalized (article, source) key for statute dedup/provenance."""
+        articolo = str(statute.get("articolo", "") or "").strip()
+        source = str(statute.get("source", "") or "").strip()
+        return articolo, source
+
+    def _filter_taxonomy_anchor_statutes_by_applicability(
+        self,
+        claim: str,
+        *,
+        core_statutes: list[dict],
+        accessory_statutes: list[dict],
+        log_prefix: str = "taxonomy",
+    ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+        """Apply applicability to taxonomy-derived statutes (soft core, hard accessory).
+
+        Returns:
+            (core_applicable, accessory_applicable, core_rejected, accessory_rejected)
+        """
+        if not core_statutes and not accessory_statutes:
+            return [], [], [], []
+
+        legal_context = self._extract_legal_context(claim)
+
+        core_applicable = (
+            self.filter_applicable_statutes(
+                claim,
+                core_statutes,
+                legal_context,
+                cache_scope="taxonomy:core",
+            )
+            if core_statutes
+            else []
+        )
+        accessory_applicable = (
+            self.filter_applicable_statutes(
+                claim,
+                accessory_statutes,
+                legal_context,
+                cache_scope="taxonomy:accessory",
+            )
+            if accessory_statutes
+            else []
+        )
+
+        core_keep_keys = {self._statute_identity_key(s) for s in core_applicable}
+        accessory_keep_keys = {
+            self._statute_identity_key(s) for s in accessory_applicable
+        }
+        core_rejected = [
+            s
+            for s in core_statutes
+            if self._statute_identity_key(s) not in core_keep_keys
+        ]
+        accessory_rejected = [
+            s
+            for s in accessory_statutes
+            if self._statute_identity_key(s) not in accessory_keep_keys
+        ]
+
+        self._log(
+            f"🎯 [{log_prefix}] Anchor applicability: "
+            f"core applicable={len(core_applicable)}/{len(core_statutes)} "
+            f"(SOFT: rejected kept), "
+            f"accessory applicable={len(accessory_applicable)}/{len(accessory_statutes)} "
+            f"(HARD: rejected dropped)"
+        )
+
+        if core_rejected:
+            refs = ", ".join(
+                f"Art. {s.get('articolo')} {self._source_short_label(s.get('source', ''))}"
+                for s in core_rejected
+            )
+            self._log(
+                f"⚠️ [{log_prefix}] Core anchor(s) flagged NOT APPLICABLE but kept (soft): {refs}",
+                "warning",
+            )
+        if accessory_rejected:
+            refs = ", ".join(
+                f"Art. {s.get('articolo')} {self._source_short_label(s.get('source', ''))}"
+                for s in accessory_rejected
+            )
+            self._log(
+                f"❌ [{log_prefix}] Accessory anchor(s) dropped by applicability: {refs}",
+                "warning",
+            )
+
+        return core_applicable, accessory_applicable, core_rejected, accessory_rejected
+
+    def _log_final_statute_origins(
+        self,
+        statutes: list[dict],
+        origin_map: dict[tuple[str, str], set[str]],
+        *,
+        label: str,
+    ) -> None:
+        """Log provenance labels for final statute set."""
+        if not statutes:
+            self._log(f"🧬 {label}: no statutes", "info")
+            return
+
+        self._log(f"🧬 {label}: final statute provenance ({len(statutes)})")
+        for idx, statute in enumerate(statutes, start=1):
+            key = self._statute_identity_key(statute)
+            origins = sorted(origin_map.get(key, set())) or ["unknown"]
+            self._log(
+                f"   [{idx}] Art. {statute.get('articolo')} "
+                f"({self._source_short_label(statute.get('source', ''))}) "
+                f"<- {', '.join(origins)}"
+            )
 
     def filter_irrelevant_precedents(
         self, claim: str, precedents: list[dict]
@@ -817,10 +1010,21 @@ class BaseAgent(ABC):
         try:
             import re
 
-            articolo_match = re.search(r"(\d+)", riferimento)
+            # Preserve article suffixes (e.g. 62-bis, 603-bis.2, 21-novies).
+            articolo_match = re.search(
+                r"\bart\.?\s*([0-9]+(?:-[a-z]+(?:\.[0-9]+)?)?)\b",
+                riferimento,
+                re.IGNORECASE,
+            )
+            if not articolo_match:
+                articolo_match = re.search(
+                    r"\b([0-9]+(?:-[a-z]+(?:\.[0-9]+)?)?)\b",
+                    riferimento,
+                    re.IGNORECASE,
+                )
         except Exception:
             pass
-        articolo = articolo_match.group(1) if articolo_match else riferimento
+        articolo = (articolo_match.group(1) if articolo_match else riferimento).lower()
 
         ref_lower = riferimento.lower()
         if (

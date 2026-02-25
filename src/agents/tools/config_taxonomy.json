@@ -150,6 +150,10 @@
                 ],
                 "accessory_norms": [
                     {
+                        "ref": "Art. 41 c.p.",
+                        "role": "Concorso di cause e cause sopravvenute, da leggere sistematicamente con Art. 40 c.p."
+                    },
+                    {
                         "ref": "Art. 43 c.p.",
                         "role": "Elemento soggettivo (colpa/dolo). Rilevante per causalità colposa, non definisce il nesso in sé"
                     }
@@ -192,8 +196,16 @@
                         "role": "Base del nesso, letto sistematicamente con Art. 41 c.p."
                     },
                     {
+                        "ref": "Art. 43 c.p.",
+                        "role": "Prevedibilità/colpa: utile per valutare la rilevanza della causa sopravvenuta nel fatto colposo"
+                    },
+                    {
                         "ref": "Art. 45 c.p.",
                         "role": "Caso fortuito/forza maggiore: filtro su imputazione/punibilità"
+                    },
+                    {
+                        "ref": "Art. 90 c.p.",
+                        "role": "Irrilevanza degli stati emotivi/passionali sull'imputabilità"
                     }
                 ]
             },
@@ -350,7 +362,20 @@
                         "role": "Caso fortuito/forza maggiore: esclude punibilità"
                     }
                 ],
-                "accessory_norms": []
+                "accessory_norms": [
+                    {
+                        "ref": "Art. 41 c.p.",
+                        "role": "Causa sopravvenuta da sola sufficiente: snodo sistematico vicino al fortuito"
+                    },
+                    {
+                        "ref": "Art. 54 c.p.",
+                        "role": "Stato di necessità come possibile filtro alternativo di non punibilità"
+                    },
+                    {
+                        "ref": "Art. 90 c.p.",
+                        "role": "Esclude che il solo stato emotivo integri fortuito/forza maggiore"
+                    }
+                ]
             },
             "principle_tests": [
                 {
@@ -650,6 +675,14 @@
                     {
                         "ref": "Art. 133 c.p.",
                         "role": "Gravità del reato e commisurazione pena"
+                    },
+                    {
+                        "ref": "Art. 90 c.p.",
+                        "role": "Irrilevanza degli stati emotivi/passionali sull'imputabilità"
+                    },
+                    {
+                        "ref": "Art. 54 c.p.",
+                        "role": "Stato di necessità come possibile scriminante/attenuazione da valutare nel contesto di urgenza"
                     },
                     {
                         "ref": "Art. 113 c.p.",

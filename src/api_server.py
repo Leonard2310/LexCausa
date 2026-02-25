@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 import warnings
 from contextlib import contextmanager
 from datetime import datetime
@@ -49,6 +50,7 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     search_precedents_tool,
 )
 from config import settings  # noqa: E402
+from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -56,6 +58,8 @@ CORS(app)
 
 # Prevent concurrent pipeline executions (interleaves logs & shared state)
 _pipeline_lock = threading.Lock()
+_active_stream_run_lock = threading.Lock()
+_active_stream_run: dict | None = None
 
 # ─── Pipeline file logging ──────────────────────────────────────────
 LOG_DIR = Path(project_root) / "logs"
@@ -315,6 +319,7 @@ def prepare_claim_context(
     max_statutes: int,
     max_precedents: int,
     progress_callback=None,
+    cancel_checker=None,
 ) -> tuple[list[dict], list[dict]]:
     """Pre-retrieve statutes and precedents before reasoning.
 
@@ -324,6 +329,11 @@ def prepare_claim_context(
     rounds) until the minimum is met or no more articles can be found.
     """
     progress_callback = progress_callback or (lambda _detail, _progress: None)
+    cancel_checker = cancel_checker or (lambda: False)
+
+    def _check_cancel() -> None:
+        if cancel_checker():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
 
     min_kept = settings.search_min_kept_statutes
     expansion_step = settings.search_expansion_step
@@ -337,8 +347,10 @@ def prepare_claim_context(
 
     pipe = get_pipeline()
     retrieval_agent = get_retrieval_filter_agent()
+    retrieval_agent.set_cancel_checker(cancel_checker)
 
     # ── Step 1: classify + embed once ──────────────────────────────────
+    _check_cancel()
     progress_callback("Classificazione claim e embedding query", 18)
     classification = pipe.classifier.classify(claim)
     embedding = pipe.embed_text(claim)
@@ -347,6 +359,7 @@ def prepare_claim_context(
     )
 
     # ── Step 2: initial hybrid retrieval ───────────────────────────────
+    _check_cancel()
     progress_callback("Recupero norme candidate (vettoriale + fulltext)", 28)
     current_top_k = max_statutes
     articles = pipe.vector_search(
@@ -361,20 +374,9 @@ def prepare_claim_context(
         articles=articles,
         stage=f"initial_top_k_{current_top_k}",
     )
-    expanded_articles = pipe.expand_with_cited_articles(articles)
-    if len(expanded_articles) > len(articles):
-        print(
-            "ℹ️ [Retrieval] 🔗 Citation expansion: "
-            f"+{len(expanded_articles) - len(articles)} articoli via CITES"
-        )
-        _log_retrieval_debug(
-            claim=claim,
-            filters=libri_filters,
-            articles=expanded_articles,
-            stage=f"initial_top_k_{current_top_k}_plus_cites",
-        )
-    articles = expanded_articles
+    article_by_id = {a.statute_id: a for a in articles}
     statutes = _articles_to_dicts(articles)
+    _check_cancel()
     legal_context = retrieval_agent._extract_legal_context(claim)
     progress_callback("Filtro rilevanza norme", 38)
     kept_statutes = retrieval_agent.filter_irrelevant_statutes(claim, statutes)
@@ -384,8 +386,54 @@ def prepare_claim_context(
     )
     seen_ids = {s["statute_id"] for s in statutes}  # all fetched so far
 
+    if kept_statutes:
+        _check_cancel()
+        seed_articles = [
+            article_by_id[s["statute_id"]]
+            for s in kept_statutes
+            if s.get("statute_id") in article_by_id
+        ]
+        expanded_articles = pipe.expand_with_cited_articles(seed_articles)
+        expanded_only = [
+            a
+            for a in expanded_articles
+            if a.statute_id not in {s.statute_id for s in seed_articles}
+        ]
+        if expanded_only:
+            print(
+                "ℹ️ [Retrieval] 🔗 Citation expansion after filters (initial): "
+                f"seed={len(seed_articles)}, +{len(expanded_only)} candidates"
+            )
+            _log_retrieval_debug(
+                claim=claim,
+                filters=libri_filters,
+                articles=expanded_articles,
+                stage=f"initial_top_k_{current_top_k}_kept_seed_plus_cites",
+            )
+            expanded_statutes = [
+                d
+                for d in _articles_to_dicts(expanded_only)
+                if d["statute_id"] not in seen_ids
+            ]
+            if expanded_statutes:
+                _check_cancel()
+                seen_ids.update(s["statute_id"] for s in expanded_statutes)
+                progress_callback("Filtro rilevanza norme (CITES)", 49)
+                kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
+                    claim, expanded_statutes
+                )
+                progress_callback("Verifica applicabilità norme (CITES)", 50)
+                kept_from_cites = retrieval_agent.filter_applicable_statutes(
+                    claim, kept_from_cites, legal_context
+                )
+                kept_statutes.extend(kept_from_cites)
+                print(
+                    "ℹ️ [Retrieval] 📎 CITES filtered result (initial): "
+                    f"+{len(kept_from_cites)} kept from {len(expanded_statutes)} new candidates"
+                )
+
     print(
-        f"📊 Initial search: {len(statutes)} fetched, "
+        f"📊 Initial search: {len(statutes)} direct fetched, "
         f"{len(kept_statutes)} kept (min={min_kept})"
     )
 
@@ -393,6 +441,7 @@ def prepare_claim_context(
     expansion = 0
     zero_gain_rounds = 0
     while len(kept_statutes) < min_kept and expansion < max_expansions:
+        _check_cancel()
         expansion += 1
         current_top_k += expansion_step
         progress_callback(
@@ -417,19 +466,7 @@ def prepare_claim_context(
             articles=articles,
             stage=f"expansion_{expansion}_top_k_{current_top_k}",
         )
-        expanded_articles = pipe.expand_with_cited_articles(articles)
-        if len(expanded_articles) > len(articles):
-            print(
-                "ℹ️ [Retrieval] 🔗 Citation expansion: "
-                f"+{len(expanded_articles) - len(articles)} articoli via CITES"
-            )
-            _log_retrieval_debug(
-                claim=claim,
-                filters=libri_filters,
-                articles=expanded_articles,
-                stage=f"expansion_{expansion}_top_k_{current_top_k}_plus_cites",
-            )
-        articles = expanded_articles
+        article_by_id = {a.statute_id: a for a in articles}
         new_statutes = [
             d for d in _articles_to_dicts(articles) if d["statute_id"] not in seen_ids
         ]
@@ -445,14 +482,67 @@ def prepare_claim_context(
         new_kept = retrieval_agent.filter_applicable_statutes(
             claim, new_kept, legal_context
         )
+
+        kept_from_cites = []
+        if new_kept:
+            _check_cancel()
+            seed_articles = [
+                article_by_id[s["statute_id"]]
+                for s in new_kept
+                if s.get("statute_id") in article_by_id
+            ]
+            expanded_articles = pipe.expand_with_cited_articles(seed_articles)
+            seed_ids = {s.statute_id for s in seed_articles}
+            expanded_only = [
+                a for a in expanded_articles if a.statute_id not in seed_ids
+            ]
+            if expanded_only:
+                print(
+                    "ℹ️ [Retrieval] 🔗 Citation expansion after filters "
+                    f"(round {expansion}): seed={len(seed_articles)}, +{len(expanded_only)} candidates"
+                )
+                _log_retrieval_debug(
+                    claim=claim,
+                    filters=libri_filters,
+                    articles=expanded_articles,
+                    stage=(
+                        f"expansion_{expansion}_top_k_{current_top_k}"
+                        "_kept_seed_plus_cites"
+                    ),
+                )
+                expanded_statutes = [
+                    d
+                    for d in _articles_to_dicts(expanded_only)
+                    if d["statute_id"] not in seen_ids
+                ]
+                if expanded_statutes:
+                    _check_cancel()
+                    seen_ids.update(s["statute_id"] for s in expanded_statutes)
+                    progress_callback("Filtro rilevanza norme (CITES esp.)", 63)
+                    kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
+                        claim, expanded_statutes
+                    )
+                    progress_callback("Verifica applicabilità norme (CITES esp.)", 64)
+                    kept_from_cites = retrieval_agent.filter_applicable_statutes(
+                        claim, kept_from_cites, legal_context
+                    )
+                    print(
+                        "ℹ️ [Retrieval] 📎 CITES filtered result "
+                        f"(round {expansion}): +{len(kept_from_cites)} kept from "
+                        f"{len(expanded_statutes)} new candidates"
+                    )
+
+        round_total_kept = len(new_kept) + len(kept_from_cites)
         kept_statutes.extend(new_kept)
+        kept_statutes.extend(kept_from_cites)
 
         print(
             f"   📊 +{len(new_statutes)} new fetched, "
-            f"+{len(new_kept)} kept → total kept={len(kept_statutes)}"
+            f"+{round_total_kept} kept (direct={len(new_kept)}, cites={len(kept_from_cites)}) "
+            f"→ total kept={len(kept_statutes)}"
         )
 
-        if len(new_kept) == 0:
+        if round_total_kept == 0:
             zero_gain_rounds += 1
         else:
             zero_gain_rounds = 0
@@ -478,6 +568,7 @@ def prepare_claim_context(
     # ── Precedents (unchanged) ─────────────────────────────────────────
     precedents: list[dict] = []
     if include_precedents:
+        _check_cancel()
         progress_callback("Recupero precedenti", 64)
         try:
             result = search_precedents_tool.invoke(
@@ -488,6 +579,7 @@ def prepare_claim_context(
         except Exception as e:
             print(f"⚠️ Errore recupero precedenti: {e}")
 
+    _check_cancel()
     progress_callback("Filtro precedenti", 66)
     precedents = retrieval_agent.filter_irrelevant_precedents(claim, precedents)
 
@@ -545,13 +637,15 @@ def get_polisher_evaluator():
 
 
 def resolve_routing_decision(
-    claim: str, payload: dict | None = None
+    claim: str, payload: dict | None = None, cancel_checker=None
 ) -> RoutingDecision:
     """
     Determina il routing (causal_type_id/theory_id) usando eventuali hint del payload,
     altrimenti invoca il Router.
     """
     router = get_router()
+    cancel_checker = cancel_checker or (lambda: False)
+    router.set_cancel_checker(cancel_checker)
     payload = payload or {}
     routing_hint = payload.get("routing") or payload.get("causality") or payload
 
@@ -566,6 +660,8 @@ def resolve_routing_decision(
         ct_valid, th_valid = config_loader.validate_ids(ct, th)
         domain = str(routing_hint.get("domain", "")).strip().upper()
         if domain not in ("CIVILE", "PENALE", "AMMINISTRATIVO", "ENTRAMBI"):
+            if cancel_checker():
+                raise PipelineCancelled("Esecuzione interrotta manualmente.")
             try:
                 domain = router.route(claim).domain
             except Exception:
@@ -580,6 +676,8 @@ def resolve_routing_decision(
             additional_causal_types=[],
         )
 
+    if cancel_checker():
+        raise PipelineCancelled("Esecuzione interrotta manualmente.")
     return router.route(claim)
 
 
@@ -859,6 +957,7 @@ def _run_full_pipeline(
     status_callback=None,
     token_callback=None,
     progress_callback=None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """Execute the full pipeline and optionally emit status/token callbacks."""
     if not isinstance(data, dict):
@@ -868,9 +967,19 @@ def _run_full_pipeline(
     token_callback = token_callback or (lambda _payload: None)
     progress_callback = progress_callback or (lambda _event, _payload: None)
 
+    def _check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
+    def _is_cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     def _emit_progress(event_name: str, payload: dict) -> None:
+        _check_cancel()
         try:
             progress_callback(event_name, payload)
+        except PipelineCancelled:
+            raise
         except Exception:
             # Progress streaming must never break pipeline execution.
             pass
@@ -878,6 +987,7 @@ def _run_full_pipeline(
     def _emit_phase(
         phase: str, status: str, progress: int, detail: str | None = None
     ) -> None:
+        _check_cancel()
         _emit_progress(
             "phase",
             {
@@ -926,6 +1036,7 @@ def _run_full_pipeline(
     if not claim:
         raise ValueError('Campo "claim" obbligatorio')
 
+    _check_cancel()
     status_callback("Avvio pipeline completa...")
     _emit_phase("context_setup", "active", 5, "Routing iniziale")
 
@@ -940,6 +1051,7 @@ def _run_full_pipeline(
         if not fe_enable_causality:
             print("🔬 Causality taxonomy DISABLED by frontend settings")
 
+        _check_cancel()
         # Apply chain step overrides to global settings
         if fe_chain_min_steps is not None:
             settings.chain_min_steps = int(fe_chain_min_steps)
@@ -960,9 +1072,14 @@ def _run_full_pipeline(
                 fe_search_query_terms_llm_max_tokens
             )
 
+        _check_cancel()
         status_callback("Preparazione contesto giuridico...")
         _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
-        routing_decision = resolve_routing_decision(claim, data)
+        routing_decision = resolve_routing_decision(
+            claim,
+            data,
+            cancel_checker=_is_cancel_requested,
+        )
         _emit_phase("context_setup", "active", 20, "Avvio recupero contesto")
 
         # Preload context once for both reasoners
@@ -975,7 +1092,9 @@ def _run_full_pipeline(
             max_statutes=max_statutes,
             max_precedents=max_precedents,
             progress_callback=_emit_context_detail,
+            cancel_checker=_is_cancel_requested,
         )
+        _check_cancel()
         _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
         reasoner_statutes = _clone_context_items(statutes)
         counter_statutes = _clone_context_items(statutes)
@@ -993,20 +1112,36 @@ def _run_full_pipeline(
         _emit_phase("support", "active", 8, "Generazione ragionamento")
         status_callback("Generazione argomentazione principale in corso...")
 
+        _check_cancel()
         reasoner_config = _build_agent_config(
             model_override=fe_reasoner_model or settings.reasoner_default_model,
             temperature=fe_temperature,
             max_tokens=fe_max_tokens,
         )
         reas = Reasoner(config=reasoner_config)
+        reas.set_cancel_checker(_is_cancel_requested)
+
+        def _reasoner_stream_callback(payload: dict) -> None:
+            """Forward reasoner tokens and translate control frames into SSE events."""
+            if isinstance(payload, dict):
+                control_event = str(payload.get("_control_event", "") or "").strip()
+                if control_event in {
+                    "reasoner_refinement_started",
+                    "reasoner_refinement_completed",
+                }:
+                    _emit_progress(control_event, payload.get("payload") or {})
+                    return
+            token_callback(payload)
+
         reasoner_result = reas.run(
             claim=claim,
             routing_decision=routing_decision,
             pre_retrieved_statutes=reasoner_statutes,
             pre_retrieved_precedents=reasoner_precedents,
             enable_causality=fe_enable_causality,
-            stream_callback=token_callback,
+            stream_callback=_reasoner_stream_callback,
         )
+        _check_cancel()
         _emit_phase("support", "active", 97, "Costruzione ASPIC+ e output finale")
         _emit_progress("reasoner_result", reasoner_result.to_dict())
         final_routing_decision = RoutingDecision(
@@ -1042,12 +1177,14 @@ def _run_full_pipeline(
         )
         status_callback("Generazione argomentazione contraria in corso...")
 
+        _check_cancel()
         counter_config = _build_agent_config(
             model_override=fe_counter_model or settings.counter_default_model,
             temperature=fe_temperature,
             max_tokens=fe_max_tokens,
         )
         cr = CounterReasoner(config=counter_config)
+        cr.set_cancel_checker(_is_cancel_requested)
 
         # Opposition consistency is validated by the Polisher gate.
         reasoner_conclusion = reasoner_result.conclusion or ""
@@ -1069,6 +1206,7 @@ def _run_full_pipeline(
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,
         )
+        _check_cancel()
         _emit_phase("counter", "active", 97, "Costruzione ASPIC+ e output finale")
         counter_result.reasoner_conclusion_context = reasoner_conclusion
 
@@ -1103,7 +1241,9 @@ def _run_full_pipeline(
         print(f"{'─'*70}")
         status_callback("Verifica finale e valutazione in corso...")
 
+        _check_cancel()
         pe = get_polisher_evaluator()
+        pe.set_cancel_checker(_is_cancel_requested)
 
         # Apply AQA weight overrides if provided by frontend
         if fe_aqa_alpha is not None:
@@ -1126,6 +1266,7 @@ def _run_full_pipeline(
         if fe_aqa_strength_ratio_by_type is not None:
             settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 
+        _check_cancel()
         evaluation_result = pe.run(
             claim=claim,
             domain=final_routing_decision.domain,
@@ -1133,6 +1274,8 @@ def _run_full_pipeline(
             counter_reasoner_output=counter_result.to_dict(),
             progress_callback=_emit_progress,
         )
+
+        _check_cancel()
 
         # Apply Polisher counter gate to the returned counter output
         counter_gate = (
@@ -1208,6 +1351,7 @@ def _run_full_pipeline(
         print("✅ FULL PIPELINE - END")
         print(f"{'='*70}\n")
 
+    _check_cancel()
     status_callback("Pipeline completata.")
     _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
     return {
@@ -1258,28 +1402,50 @@ def pipeline_stream():
     data = request.get_json(silent=True) or {}
     event_queue: Queue = Queue()
     sentinel = object()
+    run_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        _active_stream_run = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "started_at": time.time(),
+        }
 
     def push_status(message: str) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
         event_queue.put(("status", {"message": message}))
 
     def push_token(payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
         event_queue.put(("token", payload))
 
     def push_progress(event_name: str, payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
         event_queue.put(("error", {"message": message, "code": code}))
 
     def _worker() -> None:
+        global _active_stream_run
         try:
             result = _run_full_pipeline(
                 data,
                 status_callback=push_status,
                 token_callback=push_token,
                 progress_callback=push_progress,
+                cancel_event=cancel_event,
             )
             event_queue.put(("final", result))
+        except PipelineCancelled as e:
+            event_queue.put(
+                ("cancelled", {"message": str(e), "run_id": run_id, "ok": True})
+            )
         except ValueError as e:
             push_error(str(e), 400)
         except Exception as e:
@@ -1294,9 +1460,16 @@ def pipeline_stream():
         finally:
             event_queue.put(("done", {"ok": True}))
             event_queue.put(sentinel)
+            with _active_stream_run_lock:
+                if (
+                    isinstance(_active_stream_run, dict)
+                    and _active_stream_run.get("run_id") == run_id
+                ):
+                    _active_stream_run = None
             _pipeline_lock.release()
 
     threading.Thread(target=_worker, daemon=True).start()
+    event_queue.put(("run_started", {"run_id": run_id}))
 
     @stream_with_context
     def generate():
@@ -1323,6 +1496,40 @@ def pipeline_stream():
     )
 
 
+@app.route("/api/pipeline/stop", methods=["POST"])
+def pipeline_stop():
+    """
+    Richiede l'interruzione della pipeline SSE in esecuzione.
+    """
+    data = request.get_json(silent=True) or {}
+    requested_run_id = str(data.get("run_id", "") or "").strip()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        active = _active_stream_run if isinstance(_active_stream_run, dict) else None
+        if not active:
+            return jsonify({"ok": False, "error": "No active pipeline run."}), 404
+
+        active_run_id = str(active.get("run_id", "") or "")
+        if requested_run_id and active_run_id and requested_run_id != active_run_id:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "Run id mismatch with active pipeline.",
+                        "active_run_id": active_run_id,
+                    }
+                ),
+                409,
+            )
+
+        cancel_event = active.get("cancel_event")
+        if isinstance(cancel_event, threading.Event):
+            cancel_event.set()
+
+    return jsonify({"ok": True, "run_id": active_run_id})
+
+
 @app.route("/api/evaluate", methods=["POST"])
 def evaluate():
     """
@@ -1340,6 +1547,7 @@ def evaluate():
             return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
 
         pe = get_polisher_evaluator()
+        pe.set_cancel_checker(None)
         result = pe.run(
             claim=claim,
             domain=domain,
@@ -1433,6 +1641,7 @@ if __name__ == "__main__":
     print("  • POST /api/counter_reason  - Contro-ragionamento")
     print("  • POST /api/pipeline        - Pipeline completa")
     print("  • POST /api/pipeline/stream - Pipeline completa (SSE token streaming)")
+    print("  • POST /api/pipeline/stop   - Interrompe pipeline SSE attiva")
     print("  • POST /api/evaluate        - Valutazione finale (stub)")
     print()
     print("=" * 70)

@@ -29,12 +29,14 @@ from .citation_utils import (
 )
 from .router import RoutingDecision
 from .tools import config_loader
-from .tools.neo4j_tools import get_statute_by_article_tool
+from .tools.neo4j_tools import get_legal_search_pipeline, get_statute_by_article_tool
 from .tools.prompt_registry import get_prompt, render_prompt
+from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq  # noqa: E402
+from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 
 @dataclass
@@ -99,9 +101,7 @@ class CounterReasonerOutput:
 COUNTER_REASONER_SYSTEM_PROMPT = get_prompt("counter_reasoner.system")
 
 
-_DEFAULT_ATTACK_DESCRIPTION_EN = (
-    "Counter-argument to weaken the primary legal thesis."
-)
+_DEFAULT_ATTACK_DESCRIPTION_EN = "Counter-argument to weaken the primary legal thesis."
 _DEFAULT_ATTACK_DESCRIPTION_IT = (
     "le norme citate indeboliscono la tesi giuridica primaria"
 )
@@ -198,12 +198,13 @@ class CounterReasoner(BaseAgent):
         reasoner_conclusion: str,
     ) -> AttackSelection:
         """Select 2-3 counter attacks from config pools."""
-        pool: List[str] = config_loader.counter_attack_pool_for(
+        causal_pool: List[str] = config_loader.counter_attack_pool_for(
             routing_decision.causal_type_id, self._config
         )
         theory_attacks: List[str] = config_loader.theory_counter_attacks(
             routing_decision.theory_id, self._config
         )
+        pool: List[str] = list(causal_pool)
 
         if theory_attacks:
             intersection = [a for a in pool if a in theory_attacks]
@@ -212,7 +213,7 @@ class CounterReasoner(BaseAgent):
                 pool = intersection
             elif len(intersection) == 1:
                 self._log(
-                    "ℹ️ Theory/pool intersection has only 1 attack: keeping full causal pool for diversity.",
+                    "Info: theory/pool intersection has only 1 attack, keeping full causal pool for diversity.",
                     "info",
                 )
 
@@ -254,6 +255,25 @@ class CounterReasoner(BaseAgent):
             selected_ids = feasible_selected[: min(3, len(feasible_selected))]
         else:
             selected_ids = []
+            # Taxonomy fallback ladder before open-attack mode:
+            # 1) remaining causal attacks
+            # 2) remaining theory attacks
+            fallback_taxonomy_ids: List[str] = []
+            for aid in list(causal_pool) + list(theory_attacks):
+                if aid and aid not in pool and aid not in fallback_taxonomy_ids:
+                    fallback_taxonomy_ids.append(aid)
+            if fallback_taxonomy_ids:
+                feasible_fallback = self._filter_feasible_attacks(
+                    claim=claim,
+                    reasoner_conclusion=reasoner_conclusion,
+                    candidate_attack_ids=fallback_taxonomy_ids[:12],
+                )
+                if feasible_fallback:
+                    selected_ids = feasible_fallback[: min(3, len(feasible_fallback))]
+                    self._log(
+                        "Warning: primary taxonomy attacks infeasible; using fallback taxonomy attacks",
+                        "warning",
+                    )
 
         descriptions = {
             aid: self._attack_description(
@@ -264,7 +284,11 @@ class CounterReasoner(BaseAgent):
             for aid in selected_ids
         }
         return AttackSelection(
-            pool=pool, attack_ids=selected_ids, descriptions=descriptions
+            pool=pool,
+            attack_ids=selected_ids,
+            descriptions=descriptions,
+            causal_pool=causal_pool,
+            theory_pool=theory_attacks,
         )
 
     def _select_open_attacks(
@@ -588,54 +612,105 @@ class CounterReasoner(BaseAgent):
         self, causal_types: List[str], claim: str
     ) -> List[dict]:
         """
-        Get taxonomy anchor norms for the given causal types.
+        Get taxonomy anchor statutes for the given causal types.
 
-        Reads directly from config_taxonomy.json using the correct keys:
-        - anchor_norms -> core_norms / accessory_norms
-        - Each norm has 'ref' and 'role' fields
+        Alignment with Reasoner:
+        - taxonomy claim-relevance filter via get_causality_theory_tool(claim=...)
+        - applicability filter on converted statutes (soft core / hard accessory)
         """
         statutes: List[dict] = []
         seen_refs = set()
         unique_cts = list(dict.fromkeys(ct for ct in causal_types if ct))
 
         for ct in unique_cts:
-            # Find causal_type block in config
-            causal_type_block = next(
-                (c for c in self._config.get("causal_types", []) if c.get("id") == ct),
-                None,
-            )
-            if not causal_type_block:
-                self._log(
-                    f"⚠️ [taxonomy] Causal type {ct} not found in config", "warning"
+            try:
+                theory = get_causality_theory_tool.invoke(
+                    {"causality_type": ct, "claim": claim}
                 )
+            except Exception as e:
+                self._log(f"⚠️ Failed to load theory for {ct}: {e}", "warning")
                 continue
 
-            anchor_norms = causal_type_block.get("anchor_norms", {})
-            core_norms = anchor_norms.get("core_norms", []) or []
-            accessory_norms = anchor_norms.get("accessory_norms", []) or []
-            all_norms = core_norms + accessory_norms
+            core_rel = theory.get("norme_core_rilevanti", []) or []
+            acc_rel = theory.get("norme_accessorie_rilevanti", []) or []
+            core_full = theory.get("norme_core", []) or []
+            acc_full = theory.get("norme_accessorie", []) or []
 
+            if not core_rel and core_full:
+                core_rel = core_full
+            if not acc_rel and acc_full:
+                acc_rel = acc_full
+
+            taxonomy_norms = core_rel + acc_rel
+            kept_refs = [
+                n.get("ref") or n.get("riferimento")
+                for n in taxonomy_norms
+                if n.get("ref") or n.get("riferimento")
+            ]
+            kept_set = {r for r in kept_refs if r}
+            discarded_refs = [
+                n.get("ref") or n.get("riferimento")
+                for n in (core_full + acc_full)
+                if (n.get("ref") or n.get("riferimento"))
+                and (n.get("ref") or n.get("riferimento")) not in kept_set
+            ]
             self._log(
-                f"🔎 [taxonomy] Causality {ct}: core {len(core_norms)}/{len(core_norms)}, accessory {len(accessory_norms)}/{len(accessory_norms)}"
+                f"🔎 [taxonomy] Causality {ct}: core {len(core_rel)}/{len(core_full)}, accessory {len(acc_rel)}/{len(acc_full)}"
             )
-
-            kept_refs = []
-            for n in all_norms:
-                ref = n.get("ref")
-                # role = n.get("role", "")
-                """
-                TODO: Valutarne l'inserimento futuro per rendere la contro-argomentazione più sofisticata
-                (ad esempio, distinguendo tra attacchi alle norme core e accessorie).
-                """
-                if not ref or ref in seen_refs:
-                    continue
-                seen_refs.add(ref)
-                kept_refs.append(ref)
-                # Convert to statute dict format
-                statutes.append(self._norm_to_statute_dict(n))
-
             if kept_refs:
                 self._log(f"   ✔️ Kept: {', '.join(kept_refs)}")
+            if discarded_refs:
+                self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
+
+            # Align with Reasoner:
+            # - taxonomy relevance (soft) from get_causality_theory_tool(claim=...)
+            # - applicability: hard on accessory, soft on core
+            core_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in core_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            acc_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in acc_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            core_statutes_raw = [st for _, st in core_pairs]
+            acc_statutes_raw = [st for _, st in acc_pairs]
+            (
+                _core_applicable,
+                acc_applicable,
+                _core_rejected,
+                _acc_rejected,
+            ) = self._filter_taxonomy_anchor_statutes_by_applicability(
+                claim,
+                core_statutes=core_statutes_raw,
+                accessory_statutes=acc_statutes_raw,
+                log_prefix=f"counter/taxonomy/{ct}",
+            )
+
+            acc_keep_keys = {self._statute_identity_key(st) for st in acc_applicable}
+            final_core_statutes = core_statutes_raw  # soft keep
+            final_acc_statutes = [
+                st
+                for st in acc_statutes_raw
+                if self._statute_identity_key(st) in acc_keep_keys
+            ]
+
+            for st in final_core_statutes:
+                ref = str(st.get("statute_id") or "")
+                if ref and ref not in seen_refs:
+                    seen_refs.add(ref)
+                    payload = dict(st)
+                    payload["_kb_origin"] = "taxonomy_core"
+                    statutes.append(payload)
+            for st in final_acc_statutes:
+                ref = str(st.get("statute_id") or "")
+                if ref and ref not in seen_refs:
+                    seen_refs.add(ref)
+                    payload = dict(st)
+                    payload["_kb_origin"] = "taxonomy_accessory"
+                    statutes.append(payload)
 
         return statutes
 
@@ -803,6 +878,18 @@ class CounterReasoner(BaseAgent):
         all_statutes = (
             pre_retrieved_statutes + boosted_counter_statutes + anchor_statutes
         )
+        statute_origin_map: dict[tuple[str, str], set[str]] = {}
+        for s in pre_retrieved_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add("pre_retrieval")
+        for s in boosted_counter_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add("counter_second_pass")
+        for s in anchor_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add(
+                str(s.get("_kb_origin") or "taxonomy_anchor")
+            )
         # Deduplicate
         seen_keys = set()
         deduped_statutes = []
@@ -813,12 +900,21 @@ class CounterReasoner(BaseAgent):
                 deduped_statutes.append(s)
 
         before_expand = len(deduped_statutes)
+        before_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
         deduped_statutes = self._expand_with_cross_references(deduped_statutes)
+        after_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
+        for k in after_expand_keys - before_expand_keys:
+            statute_origin_map.setdefault(k, set()).add("cross_ref")
         if len(deduped_statutes) > before_expand:
             self._log(
                 f"➕ Added {len(deduped_statutes) - before_expand} statutes via cross-ref",
                 "info",
             )
+        self._log_final_statute_origins(
+            deduped_statutes,
+            statute_origin_map,
+            label="Counter KB",
+        )
 
         # Format knowledge base for prompt
         knowledge_base = self._format_context_for_prompt(
@@ -838,11 +934,18 @@ class CounterReasoner(BaseAgent):
         # ----------------------------------------------------------
         MAX_CHAIN_RETRIES = settings.chain_max_retries
         output = None
+        attack_blacklist: set[str] = set()
 
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
             self._log(
                 f"🔄 Counter-Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}"
             )
+            if attack_blacklist:
+                self._log(
+                    "⚠️ Counter attack blacklist active: "
+                    + ", ".join(sorted(attack_blacklist)),
+                    "warning",
+                )
 
             try:
                 raw_output, iterative_chain, step_attack_ids = (
@@ -855,6 +958,7 @@ class CounterReasoner(BaseAgent):
                         available_statutes=deduped_statutes,
                         allowed_precedents=allowed_precedents,
                         reasoner_conclusion=reasoner_conclusion,
+                        attack_blacklist=attack_blacklist,
                         stream_callback=stream_callback,
                     )
                 )
@@ -875,13 +979,24 @@ class CounterReasoner(BaseAgent):
                     )
                 continue
 
+            resolved_attack_ids = [
+                aid for aid in dict.fromkeys(step_attack_ids) if aid
+            ] or list(attack_selection.attack_ids)
+            resolved_primary_attack = (
+                resolved_attack_ids[0]
+                if resolved_attack_ids
+                else attack_selection.attack_id
+            )
+            if any(aid.startswith("open_") for aid in resolved_attack_ids):
+                attack_source = "open"
+
             # Build output
             output = CounterReasonerOutput(
                 claim=claim,
                 causal_type_id=routing_decision.causal_type_id,
                 theory_id=routing_decision.theory_id,
-                selected_attack_id=attack_selection.attack_id,
-                selected_attack_ids=attack_selection.attack_ids,
+                selected_attack_id=resolved_primary_attack,
+                selected_attack_ids=resolved_attack_ids,
                 reasoner_causality={
                     "causal_type_id": routing_decision.causal_type_id,
                     "theory_id": routing_decision.theory_id,
@@ -913,8 +1028,8 @@ class CounterReasoner(BaseAgent):
                 reasoning_chain=output.reasoning_chain,
                 arguments=output.counter_arguments,
                 metadata={
-                    "selected_attack_id": attack_selection.attack_id,
-                    "selected_attack_ids": attack_selection.attack_ids,
+                    "selected_attack_id": resolved_primary_attack,
+                    "selected_attack_ids": resolved_attack_ids,
                     "attack_source": attack_source,
                     "selected_attack_by_step": [
                         {"step": idx + 1, "attack_id": attack_id}
@@ -977,7 +1092,9 @@ class CounterReasoner(BaseAgent):
             causal_type_id=routing_decision.causal_type_id,
             theory_id=routing_decision.theory_id,
             selected_attack_id=(attack_selection.attack_id if attack_selection else ""),
-            selected_attack_ids=(attack_selection.attack_ids if attack_selection else []),
+            selected_attack_ids=(
+                attack_selection.attack_ids if attack_selection else []
+            ),
             reasoner_causality={
                 "causal_type_id": routing_decision.causal_type_id,
                 "theory_id": routing_decision.theory_id,
@@ -1103,7 +1220,9 @@ class CounterReasoner(BaseAgent):
             resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
             raw = (resp.content or "").strip().replace("```json", "").replace("```", "")
             data = json.loads(raw)
-            covered_raw = data.get("covered_attack_ids", []) if isinstance(data, dict) else []
+            covered_raw = (
+                data.get("covered_attack_ids", []) if isinstance(data, dict) else []
+            )
             covered_ids = [
                 str(x).strip()
                 for x in covered_raw
@@ -1146,8 +1265,7 @@ class CounterReasoner(BaseAgent):
             attack_ids=attack_ids,
         )
         size_gate = (
-            effective_context_size
-            < settings.counter_second_pass_min_against_statutes
+            effective_context_size < settings.counter_second_pass_min_against_statutes
         )
         quality_gate = coverage_ratio < 0.50
         self._log(
@@ -1187,13 +1305,7 @@ class CounterReasoner(BaseAgent):
         )
 
         try:
-            from services.legal_search import LegalSearchPipeline
-        except Exception as exc:
-            self._log(f"⚠️ Counter second-pass unavailable: {exc}", "warning")
-            return []
-
-        try:
-            pipe = LegalSearchPipeline()
+            pipe = get_legal_search_pipeline()
         except Exception as exc:
             self._log(f"⚠️ Counter second-pass init failed: {exc}", "warning")
             return []
@@ -1212,7 +1324,8 @@ class CounterReasoner(BaseAgent):
                 if (s.get("statute_id") or "").strip()
             }
 
-            for query_text in queries:
+            legal_context = self._extract_legal_context(claim)
+            for q_idx, query_text in enumerate(queries, start=1):
                 embedding = pipe.embed_text(query_text)
                 articles = pipe.vector_search(
                     embedding=embedding,
@@ -1220,18 +1333,98 @@ class CounterReasoner(BaseAgent):
                     top_k=max(1, settings.counter_second_pass_top_k),
                     query_text=query_text,
                 )
-                articles = pipe.expand_with_cited_articles(articles)
+                article_by_id = {
+                    (a.statute_id or "").strip(): a
+                    for a in articles
+                    if (a.statute_id or "").strip()
+                }
+                direct_candidates = []
                 for article in articles:
                     statute_id = (article.statute_id or "").strip()
-                    if not statute_id or statute_id in existing_ids:
+                    if (
+                        not statute_id
+                        or statute_id in existing_ids
+                        or statute_id in boosted_by_id
+                    ):
+                        continue
+                    payload = self._article_result_to_dict(article)
+                    payload["_score"] = float(article.score)
+                    direct_candidates.append(payload)
+
+                if not direct_candidates:
+                    continue
+
+                direct_kept = self.filter_irrelevant_statutes(claim, direct_candidates)
+                direct_kept = self.filter_applicable_statutes(
+                    claim,
+                    direct_kept,
+                    legal_context,
+                    cache_scope="counter_second_pass:direct",
+                )
+
+                for item in direct_kept:
+                    statute_id = (item.get("statute_id") or "").strip()
+                    if not statute_id:
                         continue
                     current = boosted_by_id.get(statute_id)
-                    if current is None or float(article.score) > float(
+                    if current is None or float(item.get("_score", 0.0)) > float(
                         current.get("_score", 0.0)
                     ):
+                        boosted_by_id[statute_id] = item
+
+                seed_articles = [
+                    article_by_id[(s.get("statute_id") or "").strip()]
+                    for s in direct_kept
+                    if (s.get("statute_id") or "").strip() in article_by_id
+                ]
+                cites_kept_count = 0
+                if seed_articles:
+                    expanded_articles = pipe.expand_with_cited_articles(seed_articles)
+                    seed_ids = {
+                        (a.statute_id or "").strip()
+                        for a in seed_articles
+                        if a.statute_id
+                    }
+                    cites_candidates = []
+                    for article in expanded_articles:
+                        statute_id = (article.statute_id or "").strip()
+                        if (
+                            not statute_id
+                            or statute_id in seed_ids
+                            or statute_id in existing_ids
+                            or statute_id in boosted_by_id
+                        ):
+                            continue
                         payload = self._article_result_to_dict(article)
                         payload["_score"] = float(article.score)
-                        boosted_by_id[statute_id] = payload
+                        cites_candidates.append(payload)
+                    if cites_candidates:
+                        cites_kept = self.filter_irrelevant_statutes(
+                            claim, cites_candidates
+                        )
+                        cites_kept = self.filter_applicable_statutes(
+                            claim,
+                            cites_kept,
+                            legal_context,
+                            cache_scope="counter_second_pass:cites",
+                        )
+                        cites_kept_count = len(cites_kept)
+                        for item in cites_kept:
+                            statute_id = (item.get("statute_id") or "").strip()
+                            if not statute_id:
+                                continue
+                            current = boosted_by_id.get(statute_id)
+                            if current is None or float(
+                                item.get("_score", 0.0)
+                            ) > float(current.get("_score", 0.0)):
+                                boosted_by_id[statute_id] = item
+
+                self._log(
+                    "📎 Counter second-pass query "
+                    f"{q_idx}/{len(queries)}: direct_kept={len(direct_kept)}, "
+                    f"cites_kept={cites_kept_count}",
+                    "info",
+                )
 
             boosted = sorted(
                 boosted_by_id.values(),
@@ -1244,10 +1437,6 @@ class CounterReasoner(BaseAgent):
 
             if not boosted:
                 return []
-
-            legal_context = self._extract_legal_context(claim)
-            boosted = self.filter_irrelevant_statutes(claim, boosted)
-            boosted = self.filter_applicable_statutes(claim, boosted, legal_context)
 
             self._log(
                 f"✅ Counter second-pass: {len(boosted)} articoli aggiuntivi kept",
@@ -1269,6 +1458,7 @@ class CounterReasoner(BaseAgent):
         available_statutes: List[dict],
         allowed_precedents: List[str],
         reasoner_conclusion: str,
+        attack_blacklist: Optional[set[str]] = None,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str], List[str]]:
         """Generate counter-reasoning chain with plan -> execute -> residual replan workflow."""
@@ -1281,16 +1471,68 @@ class CounterReasoner(BaseAgent):
             "\n".join(f"- {p}" for p in allowed_precedents)
             or "- No precedents available"
         )
-        selected_attack_ids = attack_selection.attack_ids or [
-            attack_selection.attack_id
+
+        selected_attack_ids = [
+            aid
+            for aid in dict.fromkeys(
+                attack_selection.attack_ids or [attack_selection.attack_id]
+            )
+            if aid
         ]
-        selected_attack_ids = [aid for aid in selected_attack_ids if aid]
-        if not selected_attack_ids:
-            selected_attack_ids = ["N/A"]
-        attack_catalog = "\n".join(
-            f"- {aid}: {self._attack_description(aid, locale='en', default=_DEFAULT_ATTACK_DESCRIPTION_EN)}"
-            for aid in selected_attack_ids
-        )
+        blacklist = attack_blacklist if attack_blacklist is not None else set()
+        selected_attack_ids = [
+            aid for aid in selected_attack_ids if aid not in blacklist
+        ]
+        primary_pool = [
+            aid
+            for aid in dict.fromkeys(attack_selection.pool)
+            if aid and aid not in blacklist
+        ]
+        causal_pool = [
+            aid
+            for aid in dict.fromkeys(attack_selection.causal_pool or [])
+            if aid and aid not in blacklist
+        ]
+        theory_pool = [
+            aid
+            for aid in dict.fromkeys(attack_selection.theory_pool or [])
+            if aid and aid not in blacklist
+        ]
+        causal_residual = [aid for aid in causal_pool if aid not in primary_pool]
+        theory_residual = [
+            aid
+            for aid in theory_pool
+            if aid not in primary_pool and aid not in causal_residual
+        ]
+        backup_attack_ids = [
+            aid
+            for aid in dict.fromkeys(primary_pool + causal_residual + theory_residual)
+            if aid and aid not in selected_attack_ids
+        ]
+        attack_desc_map: Dict[str, str] = dict(attack_selection.descriptions or {})
+        for attack_id in selected_attack_ids + backup_attack_ids:
+            attack_desc_map.setdefault(
+                attack_id,
+                self._attack_description(
+                    attack_id,
+                    locale="en",
+                    default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+                ),
+            )
+        attack_fail_count: Dict[str, int] = {
+            attack_id: 0 for attack_id in selected_attack_ids + backup_attack_ids
+        }
+
+        def _rebuild_attack_catalog(current_ids: List[str]) -> str:
+            ids = [aid for aid in current_ids if aid]
+            if not ids:
+                return "- no attacks available"
+            return "\n".join(
+                f"- {aid}: {attack_desc_map.get(aid, _DEFAULT_ATTACK_DESCRIPTION_EN)}"
+                for aid in ids
+            )
+
+        attack_catalog = _rebuild_attack_catalog(selected_attack_ids)
         steps: List[str] = []
         step_summaries: List[str] = []
         used_norms: List[str] = []
@@ -1304,6 +1546,44 @@ class CounterReasoner(BaseAgent):
             plan_round += 1
             if plan_round > max_plan_rounds:
                 break
+
+            if not selected_attack_ids:
+                if backup_attack_ids:
+                    selected_attack_ids.append(backup_attack_ids.pop(0))
+                    attack_catalog = _rebuild_attack_catalog(selected_attack_ids)
+                    self._log(
+                        f"Warning: switching to backup attack {selected_attack_ids[0]}",
+                        "warning",
+                    )
+                else:
+                    open_selection = self._select_open_attacks(
+                        claim=claim,
+                        reasoner_conclusion=reasoner_conclusion,
+                        min_attacks=1,
+                        max_attacks=3,
+                    )
+                    open_ids = [
+                        aid
+                        for aid in dict.fromkeys(open_selection.attack_ids)
+                        if aid and aid not in blacklist
+                    ]
+                    if not open_ids:
+                        self._log(
+                            "Warning: no additional feasible attacks available after rotations",
+                            "warning",
+                        )
+                        break
+                    selected_attack_ids = open_ids
+                    for aid, desc in (open_selection.descriptions or {}).items():
+                        if aid and desc:
+                            attack_desc_map[aid] = desc
+                    for aid in selected_attack_ids:
+                        attack_fail_count.setdefault(aid, 0)
+                    attack_catalog = _rebuild_attack_catalog(selected_attack_ids)
+                    self._log(
+                        "Warning: taxonomy attacks exhausted; switching to OPEN attack mode in-run",
+                        "warning",
+                    )
 
             remaining_min = max(1, min_steps - len(steps))
             remaining_max = max(1, max_steps - len(steps))
@@ -1327,10 +1607,16 @@ class CounterReasoner(BaseAgent):
                 plan=plan,
                 previous_summaries=step_summaries,
             )
+            plan = self._filter_counter_plan_by_feasibility(
+                claim=claim,
+                reasoner_conclusion=reasoner_conclusion,
+                plan=plan,
+                previous_summaries=step_summaries,
+            )
             if not plan:
                 stalled_rounds += 1
                 self._log(
-                    "⚠️ Counter planner produced only redundant residual steps; retrying residual plan",
+                    "Warning: counter planner produced only redundant residual steps; retrying residual plan",
                     "warning",
                 )
                 if stalled_rounds >= 2:
@@ -1338,7 +1624,7 @@ class CounterReasoner(BaseAgent):
                 continue
 
             self._log(
-                f"🧭 Counter plan generated: {len(plan)} step(s) "
+                f"Counter plan generated: {len(plan)} step(s) "
                 f"[round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
             )
 
@@ -1347,20 +1633,40 @@ class CounterReasoner(BaseAgent):
 
             for local_idx, plan_step in enumerate(plan, start=1):
                 global_idx = len(steps) + 1
-                step_attack_id = plan_step.get("attack_id", selected_attack_ids[0])
-                if step_attack_id not in selected_attack_ids:
-                    step_attack_id = selected_attack_ids[0]
-                step_attack_desc = self._attack_description(
+                step_attack_id = self._pick_attack_for_plan_step(
+                    claim=claim,
+                    reasoner_conclusion=reasoner_conclusion,
+                    plan_step=plan_step,
+                    candidate_attack_ids=selected_attack_ids,
+                    attack_desc_map=attack_desc_map,
+                    attack_fail_count=attack_fail_count,
+                )
+                if not step_attack_id:
+                    round_failed = True
+                    self._log(
+                        f"Warning: no attack available for planned counter-step {global_idx}; replanning",
+                        "warning",
+                    )
+                    break
+                plan_step["attack_id"] = step_attack_id
+                step_attack_desc = attack_desc_map.get(
                     step_attack_id,
-                    locale="en",
-                    default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+                    self._attack_description(
+                        step_attack_id,
+                        locale="en",
+                        default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+                    ),
                 )
 
                 self._log(
-                    f"🔗 Generating planned counter-step {global_idx}/{max_steps}: "
+                    f"Generating planned counter-step {global_idx}/{max_steps}: "
                     f"{plan_step.get('goal', '')[:80]} | attack={step_attack_id}"
                 )
-                step_text = self._generate_counter_step_from_plan(
+                (
+                    step_text,
+                    step_failure_reason,
+                    hard_failure_count,
+                ) = self._generate_counter_step_from_plan(
                     claim=claim,
                     routing_decision=routing_decision,
                     attack_id=step_attack_id,
@@ -1380,12 +1686,54 @@ class CounterReasoner(BaseAgent):
                 )
                 if not step_text:
                     round_failed = True
+                    attack_fail_count[step_attack_id] = (
+                        attack_fail_count.get(step_attack_id, 0) + 1
+                    )
+
+                    hard_failure_detected = (
+                        self._is_hard_attack_failure(step_failure_reason)
+                        or hard_failure_count >= 2
+                    )
+                    if hard_failure_detected:
+                        blacklist.add(step_attack_id)
+                        if step_attack_id in selected_attack_ids:
+                            selected_attack_ids = [
+                                aid
+                                for aid in selected_attack_ids
+                                if aid != step_attack_id
+                            ]
+                        backup_attack_ids = [
+                            aid for aid in backup_attack_ids if aid != step_attack_id
+                        ]
+                        self._log(
+                            f"Warning: rotating out attack {step_attack_id} "
+                            f"after hard failure pattern "
+                            f"(last_reason={step_failure_reason}, "
+                            f"hard_attempts={hard_failure_count})",
+                            "warning",
+                        )
+
+                    if backup_attack_ids and len(selected_attack_ids) < 2:
+                        replacement = backup_attack_ids.pop(0)
+                        if (
+                            replacement not in selected_attack_ids
+                            and replacement not in blacklist
+                        ):
+                            selected_attack_ids.append(replacement)
+                            self._log(
+                                f"Warning: injected backup attack {replacement} into active set",
+                                "warning",
+                            )
+
+                    attack_catalog = _rebuild_attack_catalog(selected_attack_ids)
                     self._log(
-                        f"⚠️ Planned counter step {global_idx} could not be generated; "
-                        "replanning residual steps from accepted prefix",
+                        f"Planned counter step {global_idx} could not be generated; "
+                        "replanning residual steps from accepted prefix "
+                        f"(reason: {step_failure_reason or 'unknown'})",
                         "warning",
                     )
                     break
+
                 steps.append(step_text)
                 step_attacks.append(step_attack_id)
                 step_summaries.append(self._compact_step_summary(step_text))
@@ -1401,7 +1749,7 @@ class CounterReasoner(BaseAgent):
                     f" | prec: {', '.join(prec_mentions)}" if prec_mentions else ""
                 )
                 self._log(
-                    f"✅ Counter-step {global_idx}: {step_text[:80]}... "
+                    f"Counter-step {global_idx}: {step_text[:80]}... "
                     f"| attack: {step_attack_id} "
                     f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
                 )
@@ -1427,7 +1775,7 @@ class CounterReasoner(BaseAgent):
             )
 
         self._log(
-            f"📊 Planned counter-chain complete: {len(steps)} steps, "
+            f"Planned counter-chain complete: {len(steps)} steps, "
             f"{len(set(used_norms))} unique norms"
         )
         return (
@@ -1533,8 +1881,7 @@ class CounterReasoner(BaseAgent):
                     r"[^a-z0-9_]+",
                     "_",
                     str(item.get("novelty_key", "")).strip().lower(),
-                )
-                .strip("_")
+                ).strip("_")
                 or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[:48]
                 or f"counter_step_{idx}"
             )
@@ -1543,10 +1890,10 @@ class CounterReasoner(BaseAgent):
                 raw_value=item.get("citation_requirement"),
             )
             attack_id = str(item.get("attack_id", "")).strip()
-            if not goal or not focus or not attack_id:
+            if not goal or not focus:
                 continue
-            if attack_id not in allowed_attack_ids:
-                continue
+            if attack_id and attack_id not in allowed_attack_ids:
+                attack_id = ""
             cleaned.append(
                 {
                     "id": str(item.get("id", f"C{idx}")).strip() or f"C{idx}",
@@ -1571,14 +1918,162 @@ class CounterReasoner(BaseAgent):
             raise ValueError("counter planner produced poor step-type coverage")
         if self._has_overlapping_plan_steps(cleaned):
             raise ValueError("counter planner produced overlapping/repetitive steps")
-
-        min_distinct_attacks = min(2, len(allowed_attack_ids))
-        distinct_attacks = {step.get("attack_id", "") for step in cleaned}
-        if len(cleaned) >= min_distinct_attacks and len(distinct_attacks) < min_distinct_attacks:
-            raise ValueError(
-                "counter planner did not distribute attacks across planned steps"
-            )
         return cleaned
+
+    def _pick_attack_for_plan_step(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        plan_step: Dict[str, str],
+        candidate_attack_ids: List[str],
+        attack_desc_map: Dict[str, str],
+        attack_fail_count: Dict[str, int],
+    ) -> str:
+        """
+        Pick the best available attack for a planned step.
+
+        The plan structure is generated first (attack-neutral), then each step
+        gets the best compatible attack among currently active IDs.
+        """
+        if not candidate_attack_ids:
+            return ""
+
+        hinted = str(plan_step.get("attack_id", "")).strip()
+        if hinted and hinted in candidate_attack_ids:
+            return hinted
+
+        goal = str(plan_step.get("goal", "")).strip()
+        focus = str(plan_step.get("focus", "")).strip()
+        step_type = str(plan_step.get("step_type", "OTHER")).strip()
+        step_signature = f"{goal}. {focus}. type={step_type}"
+        step_reasoner_context = (
+            f"{reasoner_conclusion}\nTarget step focus: {goal}. {focus}"
+        )
+
+        scored: List[tuple[float, str]] = []
+        for attack_id in candidate_attack_ids:
+            attack_desc = attack_desc_map.get(
+                attack_id,
+                self._attack_description(
+                    attack_id,
+                    locale="en",
+                    default=_DEFAULT_ATTACK_DESCRIPTION_EN,
+                ),
+            )
+            score = 0.0
+
+            rel = self._nli_relation(
+                target_text=attack_desc,
+                attacker_text=step_signature,
+                actor_label="CounterPlanner",
+            )
+            if rel == "entailment":
+                score += 1.2
+            elif rel == "contradiction":
+                score -= 1.2
+
+            feasibility = self._attack_feasibility_label(
+                claim=claim,
+                reasoner_conclusion=step_reasoner_context,
+                attack_id=attack_id,
+                attack_desc=attack_desc,
+            )
+            if feasibility == "FEASIBLE":
+                score += 2.5
+            elif feasibility == "LOW_FEASIBILITY":
+                score += 0.4
+            else:
+                score -= 2.0
+
+            score -= 0.5 * float(attack_fail_count.get(attack_id, 0))
+            scored.append((score, attack_id))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1] if scored else candidate_attack_ids[0]
+
+    def _is_counter_plan_step_feasible(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        plan_step: Dict[str, str],
+        previous_summaries: List[str],
+    ) -> tuple[bool, str]:
+        """
+        Feasibility gate for planner steps before step text generation.
+        """
+        goal = str(plan_step.get("goal", "")).strip()
+        focus = str(plan_step.get("focus", "")).strip()
+        if not goal or not focus:
+            return False, "incomplete plan step"
+
+        candidate = f"{goal}. {focus}".strip()
+        if self._is_garbage_text(candidate, min_words=8):
+            return False, "degenerate plan step"
+        if not self._is_counter_step_consistent(candidate):
+            return False, "reasoning inconsistency in plan step"
+        if previous_summaries and self._is_repetitive_step(
+            candidate, previous_summaries, threshold=0.45
+        ):
+            return False, "plan step redundant with accepted history"
+
+        facts_ok, facts_reason = self._is_counter_step_fact_consistent_with_claim(
+            claim=claim,
+            candidate_step=candidate,
+        )
+        if not facts_ok:
+            return False, facts_reason
+
+        grounded_ok, grounded_reason = self._is_counter_step_grounded_in_claim_facts(
+            claim=claim,
+            candidate_step=candidate,
+        )
+        if not grounded_ok:
+            return False, grounded_reason
+
+        opposed_ok, opposed_reason = self._is_counter_step_opposed_to_reasoner(
+            claim=claim,
+            reasoner_conclusion=reasoner_conclusion,
+            candidate_step=candidate,
+        )
+        if not opposed_ok:
+            return False, opposed_reason
+
+        return True, ""
+
+    def _filter_counter_plan_by_feasibility(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        plan: List[Dict[str, str]],
+        previous_summaries: List[str],
+    ) -> List[Dict[str, str]]:
+        """
+        Drop planner steps that are impossible under fact-lock/opposition constraints.
+        """
+        if not plan:
+            return []
+        kept: List[Dict[str, str]] = []
+        dropped = 0
+        for step in plan:
+            ok, _ = self._is_counter_plan_step_feasible(
+                claim=claim,
+                reasoner_conclusion=reasoner_conclusion,
+                plan_step=step,
+                previous_summaries=previous_summaries,
+            )
+            if ok:
+                kept.append(step)
+            else:
+                dropped += 1
+        if dropped:
+            self._log(
+                f"Warning: counter plan feasibility gate pruned {dropped} step(s)",
+                "warning",
+            )
+        return kept
 
     @staticmethod
     def _normalize_counter_step_type(raw_value: object) -> str:
@@ -1748,6 +2243,28 @@ class CounterReasoner(BaseAgent):
             )
         return pruned
 
+    @staticmethod
+    def _is_hard_attack_failure(reason: str) -> bool:
+        """
+        Identify failure causes that indicate the current attack line is structurally unproductive.
+        """
+        reason_norm = (reason or "").strip().lower()
+        if not reason_norm:
+            return False
+        hard_markers = (
+            "adds factual allegations not present in claim",
+            "contradicts explicit claim fact",
+            "agrees with reasoner conclusion",
+            "attack-plan misalignment",
+            "missing reasoner conclusion context",
+            "not clearly opposed to reasoner conclusion",
+            "opposition check unavailable and heuristic not satisfied",
+            "citation not grounded in allowed statutes",
+            "contains ungrounded citation",
+            "generation error:",
+        )
+        return any(marker in reason_norm for marker in hard_markers)
+
     def _generate_counter_step_from_plan(
         self,
         claim: str,
@@ -1766,7 +2283,7 @@ class CounterReasoner(BaseAgent):
         used_norms: List[str],
         allowed_statute_index: Dict[str, set[str]],
         stream_callback: Optional[Callable[[dict], None]],
-    ) -> str:
+    ) -> tuple[str, str, int]:
         """Execute one planned counter step with validation + retries."""
         base_prompt = self._build_counter_step_prompt_from_plan(
             claim=claim,
@@ -1785,6 +2302,7 @@ class CounterReasoner(BaseAgent):
         )
         last_candidate = ""
         last_reason = "invalid output"
+        hard_failure_count = 0
         for attempt in range(1, self._max_step_rewrites + 2):
             prompt = (
                 base_prompt
@@ -1812,8 +2330,19 @@ class CounterReasoner(BaseAgent):
                     ),
                 )
                 candidate = self._parse_step_text((resp.content or "").strip())
+            except PipelineCancelled:
+                raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
+                if self._is_hard_attack_failure(last_reason):
+                    hard_failure_count += 1
+                    if hard_failure_count >= 2:
+                        self._log(
+                            f"⚠️ Counter-step {plan_index}: hard-failure threshold reached during generation "
+                            f"(hard_attempts={hard_failure_count}), rotating attack immediately",
+                            "warning",
+                        )
+                        return "", last_reason, hard_failure_count
                 self._log(
                     f"⚠️ Counter-step {plan_index} generation failed (attempt {attempt}): {exc}",
                     "warning",
@@ -1829,13 +2358,22 @@ class CounterReasoner(BaseAgent):
                 expected_norm=plan_step.get("expected_norm", "N/A"),
                 citation_requirement=plan_step.get("citation_requirement", "optional"),
                 allowed_statute_index=allowed_statute_index,
-                attack_id=plan_step.get("attack_id", attack_id),
+                attack_id=(plan_step.get("attack_id") or attack_id),
                 attack_desc=attack_desc,
                 plan_focus=plan_step.get("focus", ""),
             )
             if ok:
-                return candidate
+                return candidate, "", 0
             last_reason = reason
+            if self._is_hard_attack_failure(reason):
+                hard_failure_count += 1
+                if hard_failure_count >= 2:
+                    self._log(
+                        f"⚠️ Counter-step {plan_index}: hard-failure threshold reached "
+                        f"(hard_attempts={hard_failure_count}), rotating attack immediately",
+                        "warning",
+                    )
+                    return "", last_reason, hard_failure_count
             if stream_callback:
                 try:
                     stream_callback(
@@ -1845,6 +2383,8 @@ class CounterReasoner(BaseAgent):
                             "step": plan_index,
                         }
                     )
+                except PipelineCancelled:
+                    raise
                 except Exception:
                     pass
             self._log(
@@ -1852,7 +2392,7 @@ class CounterReasoner(BaseAgent):
                 f"[attempt {attempt}/{self._max_step_rewrites + 1}]",
                 "warning",
             )
-        return ""
+        return "", last_reason, hard_failure_count
 
     def _build_counter_step_prompt_from_plan(
         self,
@@ -1905,7 +2445,7 @@ class CounterReasoner(BaseAgent):
             plan_focus=plan_step.get("focus", ""),
             plan_expected_norm=plan_step.get("expected_norm", "N/A"),
             plan_citation_requirement=plan_step.get("citation_requirement", "optional"),
-            plan_attack_id=plan_step.get("attack_id", attack_id),
+            plan_attack_id=(plan_step.get("attack_id") or attack_id),
             plan_step_type=plan_step.get("step_type", "OTHER"),
             plan_novelty_key=plan_step.get("novelty_key", ""),
             summary_lines=summary_lines,
@@ -2122,12 +2662,17 @@ class CounterReasoner(BaseAgent):
             if heuristic_ok:
                 result = (True, "")
             else:
-                result = (False, "opposition check unavailable and heuristic not satisfied")
+                result = (
+                    False,
+                    "opposition check unavailable and heuristic not satisfied",
+                )
 
         self._reasoner_opposition_check_cache[cache_key] = result
         return result
 
-    def _heuristic_counter_opposition(self, *, reasoner_text: str, step_text: str) -> bool:
+    def _heuristic_counter_opposition(
+        self, *, reasoner_text: str, step_text: str
+    ) -> bool:
         """
         Best-effort opposition check when LLM verdict is UNCLEAR/unavailable.
         """
@@ -2419,6 +2964,8 @@ class CounterReasoner(BaseAgent):
             payload["step"] = step
         try:
             stream_callback(payload)
+        except PipelineCancelled:
+            raise
         except Exception:
             # Streaming callback errors must never break counter-generation.
             pass
@@ -2661,6 +3208,8 @@ class AttackSelection:
     pool: List[str]
     attack_ids: List[str]
     descriptions: Dict[str, str]
+    causal_pool: List[str] = field(default_factory=list)
+    theory_pool: List[str] = field(default_factory=list)
 
     @property
     def attack_id(self) -> str:

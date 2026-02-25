@@ -928,6 +928,30 @@
   cursor: not-allowed;
 }
 
+.stop-button {
+  width: 3rem;
+  height: 3rem;
+  background-color: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  flex-shrink: 0;
+}
+
+.stop-button:hover:not(:disabled) {
+  background-color: #b91c1c;
+}
+
+.stop-button:disabled {
+  background-color: #fca5a5;
+  cursor: not-allowed;
+}
+
 .input-hint {
   font-size: 0.75rem;
   color: #6b7280;
@@ -1262,6 +1286,11 @@
   }
 
   .send-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .stop-button {
     width: 2.75rem;
     height: 2.75rem;
   }

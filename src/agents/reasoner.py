@@ -35,6 +35,7 @@ from .tools.taxonomy_tools import get_causality_theory_tool
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
+from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 # System prompt for the Reasoner (with pre-retrieved context)
 REASONER_SYSTEM_PROMPT = get_prompt("reasoner.system")
@@ -229,11 +230,128 @@ class Reasoner(BaseAgent):
         anchor_statutes: list[dict] = []
         principle_tests: list[dict] = []
 
+        # Provisional plan-based causality bootstrap (before expensive step generation):
+        # plan draft -> provisional causality bundle -> taxonomy anchors -> final planner/executor.
+        if enable_causality:
+            try:
+                bootstrap_allowed_statutes = [
+                    f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
+                    for s in pre_retrieved_statutes
+                ]
+                bootstrap_allowed_precedents = [
+                    p.get("title", "Untitled") for p in pre_retrieved_precedents
+                ]
+                bootstrap_kb = self._format_context_for_prompt(
+                    pre_retrieved_statutes, pre_retrieved_precedents
+                )
+                bootstrap_plan = self._generate_reasoning_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    anchor_text=self._format_anchor_norms({}),
+                    principle_text=self._format_principle_tests([]),
+                    knowledge_base=bootstrap_kb,
+                    statutes_list=(
+                        "\n".join(f"- {a}" for a in bootstrap_allowed_statutes)
+                        or "- No statutes available"
+                    ),
+                    precedents_list=(
+                        "\n".join(f"- {p}" for p in bootstrap_allowed_precedents)
+                        or "- No precedents available"
+                    ),
+                    min_steps=max(1, settings.chain_min_steps),
+                    max_steps=max(1, settings.chain_max_steps),
+                    planner_mode="FULL",
+                    resume_from_step=1,
+                    existing_summaries=None,
+                )
+                bootstrap_plan = self._coerce_plan_to_allowed_norms(
+                    plan=bootstrap_plan,
+                    allowed_statutes=bootstrap_allowed_statutes,
+                )
+                self._log(
+                    f"🧭 Pre-generation plan draft for causality bootstrap: {len(bootstrap_plan)} step(s)"
+                )
+                bootstrap_pseudo_chain = self._plan_draft_to_reasoning_like_chain(
+                    bootstrap_plan
+                )
+                if bootstrap_pseudo_chain:
+                    provisional_class = self._classify_causality_from_reasoning(
+                        claim=claim,
+                        reasoning_chain=bootstrap_pseudo_chain,
+                        raw_response=json.dumps(
+                            {"steps": bootstrap_plan}, ensure_ascii=False
+                        ),
+                        domain=domain,
+                    )
+                    provisional_causal_id = (
+                        provisional_class.get("causal_type_id") or ""
+                    ).strip()
+                    provisional_theory_id = (
+                        provisional_class.get("theory_id") or ""
+                    ).strip()
+                    if provisional_causal_id:
+                        provisional_causal_id, provisional_theory_id = (
+                            config_loader.validate_ids(
+                                provisional_causal_id, provisional_theory_id
+                            )
+                        )
+                        provisional_bundle = self._build_causal_type_bundle_for_counter(
+                            claim=claim,
+                            domain=domain,
+                            primary_causal_type_id=provisional_causal_id,
+                            reasoning_chain=bootstrap_pseudo_chain,
+                            raw_response="\n".join(bootstrap_pseudo_chain),
+                        )
+                        (
+                            anchor_norms,
+                            anchor_statutes,
+                            principle_tests,
+                        ) = self._filtered_anchor_norms_for_types(
+                            provisional_bundle, claim
+                        )
+                        self._log(
+                            "🔬 Provisional causality bootstrap from plan draft: "
+                            f"{provisional_causal_id} / {provisional_theory_id}"
+                        )
+                        self._log(
+                            "🔬 Provisional causal-type bundle (pre-generation): "
+                            f"{provisional_bundle}"
+                        )
+                        self._log(
+                            "📋 Provisional anchor norms (pre-generation): "
+                            f"core={len(anchor_norms.get('core_norms', []))}, "
+                            f"accessory={len(anchor_norms.get('accessory_norms', []))}"
+                        )
+                        if anchor_statutes:
+                            self._log(
+                                "🧭 Enriching Reasoner KB before step generation with "
+                                f"{len(anchor_statutes)} taxonomy anchor statute(s) from provisional bundle"
+                            )
+                else:
+                    self._log(
+                        "⚠️ Provisional plan draft produced no usable pseudo-chain for causality bootstrap",
+                        "warning",
+                    )
+            except Exception as bootstrap_exc:
+                self._log(
+                    f"⚠️ Provisional plan-based causality bootstrap failed: {bootstrap_exc}",
+                    "warning",
+                )
+
         # Phase 3: refine reasoning with anchor norms + cross-ref expansion
         self._log(
             f"📌 Phase 3: merging pre_retrieved ({len(pre_retrieved_statutes)}) + anchor ({len(anchor_statutes)}) statutes"
         )
         all_statutes = pre_retrieved_statutes + anchor_statutes
+        statute_origin_map: dict[tuple[str, str], set[str]] = {}
+        for s in pre_retrieved_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add("pre_retrieval")
+        for s in anchor_statutes:
+            k = self._statute_identity_key(s)
+            statute_origin_map.setdefault(k, set()).add(
+                str(s.get("_kb_origin") or "taxonomy_anchor")
+            )
         seen_keys = set()
         deduped_statutes = []
         for s in all_statutes:
@@ -243,12 +361,21 @@ class Reasoner(BaseAgent):
                 deduped_statutes.append(s)
         self._log(f"📌 After dedup: {len(deduped_statutes)} statutes")
         before_expand = len(deduped_statutes)
+        before_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
         deduped_statutes = self._expand_with_cross_references(deduped_statutes)
+        after_expand_keys = {self._statute_identity_key(s) for s in deduped_statutes}
+        for k in after_expand_keys - before_expand_keys:
+            statute_origin_map.setdefault(k, set()).add("cross_ref")
         if len(deduped_statutes) > before_expand:
             self._log(
                 f"➕ Added {len(deduped_statutes) - before_expand} statutes via cross-ref",
                 "info",
             )
+        self._log_final_statute_origins(
+            deduped_statutes,
+            statute_origin_map,
+            label="Reasoner KB",
+        )
 
         allowed_statutes = [
             f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
@@ -279,6 +406,7 @@ class Reasoner(BaseAgent):
 
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
             self._log(f"🔄 Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
+            did_posthoc_anchor_refine = False
 
             try:
                 raw_output, iterative_chain = self._generate_chain_iteratively(
@@ -360,8 +488,16 @@ class Reasoner(BaseAgent):
                     }
 
                     if final_causal_id:
-                        causal_types_for_counter = [final_causal_id]
-                        anchor_norms, _anchor_statutes_unused, principle_tests = (
+                        causal_types_for_counter = (
+                            self._build_causal_type_bundle_for_counter(
+                                claim=claim,
+                                domain=domain,
+                                primary_causal_type_id=final_causal_id,
+                                reasoning_chain=reasoning_chain,
+                                raw_response=raw_output,
+                            )
+                        )
+                        anchor_norms, anchor_statutes_posthoc, principle_tests = (
                             self._filtered_anchor_norms_for_types(
                                 causal_types_for_counter, claim
                             )
@@ -369,6 +505,90 @@ class Reasoner(BaseAgent):
                         self._log(
                             f"📋 Post-hoc anchor norms: core={len(anchor_norms.get('core_norms', []))}, accessory={len(anchor_norms.get('accessory_norms', []))}"
                         )
+                        self._log(
+                            "🔬 Counter causal-type bundle: "
+                            f"{causal_types_for_counter}",
+                            "info",
+                        )
+
+                        if not did_posthoc_anchor_refine:
+                            refinement = (
+                                self._maybe_refine_reasoning_with_posthoc_anchors(
+                                    claim=claim,
+                                    routing_decision=routing_decision,
+                                    pre_retrieved_precedents=pre_retrieved_precedents,
+                                    deduped_statutes=deduped_statutes,
+                                    statute_origin_map=statute_origin_map,
+                                    anchor_norms=anchor_norms,
+                                    anchor_statutes=anchor_statutes_posthoc,
+                                    principle_tests=principle_tests,
+                                    reasoning_chain=reasoning_chain,
+                                    raw_output=raw_output,
+                                    stream_callback=stream_callback,
+                                )
+                            )
+                            if refinement:
+                                did_posthoc_anchor_refine = True
+                                raw_output = refinement["raw_output"]
+                                reasoning_chain = refinement["reasoning_chain"]
+                                conclusion = refinement["conclusion"] or conclusion
+                                arguments = refinement["arguments"]
+                                deduped_statutes = refinement["deduped_statutes"]
+                                statute_origin_map = refinement["statute_origin_map"]
+
+                                # Re-run post-hoc classification/bundle on refined chain once.
+                                post_chain_class = (
+                                    self._classify_causality_from_reasoning(
+                                        claim=claim,
+                                        reasoning_chain=reasoning_chain,
+                                        raw_response=raw_output,
+                                        domain=domain,
+                                    )
+                                )
+                                post_causal_id = (
+                                    post_chain_class.get("causal_type_id") or ""
+                                )
+                                post_theory_id = post_chain_class.get("theory_id") or ""
+                                if post_causal_id:
+                                    post_causal_id, post_theory_id = (
+                                        config_loader.validate_ids(
+                                            post_causal_id, post_theory_id
+                                        )
+                                    )
+                                final_causal_id = post_causal_id
+                                final_theory_id = post_theory_id or ""
+                                causality_classification = {
+                                    **post_chain_class,
+                                    "domain": domain,
+                                    "source": "reasoning_chain_posthoc_refined",
+                                }
+                                if final_causal_id:
+                                    causal_types_for_counter = (
+                                        self._build_causal_type_bundle_for_counter(
+                                            claim=claim,
+                                            domain=domain,
+                                            primary_causal_type_id=final_causal_id,
+                                            reasoning_chain=reasoning_chain,
+                                            raw_response=raw_output,
+                                        )
+                                    )
+                                    (
+                                        anchor_norms,
+                                        _anchor_statutes_posthoc_refined,
+                                        principle_tests,
+                                    ) = self._filtered_anchor_norms_for_types(
+                                        causal_types_for_counter, claim
+                                    )
+                                    self._log(
+                                        "📋 Post-hoc anchor norms (after refinement): "
+                                        f"core={len(anchor_norms.get('core_norms', []))}, "
+                                        f"accessory={len(anchor_norms.get('accessory_norms', []))}"
+                                    )
+                                    self._log(
+                                        "🔬 Counter causal-type bundle (after refinement): "
+                                        f"{causal_types_for_counter}",
+                                        "info",
+                                    )
 
                     # Optional diagnostics: compare eventual input hint vs post-hoc chain class.
                     if hint_causal_id:
@@ -464,6 +684,7 @@ class Reasoner(BaseAgent):
                 self._build_react_agent,
                 {"messages": messages},
                 model_order=self._resilient_model_order(),
+                cancel_checker=self._cancel_checker,
             )
         except Exception as e:
             # Handle Groq tool_use_failed: the model generated a valid response
@@ -596,7 +817,7 @@ class Reasoner(BaseAgent):
         ):
             return "PEN_PROPERTY_QUALIFICATION"
         if can("PEN_COLPA_GRADATION") and pen.intersection(
-            {"42", "43", "61", "62-bis", "113", "133", "589-bis", "590"}
+            {"42", "43", "61", "62-bis", "113", "133"}
         ):
             return "PEN_COLPA_GRADATION"
         if can("PEN_INTERVENING") and pen.intersection({"41", "45"}):
@@ -625,7 +846,9 @@ class Reasoner(BaseAgent):
             return "CIV_REMOTENESS"
 
         # Administrative signatures
-        if can("AMM_AUTOTUTELA_BALANCE") and amm.intersection({"21-novies", "21-quinquies"}):
+        if can("AMM_AUTOTUTELA_BALANCE") and amm.intersection(
+            {"21-novies", "21-quinquies"}
+        ):
             return "AMM_AUTOTUTELA_BALANCE"
         if can("AMM_DELAY_REMEDIES") and amm.intersection({"2-bis"}):
             return "AMM_DELAY_REMEDIES"
@@ -633,6 +856,176 @@ class Reasoner(BaseAgent):
             return "AMM_PROCEDURAL_LEGITIMACY"
 
         return ""
+
+    def _build_causal_type_bundle_for_counter(
+        self,
+        *,
+        claim: str,
+        domain: str,
+        primary_causal_type_id: str,
+        reasoning_chain: list[str],
+        raw_response: str,
+        max_total: int | None = None,
+    ) -> list[str]:
+        """Build a small multi-type bundle for counter anchor norms.
+
+        Keeps the post-hoc classified type as primary, then adds a small number of
+        complementary causal types using article signatures and generic claim cues.
+        This is intentionally conservative and mainly targets mixed penal
+        causation/culpability patterns without changing the primary routing.
+        """
+        primary = (primary_causal_type_id or "").strip()
+        if not primary:
+            return []
+
+        config = config_loader.load_config()
+        ct_index = config_loader.causal_types_by_id(config)
+        domain_lower = (domain or "").strip().lower()
+        if domain_lower == "entrambi":
+            allowed_ids = list(ct_index.keys())
+        else:
+            allowed_ids = [
+                ct_id
+                for ct_id, ct in ct_index.items()
+                if str(ct.get("domain", "") or "").strip().lower() == domain_lower
+            ] or list(ct_index.keys())
+
+        allowed = set(allowed_ids)
+        effective_max_total = (
+            max_total
+            if max_total is not None
+            else (4 if domain_lower == "penale" else 3)
+        )
+        selected: list[str] = []
+        reasons: list[str] = []
+        truncated: list[str] = []
+
+        def add(ct_id: str, reason: str) -> None:
+            if not ct_id or ct_id not in allowed or ct_id in selected:
+                return
+            if len(selected) >= effective_max_total:
+                truncated.append(f"{ct_id}: {reason}")
+                return
+            selected.append(ct_id)
+            reasons.append(f"{ct_id}: {reason}")
+
+        add(primary, "primary post-hoc classification")
+
+        chain_text = "\n".join(reasoning_chain) or raw_response or ""
+        mentions = extract_article_mentions(chain_text, require_code=True)
+        pen, _civ, _amm = self._article_ids_by_source(mentions)
+
+        claim_text = (claim or "").lower()
+        chain_lower = chain_text.lower()
+        penal_text = f"{claim_text}\n{chain_lower}"
+
+        # Article-signature complements (deterministic)
+        if pen.intersection({"40", "41", "589", "589-bis", "590"}):
+            add("PEN_FACTUAL", "penal causal/factual article signature")
+        if pen.intersection({"41", "45", "54", "90"}):
+            add("PEN_INTERVENING", "intervening/imputation article signature")
+        if pen.intersection({"45", "54", "90"}):
+            add(
+                "IMPUTATION_FILTER", "fortuito/necessity/imputability article signature"
+            )
+        if pen.intersection({"42", "43", "61", "62-bis", "113", "133"}):
+            add("PEN_COLPA_GRADATION", "fault gradation/sanction article signature")
+
+        # Generic penal claim cues (used when cited articles are incomplete)
+        has_counterfactual_cues = any(
+            cue in penal_text
+            for cue in (
+                "nesso causale",
+                "controfatt",
+                "causa sopravven",
+                "si sarebbe verificat",
+                "perizi",
+            )
+        )
+        has_emergency_or_emotion_cues = any(
+            cue in penal_text
+            for cue in (
+                "stato emotiv",
+                "urgenza",
+                "parto",
+                "ospedal",
+                "fortuit",
+                "forza maggiore",
+                "stato di necessit",
+                "necessità",
+            )
+        )
+        has_fault_gradation_cues = any(
+            cue in penal_text
+            for cue in (
+                "colpa",
+                "prevedibil",
+                "evitabil",
+                "attenuan",
+                "aggravan",
+                "rimprover",
+                "commisur",
+            )
+        )
+
+        if has_counterfactual_cues:
+            add("PEN_FACTUAL", "counterfactual/causal cues in claim or chain")
+            add(
+                "PEN_INTERVENING",
+                "supervening-cause style causal cues in claim or chain",
+            )
+        if has_emergency_or_emotion_cues:
+            add("PEN_INTERVENING", "emergency/emotional-state cues in claim or chain")
+            add(
+                "IMPUTATION_FILTER",
+                "emergency/fortuitous/imputability cues in claim or chain",
+            )
+        if has_fault_gradation_cues:
+            add(
+                "PEN_COLPA_GRADATION", "fault gradation/sanction cues in claim or chain"
+            )
+
+        if reasons:
+            self._log(
+                "🔬 Counter causal-type bundle reasons: " + " | ".join(reasons),
+                "info",
+            )
+        if truncated:
+            self._log(
+                "⚠️ Counter causal-type bundle truncated "
+                f"(max_total={effective_max_total}): " + " | ".join(truncated),
+                "warning",
+            )
+
+        return selected
+
+    @staticmethod
+    def _plan_draft_to_reasoning_like_chain(
+        plan_steps: list[dict[str, str]],
+    ) -> list[str]:
+        """Convert planner steps into reasoning-like strings for provisional classification."""
+        pseudo_chain: list[str] = []
+        for idx, step in enumerate(plan_steps or [], start=1):
+            goal = str(step.get("goal", "") or "").strip()
+            focus = str(step.get("focus", "") or "").strip()
+            expected_norm = str(step.get("expected_norm", "") or "").strip()
+            step_type = str(step.get("step_type", "") or "").strip().upper() or "OTHER"
+            parts = [f"[PLAN STEP {idx} | {step_type}]"]
+            if goal:
+                parts.append(f"Goal: {goal}.")
+            if focus:
+                parts.append(f"Focus: {focus}.")
+            if expected_norm and expected_norm.upper() not in {
+                "N/A",
+                "NA",
+                "NONE",
+                "-",
+            }:
+                parts.append(f"Expected norm: {expected_norm}.")
+            text = " ".join(parts).strip()
+            if text:
+                pseudo_chain.append(text)
+        return pseudo_chain
 
     def _classify_causality_from_reasoning(
         self, claim: str, reasoning_chain: list[str], raw_response: str, domain: str
@@ -675,10 +1068,23 @@ class Reasoner(BaseAgent):
             allowed_ids=allowed_ids,
         )
         if heuristic_id:
-            theory_id = self._get_default_theory(heuristic_id, config)
-            result = {"causal_type_id": heuristic_id, "theory_id": theory_id}
-            self._log(f"🔬 Heuristic causality classification: {result}")
-            return result
+            pen_ids, _civ_ids, _amm_ids = self._article_ids_by_source(mentions)
+            factual_intervening_markers = pen_ids.intersection(
+                {"40", "41", "45", "589-bis", "590"}
+            )
+            if heuristic_id in {"PEN_FACTUAL", "PEN_INTERVENING"} and (
+                factual_intervening_markers == {"41"}
+            ):
+                self._log(
+                    "⚠️ Heuristic causality classification ambiguous on shared marker "
+                    "Art. 41 c.p.; deferring to LLM classifier",
+                    "warning",
+                )
+            else:
+                theory_id = self._get_default_theory(heuristic_id, config)
+                result = {"causal_type_id": heuristic_id, "theory_id": theory_id}
+                self._log(f"🔬 Heuristic causality classification: {result}")
+                return result
 
         # Build causal type descriptions for prompt
         type_descriptions = []
@@ -829,6 +1235,40 @@ class Reasoner(BaseAgent):
             if discarded_refs:
                 self._log(f"   ❌ Discarded: {', '.join(discarded_refs)}")
 
+            # Second-stage applicability on taxonomy-derived statutes:
+            # - core norms: soft (flag but keep even if rejected)
+            # - accessory norms: hard (drop if rejected)
+            core_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in core_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            acc_pairs = [
+                (n, self._norm_to_statute_dict(n))
+                for n in acc_rel
+                if n.get("ref") or n.get("riferimento")
+            ]
+            core_statutes_raw = [st for _, st in core_pairs]
+            acc_statutes_raw = [st for _, st in acc_pairs]
+            (
+                _core_applicable,
+                acc_applicable,
+                _core_rejected,
+                _acc_rejected,
+            ) = self._filter_taxonomy_anchor_statutes_by_applicability(
+                claim,
+                core_statutes=core_statutes_raw,
+                accessory_statutes=acc_statutes_raw,
+                log_prefix=f"reasoner/taxonomy/{ct}",
+            )
+            acc_keep_keys = {self._statute_identity_key(st) for st in acc_applicable}
+            acc_rel = [
+                norm
+                for norm, st in acc_pairs
+                if self._statute_identity_key(st) in acc_keep_keys
+            ]
+            taxonomy_norms = core_rel + acc_rel
+
             merged_core.extend(core_rel)
             merged_accessory.extend(acc_rel)
             statutes.extend(
@@ -847,6 +1287,212 @@ class Reasoner(BaseAgent):
             "accessory_norms": merged_accessory,
         }
         return anchor_norms, statutes, principle_tests
+
+    def _maybe_refine_reasoning_with_posthoc_anchors(
+        self,
+        *,
+        claim: str,
+        routing_decision: RoutingDecision,
+        pre_retrieved_precedents: list[dict],
+        deduped_statutes: list[dict],
+        statute_origin_map: dict[tuple[str, str], set[str]],
+        anchor_norms: dict,
+        anchor_statutes: list[dict],
+        principle_tests: list[dict],
+        reasoning_chain: list[str],
+        raw_output: str,
+        stream_callback: Optional[Callable[[dict], None]] = None,
+    ) -> dict | None:
+        """One-shot refinement when post-hoc core anchors are missing from the Reasoner KB."""
+        if not anchor_statutes:
+            return None
+
+        kb_keys = {self._statute_identity_key(s) for s in deduped_statutes}
+        kb_article_ids = {
+            normalize_article_id(str(s.get("articolo", "") or ""))
+            for s in deduped_statutes
+            if s.get("articolo")
+        }
+
+        core_anchor_ids: set[str] = set()
+        for norm in anchor_norms.get("core_norms", []) or []:
+            ref = str(norm.get("ref") or norm.get("riferimento") or "").strip()
+            if ref:
+                core_anchor_ids.add(normalize_article_id(ref))
+        core_anchor_ids.discard("")
+
+        missing_core_ids = sorted(
+            aid for aid in core_anchor_ids if aid not in kb_article_ids
+        )
+        if not missing_core_ids:
+            return None
+
+        # Skip expensive full-chain regeneration when the current chain already cites
+        # enough core anchors (even if they were not present in the initial KB).
+        chain_text = " ".join(reasoning_chain or [])
+        chain_mentions = extract_article_mentions(chain_text, require_code=False)
+        chain_cited_ids = {
+            normalize_article_id(str(getattr(m, "article_id", "") or ""))
+            for m in chain_mentions
+            if getattr(m, "article_id", None)
+        }
+        chain_cited_ids.discard("")
+        core_anchor_cited = sorted(
+            aid for aid in core_anchor_ids if aid in chain_cited_ids
+        )
+        if core_anchor_ids:
+            coverage_ratio = len(core_anchor_cited) / max(1, len(core_anchor_ids))
+            min_hits = 1 if len(core_anchor_ids) == 1 else 2
+            if len(core_anchor_cited) >= min_hits and coverage_ratio >= 0.6:
+                self._log(
+                    "ℹ️ Skipping post-hoc anchor refinement: current chain already covers "
+                    f"{len(core_anchor_cited)}/{len(core_anchor_ids)} core anchor(s) "
+                    f"({', '.join(f'Art. {aid}' for aid in core_anchor_cited)})",
+                    "info",
+                )
+                return None
+
+        extra_anchor_statutes = []
+        for st in anchor_statutes:
+            key = self._statute_identity_key(st)
+            if key in kb_keys:
+                continue
+            payload = dict(st)
+            payload["_kb_origin"] = str(
+                payload.get("_kb_origin") or "taxonomy_posthoc_anchor"
+            )
+            extra_anchor_statutes.append(payload)
+
+        if not extra_anchor_statutes:
+            return None
+
+        self._log(
+            "🛠️ Reasoner post-hoc anchor refinement triggered: missing core anchor(s) in KB "
+            f"{', '.join(f'Art. {aid}' for aid in missing_core_ids)}; "
+            f"injecting {len(extra_anchor_statutes)} anchor statute(s) and regenerating once",
+            "warning",
+        )
+        self._emit_stream_control(
+            stream_callback,
+            event_name="reasoner_refinement_started",
+            payload={
+                "missing_core_anchor_ids": missing_core_ids,
+                "injected_anchor_count": len(extra_anchor_statutes),
+                "reason": "missing_core_anchors_in_reasoner_kb",
+            },
+        )
+
+        refined_origin_map: dict[tuple[str, str], set[str]] = {
+            k: set(v) for k, v in statute_origin_map.items()
+        }
+        for s in extra_anchor_statutes:
+            k = self._statute_identity_key(s)
+            refined_origin_map.setdefault(k, set()).add(
+                str(s.get("_kb_origin") or "taxonomy_posthoc_anchor")
+            )
+
+        seen_keys = set()
+        refined_statutes = []
+        for s in deduped_statutes + extra_anchor_statutes:
+            key = self._statute_identity_key(s)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            refined_statutes.append(s)
+
+        before_expand = len(refined_statutes)
+        before_expand_keys = {self._statute_identity_key(s) for s in refined_statutes}
+        refined_statutes = self._expand_with_cross_references(refined_statutes)
+        after_expand_keys = {self._statute_identity_key(s) for s in refined_statutes}
+        for k in after_expand_keys - before_expand_keys:
+            refined_origin_map.setdefault(k, set()).add("cross_ref")
+        if len(refined_statutes) > before_expand:
+            self._log(
+                f"➕ Added {len(refined_statutes) - before_expand} statutes via cross-ref (refinement)",
+                "info",
+            )
+        self._log_final_statute_origins(
+            refined_statutes,
+            refined_origin_map,
+            label="Reasoner KB (refined)",
+        )
+
+        allowed_statutes = [
+            f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
+            for s in refined_statutes
+        ]
+        allowed_precedents = [
+            p.get("title", "Untitled") for p in pre_retrieved_precedents
+        ]
+        knowledge_base = self._format_context_for_prompt(
+            refined_statutes, pre_retrieved_precedents
+        )
+        anchor_text = self._format_anchor_norms(anchor_norms)
+        principle_text = self._format_principle_tests(principle_tests)
+
+        try:
+            raw_output_refined, iterative_chain = self._generate_chain_iteratively(
+                claim=claim,
+                routing_decision=routing_decision,
+                anchor_text=anchor_text,
+                principle_text=principle_text,
+                knowledge_base=knowledge_base,
+                allowed_statutes=allowed_statutes,
+                allowed_precedents=allowed_precedents,
+                stream_callback=stream_callback,
+            )
+        except Exception as exc:
+            self._log(
+                f"⚠️ Reasoner post-hoc anchor refinement failed during regeneration: {exc}",
+                "warning",
+            )
+            return None
+
+        conclusion_refined = (
+            self._generate_conclusion(
+                claim, iterative_chain, stream_callback=stream_callback
+            )
+            if iterative_chain
+            else ""
+        )
+        if conclusion_refined:
+            raw_output_refined = self._assemble_raw_response(
+                claim, iterative_chain, conclusion_text=conclusion_refined
+            )
+
+        reasoning_chain_refined = (
+            iterative_chain
+            if iterative_chain
+            else self._extract_reasoning_chain(raw_output_refined)
+        )
+        reasoning_chain_refined = self._sanitize_reasoning_chain(
+            reasoning_chain_refined, pre_retrieved_precedents
+        )
+        if not reasoning_chain_refined:
+            self._log(
+                "⚠️ Reasoner post-hoc anchor refinement produced empty reasoning chain; keeping original",
+                "warning",
+            )
+            return None
+
+        arguments_refined = self._extract_arguments(raw_output_refined)
+        self._emit_stream_control(
+            stream_callback,
+            event_name="reasoner_refinement_completed",
+            payload={
+                "reasoning_steps": len(reasoning_chain_refined),
+                "kb_statutes": len(refined_statutes),
+                "injected_anchor_count": len(extra_anchor_statutes),
+            },
+        )
+        return {
+            "raw_output": raw_output_refined,
+            "reasoning_chain": reasoning_chain_refined,
+            "conclusion": conclusion_refined,
+            "arguments": arguments_refined,
+            "deduped_statutes": refined_statutes,
+            "statute_origin_map": refined_origin_map,
+        }
 
     def _generate_chain_iteratively(
         self,
@@ -1091,8 +1737,7 @@ class Reasoner(BaseAgent):
                     r"[^a-z0-9_]+",
                     "_",
                     str(item.get("novelty_key", "")).strip().lower(),
-                )
-                .strip("_")
+                ).strip("_")
                 or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[:48]
                 or f"step_{idx}"
             )
@@ -1227,7 +1872,9 @@ class Reasoner(BaseAgent):
         """
         ids: set[str] = set()
         for label in allowed_statutes or []:
-            for match in re.findall(r"art\.?\s*([0-9]+(?:-[a-z]+)?)", label, re.IGNORECASE):
+            for match in re.findall(
+                r"art\.?\s*([0-9]+(?:-[a-z]+)?)", label, re.IGNORECASE
+            ):
                 normalized = normalize_article_id(match)
                 if normalized:
                     ids.add(normalized)
@@ -1437,11 +2084,13 @@ class Reasoner(BaseAgent):
                                 step=plan_index,
                             )
                         )
-                        if stream_callback and attempt == 1
+                        if stream_callback
                         else None
                     ),
                 )
                 candidate = self._parse_step_text((resp.content or "").strip())
+            except PipelineCancelled:
+                raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
                 self._log(
@@ -1470,6 +2119,8 @@ class Reasoner(BaseAgent):
                             "step": plan_index,
                         }
                     )
+                except PipelineCancelled:
+                    raise
                 except Exception:
                     pass
             self._log(
@@ -1649,8 +2300,32 @@ class Reasoner(BaseAgent):
             payload["step"] = step
         try:
             stream_callback(payload)
+        except PipelineCancelled:
+            raise
         except Exception:
             # Streaming callback errors must never break reasoning generation.
+            pass
+
+    @staticmethod
+    def _emit_stream_control(
+        stream_callback: Optional[Callable[[dict], None]],
+        *,
+        event_name: str,
+        payload: dict,
+    ) -> None:
+        """Emit a control message through the streaming callback channel."""
+        if not stream_callback or not event_name:
+            return
+        try:
+            stream_callback(
+                {
+                    "_control_event": str(event_name).strip(),
+                    "payload": payload or {},
+                }
+            )
+        except PipelineCancelled:
+            raise
+        except Exception:
             pass
 
     def _parse_step_text(self, response: str) -> str:
@@ -1821,9 +2496,10 @@ class Reasoner(BaseAgent):
             if conclusion:
                 if not self._is_support_step_consistent(conclusion):
                     self._log(
-                        "⚠️ LLM conclusion appears internally inconsistent; rewriting",
+                        "Warning: LLM conclusion appears internally inconsistent; trying rewrite (non-blocking)",
                         "warning",
                     )
+                    original_conclusion = conclusion
                     rewrite_prompt = self._build_support_conclusion_rewrite_prompt(
                         claim=claim,
                         chain_text=chain_text,
@@ -1841,20 +2517,25 @@ class Reasoner(BaseAgent):
                             rewritten,
                             flags=re.IGNORECASE,
                         ).strip()
-                        if rewritten and self._is_support_step_consistent(rewritten):
+                        if rewritten:
                             conclusion = rewritten
+                            if not self._is_support_step_consistent(conclusion):
+                                self._log(
+                                    "Warning: rewritten conclusion is still internally inconsistent; keeping rewritten anyway (fact-lock enforced)",
+                                    "warning",
+                                )
                         else:
                             self._log(
-                                "⚠️ Rewritten conclusion still inconsistent; using fallback",
+                                "Warning: rewritten conclusion is empty; keeping original conclusion",
                                 "warning",
                             )
-                            conclusion = ""
+                            conclusion = original_conclusion
                     except Exception as rewrite_exc:
                         self._log(
-                            f"⚠️ Conclusion rewrite failed: {rewrite_exc}",
+                            f"Warning: conclusion rewrite failed: {rewrite_exc}; keeping original conclusion",
                             "warning",
                         )
-                        conclusion = ""
+                        conclusion = original_conclusion
                 if conclusion:
                     facts_ok, _ = self._is_step_fact_consistent_with_claim(
                         claim=claim,
@@ -1863,13 +2544,15 @@ class Reasoner(BaseAgent):
                     )
                     if not facts_ok:
                         self._log(
-                            "⚠️ LLM conclusion contradicts explicit claim facts; using fallback",
+                            "Warning: LLM conclusion contradicts explicit claim facts; using fallback",
                             "warning",
                         )
                         conclusion = ""
                 if conclusion:
-                    self._log(f"📝 LLM-generated conclusion: {conclusion[:120]}...")
+                    self._log(f"LLM-generated conclusion: {conclusion[:120]}...")
                     return conclusion
+        except PipelineCancelled:
+            raise
         except Exception as e:
             self._log(f"⚠️ Conclusion generation failed: {e}", "warning")
 
@@ -1906,22 +2589,20 @@ class Reasoner(BaseAgent):
         if conclusion_text:
             if not self._is_support_step_consistent(conclusion_text):
                 self._log(
-                    "⚠️ Provided conclusion is internally inconsistent; using fallback",
+                    "Warning: provided conclusion appears internally inconsistent (non-blocking); enforcing only fact-lock",
+                    "warning",
+                )
+            facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                claim=claim,
+                candidate_step=conclusion_text,
+                actor_label="Reasoner",
+            )
+            if not facts_ok:
+                self._log(
+                    "Warning: provided conclusion contradicts explicit claim facts; using fallback",
                     "warning",
                 )
                 conclusion_text = ""
-            else:
-                facts_ok, _ = self._is_step_fact_consistent_with_claim(
-                    claim=claim,
-                    candidate_step=conclusion_text,
-                    actor_label="Reasoner",
-                )
-                if not facts_ok:
-                    self._log(
-                        "⚠️ Provided conclusion contradicts explicit claim facts; using fallback",
-                        "warning",
-                    )
-                    conclusion_text = ""
 
         if not conclusion_text:
             norms_list = ", ".join(norms) if norms else "le norme applicabili"

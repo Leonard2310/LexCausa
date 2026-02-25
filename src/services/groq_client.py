@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage
 from langchain_groq import ChatGroq
 
 from config import settings
+from services.pipeline_control import PipelineCancelled
 
 logger = logging.getLogger("lexcausa.groq_client")
 
@@ -167,6 +168,7 @@ def _resilient_loop(
     max_retries: Optional[int] = None,
     label: str = "Groq",
     model_order: Optional[list[str]] = None,
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ):
     """
     Generic resilient execution loop.
@@ -185,6 +187,19 @@ def _resilient_loop(
       instead of looping forever.
     - On other transient errors → retry with exponential backoff, then rotate key.
     """
+
+    def _check_cancel() -> None:
+        if cancel_checker is not None and cancel_checker():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
+    def _sleep_with_cancel(delay_s: float) -> None:
+        remaining = max(0.0, float(delay_s))
+        while remaining > 0:
+            _check_cancel()
+            chunk = 0.2 if remaining > 0.2 else remaining
+            time.sleep(chunk)
+            remaining -= chunk
+
     retries = max_retries or settings.groq_max_retries
     # Allow per-call model order overrides (used by Reasoner/CounterReasoner).
     if model_order:
@@ -219,6 +234,7 @@ def _resilient_loop(
 
     # ── Skip models already known to be down ─────────────────────────────
     while model_idx < len(models) and _is_model_cached_down(models[model_idx]):
+        _check_cancel()
         logger.info(
             "⏩ [%s] Skipping model %s (cached as down)",
             label,
@@ -235,20 +251,25 @@ def _resilient_loop(
         model_idx = 0
 
     while model_idx < len(models):
+        _check_cancel()
         model = models[model_idx]
         # Track which keys have been rate-limited for THIS model
         rate_limited_keys: set[int] = set()
         keys_tried = 0
 
         while keys_tried < n_keys:
+            _check_cancel()
             key = _current_key()
             cur_idx = _current_key_index
 
             for attempt in range(1, retries + 1):
+                _check_cancel()
                 try:
                     return execute_fn(key, model)
                 except Exception as exc:
                     last_exc = exc
+                    if isinstance(exc, PipelineCancelled):
+                        raise
 
                     if not _is_retryable(exc):
                         raise  # Non-retryable (e.g. 400 Bad Request) → fail fast
@@ -313,7 +334,7 @@ def _resilient_loop(
                     )
                     if attempt < retries:
                         delay = base_delay * (2 ** (attempt - 1))
-                        time.sleep(delay)
+                        _sleep_with_cancel(delay)
             else:
                 # All retry attempts exhausted for this key (no break) → rotate key
                 logger.warning(
@@ -437,6 +458,7 @@ def resilient_chat_call(
     *,
     max_retries: Optional[int] = None,
     model_order: Optional[list[str]] = None,
+    cancel_checker: Optional[Callable[[], bool]] = None,
     **invoke_kwargs,
 ):
     """
@@ -465,6 +487,7 @@ def resilient_chat_call(
         max_retries=max_retries,
         label="ChatGroq",
         model_order=model_order,
+        cancel_checker=cancel_checker,
     )
 
 
@@ -499,6 +522,7 @@ def resilient_chat_stream(
     on_token: Optional[Callable[[str], None]] = None,
     max_retries: Optional[int] = None,
     model_order: Optional[list[str]] = None,
+    cancel_checker: Optional[Callable[[], bool]] = None,
     **stream_kwargs,
 ):
     """
@@ -521,6 +545,8 @@ def resilient_chat_stream(
 
         pieces: list[str] = []
         for chunk in llm.stream(messages, **stream_kwargs):
+            if cancel_checker is not None and cancel_checker():
+                raise PipelineCancelled("Esecuzione interrotta manualmente.")
             text = _chunk_to_text(chunk)
             if not text:
                 continue
@@ -534,6 +560,7 @@ def resilient_chat_stream(
         max_retries=max_retries,
         label="ChatGroqStream",
         model_order=model_order,
+        cancel_checker=cancel_checker,
     )
 
 
@@ -548,6 +575,7 @@ def resilient_react_invoke(
     *,
     max_retries: Optional[int] = None,
     model_order: Optional[list[str]] = None,
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ):
     """
     Invoke a LangGraph ReAct agent with smart retry strategy.
@@ -567,4 +595,5 @@ def resilient_react_invoke(
         max_retries=max_retries,
         label="ReAct",
         model_order=model_order,
+        cancel_checker=cancel_checker,
     )

@@ -64,18 +64,19 @@ class Settings(BaseSettings):
         "gpt_oss_120b": "openai/gpt-oss-120b",
         "gpt_oss_20b": "openai/gpt-oss-20b",
         "groq_llama_3_3_70b_versatile": "llama-3.3-70b-versatile",
-        "groq_llama_3_1_8b_instant": "llama-3.1-8b-instant",
         "qwen_qwen3_32b": "qwen/qwen3-32b",
     }
     # Used by retrieval-side components (claim classifier, keyword extraction,
     # legal-context extraction, relevance/applicability filters, precedents keywording).
     RETRIEVAL_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
         "groq_llama_maverick_17b",
-        "groq_llama_3_1_8b_instant",
+        "groq_llama_scout_17b",
+        "gpt_oss_20b",
     ]
     # Used by the rest of the pipeline helpers (router, evaluator/polisher).
     PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
         "groq_llama_maverick_17b",
+        "groq_llama_scout_17b",
         "gpt_oss_20b",
     ]
     REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
@@ -144,7 +145,7 @@ class Settings(BaseSettings):
         description="Default number of statute results to return when not specified.",
     )
     search_min_kept_statutes: int = Field(
-        default=10,
+        default=8,
         alias="SEARCH_MIN_KEPT_STATUTES",
         description="Minimum number of statutes to keep after relevance filtering. "
         "If fewer are kept, the search expands progressively by +10 until this threshold is met.",
@@ -160,7 +161,7 @@ class Settings(BaseSettings):
         description="Maximum number of progressive expansion rounds to avoid infinite loops.",
     )
     search_expansion_max_zero_gain_rounds: int = Field(
-        default=2,
+        default=1,
         alias="SEARCH_EXPANSION_MAX_ZERO_GAIN_ROUNDS",
         description="Early-stop retrieval expansion after this many consecutive rounds with zero newly kept statutes.",
     )
@@ -320,17 +321,17 @@ class Settings(BaseSettings):
         description="Enable citation-based expansion via Neo4j CITES edges before retrieval filters.",
     )
     search_cites_per_article_limit: int = Field(
-        default=10,
+        default=6,
         alias="SEARCH_CITES_PER_ARTICLE_LIMIT",
         description="Maximum number of cited neighbors to fetch per initially retrieved statute.",
     )
     search_cites_max_additional: int = Field(
-        default=60,
+        default=30,
         alias="SEARCH_CITES_MAX_ADDITIONAL",
         description="Maximum number of citation-expanded statutes added to a retrieval round.",
     )
     search_cites_score_decay: float = Field(
-        default=0.85,
+        default=0.70,
         alias="SEARCH_CITES_SCORE_DECAY",
         description="Score decay applied to cited statutes relative to their strongest parent score.",
     )

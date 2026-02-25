@@ -746,15 +746,25 @@ class BaseAgent(ABC):
                     )
                     answer = "YES"  # safe default: keep on error
 
-                token = answer.split()[0] if answer else ""
+                first_token = answer.split()[0] if answer else ""
+                token = re.sub(r"^[^A-Z]+|[^A-Z]+$", "", first_token)
+                leading_match = re.match(r"^\s*[\(\[\"'`]*\s*(YES|NO)\b", answer)
                 if token in {"YES", "NO"}:
                     keep = token == "YES"
+                elif leading_match:
+                    keep = leading_match.group(1) == "YES"
                 else:
-                    # Strict parse with safe default-to-keep, but logged for visibility.
-                    keep = "NO" not in answer
+                    # Non-canonical fallback:
+                    # - pre-retrieval/general path: fail-open (KEEP) to avoid empty-KB collapse
+                    # - taxonomy/counter-specific paths: keep stricter heuristic behavior
+                    if cache_scope == "general":
+                        keep = True
+                    else:
+                        keep = "NO" not in answer
                     self._log(
                         f"⚠️ Non-canonical applicability output for {article_number}: "
-                        f"{answer[:80]!r} -> {'KEEP' if keep else 'DROP'}",
+                        f"{answer[:80]!r} -> {'KEEP' if keep else 'DROP'} "
+                        f"(scope={cache_scope})",
                         "warning",
                     )
                 self._statute_applicability_cache[cache_key] = keep
@@ -1000,10 +1010,21 @@ class BaseAgent(ABC):
         try:
             import re
 
-            articolo_match = re.search(r"(\d+)", riferimento)
+            # Preserve article suffixes (e.g. 62-bis, 603-bis.2, 21-novies).
+            articolo_match = re.search(
+                r"\bart\.?\s*([0-9]+(?:-[a-z]+(?:\.[0-9]+)?)?)\b",
+                riferimento,
+                re.IGNORECASE,
+            )
+            if not articolo_match:
+                articolo_match = re.search(
+                    r"\b([0-9]+(?:-[a-z]+(?:\.[0-9]+)?)?)\b",
+                    riferimento,
+                    re.IGNORECASE,
+                )
         except Exception:
             pass
-        articolo = articolo_match.group(1) if articolo_match else riferimento
+        articolo = (articolo_match.group(1) if articolo_match else riferimento).lower()
 
         ref_lower = riferimento.lower()
         if (

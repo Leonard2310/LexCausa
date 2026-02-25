@@ -1120,13 +1120,26 @@ def _run_full_pipeline(
         )
         reas = Reasoner(config=reasoner_config)
         reas.set_cancel_checker(_is_cancel_requested)
+
+        def _reasoner_stream_callback(payload: dict) -> None:
+            """Forward reasoner tokens and translate control frames into SSE events."""
+            if isinstance(payload, dict):
+                control_event = str(payload.get("_control_event", "") or "").strip()
+                if control_event in {
+                    "reasoner_refinement_started",
+                    "reasoner_refinement_completed",
+                }:
+                    _emit_progress(control_event, payload.get("payload") or {})
+                    return
+            token_callback(payload)
+
         reasoner_result = reas.run(
             claim=claim,
             routing_decision=routing_decision,
             pre_retrieved_statutes=reasoner_statutes,
             pre_retrieved_precedents=reasoner_precedents,
             enable_causality=fe_enable_causality,
-            stream_callback=token_callback,
+            stream_callback=_reasoner_stream_callback,
         )
         _check_cancel()
         _emit_phase("support", "active", 97, "Costruzione ASPIC+ e output finale")

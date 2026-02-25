@@ -569,6 +569,54 @@ export default function App() {
       });
     };
 
+    const resetReasonerLiveForRefinement = (payload = {}) => {
+      updateLivePipeline((prev) => ({
+        ...prev,
+        reasoner: {
+          ...(prev.reasoner || {}),
+          raw_response: '',
+        },
+        _stream: {
+          ...(prev._stream || {}),
+          support_steps: {},
+          support_max_step: 0,
+          support_conclusion_live: '',
+          reasoner_refinement_active: true,
+          reasoner_refinement_meta: payload || {},
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            support: 'Riclassificazione causale e rigenerazione con norme di tassonomia...',
+          },
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            support: Math.max(55, Number(prev._stream?.phase_progress?.support || 0)),
+          },
+        },
+      }));
+    };
+
+    const completeReasonerRefinementLive = (payload = {}) => {
+      updateLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          reasoner_refinement_active: false,
+          reasoner_refinement_meta: {
+            ...(prev._stream?.reasoner_refinement_meta || {}),
+            ...(payload || {}),
+          },
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            support: 'Rigenerazione del Reasoner completata, finalizzazione output...',
+          },
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            support: Math.max(90, Number(prev._stream?.phase_progress?.support || 0)),
+          },
+        },
+      }));
+    };
+
     const requestBody = JSON.stringify({
       claim,
       include_precedents: pipelineSettings.include_precedents,
@@ -688,6 +736,18 @@ export default function App() {
             continue;
           }
 
+          if (eventName === 'reasoner_refinement_started') {
+            setPhaseStatus('support', 'active');
+            resetReasonerLiveForRefinement(payload || {});
+            continue;
+          }
+
+          if (eventName === 'reasoner_refinement_completed') {
+            setPhaseStatus('support', 'active');
+            completeReasonerRefinementLive(payload || {});
+            continue;
+          }
+
           if (eventName === 'token') {
             const phase = payload.phase || 'generic';
             if (payload?.action === 'reset_step') {
@@ -725,6 +785,10 @@ export default function App() {
             setPipelineResult((prev) => ({
               ...(prev || {}),
               reasoner: payload || {},
+              _stream: {
+                ...(prev?._stream || {}),
+                reasoner_refinement_active: false,
+              },
             }));
             continue;
           }
@@ -958,6 +1022,7 @@ export default function App() {
                   counter: 100,
                   final_evaluation: 100,
                 },
+                reasoner_refinement_active: false,
               },
             }));
             continue;
@@ -2934,6 +2999,18 @@ export default function App() {
                         <div className="structured-live-tag">
                           <Loader2 size={14} className="loading-spinner" />
                           <span>Costruzione ASPIC+ in corso...</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {pipelineResult._stream?.reasoner_refinement_active && (
+                      <div className="subsection">
+                        <h4>Refinement Reasoner</h4>
+                        <div className="structured-live-tag">
+                          <Loader2 size={14} className="loading-spinner" />
+                          <span>
+                            Riclassificazione causale e rigenerazione della catena con norme tassonomiche...
+                          </span>
                         </div>
                       </div>
                     )}

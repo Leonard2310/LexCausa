@@ -187,6 +187,7 @@ def _resilient_loop(
       instead of looping forever.
     - On other transient errors → retry with exponential backoff, then rotate key.
     """
+
     def _check_cancel() -> None:
         if cancel_checker is not None and cancel_checker():
             raise PipelineCancelled("Esecuzione interrotta manualmente.")

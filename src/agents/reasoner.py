@@ -297,6 +297,7 @@ class Reasoner(BaseAgent):
 
         for attempt in range(1, MAX_CHAIN_RETRIES + 1):
             self._log(f"🔄 Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
+            did_posthoc_anchor_refine = False
 
             try:
                 raw_output, iterative_chain = self._generate_chain_iteratively(
@@ -387,7 +388,7 @@ class Reasoner(BaseAgent):
                                 raw_response=raw_output,
                             )
                         )
-                        anchor_norms, _anchor_statutes_unused, principle_tests = (
+                        anchor_norms, anchor_statutes_posthoc, principle_tests = (
                             self._filtered_anchor_norms_for_types(
                                 causal_types_for_counter, claim
                             )
@@ -400,6 +401,84 @@ class Reasoner(BaseAgent):
                             f"{causal_types_for_counter}",
                             "info",
                         )
+
+                        if not did_posthoc_anchor_refine:
+                            refinement = (
+                                self._maybe_refine_reasoning_with_posthoc_anchors(
+                                    claim=claim,
+                                    routing_decision=routing_decision,
+                                    pre_retrieved_precedents=pre_retrieved_precedents,
+                                    deduped_statutes=deduped_statutes,
+                                    statute_origin_map=statute_origin_map,
+                                    anchor_norms=anchor_norms,
+                                    anchor_statutes=anchor_statutes_posthoc,
+                                    principle_tests=principle_tests,
+                                    reasoning_chain=reasoning_chain,
+                                    raw_output=raw_output,
+                                )
+                            )
+                            if refinement:
+                                did_posthoc_anchor_refine = True
+                                raw_output = refinement["raw_output"]
+                                reasoning_chain = refinement["reasoning_chain"]
+                                conclusion = refinement["conclusion"] or conclusion
+                                arguments = refinement["arguments"]
+                                deduped_statutes = refinement["deduped_statutes"]
+                                statute_origin_map = refinement["statute_origin_map"]
+
+                                # Re-run post-hoc classification/bundle on refined chain once.
+                                post_chain_class = (
+                                    self._classify_causality_from_reasoning(
+                                        claim=claim,
+                                        reasoning_chain=reasoning_chain,
+                                        raw_response=raw_output,
+                                        domain=domain,
+                                    )
+                                )
+                                post_causal_id = (
+                                    post_chain_class.get("causal_type_id") or ""
+                                )
+                                post_theory_id = post_chain_class.get("theory_id") or ""
+                                if post_causal_id:
+                                    post_causal_id, post_theory_id = (
+                                        config_loader.validate_ids(
+                                            post_causal_id, post_theory_id
+                                        )
+                                    )
+                                final_causal_id = post_causal_id
+                                final_theory_id = post_theory_id or ""
+                                causality_classification = {
+                                    **post_chain_class,
+                                    "domain": domain,
+                                    "source": "reasoning_chain_posthoc_refined",
+                                }
+                                if final_causal_id:
+                                    causal_types_for_counter = (
+                                        self._build_causal_type_bundle_for_counter(
+                                            claim=claim,
+                                            domain=domain,
+                                            primary_causal_type_id=final_causal_id,
+                                            reasoning_chain=reasoning_chain,
+                                            raw_response=raw_output,
+                                        )
+                                    )
+                                    (
+                                        anchor_norms,
+                                        _anchor_statutes_posthoc_refined,
+                                        principle_tests,
+                                    ) = self._filtered_anchor_norms_for_types(
+                                        causal_types_for_counter, claim
+                                    )
+                                    self._log(
+                                        "📋 Post-hoc anchor norms (after refinement): "
+                                        f"core={len(anchor_norms.get('core_norms', []))}, "
+                                        f"accessory={len(anchor_norms.get('accessory_norms', []))}"
+                                    )
+                                    self._log(
+                                        "🔬 Counter causal-type bundle (after refinement): "
+                                        f"{causal_types_for_counter}",
+                                        "info",
+                                    )
 
                     # Optional diagnostics: compare eventual input hint vs post-hoc chain class.
                     if hint_causal_id:
@@ -675,11 +754,11 @@ class Reasoner(BaseAgent):
         primary_causal_type_id: str,
         reasoning_chain: list[str],
         raw_response: str,
-        max_total: int = 3,
+        max_total: int | None = None,
     ) -> list[str]:
         """Build a small multi-type bundle for counter anchor norms.
 
-        Keeps the post-hoc classified type as primary, then adds up to two
+        Keeps the post-hoc classified type as primary, then adds a small number of
         complementary causal types using article signatures and generic claim cues.
         This is intentionally conservative and mainly targets mixed penal
         causation/culpability patterns without changing the primary routing.
@@ -701,13 +780,20 @@ class Reasoner(BaseAgent):
             ] or list(ct_index.keys())
 
         allowed = set(allowed_ids)
+        effective_max_total = (
+            max_total
+            if max_total is not None
+            else (4 if domain_lower == "penale" else 3)
+        )
         selected: list[str] = []
         reasons: list[str] = []
+        truncated: list[str] = []
 
         def add(ct_id: str, reason: str) -> None:
             if not ct_id or ct_id not in allowed or ct_id in selected:
                 return
-            if len(selected) >= max_total:
+            if len(selected) >= effective_max_total:
+                truncated.append(f"{ct_id}: {reason}")
                 return
             selected.append(ct_id)
             reasons.append(f"{ct_id}: {reason}")
@@ -793,6 +879,12 @@ class Reasoner(BaseAgent):
                 "🔬 Counter causal-type bundle reasons: " + " | ".join(reasons),
                 "info",
             )
+        if truncated:
+            self._log(
+                "⚠️ Counter causal-type bundle truncated "
+                f"(max_total={effective_max_total}): " + " | ".join(truncated),
+                "warning",
+            )
 
         return selected
 
@@ -837,10 +929,23 @@ class Reasoner(BaseAgent):
             allowed_ids=allowed_ids,
         )
         if heuristic_id:
-            theory_id = self._get_default_theory(heuristic_id, config)
-            result = {"causal_type_id": heuristic_id, "theory_id": theory_id}
-            self._log(f"🔬 Heuristic causality classification: {result}")
-            return result
+            pen_ids, _civ_ids, _amm_ids = self._article_ids_by_source(mentions)
+            factual_intervening_markers = pen_ids.intersection(
+                {"40", "41", "45", "589-bis", "590"}
+            )
+            if heuristic_id in {"PEN_FACTUAL", "PEN_INTERVENING"} and (
+                factual_intervening_markers == {"41"}
+            ):
+                self._log(
+                    "⚠️ Heuristic causality classification ambiguous on shared marker "
+                    "Art. 41 c.p.; deferring to LLM classifier",
+                    "warning",
+                )
+            else:
+                theory_id = self._get_default_theory(heuristic_id, config)
+                result = {"causal_type_id": heuristic_id, "theory_id": theory_id}
+                self._log(f"🔬 Heuristic causality classification: {result}")
+                return result
 
         # Build causal type descriptions for prompt
         type_descriptions = []
@@ -1043,6 +1148,166 @@ class Reasoner(BaseAgent):
             "accessory_norms": merged_accessory,
         }
         return anchor_norms, statutes, principle_tests
+
+    def _maybe_refine_reasoning_with_posthoc_anchors(
+        self,
+        *,
+        claim: str,
+        routing_decision: RoutingDecision,
+        pre_retrieved_precedents: list[dict],
+        deduped_statutes: list[dict],
+        statute_origin_map: dict[tuple[str, str], set[str]],
+        anchor_norms: dict,
+        anchor_statutes: list[dict],
+        principle_tests: list[dict],
+        reasoning_chain: list[str],
+        raw_output: str,
+    ) -> dict | None:
+        """One-shot refinement when post-hoc core anchors are missing from the Reasoner KB."""
+        if not anchor_statutes:
+            return None
+
+        kb_keys = {self._statute_identity_key(s) for s in deduped_statutes}
+        kb_article_ids = {
+            normalize_article_id(str(s.get("articolo", "") or ""))
+            for s in deduped_statutes
+            if s.get("articolo")
+        }
+
+        core_anchor_ids: set[str] = set()
+        for norm in anchor_norms.get("core_norms", []) or []:
+            ref = str(norm.get("ref") or norm.get("riferimento") or "").strip()
+            if ref:
+                core_anchor_ids.add(normalize_article_id(ref))
+        core_anchor_ids.discard("")
+
+        missing_core_ids = sorted(
+            aid for aid in core_anchor_ids if aid not in kb_article_ids
+        )
+        if not missing_core_ids:
+            return None
+
+        extra_anchor_statutes = []
+        for st in anchor_statutes:
+            key = self._statute_identity_key(st)
+            if key in kb_keys:
+                continue
+            payload = dict(st)
+            payload["_kb_origin"] = str(
+                payload.get("_kb_origin") or "taxonomy_posthoc_anchor"
+            )
+            extra_anchor_statutes.append(payload)
+
+        if not extra_anchor_statutes:
+            return None
+
+        self._log(
+            "🛠️ Reasoner post-hoc anchor refinement triggered: missing core anchor(s) in KB "
+            f"{', '.join(f'Art. {aid}' for aid in missing_core_ids)}; "
+            f"injecting {len(extra_anchor_statutes)} anchor statute(s) and regenerating once",
+            "warning",
+        )
+
+        refined_origin_map: dict[tuple[str, str], set[str]] = {
+            k: set(v) for k, v in statute_origin_map.items()
+        }
+        for s in extra_anchor_statutes:
+            k = self._statute_identity_key(s)
+            refined_origin_map.setdefault(k, set()).add(
+                str(s.get("_kb_origin") or "taxonomy_posthoc_anchor")
+            )
+
+        seen_keys = set()
+        refined_statutes = []
+        for s in deduped_statutes + extra_anchor_statutes:
+            key = self._statute_identity_key(s)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            refined_statutes.append(s)
+
+        before_expand = len(refined_statutes)
+        before_expand_keys = {self._statute_identity_key(s) for s in refined_statutes}
+        refined_statutes = self._expand_with_cross_references(refined_statutes)
+        after_expand_keys = {self._statute_identity_key(s) for s in refined_statutes}
+        for k in after_expand_keys - before_expand_keys:
+            refined_origin_map.setdefault(k, set()).add("cross_ref")
+        if len(refined_statutes) > before_expand:
+            self._log(
+                f"➕ Added {len(refined_statutes) - before_expand} statutes via cross-ref (refinement)",
+                "info",
+            )
+        self._log_final_statute_origins(
+            refined_statutes,
+            refined_origin_map,
+            label="Reasoner KB (refined)",
+        )
+
+        allowed_statutes = [
+            f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
+            for s in refined_statutes
+        ]
+        allowed_precedents = [
+            p.get("title", "Untitled") for p in pre_retrieved_precedents
+        ]
+        knowledge_base = self._format_context_for_prompt(
+            refined_statutes, pre_retrieved_precedents
+        )
+        anchor_text = self._format_anchor_norms(anchor_norms)
+        principle_text = self._format_principle_tests(principle_tests)
+
+        try:
+            raw_output_refined, iterative_chain = self._generate_chain_iteratively(
+                claim=claim,
+                routing_decision=routing_decision,
+                anchor_text=anchor_text,
+                principle_text=principle_text,
+                knowledge_base=knowledge_base,
+                allowed_statutes=allowed_statutes,
+                allowed_precedents=allowed_precedents,
+                stream_callback=None,
+            )
+        except Exception as exc:
+            self._log(
+                f"⚠️ Reasoner post-hoc anchor refinement failed during regeneration: {exc}",
+                "warning",
+            )
+            return None
+
+        conclusion_refined = (
+            self._generate_conclusion(claim, iterative_chain, stream_callback=None)
+            if iterative_chain
+            else ""
+        )
+        if conclusion_refined:
+            raw_output_refined = self._assemble_raw_response(
+                claim, iterative_chain, conclusion_text=conclusion_refined
+            )
+
+        reasoning_chain_refined = (
+            iterative_chain
+            if iterative_chain
+            else self._extract_reasoning_chain(raw_output_refined)
+        )
+        reasoning_chain_refined = self._sanitize_reasoning_chain(
+            reasoning_chain_refined, pre_retrieved_precedents
+        )
+        if not reasoning_chain_refined:
+            self._log(
+                "⚠️ Reasoner post-hoc anchor refinement produced empty reasoning chain; keeping original",
+                "warning",
+            )
+            return None
+
+        arguments_refined = self._extract_arguments(raw_output_refined)
+        return {
+            "raw_output": raw_output_refined,
+            "reasoning_chain": reasoning_chain_refined,
+            "conclusion": conclusion_refined,
+            "arguments": arguments_refined,
+            "deduped_statutes": refined_statutes,
+            "statute_origin_map": refined_origin_map,
+        }
 
     def _generate_chain_iteratively(
         self,

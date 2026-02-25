@@ -29,7 +29,7 @@ from .citation_utils import (
 )
 from .router import RoutingDecision
 from .tools import config_loader
-from .tools.neo4j_tools import get_statute_by_article_tool
+from .tools.neo4j_tools import get_legal_search_pipeline, get_statute_by_article_tool
 from .tools.prompt_registry import get_prompt, render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
@@ -1296,13 +1296,7 @@ class CounterReasoner(BaseAgent):
         )
 
         try:
-            from services.legal_search import LegalSearchPipeline
-        except Exception as exc:
-            self._log(f"⚠️ Counter second-pass unavailable: {exc}", "warning")
-            return []
-
-        try:
-            pipe = LegalSearchPipeline()
+            pipe = get_legal_search_pipeline()
         except Exception as exc:
             self._log(f"⚠️ Counter second-pass init failed: {exc}", "warning")
             return []
@@ -1321,7 +1315,8 @@ class CounterReasoner(BaseAgent):
                 if (s.get("statute_id") or "").strip()
             }
 
-            for query_text in queries:
+            legal_context = self._extract_legal_context(claim)
+            for q_idx, query_text in enumerate(queries, start=1):
                 embedding = pipe.embed_text(query_text)
                 articles = pipe.vector_search(
                     embedding=embedding,
@@ -1329,18 +1324,98 @@ class CounterReasoner(BaseAgent):
                     top_k=max(1, settings.counter_second_pass_top_k),
                     query_text=query_text,
                 )
-                articles = pipe.expand_with_cited_articles(articles)
+                article_by_id = {
+                    (a.statute_id or "").strip(): a
+                    for a in articles
+                    if (a.statute_id or "").strip()
+                }
+                direct_candidates = []
                 for article in articles:
                     statute_id = (article.statute_id or "").strip()
-                    if not statute_id or statute_id in existing_ids:
+                    if (
+                        not statute_id
+                        or statute_id in existing_ids
+                        or statute_id in boosted_by_id
+                    ):
+                        continue
+                    payload = self._article_result_to_dict(article)
+                    payload["_score"] = float(article.score)
+                    direct_candidates.append(payload)
+
+                if not direct_candidates:
+                    continue
+
+                direct_kept = self.filter_irrelevant_statutes(claim, direct_candidates)
+                direct_kept = self.filter_applicable_statutes(
+                    claim,
+                    direct_kept,
+                    legal_context,
+                    cache_scope="counter_second_pass:direct",
+                )
+
+                for item in direct_kept:
+                    statute_id = (item.get("statute_id") or "").strip()
+                    if not statute_id:
                         continue
                     current = boosted_by_id.get(statute_id)
-                    if current is None or float(article.score) > float(
+                    if current is None or float(item.get("_score", 0.0)) > float(
                         current.get("_score", 0.0)
                     ):
+                        boosted_by_id[statute_id] = item
+
+                seed_articles = [
+                    article_by_id[(s.get("statute_id") or "").strip()]
+                    for s in direct_kept
+                    if (s.get("statute_id") or "").strip() in article_by_id
+                ]
+                cites_kept_count = 0
+                if seed_articles:
+                    expanded_articles = pipe.expand_with_cited_articles(seed_articles)
+                    seed_ids = {
+                        (a.statute_id or "").strip()
+                        for a in seed_articles
+                        if a.statute_id
+                    }
+                    cites_candidates = []
+                    for article in expanded_articles:
+                        statute_id = (article.statute_id or "").strip()
+                        if (
+                            not statute_id
+                            or statute_id in seed_ids
+                            or statute_id in existing_ids
+                            or statute_id in boosted_by_id
+                        ):
+                            continue
                         payload = self._article_result_to_dict(article)
                         payload["_score"] = float(article.score)
-                        boosted_by_id[statute_id] = payload
+                        cites_candidates.append(payload)
+                    if cites_candidates:
+                        cites_kept = self.filter_irrelevant_statutes(
+                            claim, cites_candidates
+                        )
+                        cites_kept = self.filter_applicable_statutes(
+                            claim,
+                            cites_kept,
+                            legal_context,
+                            cache_scope="counter_second_pass:cites",
+                        )
+                        cites_kept_count = len(cites_kept)
+                        for item in cites_kept:
+                            statute_id = (item.get("statute_id") or "").strip()
+                            if not statute_id:
+                                continue
+                            current = boosted_by_id.get(statute_id)
+                            if current is None or float(
+                                item.get("_score", 0.0)
+                            ) > float(current.get("_score", 0.0)):
+                                boosted_by_id[statute_id] = item
+
+                self._log(
+                    "📎 Counter second-pass query "
+                    f"{q_idx}/{len(queries)}: direct_kept={len(direct_kept)}, "
+                    f"cites_kept={cites_kept_count}",
+                    "info",
+                )
 
             boosted = sorted(
                 boosted_by_id.values(),
@@ -1353,10 +1428,6 @@ class CounterReasoner(BaseAgent):
 
             if not boosted:
                 return []
-
-            legal_context = self._extract_legal_context(claim)
-            boosted = self.filter_irrelevant_statutes(claim, boosted)
-            boosted = self.filter_applicable_statutes(claim, boosted, legal_context)
 
             self._log(
                 f"✅ Counter second-pass: {len(boosted)} articoli aggiuntivi kept",

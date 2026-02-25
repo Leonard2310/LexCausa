@@ -166,7 +166,7 @@ Respond with EXACTLY one short line and no extra text.""",
     PromptKey.BASE_FILTER_APPLICABLE_STATUTES: """Legal Situation:
 "[[claim]]"
 
-Legal Context: [[legal_context]]
+Legal Context: [[legal_context]][[taxonomy_role_block]]
 
 Statute:
 "[[article_number]] - [[article_title]]"

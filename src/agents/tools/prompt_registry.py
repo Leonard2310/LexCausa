@@ -36,17 +36,20 @@ class PromptKey(StrEnum):
     REASONER_SUPPORT_STEP = "reasoner.support_step"
     REASONER_SUPPORT_PLAN_REWRITE = "reasoner.support_plan_rewrite"
     REASONER_SEMANTIC_REDUNDANCY = "reasoner.semantic_redundancy"
-    REASONER_SUPPORT_CONCLUSION_REWRITE = "reasoner.support_conclusion_rewrite"
     REASONER_GENERATE_CONCLUSION = "reasoner.generate_conclusion"
     REASONER_REASONING_WITH_CONTEXT = "reasoner.reasoning_with_context"
     COUNTER_REASONER_SYSTEM = "counter_reasoner.system"
     COUNTER_REASONER_PICK_ATTACKS = "counter_reasoner.pick_attacks"
     COUNTER_REASONER_OPEN_ATTACKS = "counter_reasoner.open_attacks"
+    COUNTER_REASONER_TARGET_MAP = "counter_reasoner.target_map"
     COUNTER_REASONER_GENERATE_PLAN = "counter_reasoner.generate_plan"
+    COUNTER_REASONER_PLAN_TARGET_ALIGNMENT = "counter_reasoner.plan_target_alignment"
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
     COUNTER_REASONER_SEMANTIC_REDUNDANCY = "counter_reasoner.semantic_redundancy"
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
     COUNTER_REASONER_ATTACK_FEASIBILITY = "counter_reasoner.attack_feasibility"
+    COUNTER_REASONER_ATTACK_COMPATIBILITY = "counter_reasoner.attack_compatibility"
+    COUNTER_REASONER_ATTACK_PRECONDITION_CHECK = "counter_reasoner.attack_precondition_check"
     COUNTER_REASONER_STEP_OPPOSITION_CHECK = "counter_reasoner.step_opposition_check"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
     COUNTER_REASONER_NO_NEW_FACTS = "counter_reasoner.no_new_facts"
@@ -502,27 +505,6 @@ Rule:
 
 Answer with EXACTLY one word: NEW or REPEAT.
 """,
-    PromptKey.REASONER_SUPPORT_CONCLUSION_REWRITE: """You are an expert Italian jurist. Rewrite the conclusion below so it is strictly consistent with the reasoning chain.
-
-CLAIM:
-"[[claim]]"
-
-REASONING CHAIN:
-[[chain_text]]
-
-CITED NORMS: [[norms_text]]
-
-INVALID CONCLUSION TO REWRITE:
-"[[invalid_conclusion]]"
-
-RULES:
-- Keep it in Italian.
-- 2-4 sentences max.
-- Must clearly synthesize the legal assessment emerging from the chain.
-- It may conclude in favor of or against liability/right depending on the chain, but it must not contradict the chain.
-- Do not add facts or norms outside the chain.
-
-CONCLUSION:""",
     PromptKey.REASONER_GENERATE_CONCLUSION: """You are an expert Italian jurist. Based on the legal reasoning chain below, generate a concise and precise CONCLUSION.
 
 ORIGINAL CLAIM:
@@ -682,6 +664,33 @@ Return ONLY JSON in this exact format:
   ]
 }
 """,
+    PromptKey.COUNTER_REASONER_TARGET_MAP: """You are extracting the valid legal attack surface for a Counter-Reasoner.
+
+CLAIM:
+[[claim]]
+
+REASONER CONCLUSION:
+[[reasoner_conclusion]]
+
+Return ONLY JSON:
+{
+  "allowed_targets": [
+    "short legal point that can be contested/limited without inventing facts"
+  ],
+  "forbidden_assumptions": [
+    "short statement of factual assumptions that are not explicit in the claim"
+  ],
+  "priority_targets": [
+    "highest-value legal target 1",
+    "highest-value legal target 2"
+  ]
+}
+
+Rules:
+- allowed_targets must be legal-inferential targets (qualification, proof threshold, cumulo limits, proportionality, quantification, aggravants/attenuants, etc.).
+- forbidden_assumptions must include hypothetical factual completions not in claim.
+- Do not output prose or markdown.
+""",
     PromptKey.COUNTER_REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian counter-argumentation.
 
 Create a step-by-step plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
@@ -704,6 +713,10 @@ Return ONLY valid JSON (no markdown, no prose) with this schema:
 CLAIM:
 "[[claim]]"
 [[reasoner_block]]
+CLAIM FACT ANCHORS (use only these factual premises):
+[[claim_facts]]
+TARGET MAP (counter scope):
+[[target_map]]
 DOMAIN: [[routing_domain]]
 CAUSAL TYPE: [[causal_type_id]]
 THEORY: [[theory_id]]
@@ -729,6 +742,10 @@ RULES:
 - Number of steps must be between [[min_steps]] and [[max_steps]].
 - Each step must be materially different (no overlap/rephrasing).
 - Steps must function as counter-argument steps (they must weaken the primary thesis / Reasoner conclusion).
+- Steps must stay within TARGET MAP allowed_targets.
+- Steps must avoid TARGET MAP forbidden_assumptions.
+- Treat Reasoner conclusion as a thesis-to-attack, NOT as a source of additional facts.
+- Never use factual details from Reasoner conclusion unless they are also present in CLAIM FACT ANCHORS.
 - Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
 - Never introduce hypothetical external events not in claim (e.g., mechanical failure, weather conditions, third-party interventions) as if they were case facts.
 - For causal-alternative attacks, contest certainty/weight/completeness of the existing evidence or legal imputability; do NOT fabricate alternative factual scenarios.
@@ -744,12 +761,38 @@ RULES:
 - If ALREADY ACCEPTED COUNTER STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
 """,
+    PromptKey.COUNTER_REASONER_PLAN_TARGET_ALIGNMENT: """You are checking whether a planned counter step is in-scope.
+
+CLAIM:
+[[claim]]
+
+REASONER CONCLUSION:
+[[reasoner_conclusion]]
+
+TARGET MAP:
+[[target_map]]
+
+PLANNED GOAL:
+[[plan_goal]]
+
+PLANNED FOCUS:
+[[plan_focus]]
+
+Task:
+- ALIGNED: step fits allowed_targets and does not imply forbidden_assumptions.
+- OFF_TARGET: step is outside allowed_targets or implies forbidden_assumptions.
+- UNCLEAR: not enough signal.
+
+Answer with EXACTLY one word: ALIGNED or OFF_TARGET or UNCLEAR.
+""",
     PromptKey.COUNTER_REASONER_STEP_PROMPT: """You are an expert Italian jurist.
 You must execute ONLY one planned COUNTER step.
 
 CLAIM:
 "[[claim]]"
 [[reasoner_block]]
+CLAIM FACT ANCHORS (fixed facts, do not alter):
+[[claim_facts]]
 DOMAIN: [[routing_domain]]
 CAUSAL TYPE: [[causal_type_id]]
 THEORY: [[theory_id]]
@@ -785,6 +828,8 @@ HARD RULES:
 - It must advance the plan and add NEW information, not paraphrase prior steps.
 - It must realize the declared novelty key by adding a distinct counter-argument point.
 - It must function as a counter-step (weakening or challenging the primary thesis / Reasoner conclusion).
+- Treat Reasoner conclusion as a thesis-to-attack, NOT as a source of additional facts.
+- Never import factual details from Reasoner conclusion unless they are explicitly present in CLAIM FACT ANCHORS.
 - Never invent facts outside claim.
 - Never assume or complete missing factual details beyond what is explicitly stated in the claim.
 - Never introduce hypothetical external events (e.g., mechanical failures, weather events, unknown third-party causes) unless explicitly stated in the claim.
@@ -871,6 +916,46 @@ Labels:
 
 Answer with EXACTLY one word: FEASIBLE or LOW_FEASIBILITY or INFEASIBLE.
 """,
+    PromptKey.COUNTER_REASONER_ATTACK_COMPATIBILITY: """You are evaluating semantic compatibility between a legal claim and a counter-attack strategy.
+
+CLAIM:
+[[claim]]
+
+ATTACK ID:
+[[attack_id]]
+
+ATTACK DESCRIPTION:
+[[attack_desc]]
+
+Task:
+- COMPATIBLE: attack naturally fits the legal institutes/factual frame of the claim.
+- WEAK: attack is only partially suitable; it might work but with limited strength.
+- MISMATCH: attack targets institutes/facts that are not present in the claim context.
+
+Rules:
+- Focus on legal-semantic fit, not lexical overlap.
+- If uncertain, prefer WEAK.
+
+Answer with EXACTLY one word: COMPATIBLE or WEAK or MISMATCH.
+""",
+    PromptKey.COUNTER_REASONER_ATTACK_PRECONDITION_CHECK: """You are checking whether an attack precondition is satisfied.
+
+CLAIM:
+[[claim]]
+
+REASONER CONCLUSION:
+[[reasoner_conclusion]]
+
+PRECONDITION:
+[[precondition]]
+
+Task:
+- SATISFIED: precondition is clearly supported by the case context.
+- UNSATISFIED: precondition is clearly not supported.
+- UNCLEAR: not enough signal.
+
+Answer with EXACTLY one word: SATISFIED or UNSATISFIED or UNCLEAR.
+""",
     PromptKey.COUNTER_REASONER_STEP_OPPOSITION_CHECK: """You are checking whether a counter-argument step actually opposes the primary legal thesis.
 
 CLAIM:
@@ -920,10 +1005,11 @@ Decide whether the candidate step introduces NEW FACTUAL ALLEGATIONS that are no
 Important:
 - Legal interpretations, normative qualifications, and evidentiary criticism are allowed.
 - It is NOT allowed to add hypothetical events/causes/conditions as case facts.
+- If the step only derives legal consequences from existing facts (without adding new events), classify it as LEGAL_INFERENCE.
 - If a factual element is merely possible but not in the claim, this counts as ADDS_FACTS.
 - If doubtful, prefer GROUNDED unless there is a clear added factual allegation.
 
-Answer with EXACTLY one word: GROUNDED or ADDS_FACTS.
+Answer with EXACTLY one word: GROUNDED or LEGAL_INFERENCE or ADDS_FACTS.
 """,
     # ---------------------------------------------------------------------
     # AQA / NLP / Polisher

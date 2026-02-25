@@ -2214,8 +2214,6 @@ class Reasoner(BaseAgent):
             return False, "empty step"
         if self._is_garbage_text(text):
             return False, "garbage output"
-        if not self._is_support_step_consistent(text):
-            return False, "reasoning inconsistency"
         facts_ok, facts_reason = self._is_step_fact_consistent_with_claim(
             claim=claim,
             candidate_step=text,
@@ -2391,27 +2389,6 @@ class Reasoner(BaseAgent):
 
         return step_text
 
-    def _build_support_conclusion_rewrite_prompt(
-        self, claim: str, chain_text: str, norms_text: str, invalid_conclusion: str
-    ) -> str:
-        """Force a concise conclusion aligned with the reasoning chain."""
-        return render_prompt(
-            "reasoner.support_conclusion_rewrite",
-            claim=claim,
-            chain_text=chain_text,
-            norms_text=norms_text,
-            invalid_conclusion=invalid_conclusion,
-        )
-
-    def _is_support_step_consistent(self, step_text: str) -> bool:
-        """
-        Lightweight guardrail against self-contradictory legal reasoning text.
-
-        This intentionally does NOT enforce a pro/anti orientation on the claim.
-        It only rejects obvious internal contradictions inside a single step.
-        """
-        return self._is_step_self_consistent(step_text)
-
     def _is_support_step_compatible_with_history(
         self,
         *,
@@ -2494,60 +2471,17 @@ class Reasoner(BaseAgent):
                 flags=re.IGNORECASE,
             ).strip()
             if conclusion:
-                if not self._is_support_step_consistent(conclusion):
+                facts_ok, _ = self._is_step_fact_consistent_with_claim(
+                    claim=claim,
+                    candidate_step=conclusion,
+                    actor_label="Reasoner",
+                )
+                if not facts_ok:
                     self._log(
-                        "Warning: LLM conclusion appears internally inconsistent; trying rewrite (non-blocking)",
+                        "Warning: LLM conclusion contradicts explicit claim facts; using fallback",
                         "warning",
                     )
-                    original_conclusion = conclusion
-                    rewrite_prompt = self._build_support_conclusion_rewrite_prompt(
-                        claim=claim,
-                        chain_text=chain_text,
-                        norms_text=norms_text,
-                        invalid_conclusion=conclusion,
-                    )
-                    try:
-                        rewrite_resp = self._resilient_llm_invoke(
-                            [HumanMessage(content=rewrite_prompt)]
-                        )
-                        rewritten = (rewrite_resp.content or "").strip()
-                        rewritten = re.sub(
-                            r"^(?:CONCLUSIONE|CONCLUSION)\s*:\s*",
-                            "",
-                            rewritten,
-                            flags=re.IGNORECASE,
-                        ).strip()
-                        if rewritten:
-                            conclusion = rewritten
-                            if not self._is_support_step_consistent(conclusion):
-                                self._log(
-                                    "Warning: rewritten conclusion is still internally inconsistent; keeping rewritten anyway (fact-lock enforced)",
-                                    "warning",
-                                )
-                        else:
-                            self._log(
-                                "Warning: rewritten conclusion is empty; keeping original conclusion",
-                                "warning",
-                            )
-                            conclusion = original_conclusion
-                    except Exception as rewrite_exc:
-                        self._log(
-                            f"Warning: conclusion rewrite failed: {rewrite_exc}; keeping original conclusion",
-                            "warning",
-                        )
-                        conclusion = original_conclusion
-                if conclusion:
-                    facts_ok, _ = self._is_step_fact_consistent_with_claim(
-                        claim=claim,
-                        candidate_step=conclusion,
-                        actor_label="Reasoner",
-                    )
-                    if not facts_ok:
-                        self._log(
-                            "Warning: LLM conclusion contradicts explicit claim facts; using fallback",
-                            "warning",
-                        )
-                        conclusion = ""
+                    conclusion = ""
                 if conclusion:
                     self._log(f"LLM-generated conclusion: {conclusion[:120]}...")
                     return conclusion
@@ -2587,11 +2521,6 @@ class Reasoner(BaseAgent):
         norms_text = "\n".join(f"- {n}" for n in norms) if norms else "N/D"
 
         if conclusion_text:
-            if not self._is_support_step_consistent(conclusion_text):
-                self._log(
-                    "Warning: provided conclusion appears internally inconsistent (non-blocking); enforcing only fact-lock",
-                    "warning",
-                )
             facts_ok, _ = self._is_step_fact_consistent_with_claim(
                 claim=claim,
                 candidate_step=conclusion_text,

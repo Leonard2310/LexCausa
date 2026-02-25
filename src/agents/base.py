@@ -283,60 +283,6 @@ class BaseAgent(ABC):
                 return True
         return False
 
-    @staticmethod
-    def _split_reasoning_clauses(step_text: str) -> list[str]:
-        """Split a step into comparable clauses for semantic self-consistency checks."""
-        text = re.sub(r"\s+", " ", (step_text or "").strip())
-        if not text:
-            return []
-        sentences = re.split(r"(?<=[.!?;])\s+", text)
-        clauses: list[str] = []
-        for sentence in sentences:
-            sentence = sentence.strip(" -")
-            if not sentence:
-                continue
-            parts = re.split(
-                r"\b(?:ma|tuttavia|per[oò]|invece|al contrario|nondimeno)\b",
-                sentence,
-                flags=re.IGNORECASE,
-            )
-            for part in parts:
-                chunk = part.strip(" ,.-")
-                if len(chunk) >= 20:
-                    clauses.append(chunk)
-        return clauses
-
-    def _is_step_self_consistent(self, step_text: str) -> bool:
-        """Reject internal contradictions using semantic (NLI) checks across clauses."""
-        text = re.sub(r"\s+", " ", (step_text or "").strip())
-        if not text:
-            return False
-
-        clauses = self._split_reasoning_clauses(text)
-        if len(clauses) < 2:
-            return True
-
-        clauses = clauses[:5]  # keep latency bounded
-        for i in range(len(clauses)):
-            for j in range(i + 1, len(clauses)):
-                a = clauses[i]
-                b = clauses[j]
-                rel_ab = self._nli_relation(
-                    target_text=a,
-                    attacker_text=b,
-                    actor_label="BaseAgent",
-                )
-                if rel_ab != "contradiction":
-                    continue
-                rel_ba = self._nli_relation(
-                    target_text=b,
-                    attacker_text=a,
-                    actor_label="BaseAgent",
-                )
-                if rel_ba == "contradiction":
-                    return False
-        return True
-
     def _is_step_fact_consistent_with_claim(
         self,
         *,

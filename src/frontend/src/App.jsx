@@ -63,6 +63,15 @@ const sourceShortLabel = (source) => {
 
 const createLivePipelineResult = (claim) => ({
   claim,
+  retrieval_context: {
+    statutes: [],
+    precedents: [],
+    memory: {
+      enabled: false,
+      overwrite: false,
+      hit: false,
+    },
+  },
   reasoner: {
     raw_response: '',
     statutes: [],
@@ -802,6 +811,18 @@ export default function App() {
               _stream: {
                 ...(prev?._stream || {}),
                 reasoner_refinement_active: false,
+              },
+            }));
+            continue;
+          }
+
+          if (eventName === 'retrieval_context') {
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              retrieval_context: payload || {
+                statutes: [],
+                precedents: [],
+                memory: {},
               },
             }));
             continue;
@@ -2960,6 +2981,62 @@ export default function App() {
                             </div>
                           );
                         })}
+                      </div>
+                    </div>
+                  )}
+
+                  {(pipelineResult.retrieval_context?.statutes?.length > 0
+                    || pipelineResult.retrieval_context?.precedents?.length > 0) && (
+                    <div className="result-section pipeline-section">
+                      <h3 className="section-header">
+                        <CheckCircle2 size={20} style={{ color: '#64748b' }} />
+                        Contesto Pre-retrieval
+                      </h3>
+                      <div className="subsection">
+                        <h4>
+                          Knowledge Base condivisa
+                          {pipelineResult.retrieval_context?.memory?.enabled && (
+                            <span style={{ marginLeft: 8, fontWeight: 500, opacity: 0.85 }}>
+                              {pipelineResult.retrieval_context?.memory?.hit
+                                ? '(da memoria cache)'
+                                : '(da retrieval live)'}
+                            </span>
+                          )}
+                        </h4>
+                        {pipelineResult.retrieval_context?.statutes?.length > 0 && (
+                          <>
+                            <p style={{ marginTop: 0, marginBottom: 8, opacity: 0.85 }}>
+                              Articoli ({pipelineResult.retrieval_context.statutes.length})
+                            </p>
+                            <CollapsibleList
+                              items={pipelineResult.retrieval_context.statutes}
+                              limit={5}
+                              renderItem={(art, idx) => (
+                                <li key={`ctx-stat-${idx}`}>
+                                  <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
+                                  {art.source && ` (${sourceShortLabel(art.source)})`}
+                                  {art.titolo && ` - ${art.titolo}`}
+                                </li>
+                              )}
+                            />
+                          </>
+                        )}
+                        {pipelineResult.retrieval_context?.precedents?.length > 0 && (
+                          <>
+                            <p style={{ marginTop: 12, marginBottom: 8, opacity: 0.85 }}>
+                              Precedenti ({pipelineResult.retrieval_context.precedents.length})
+                            </p>
+                            <CollapsibleList
+                              items={pipelineResult.retrieval_context.precedents}
+                              limit={5}
+                              renderItem={(prec, idx) => (
+                                <li key={`ctx-pr-${idx}`}>
+                                  <strong>{idx + 1}. {prec.title || `Precedente ${idx + 1}`}</strong>
+                                </li>
+                              )}
+                            />
+                          </>
+                        )}
                       </div>
                     </div>
                   )}

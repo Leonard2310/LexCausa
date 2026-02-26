@@ -255,6 +255,42 @@ def _articles_to_dicts(articles) -> list[dict]:
     ]
 
 
+def _log_claim_context_items(
+    *,
+    claim: str,
+    statutes: list[dict],
+    precedents: list[dict],
+    source_label: str,
+) -> None:
+    """Print a compact summary of claim-context items (e.g., cache HIT contents)."""
+    print(f"💾 [Retrieval] Claim-context items ({source_label}) for claim:")
+    print(f"   - {claim[:160]}{'...' if len(claim) > 160 else ''}")
+    if statutes:
+        print(f"   - Statutes ({len(statutes)}):")
+        for idx, art in enumerate(statutes, start=1):
+            articolo = art.get("articolo") or art.get("statute_id") or "?"
+            titolo = art.get("titolo") or ""
+            source = art.get("source") or ""
+            source_suffix = f" ({source})" if source else ""
+            title_suffix = f" - {titolo}" if titolo else ""
+            print(f"     [{idx}] Art. {articolo}{source_suffix}{title_suffix}")
+    else:
+        print("   - Statutes: none")
+
+    if precedents:
+        print(f"   - Precedents ({len(precedents)}):")
+        for idx, pr in enumerate(precedents, start=1):
+            title = (
+                pr.get("title")
+                or pr.get("titolo")
+                or pr.get("name")
+                or f"Precedent {idx}"
+            )
+            print(f"     [{idx}] {title}")
+    else:
+        print("   - Precedents: none")
+
+
 def _article_with_retrieval_debug(art) -> dict:
     """Serialize an ArticleResult including hybrid retrieval score breakdown."""
     breakdown = art.score_debug or {}
@@ -366,6 +402,7 @@ def prepare_claim_context(
     claim_context_memory_overwrite: bool = False,
     progress_callback=None,
     cancel_checker=None,
+    result_metadata: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Pre-retrieve statutes and precedents before reasoning.
 
@@ -388,6 +425,11 @@ def prepare_claim_context(
     memory_overwrite = bool(claim_context_memory_overwrite)
     if memory_overwrite and not memory_enabled:
         memory_enabled = True
+    if isinstance(result_metadata, dict):
+        result_metadata.clear()
+        result_metadata["memory_enabled"] = memory_enabled
+        result_metadata["memory_overwrite"] = memory_overwrite
+        result_metadata["memory_hit"] = False
 
     print(
         f"🔎 Pre-retrieval config: top_k_statutes={max_statutes}, "
@@ -427,6 +469,15 @@ def prepare_claim_context(
                 "💾 [Retrieval] Claim-context memory HIT: "
                 f"{len(cached_statutes)} statutes, {len(cached_precedents)} precedents"
             )
+            _log_claim_context_items(
+                claim=claim,
+                statutes=cached_statutes,
+                precedents=cached_precedents,
+                source_label="cache HIT",
+            )
+            if isinstance(result_metadata, dict):
+                result_metadata["memory_enabled"] = True
+                result_metadata["memory_hit"] = True
             progress_callback("Memoria contesto claim: cache hit", 66)
             return cached_statutes, cached_precedents
 
@@ -685,6 +736,9 @@ def prepare_claim_context(
                 f"{len(statutes)} statutes, {len(precedents)} precedents "
                 f"(key={cache_key[:10]}...)"
             )
+            if isinstance(result_metadata, dict):
+                result_metadata["memory_saved"] = True
+                result_metadata["cache_key"] = cache_key
         except Exception as e:
             print(f"⚠️ [Retrieval] Claim-context memory save failed: {e}")
 
@@ -1223,6 +1277,7 @@ def _run_full_pipeline(
         def _emit_context_detail(detail: str, progress: int) -> None:
             _emit_phase("context_setup", "active", progress, detail)
 
+        retrieval_context_meta: dict = {}
         statutes, precedents = prepare_claim_context(
             claim=claim,
             include_precedents=include_precedents,
@@ -1232,8 +1287,21 @@ def _run_full_pipeline(
             claim_context_memory_overwrite=claim_memory_overwrite,
             progress_callback=_emit_context_detail,
             cancel_checker=_is_cancel_requested,
+            result_metadata=retrieval_context_meta,
         )
         _check_cancel()
+        _emit_progress(
+            "retrieval_context",
+            {
+                "statutes": _clone_context_items(statutes),
+                "precedents": _clone_context_items(precedents),
+                "memory": {
+                    "enabled": bool(retrieval_context_meta.get("memory_enabled")),
+                    "overwrite": bool(retrieval_context_meta.get("memory_overwrite")),
+                    "hit": bool(retrieval_context_meta.get("memory_hit")),
+                },
+            },
+        )
         _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
         reasoner_statutes = _clone_context_items(statutes)
         counter_statutes = _clone_context_items(statutes)
@@ -1495,6 +1563,15 @@ def _run_full_pipeline(
     _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
     return {
         "claim": claim,
+        "retrieval_context": {
+            "statutes": _clone_context_items(statutes),
+            "precedents": _clone_context_items(precedents),
+            "memory": {
+                "enabled": bool(retrieval_context_meta.get("memory_enabled")),
+                "overwrite": bool(retrieval_context_meta.get("memory_overwrite")),
+                "hit": bool(retrieval_context_meta.get("memory_hit")),
+            },
+        },
         "routing": routing_decision.to_dict(),
         "final_routing": final_routing_decision.to_dict(),
         "reasoner": reasoner_result.to_dict(),

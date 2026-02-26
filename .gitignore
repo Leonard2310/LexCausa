@@ -63,6 +63,8 @@ celerybeat.pid
 src/data/embeddings/
 src/data/old/
 claims.md
+new
+old_claims.md
 claims_gold_labels.json
 
 # DoE artifacts

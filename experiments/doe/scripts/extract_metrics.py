@@ -13,7 +13,6 @@ from typing import Any
 
 import pandas as pd
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PLAN = PROJECT_ROOT / "experiments" / "doe" / "run_plan.csv"
 
@@ -67,7 +66,7 @@ def count_repair_failed(report: dict[str, Any]) -> int:
 
 
 def safe_div(n: float | int | None, d: float | int | None) -> float | None:
-    if n is None or d in (None, 0):
+    if n is None or d is None or d == 0:
         return None
     return float(n) / float(d)
 
@@ -117,9 +116,13 @@ def extract_row_metrics(row: dict[str, str], payload: dict[str, Any]) -> dict[st
         "contra_cogency_avg": as_float(chain_contra.get("cogency_avg")),
         "contra_semantics_avg": as_float(chain_contra.get("semantics_avg")),
         "contra_norm_support_avg": as_float(chain_contra.get("norm_support_avg")),
-        "reasoner_consistency_score": as_float(reasoner_report.get("consistency_score")),
+        "reasoner_consistency_score": as_float(
+            reasoner_report.get("consistency_score")
+        ),
         "counter_consistency_score": as_float(counter_report.get("consistency_score")),
-        "reasoner_repaired_citations": as_int(reasoner_report.get("repaired_citations")),
+        "reasoner_repaired_citations": as_int(
+            reasoner_report.get("repaired_citations")
+        ),
         "counter_repaired_citations": as_int(counter_report.get("repaired_citations")),
         "reasoner_dropped_citations": as_int(reasoner_report.get("dropped_citations")),
         "counter_dropped_citations": as_int(counter_report.get("dropped_citations")),
@@ -182,8 +185,7 @@ def build_paired_deltas(metrics_df: pd.DataFrame) -> pd.DataFrame:
             "counter_consistency_A": a.get("counter_consistency_score"),
             "counter_consistency_B": b.get("counter_consistency_score"),
             "delta_counter_consistency": (
-                b.get("counter_consistency_score")
-                - a.get("counter_consistency_score")
+                b.get("counter_consistency_score") - a.get("counter_consistency_score")
                 if pd.notna(a.get("counter_consistency_score"))
                 and pd.notna(b.get("counter_consistency_score"))
                 else None
@@ -191,8 +193,7 @@ def build_paired_deltas(metrics_df: pd.DataFrame) -> pd.DataFrame:
             "reasoner_repair_fail_rate_A": a.get("reasoner_repair_fail_rate"),
             "reasoner_repair_fail_rate_B": b.get("reasoner_repair_fail_rate"),
             "delta_reasoner_repair_fail_rate": (
-                b.get("reasoner_repair_fail_rate")
-                - a.get("reasoner_repair_fail_rate")
+                b.get("reasoner_repair_fail_rate") - a.get("reasoner_repair_fail_rate")
                 if pd.notna(a.get("reasoner_repair_fail_rate"))
                 and pd.notna(b.get("reasoner_repair_fail_rate"))
                 else None
@@ -200,8 +201,7 @@ def build_paired_deltas(metrics_df: pd.DataFrame) -> pd.DataFrame:
             "counter_repair_fail_rate_A": a.get("counter_repair_fail_rate"),
             "counter_repair_fail_rate_B": b.get("counter_repair_fail_rate"),
             "delta_counter_repair_fail_rate": (
-                b.get("counter_repair_fail_rate")
-                - a.get("counter_repair_fail_rate")
+                b.get("counter_repair_fail_rate") - a.get("counter_repair_fail_rate")
                 if pd.notna(a.get("counter_repair_fail_rate"))
                 and pd.notna(b.get("counter_repair_fail_rate"))
                 else None
@@ -280,7 +280,7 @@ def main() -> None:
     metrics_df.to_csv(metrics_csv, index=False, encoding="utf-8")
     metrics_df.to_parquet(metrics_parquet, index=False)
 
-    paired_df = build_paired_deltas(metrics_df[metrics_df["raw_missing"] == False])  # noqa: E712
+    paired_df = build_paired_deltas(metrics_df[metrics_df["raw_missing"].eq(False)])
     paired_csv = args.out / "paired_deltas.csv"
     paired_df.to_csv(paired_csv, index=False, encoding="utf-8")
 

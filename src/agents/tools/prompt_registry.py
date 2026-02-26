@@ -49,7 +49,9 @@ class PromptKey(StrEnum):
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
     COUNTER_REASONER_ATTACK_FEASIBILITY = "counter_reasoner.attack_feasibility"
     COUNTER_REASONER_ATTACK_COMPATIBILITY = "counter_reasoner.attack_compatibility"
-    COUNTER_REASONER_ATTACK_PRECONDITION_CHECK = "counter_reasoner.attack_precondition_check"
+    COUNTER_REASONER_ATTACK_PRECONDITION_CHECK = (
+        "counter_reasoner.attack_precondition_check"
+    )
     COUNTER_REASONER_STEP_OPPOSITION_CHECK = "counter_reasoner.step_opposition_check"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
     COUNTER_REASONER_NO_NEW_FACTS = "counter_reasoner.no_new_facts"

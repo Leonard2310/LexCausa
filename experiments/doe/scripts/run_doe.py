@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PLAN = PROJECT_ROOT / "experiments" / "doe" / "run_plan.csv"
 DEFAULT_CONFIG = PROJECT_ROOT / "experiments" / "doe" / "doe_settings.json"

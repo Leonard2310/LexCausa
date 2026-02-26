@@ -556,6 +556,67 @@ class ConsistencyMixin:
             # In case of error, assume pertinent to be conservative (repair > drop)
             return True
 
+    def _pre_repair_statute_relevance_gate(
+        self,
+        *,
+        claim: str,
+        full_text: str,
+        article_num: str,
+        citation: str,
+        cited_text: str,
+        db_text: str,
+    ) -> tuple[bool, str]:
+        """
+        Relevance gate executed BEFORE any textual repair/drop workflow.
+
+        Returns:
+            (is_relevant, label) where label is one of:
+            - RELEVANT
+            - IRRELEVANT
+            - UNCERTAIN_KEEP (on checker failures)
+        """
+        cache: dict[tuple[str, str, str], tuple[bool, str]] = getattr(
+            self, "_statute_relevance_gate_cache", {}
+        )
+        if not hasattr(self, "_statute_relevance_gate_cache"):
+            self._statute_relevance_gate_cache = cache
+
+        claim_sig = self._normalize_text_for_match(claim or "")[:220]
+        evidence = (cited_text or citation or "").strip()
+        if not evidence and db_text:
+            evidence = db_text[:220]
+        evidence_sig = self._normalize_text_for_match(evidence)[:220]
+        key = (str(article_num).strip(), claim_sig, evidence_sig)
+        if key in cache:
+            return cache[key]
+
+        # Build a "case-aware" context without changing the old pertinence helper.
+        case_context = "\n".join(
+            part
+            for part in [
+                f"CLAIM: {claim.strip()}" if (claim or "").strip() else "",
+                f"CHAIN: {full_text.strip()}" if (full_text or "").strip() else "",
+            ]
+            if part
+        ).strip()
+        if not case_context:
+            case_context = (full_text or claim or "").strip()
+
+        cited_for_gate = evidence or f"Art. {article_num}"
+        try:
+            pertinent = self._check_pertinence_with_llm(
+                article_num=article_num,
+                cited_text=cited_for_gate,
+                full_text=case_context,
+            )
+            result = (bool(pertinent), "RELEVANT" if pertinent else "IRRELEVANT")
+        except Exception:
+            # Conservative fallback: keep citation for downstream repair logic.
+            result = (True, "UNCERTAIN_KEEP")
+
+        cache[key] = result
+        return result
+
     def _is_article_core(
         self,
         article_num: str,
@@ -1119,6 +1180,7 @@ class ConsistencyMixin:
         reasoning_chain: list[str],
         raw_response: str,
         domain: str,
+        claim: str = "",
         aspic_ir: dict | None = None,
         progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> ConsistencyReport:
@@ -1134,6 +1196,7 @@ class ConsistencyMixin:
             reasoning_chain: List of reasoning steps
             raw_response: Raw LLM response text
             domain: Legal domain ("CIVILE", "PENALE", "AMMINISTRATIVO", or "ENTRAMBI")
+            claim: Original legal claim (used by relevance gate)
             aspic_ir: ASPIC IR structured output for text extraction
 
         Returns:
@@ -1274,7 +1337,37 @@ class ConsistencyMixin:
                 if cited_text:
                     self._log(f"      📖 Cited text extracted: '{cited_text[:80]}...'")
 
-                if cited_text and db_text:
+                # Pre-repair legal relevance gate:
+                # if article is irrelevant to the case, drop it before any
+                # text-repair workflow.
+                is_relevant, relevance_label = self._pre_repair_statute_relevance_gate(
+                    claim=claim,
+                    full_text=verification_text,
+                    article_num=article_num,
+                    citation=citation,
+                    cited_text=cited_text,
+                    db_text=db_text,
+                )
+                if not is_relevant:
+                    check.text_verified = bool(cited_text or db_text)
+                    check.text_match = False
+                    check.text_similarity = 0.0
+                    check.cited_text = cited_text
+                    check.db_text_preview = db_text
+                    check.mismatch_action = MismatchAction.DROPPED.value
+                    check.details = (
+                        f"Verified in Neo4j ({domain}), dropped by relevance gate "
+                        f"({relevance_label})"
+                    )
+                    report.dropped_citations += 1
+                    report.issues.append(
+                        f"Art. {article_num}: dropped as non-pertinent to the case"
+                    )
+                    self._log(
+                        f"      🗑️ Art. {article_num} DROPPED by relevance gate "
+                        f"(label={relevance_label})"
+                    )
+                elif cited_text and db_text:
                     # Perform text verification
                     similarity = self._compute_text_similarity(cited_text, db_text)
                     text_match = similarity >= settings.cc_text_match_threshold
@@ -1312,7 +1405,7 @@ class ConsistencyMixin:
                             full_text=verification_text,
                             report=report,
                         )
-                elif not cited_text and db_text:
+                elif is_relevant and not cited_text and db_text:
                     # Article exists in DB but no text was cited in the response.
                     # Treat as mismatch → repair by injecting DB text.
                     self._log(

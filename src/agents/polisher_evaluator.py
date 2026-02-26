@@ -194,6 +194,7 @@ class PolisherEvaluator(
             reasoning_chain=reasoner_chain,
             raw_response=reasoner_raw,
             domain=domain,
+            claim=claim,
             aspic_ir=reasoner_aspic_ir,
             progress_callback=lambda payload: _emit(
                 "evaluation_citation_check", payload
@@ -219,6 +220,7 @@ class PolisherEvaluator(
             reasoning_chain=counter_chain,
             raw_response=counter_raw,
             domain=domain,
+            claim=claim,
             aspic_ir=counter_aspic_ir,
             progress_callback=lambda payload: _emit(
                 "evaluation_citation_check", payload

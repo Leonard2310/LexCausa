@@ -2411,11 +2411,8 @@ class CounterReasoner(BaseAgent):
         hard_markers = (
             "adds factual allegations not present in claim",
             "contradicts explicit claim fact",
-            "agrees with reasoner conclusion",
-            "attack-plan misalignment",
-            "missing reasoner conclusion context",
-            "not clearly opposed to reasoner conclusion",
-            "opposition check unavailable and heuristic not satisfied",
+            "candidate contradicts previous step",
+            "history incompatibility",
             "citation not grounded in allowed statutes",
             "contains ungrounded citation",
         )
@@ -2429,13 +2426,13 @@ class CounterReasoner(BaseAgent):
             return "adds_facts"
         if "contradicts explicit claim fact" in text:
             return "contradicts_claim_fact"
-        if "agrees with reasoner conclusion" in text:
-            return "agrees_reasoner"
-        if "attack-plan misalignment" in text:
-            return "attack_misalignment"
+        if "candidate contradicts previous step" in text:
+            return "history_contradiction"
+        if "history incompatibility" in text:
+            return "history_incompatibility"
         if "citation not grounded" in text or "ungrounded citation" in text:
             return "ungrounded_citation"
-        if "semantic repetition" in text or "lexical repetition" in text:
+        if "lexical repetition" in text:
             return "repetition"
         if "generation error" in text:
             return "generation_error"
@@ -2661,6 +2658,13 @@ class CounterReasoner(BaseAgent):
         )
         if not grounded_ok:
             return False, grounded_reason
+        compatible, compat_reason = self._is_counter_step_compatible_with_history(
+            candidate_step=text,
+            previous_steps=previous_steps,
+            claim=claim,
+        )
+        if not compatible:
+            return False, compat_reason or "history incompatibility"
         _ = (reasoner_conclusion, attack_id, attack_desc, plan_focus)
         mention_matches = extract_article_mentions(text, require_code=False)
         if (
@@ -2680,6 +2684,40 @@ class CounterReasoner(BaseAgent):
                 return False, grounded_reason
         if previous_steps and self._is_repetitive_step(text, previous_steps):
             return False, "lexical repetition"
+        return True, ""
+
+    def _is_counter_step_compatible_with_history(
+        self,
+        *,
+        candidate_step: str,
+        previous_steps: List[str],
+        claim: str,
+    ) -> tuple[bool, str]:
+        """
+        Ensure candidate counter-step is semantically compatible with accepted chain history.
+        """
+        _ = claim
+        if not previous_steps:
+            return True, ""
+        window = previous_steps[-3:]
+        start_idx = len(previous_steps) - len(window) + 1
+        for offset, prev_step in enumerate(window):
+            relation = self._nli_relation(
+                target_text=prev_step,
+                attacker_text=candidate_step,
+                actor_label="CounterReasoner",
+            )
+            if relation != "contradiction":
+                continue
+            # Reject only when contradiction is stable in both directions.
+            relation_sym = self._nli_relation(
+                target_text=candidate_step,
+                attacker_text=prev_step,
+                actor_label="CounterReasoner",
+            )
+            if relation_sym == "contradiction":
+                step_no = start_idx + offset
+                return False, f"candidate contradicts previous step {step_no}"
         return True, ""
 
     def _is_counter_step_fact_consistent_with_claim(
@@ -2748,6 +2786,7 @@ class CounterReasoner(BaseAgent):
         self._new_facts_check_cache[cache_key] = result
         return result
 
+    @staticmethod
     def _normalize_source_for_match(source_raw: str) -> str:
         """Normalize source labels to internal statute-source keys."""
         source = (source_raw or "").strip().lower()
@@ -2846,6 +2885,7 @@ class CounterReasoner(BaseAgent):
             )
         return True, ""
 
+    @staticmethod
     def _first_sentence_legal_safe(text: str) -> str:
         """
         Return first sentence without splitting on legal abbreviations

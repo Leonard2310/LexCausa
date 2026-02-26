@@ -68,8 +68,6 @@ class PromptKey(StrEnum):
     CONSISTENCY_PRECEDENT_MISMATCH_USER = "consistency.precedent_mismatch_user"
     CONSISTENCY_PRECEDENT_REPAIR_SYSTEM = "consistency.precedent_repair_system"
     CONSISTENCY_PRECEDENT_REPAIR_USER = "consistency.precedent_repair_user"
-    CONSISTENCY_REGENERATE_STEP_SYSTEM = "consistency.regenerate_step_system"
-    CONSISTENCY_REGENERATE_STEP_USER = "consistency.regenerate_step_user"
 
 
 PROMPTS: dict[PromptKey, str] = {
@@ -1121,6 +1119,8 @@ Respond ONLY with one of these words: PERTINENT or NOT_PERTINENT""",
 
 NORM TO EVALUATE: Art. [[article_num]]
 CITED TEXT: "[[cited_text]]"
+OFFICIAL NORM TITLE (DB): "[[db_title]]"
+OFFICIAL NORM TEXT (DB EXCERPT): "[[db_text]]"
 
 Is this norm PERTINENT or NOT_PERTINENT to the argumentative logic of the reasoning chain?""",
     PromptKey.CONSISTENCY_REPAIR_DB_SYSTEM: """You are an expert in Italian law. You must rewrite a normative passage using EXCLUSIVELY the official text of the provided article.
@@ -1170,29 +1170,7 @@ ORIGINAL CONTEXT (to correct):
 "[[cited_text]]"
 
 Rewrite using only the official summary.""",
-    PromptKey.CONSISTENCY_REGENERATE_STEP_SYSTEM: """You are an expert Italian jurist. You must rewrite a SINGLE reasoning step from a legal argument.
 
-You will receive:
-1. The ORIGINAL step text (which contains an incorrect normative citation)
-2. The CORRECT official text of the article from the database
-
-RULES:
-1. Rewrite the step so that it correctly uses the OFFICIAL text of the article
-2. Adjust the legal reasoning to be coherent with the CORRECT article text
-3. Include a verbatim quote from the official text in «»
-4. Keep approximately the same length and depth
-5. Write in Italian
-6. Output ONLY the rewritten step text, nothing else
-7. Do NOT include the step number (e.g. do NOT start with "3.")""",
-    PromptKey.CONSISTENCY_REGENERATE_STEP_USER: """ARTICLE: [[citation]]
-
-CORRECT OFFICIAL TEXT:
-"[[db_text_preview]]"
-
-ORIGINAL STEP (to rewrite):
-"[[original_step_text]]"
-
-Rewrite this step in Italian using the correct article text.""",
 }
 
 

@@ -1766,10 +1766,6 @@ class Reasoner(BaseAgent):
         novelty_keys = [step.get("novelty_key", "") for step in cleaned]
         if len(set(novelty_keys)) != len(novelty_keys):
             raise ValueError("planner produced duplicate novelty_key values")
-        if not self._has_min_plan_type_coverage(cleaned):
-            raise ValueError("planner produced poor step-type coverage")
-        if self._has_overlapping_plan_steps(cleaned):
-            raise ValueError("planner produced overlapping/repetitive steps")
         return cleaned
 
     @staticmethod
@@ -1802,22 +1798,6 @@ class Reasoner(BaseAgent):
             "CONCLUSION": "SYNTHESIS",
         }
         return aliases.get(value, "OTHER")
-
-    @staticmethod
-    def _has_min_plan_type_coverage(plan_steps: list[dict[str, str]]) -> bool:
-        """Require at least minimal diversity of step types for non-trivial plans."""
-        if len(plan_steps) <= 2:
-            return True
-        concrete = [
-            str(step.get("step_type", "")).strip().upper()
-            for step in plan_steps
-            if str(step.get("step_type", "")).strip().upper() not in {"", "OTHER"}
-        ]
-        if len(concrete) < 2:
-            # Backward compatibility when planner does not provide step_type.
-            return True
-        min_required = 2 if len(plan_steps) <= 4 else 3
-        return len(set(concrete)) >= min_required
 
     @staticmethod
     def _normalize_plan_citation_requirement(
@@ -1928,47 +1908,6 @@ class Reasoner(BaseAgent):
                 "warning",
             )
         return plan
-
-    def _has_overlapping_plan_steps(self, plan_steps: list[dict[str, str]]) -> bool:
-        """Detect overlap across planned goals/focuses (lexical + semantic)."""
-        normalized = []
-        texts: list[str] = []
-        for step in plan_steps:
-            text = f"{step.get('goal', '')} {step.get('focus', '')}".lower()
-            text = re.sub(r"[^a-z0-9\s]", " ", text)
-            words = {w for w in text.split() if len(w) > 3}
-            normalized.append(words)
-            texts.append(
-                re.sub(
-                    r"\s+",
-                    " ",
-                    f"{step.get('goal', '')}. {step.get('focus', '')}",
-                ).strip()
-            )
-
-        for i in range(len(normalized)):
-            for j in range(i + 1, len(normalized)):
-                a = normalized[i]
-                b = normalized[j]
-                if not a or not b:
-                    continue
-                overlap = len(a & b) / len(a | b)
-                if overlap >= 0.65:
-                    return True
-                if overlap >= 0.40:
-                    rel_ab = self._nli_relation(
-                        target_text=texts[i],
-                        attacker_text=texts[j],
-                        actor_label="ReasonerPlanner",
-                    )
-                    rel_ba = self._nli_relation(
-                        target_text=texts[j],
-                        attacker_text=texts[i],
-                        actor_label="ReasonerPlanner",
-                    )
-                    if rel_ab == "entailment" and rel_ba == "entailment":
-                        return True
-        return False
 
     def _prune_plan_against_existing_history(
         self,
@@ -2237,15 +2176,8 @@ class Reasoner(BaseAgent):
             and not citations
         ):
             return False, "missing statutory citation"
-        if previous_steps and self._is_repetitive_step(text, previous_steps):
-            return False, "lexical repetition"
-        if previous_steps and self._is_semantically_redundant_step(
-            candidate_step=text,
-            previous_steps=previous_steps,
-            claim=claim,
-            role="support",
-        ):
-            return False, "semantic repetition"
+        # TEMPORARILY DISABLED:
+        # semantic-repetition rejection is too aggressive during current tuning.
         return True, ""
 
     def _is_semantically_redundant_step(

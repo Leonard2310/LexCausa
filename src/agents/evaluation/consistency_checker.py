@@ -36,7 +36,7 @@ class ConsistencyMixin:
 
     def _verify_statute_in_neo4j(
         self, article_num: str, domain: str, citation_str: str = ""
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, str]:
         """
         Verify if an article exists in Neo4j and return its text.
 
@@ -47,12 +47,13 @@ class ConsistencyMixin:
                           to disambiguate codice when domain is ENTRAMBI.
 
         Returns:
-            Tuple of (exists: bool, text: str). Text is empty if not found.
+            Tuple of (exists: bool, text: str, title: str).
+            Text/title are empty if not found.
         """
         driver = get_driver()
         article_id = self._normalize_article_id(article_num)
         if not article_id:
-            return False, ""
+            return False, "", ""
 
         domain = (domain or "").strip().upper()
         citation_lower = citation_str.lower() if citation_str else ""
@@ -134,11 +135,11 @@ class ConsistencyMixin:
                             self._log(
                                 f"      Neo4j: Art. {article_id} found but NO TEXT in DB"
                             )
-                        return True, testo
-                return False, ""
+                        return True, testo, titolo
+                return False, "", ""
         except Exception as e:
             self._log(f"⚠️ Neo4j query failed: {e}", "warning")
-            return False, ""
+            return False, "", ""
 
     @staticmethod
     def _normalize_article_id(raw: str) -> str:
@@ -295,18 +296,25 @@ class ConsistencyMixin:
         """
         Extract the text cited in the reasoning chain for a specific article.
 
-        Searches for patterns like:
-        - "L'Art. 1223 c.c. stabilisce che [testo fino al punto]"
-        - "Art. 1223 c.c. - [testo fino al punto]"
-        - "Secondo l'Art. 1223 c.c., [testo]"
+        Returns only the extracted text for backward compatibility.
+        Use ``_extract_cited_text_for_article_with_source`` to also get the
+        extraction pattern metadata.
+        """
+        extracted, _source = self._extract_cited_text_for_article_with_source(
+            full_text, article_num, aspic_ir
+        )
+        return extracted
 
-        Args:
-            full_text: The full reasoning chain text (raw_response)
-            article_num: The article number to find
-            aspic_ir: Optional ASPIC IR (not used in this version)
+    def _extract_cited_text_for_article_with_source(
+        self, full_text: str, article_num: str, aspic_ir: dict | None = None
+    ) -> tuple[str, str]:
+        """
+        Extract cited text and report the source pattern used.
 
         Returns:
-            Extracted text associated with the article, or empty string if not found.
+            Tuple(extracted_text, source_pattern)
+            source_pattern in {"pattern0","pattern1","pattern2","pattern3",
+            "pattern4","none"}.
         """
         article_id = self._normalize_article_id(article_num)
         article_pattern = self._article_id_to_regex(article_id or article_num)
@@ -328,7 +336,7 @@ class ConsistencyMixin:
             extracted = re.sub(r"\s+", " ", extracted)
             if len(extracted) >= 20:
                 self._log("      🎯 Found 'Norma + Testo' block pattern")
-                return extracted
+                return extracted, "pattern0"
 
         # Pattern 1: "L'Art. 1223 c.c. stabilisce/prevede/limita che..."
         # Captures the verb + "che" + text until period
@@ -343,7 +351,7 @@ class ConsistencyMixin:
                     + str(article_num)
                     + " stabilisce/prevede...' pattern"
                 )
-                return extracted
+                return extracted, "pattern1"
 
         # Pattern 2: "Art. 1223 c.c. - [testo]"
         pattern2 = rf"Art(?:icolo)?\.?\s*{article_anchor}\s*{code_pattern}\s*[\-:]\s*(.+?)(?:\.|$)"
@@ -361,7 +369,7 @@ class ConsistencyMixin:
                     self._log(
                         "      🎯 Found 'Art. " + str(article_num) + " - ...' pattern"
                     )
-                    return extracted
+                    return extracted, "pattern2"
 
         # Pattern 3: "Secondo l'Art. 1223 c.c., [testo]"
         pattern3 = rf"[Ss]econdo\s+[Ll][''']?Art(?:icolo)?\.?\s*{article_anchor}\s*{code_pattern},?\s+(.+?)(?:\.|$)"
@@ -375,7 +383,7 @@ class ConsistencyMixin:
                     + str(article_num)
                     + "...' pattern"
                 )
-                return extracted
+                return extracted, "pattern3"
 
         # Pattern 4: "(Art. 1223 c.c.)" in parentheses after text - capture text before
         pattern4 = (
@@ -394,10 +402,11 @@ class ConsistencyMixin:
                         + str(article_num)
                         + ")' pattern"
                     )
-                    return last_sentence
+                    return last_sentence, "pattern4"
 
         self._log("      ⚠️ No text found for Art. " + str(article_num))
-        return ""
+        return "", "none"
+
 
     def _compute_text_similarity(self, cited_text: str, db_text: str) -> float:
         """
@@ -498,6 +507,8 @@ class ConsistencyMixin:
         article_num: str,
         cited_text: str,
         full_text: str,
+        db_text: str = "",
+        db_title: str = "",
     ) -> bool:
         """
         Use LLM to check if a peripheral norm is still logically pertinent
@@ -514,6 +525,8 @@ class ConsistencyMixin:
             article_num: Article number
             cited_text: Text cited in the reasoning chain for this article
             full_text: Full reasoning chain text
+            db_text: Official DB text (optional, strengthens pertinence check)
+            db_title: Official DB title (optional)
 
         Returns:
             True if the norm is pertinent (should be repaired),
@@ -532,6 +545,8 @@ class ConsistencyMixin:
                 full_text=full_text[: settings.truncation_chain_text],
                 article_num=article_num,
                 cited_text=cited_text,
+                db_title=(db_title or "")[:200],
+                db_text=(db_text or "")[:1200],
             )
 
             messages = [
@@ -556,6 +571,7 @@ class ConsistencyMixin:
             # In case of error, assume pertinent to be conservative (repair > drop)
             return True
 
+
     def _pre_repair_statute_relevance_gate(
         self,
         *,
@@ -565,6 +581,7 @@ class ConsistencyMixin:
         citation: str,
         cited_text: str,
         db_text: str,
+        db_title: str = "",
     ) -> tuple[bool, str]:
         """
         Relevance gate executed BEFORE any textual repair/drop workflow.
@@ -582,11 +599,8 @@ class ConsistencyMixin:
             self._statute_relevance_gate_cache = cache
 
         claim_sig = self._normalize_text_for_match(claim or "")[:220]
-        evidence = (cited_text or citation or "").strip()
-        if not evidence and db_text:
-            evidence = db_text[:220]
-        evidence_sig = self._normalize_text_for_match(evidence)[:220]
-        key = (str(article_num).strip(), claim_sig, evidence_sig)
+        db_sig = self._normalize_text_for_match(db_text or "")[:220]
+        key = (str(article_num).strip(), claim_sig, db_sig)
         if key in cache:
             return cache[key]
 
@@ -602,12 +616,17 @@ class ConsistencyMixin:
         if not case_context:
             case_context = (full_text or claim or "").strip()
 
+        evidence = (cited_text or citation or "").strip()
+        if not evidence and db_text:
+            evidence = db_text[:220]
         cited_for_gate = evidence or f"Art. {article_num}"
         try:
             pertinent = self._check_pertinence_with_llm(
                 article_num=article_num,
                 cited_text=cited_for_gate,
                 full_text=case_context,
+                db_text=db_text,
+                db_title=db_title,
             )
             result = (bool(pertinent), "RELEVANT" if pertinent else "IRRELEVANT")
         except Exception:
@@ -777,6 +796,9 @@ class ConsistencyMixin:
         aspic_ir: dict | None,
         full_text: str,
         report: ConsistencyReport,
+        db_title: str = "",
+        precomputed_is_core: bool | None = None,
+        prechecked_pertinent: bool | None = None,
     ) -> None:
         """
         Handle a normative mismatch by verifying with LLM and taking appropriate action.
@@ -798,6 +820,10 @@ class ConsistencyMixin:
             aspic_ir: ASPIC IR structure
             full_text: Full reasoning text
             report: ConsistencyReport to update
+            db_title: Official DB title (optional)
+            precomputed_is_core: If provided, skips core re-classification
+            prechecked_pertinent: If provided for peripheral norms, skips
+                pertinence re-check.
         """
         self._log(f"      🔧 Handling mismatch for Art. {article_num}...")
 
@@ -816,7 +842,10 @@ class ConsistencyMixin:
             return
 
         # Step 2: Classify as core or peripheral
-        is_core = self._is_article_core(article_num, aspic_ir, full_text)
+        if precomputed_is_core is None:
+            is_core = self._is_article_core(article_num, aspic_ir, full_text)
+        else:
+            is_core = bool(precomputed_is_core)
         check.is_core = is_core
 
         if is_core:
@@ -849,9 +878,16 @@ class ConsistencyMixin:
             self._log(
                 f"      🔍 Art. {article_num} is PERIPHERAL - checking pertinence..."
             )
-            is_pertinent = self._check_pertinence_with_llm(
-                article_num, cited_text, full_text
-            )
+            if prechecked_pertinent is None:
+                is_pertinent = self._check_pertinence_with_llm(
+                    article_num,
+                    cited_text,
+                    full_text,
+                    db_text=db_text,
+                    db_title=db_title,
+                )
+            else:
+                is_pertinent = bool(prechecked_pertinent)
 
             if is_pertinent:
                 # Pertinent peripheral norm → attempt repair (keep it)
@@ -1314,7 +1350,7 @@ class ConsistencyMixin:
             verified_articles.add(article_key)
 
             # Verify existence in Neo4j and get text
-            found, db_text = self._verify_statute_in_neo4j(
+            found, db_text, db_title = self._verify_statute_in_neo4j(
                 article_num, domain, citation
             )
 
@@ -1330,24 +1366,46 @@ class ConsistencyMixin:
                 self._log(f"   ✅ Art. {article_num} -> EXISTS in Neo4j")
 
                 # Extract cited text from the reasoning chain / raw response
-                cited_text = self._extract_cited_text_for_article(
+                cited_text, cited_source = self._extract_cited_text_for_article_with_source(
                     verification_text, article_num, aspic_ir
                 )
 
                 if cited_text:
                     self._log(f"      📖 Cited text extracted: '{cited_text[:80]}...'")
+                    self._log(f"      🔎 Citation extraction source: {cited_source}")
 
-                # Pre-repair legal relevance gate:
-                # if article is irrelevant to the case, drop it before any
-                # text-repair workflow.
-                is_relevant, relevance_label = self._pre_repair_statute_relevance_gate(
-                    claim=claim,
-                    full_text=verification_text,
-                    article_num=article_num,
-                    citation=citation,
-                    cited_text=cited_text,
-                    db_text=db_text,
+                # Classify core/peripheral BEFORE applying any relevance gate.
+                # Core norms must never be dropped by the pre-repair gate.
+                is_core = self._is_article_core(article_num, aspic_ir, verification_text)
+                check.is_core = is_core
+
+                run_relevance_gate = (
+                    not is_core and bool(cited_text) and cited_source != "pattern4"
                 )
+                is_relevant = True
+                relevance_label = "SKIPPED"
+                if run_relevance_gate:
+                    is_relevant, relevance_label = (
+                        self._pre_repair_statute_relevance_gate(
+                            claim=claim,
+                            full_text=verification_text,
+                            article_num=article_num,
+                            citation=citation,
+                            cited_text=cited_text,
+                            db_text=db_text,
+                            db_title=db_title,
+                        )
+                    )
+                elif not is_core:
+                    if not cited_text:
+                        relevance_label = "SKIPPED_NO_EVIDENCE_KEEP"
+                    elif cited_source == "pattern4":
+                        relevance_label = "SKIPPED_FRAGILE_EVIDENCE_KEEP"
+                    self._log(
+                        f"      ↩️ Relevance gate skipped for Art. {article_num} "
+                        f"(label={relevance_label})"
+                    )
+
                 if not is_relevant:
                     check.text_verified = bool(cited_text or db_text)
                     check.text_match = False
@@ -1360,6 +1418,7 @@ class ConsistencyMixin:
                         f"({relevance_label})"
                     )
                     report.dropped_citations += 1
+                    report.relevance_gate_dropped_citations += 1
                     report.issues.append(
                         f"Art. {article_num}: dropped as non-pertinent to the case"
                     )
@@ -1404,8 +1463,13 @@ class ConsistencyMixin:
                             aspic_ir=aspic_ir,
                             full_text=verification_text,
                             report=report,
+                            db_title=db_title,
+                            precomputed_is_core=is_core,
+                            prechecked_pertinent=(
+                                True if run_relevance_gate and relevance_label == "RELEVANT" else None
+                            ),
                         )
-                elif is_relevant and not cited_text and db_text:
+                elif not cited_text and db_text:
                     # Article exists in DB but no text was cited in the response.
                     # Treat as mismatch → repair by injecting DB text.
                     self._log(
@@ -1416,9 +1480,7 @@ class ConsistencyMixin:
                     check.text_similarity = 0.0
                     check.cited_text = ""
                     check.db_text_preview = db_text
-                    check.is_core = (
-                        True  # no text at all → treat as core (must be repaired)
-                    )
+                    check.is_core = True  # no text at all → force repair
                     check.mismatch_action = MismatchAction.REPAIRED.value
                     check.repaired_text = db_text
                     check.repair_success = True
@@ -1568,10 +1630,24 @@ class ConsistencyMixin:
         else:
             text_score = 1.0  # No text verified = no penalty
 
-        report.consistency_score = (
+        base_score = (
             settings.cc_consistency_existence_weight * existence_score
             + settings.cc_consistency_text_weight * text_score
         )
+        if report.total_citations > 0:
+            relevance_drop_ratio = (
+                report.relevance_gate_dropped_citations / report.total_citations
+            )
+        else:
+            relevance_drop_ratio = 0.0
+
+        relevance_penalty_factor = max(
+            0.0,
+            1.0
+            - settings.cc_relevance_drop_penalty_weight * relevance_drop_ratio,
+        )
+        report.consistency_score = base_score * relevance_penalty_factor
+        report.issues = self._deduplicate_issue_list(report.issues)
 
         return report
 
@@ -1592,6 +1668,51 @@ class ConsistencyMixin:
             citations.append(citation)
 
         return citations
+
+    def _deduplicate_issue_list(self, issues: list[str]) -> list[str]:
+        """
+        Keep one final issue per citation key (article/precedent) to avoid
+        double-reporting intermediate states.
+        """
+        if not issues:
+            return []
+
+        def issue_key(text: str) -> str:
+            m = re.match(r"^(Art\.\s*[^:]+):", text, re.IGNORECASE)
+            if m:
+                return m.group(1).strip().lower()
+            m = re.match(r"^(Precedent\s+'[^']+')", text, re.IGNORECASE)
+            if m:
+                return m.group(1).strip().lower()
+            return text.strip().lower()
+
+        def issue_priority(text: str) -> int:
+            t = text.lower()
+            if "attribution unresolved" in t:
+                return 100
+            if "attribution" in t:
+                return 90
+            if "not found" in t:
+                return 80
+            if "repair failed" in t:
+                return 70
+            if "dropped" in t:
+                return 60
+            if "differs from db" in t:
+                return 50
+            if "no text cited" in t:
+                return 40
+            return 10
+
+        kept: dict[str, str] = {}
+        for issue in issues:
+            key = issue_key(issue)
+            if key not in kept:
+                kept[key] = issue
+                continue
+            if issue_priority(issue) >= issue_priority(kept[key]):
+                kept[key] = issue
+        return list(kept.values())
 
     def _generate_consistency_summary(
         self,
@@ -1615,6 +1736,11 @@ class ConsistencyMixin:
             lines.append(f"- Citazioni riparate: {reasoner_report.repaired_citations}")
         if reasoner_report.dropped_citations > 0:
             lines.append(f"- Citazioni scartate: {reasoner_report.dropped_citations}")
+        if reasoner_report.relevance_gate_dropped_citations > 0:
+            lines.append(
+                "- Scarti da relevance gate: "
+                f"{reasoner_report.relevance_gate_dropped_citations}"
+            )
         lines.append(f"- Score di consistenza: {reasoner_report.consistency_score:.2%}")
         if reasoner_report.issues:
             lines.append(f"- Problemi: {len(reasoner_report.issues)}")
@@ -1633,6 +1759,11 @@ class ConsistencyMixin:
             lines.append(f"- Citazioni riparate: {counter_report.repaired_citations}")
         if counter_report.dropped_citations > 0:
             lines.append(f"- Citazioni scartate: {counter_report.dropped_citations}")
+        if counter_report.relevance_gate_dropped_citations > 0:
+            lines.append(
+                "- Scarti da relevance gate: "
+                f"{counter_report.relevance_gate_dropped_citations}"
+            )
         lines.append(f"- Score di consistenza: {counter_report.consistency_score:.2%}")
         if counter_report.issues:
             lines.append(f"- Problemi: {len(counter_report.issues)}")
@@ -1641,13 +1772,6 @@ class ConsistencyMixin:
 
         return "\n".join(lines)
 
-    # ------------------------------------------------------------------
-    # Threshold: below this text_similarity the step's reasoning is
-    # likely built on a completely wrong article and a simple text
-    # replacement won't fix the logical incoherence → the step must
-    # be regenerated by an LLM.
-    # ------------------------------------------------------------------
-    _SEVERE_MISMATCH_THRESHOLD = 0.40
 
     def _regenerate_reasoning_chain_with_llm(
         self,
@@ -1655,26 +1779,12 @@ class ConsistencyMixin:
         citation_checks: list[CitationCheck],
         agent_name: str,
     ) -> str:
-        """Apply **hybrid** repairs to the reasoning chain text.
+        """Apply surgical repairs to the reasoning chain text.
 
-        The strategy adapts to the severity of each mismatch:
-
-        **Surgical (no LLM)**
-        * *No text cited*  →  inject ``«DB text»`` after the article
-          mention.
-        * *Text mismatch ≥ 40 %*  →  in-place replacement of the
-          incorrect passage with the corrected ``repaired_text``.
-        * *Dropped / repair-failed*  →  mark with
-          ``[Citation removed - unreliable source]``.
-
-        **Per-step LLM regeneration**
-        * *Text mismatch < 40 %*  →  the article was probably confused
-          with another one (e.g. Art. 23 cited with Art. 43's text).
-          The entire reasoning step is extracted, sent to an LLM with
-          the correct DB text, and rewritten **individually**.
-
-        This preserves the original structure (headers, numbered chain)
-        while fixing steps whose reasoning was built on a wrong article.
+        Strategy:
+        - no cited text -> inject DB text after article mention
+        - cited text mismatch -> in-place replacement with repaired text
+        - dropped/failed citations -> mark unreliable citation
 
         Args:
             original_chain: The original reasoning chain text
@@ -1685,7 +1795,6 @@ class ConsistencyMixin:
             The repaired chain text.
         """
         surgical_count = 0
-        llm_regen_count = 0
         dropped_count = 0
         chain = original_chain
 
@@ -1720,32 +1829,24 @@ class ConsistencyMixin:
                     surgical_count += 1
 
                 elif check.cited_text and check.repaired_text:
-                    # Decide: surgical or per-step LLM?
-                    if check.text_similarity >= self._SEVERE_MISMATCH_THRESHOLD:
-                        # Case B: text was reasonably close → surgical replace
-                        if check.cited_text in chain:
-                            chain = chain.replace(
-                                check.cited_text, check.repaired_text, 1
+                    # Case B: text cited and repaired text available → surgical replace
+                    if check.cited_text in chain:
+                        chain = chain.replace(check.cited_text, check.repaired_text, 1)
+                        surgical_count += 1
+                    else:
+                        idx = chain.lower().find(check.cited_text.lower())
+                        if idx >= 0:
+                            chain = (
+                                chain[:idx]
+                                + check.repaired_text
+                                + chain[idx + len(check.cited_text) :]
                             )
                             surgical_count += 1
                         else:
-                            idx = chain.lower().find(check.cited_text.lower())
-                            if idx >= 0:
-                                chain = (
-                                    chain[:idx]
-                                    + check.repaired_text
-                                    + chain[idx + len(check.cited_text) :]
-                                )
-                                surgical_count += 1
-                            else:
-                                chain = self._inject_text_after_article(
-                                    chain, check.citation, check.repaired_text
-                                )
-                                surgical_count += 1
-                    else:
-                        # Case C: severe mismatch → regenerate the step
-                        chain = self._regenerate_single_step(chain, check, agent_name)
-                        llm_regen_count += 1
+                            chain = self._inject_text_after_article(
+                                chain, check.citation, check.repaired_text
+                            )
+                            surgical_count += 1
 
             # --- DROPPED / REPAIR_FAILED citations ---
             elif check.mismatch_action in (
@@ -1760,15 +1861,14 @@ class ConsistencyMixin:
                     )
                 dropped_count += 1
 
-        total = surgical_count + llm_regen_count + dropped_count
+        total = surgical_count + dropped_count
         if total == 0:
             self._log(f"   ✅ [{agent_name}] No repairs needed - chain unchanged")
             return original_chain
 
         self._log(
             f"   🔄 [{agent_name}] Repair complete: "
-            f"{surgical_count} surgical, {llm_regen_count} LLM-regenerated, "
-            f"{dropped_count} dropped"
+            f"{surgical_count} surgical, {dropped_count} dropped"
         )
         return chain
 
@@ -1776,110 +1876,6 @@ class ConsistencyMixin:
     # Per-step LLM regeneration (only for severe mismatches)
     # ------------------------------------------------------------------
 
-    def _regenerate_single_step(
-        self,
-        chain: str,
-        check: CitationCheck,
-        agent_name: str,
-    ) -> str:
-        """Find and regenerate the specific step that cites *check.citation*.
-
-        Locates the numbered chain step (e.g. ``3. L'Art. 23 c.p. …``)
-        that contains the problematic article, sends **only that step**
-        to the LLM with the correct DB text, and replaces it in-place.
-
-        If the step cannot be isolated or the LLM call fails, falls back
-        to a surgical text injection.
-        """
-        # Extract article number
-        article_id = self._extract_article_id_from_citation(check.citation)
-        if not article_id:
-            return self._inject_text_after_article(
-                chain, check.citation, check.repaired_text
-            )
-        article_pattern = self._article_id_to_regex(article_id)
-
-        # Find the numbered step containing this article in the chain.
-        # Steps are formatted as "N. <text>\n" where N is 1, 2, 3…
-        # We look for a line starting with a number, containing our article.
-        step_pattern = re.compile(
-            rf"^(\d+)\.\s+(.*?Art(?:icolo)?\.?\s*{article_pattern}(?![-\w]).*?)$",
-            re.IGNORECASE | re.MULTILINE,
-        )
-        match = step_pattern.search(chain)
-        if not match:
-            self._log(
-                f"      ⚠️ [{agent_name}] Could not isolate step for "
-                f"{check.citation}; falling back to injection"
-            )
-            return self._inject_text_after_article(
-                chain, check.citation, check.repaired_text
-            )
-
-        step_number = match.group(1)
-        original_step_text = match.group(2)
-        full_match_text = match.group(0)  # "N. <text>"
-
-        self._log(
-            f"      🔬 [{agent_name}] Regenerating step {step_number} "
-            f"for {check.citation} (similarity was {check.text_similarity:.0%})"
-        )
-
-        # Ask LLM to rewrite only this step
-        try:
-            llm = get_chat_groq(
-                temperature=settings.classifier_temperature,
-                max_tokens=settings.repair_max_tokens,
-            )
-
-            system_prompt = render_prompt("consistency.regenerate_step_system")
-
-            user_prompt = render_prompt(
-                "consistency.regenerate_step_user",
-                citation=check.citation,
-                db_text_preview=check.db_text_preview,
-                original_step_text=original_step_text[:800],
-            )
-
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ]
-
-            response = resilient_chat_call(llm, messages)
-            new_step_text = response.content.strip()
-
-            # Remove any leading "N." the LLM might have added
-            new_step_text = re.sub(r"^\d+\.\s*", "", new_step_text)
-
-            if len(new_step_text) < 30:
-                self._log(
-                    f"      ⚠️ [{agent_name}] LLM step regen too short; "
-                    f"falling back to injection"
-                )
-                return self._inject_text_after_article(
-                    chain, check.citation, check.repaired_text
-                )
-
-            # Replace only this step in the chain
-            new_full_step = f"{step_number}. {new_step_text}"
-            chain = chain.replace(full_match_text, new_full_step, 1)
-
-            self._log(
-                f"      ✅ [{agent_name}] Step {step_number} regenerated "
-                f"({len(new_step_text)} chars)"
-            )
-            return chain
-
-        except Exception as e:
-            self._log(
-                f"      ⚠️ [{agent_name}] Step regen failed: {e}; "
-                f"falling back to injection",
-                "warning",
-            )
-            return self._inject_text_after_article(
-                chain, check.citation, check.repaired_text
-            )
 
     def _inject_text_after_article(
         self, chain: str, citation: str, repaired_text: str

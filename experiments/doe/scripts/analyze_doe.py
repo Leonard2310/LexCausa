@@ -106,33 +106,37 @@ def build_domain_breakdown(metrics: pd.DataFrame) -> list[dict[str, Any]]:
                     "domain": domain,
                     "condition": cond,
                     "runs": int(cdf.shape[0]),
-                    "aqa_net_final_mean": float(cdf["aqa_net_final"].mean())
-                    if "aqa_net_final" in cdf
-                    else None,
-                    "reasoner_consistency_mean": float(
-                        cdf["reasoner_consistency_score"].mean()
-                    )
-                    if "reasoner_consistency_score" in cdf
-                    else None,
-                    "counter_consistency_mean": float(
-                        cdf["counter_consistency_score"].mean()
-                    )
-                    if "counter_consistency_score" in cdf
-                    else None,
-                    "counter_gate_abstain_rate": float(
-                        pd.to_numeric(cdf["counter_gate_abstain"], errors="coerce")
-                        .fillna(0)
-                        .mean()
-                    )
-                    if "counter_gate_abstain" in cdf
-                    else None,
+                    "aqa_net_final_mean": (
+                        float(cdf["aqa_net_final"].mean())
+                        if "aqa_net_final" in cdf
+                        else None
+                    ),
+                    "reasoner_consistency_mean": (
+                        float(cdf["reasoner_consistency_score"].mean())
+                        if "reasoner_consistency_score" in cdf
+                        else None
+                    ),
+                    "counter_consistency_mean": (
+                        float(cdf["counter_consistency_score"].mean())
+                        if "counter_consistency_score" in cdf
+                        else None
+                    ),
+                    "counter_gate_abstain_rate": (
+                        float(
+                            pd.to_numeric(cdf["counter_gate_abstain"], errors="coerce")
+                            .fillna(0)
+                            .mean()
+                        )
+                        if "counter_gate_abstain" in cdf
+                        else None
+                    ),
                 }
             )
     return rows
 
 
 def build_stability_summary(metrics: pd.DataFrame) -> dict[str, Any]:
-    rows = []
+    rows: list[dict[str, Any]] = []
     if "replicate" not in metrics.columns:
         return {"available": False, "rows": rows}
 
@@ -157,7 +161,7 @@ def build_stability_summary(metrics: pd.DataFrame) -> dict[str, Any]:
     df = pd.DataFrame(rows)
     if df.empty:
         return {"available": False, "rows": rows}
-    out = {
+    out: dict[str, Any] = {
         "available": True,
         "rows": rows,
         "by_condition": {},
@@ -168,9 +172,11 @@ def build_stability_summary(metrics: pd.DataFrame) -> dict[str, Any]:
             continue
         out["by_condition"][cond] = {
             "mean_std_aqa_net_final": float(cdf["aqa_net_final_std"].mean()),
-            "mean_verdict_agreement": float(cdf["verdict_agreement"].dropna().mean())
-            if cdf["verdict_agreement"].notna().any()
-            else None,
+            "mean_verdict_agreement": (
+                float(cdf["verdict_agreement"].dropna().mean())
+                if cdf["verdict_agreement"].notna().any()
+                else None
+            ),
         }
     return out
 
@@ -235,7 +241,9 @@ def main() -> None:
         for metric_name, hib in metric_specs
     ]
 
-    if {"plausible_A", "plausible_B"}.issubset(set(paired.columns)) and not paired.empty:
+    if {"plausible_A", "plausible_B"}.issubset(
+        set(paired.columns)
+    ) and not paired.empty:
         plausible_rate_a = float((paired["plausible_A"] == 1).mean())
         plausible_rate_b = float((paired["plausible_B"] == 1).mean())
     else:

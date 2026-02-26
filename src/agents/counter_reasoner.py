@@ -243,7 +243,7 @@ class CounterReasoner(BaseAgent):
             claim=claim_text,
             reasoner_conclusion=reasoner_text,
         )
-        fallback = {
+        fallback: Dict[str, List[str]] = {
             "allowed_targets": [],
             "forbidden_assumptions": [],
             "priority_targets": [],
@@ -263,7 +263,9 @@ class CounterReasoner(BaseAgent):
                 if not isinstance(vals, list):
                     vals = []
                 fallback[k] = [
-                    str(v).strip() for v in vals if isinstance(v, str) and str(v).strip()
+                    str(v).strip()
+                    for v in vals
+                    if isinstance(v, str) and str(v).strip()
                 ][:10]
         except Exception as exc:
             self._log(f"⚠️ Counter target-map extraction failed: {exc}", "warning")
@@ -315,16 +317,9 @@ class CounterReasoner(BaseAgent):
 
         def _compatible(aid: str) -> bool:
             return self._is_attack_compatible_with_claim(aid, claim)
-        causal_pool = [
-            aid
-            for aid in raw_causal_pool
-            if _compatible(aid)
-        ]
-        theory_attacks = [
-            aid
-            for aid in raw_theory_attacks
-            if _compatible(aid)
-        ]
+
+        causal_pool = [aid for aid in raw_causal_pool if _compatible(aid)]
+        theory_attacks = [aid for aid in raw_theory_attacks if _compatible(aid)]
         pool: List[str] = list(causal_pool)
 
         if theory_attacks:
@@ -340,11 +335,7 @@ class CounterReasoner(BaseAgent):
 
         if not pool:
             # Fallback to theory attacks or all known attacks
-            known = [
-                aid
-                for aid in self._known_attack_ids()
-                if _compatible(aid)
-            ]
+            known = [aid for aid in self._known_attack_ids() if _compatible(aid)]
             pool = theory_attacks or known
 
         selected_ids = self._pick_attacks_with_llm(
@@ -1665,14 +1656,10 @@ class CounterReasoner(BaseAgent):
                 return bool(aid and aid not in blacklist)
 
             selected_attack_ids = [
-                aid
-                for aid in selected_attack_ids
-                if _attack_is_active(aid)
+                aid for aid in selected_attack_ids if _attack_is_active(aid)
             ]
             backup_attack_ids = [
-                aid
-                for aid in backup_attack_ids
-                if _attack_is_active(aid)
+                aid for aid in backup_attack_ids if _attack_is_active(aid)
             ]
 
             if not selected_attack_ids:
@@ -1864,10 +1851,14 @@ class CounterReasoner(BaseAgent):
                             blacklist.add(step_attack_id)
                             attack_local_cooldown.pop(step_attack_id, None)
                             selected_attack_ids = [
-                                aid for aid in selected_attack_ids if aid != step_attack_id
+                                aid
+                                for aid in selected_attack_ids
+                                if aid != step_attack_id
                             ]
                             backup_attack_ids = [
-                                aid for aid in backup_attack_ids if aid != step_attack_id
+                                aid
+                                for aid in backup_attack_ids
+                                if aid != step_attack_id
                             ]
                             self._log(
                                 f"Warning: rotating out attack {step_attack_id} "
@@ -2748,6 +2739,7 @@ class CounterReasoner(BaseAgent):
         self._new_facts_check_cache[cache_key] = result
         return result
 
+    @staticmethod
     def _normalize_source_for_match(source_raw: str) -> str:
         """Normalize source labels to internal statute-source keys."""
         source = (source_raw or "").strip().lower()
@@ -2846,6 +2838,7 @@ class CounterReasoner(BaseAgent):
             )
         return True, ""
 
+    @staticmethod
     def _first_sentence_legal_safe(text: str) -> str:
         """
         Return first sentence without splitting on legal abbreviations

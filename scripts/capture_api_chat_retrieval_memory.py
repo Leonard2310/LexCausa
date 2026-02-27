@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -33,6 +34,7 @@ import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CLAIMS_MD_PATH = PROJECT_ROOT / "claims.md"
+OLD_CLAIMS_MD_PATH = PROJECT_ROOT / "old_claims.md"
 OUTPUT_DIR = PROJECT_ROOT / "logs" / "api_chat_memory"
 
 
@@ -43,6 +45,7 @@ class ClaimEntry:
     domain: str
     title: str
     text: str
+    source_file: str
 
 
 def _slugify_filename(text: str, max_len: int = 60) -> str:
@@ -70,6 +73,7 @@ def _parse_claims_from_block(
     pattern: re.Pattern[str],
     section: str,
     domain: str,
+    source_file: str,
 ) -> list[ClaimEntry]:
     claims: list[ClaimEntry] = []
     matches = list(pattern.finditer(block))
@@ -86,13 +90,17 @@ def _parse_claims_from_block(
                 text=body,
                 section=section,
                 domain=domain,
+                source_file=source_file,
             )
         )
     return claims
 
 
-def parse_claims_md(path: Path) -> tuple[list[ClaimEntry], int]:
+def parse_claims_md(
+    path: Path, *, include_non_covered: bool = False
+) -> tuple[list[ClaimEntry], int]:
     text = path.read_text(encoding="utf-8")
+    source_file = path.name
 
     civile_block = _extract_block(
         text,
@@ -129,24 +137,61 @@ def parse_claims_md(path: Path) -> tuple[list[ClaimEntry], int]:
 
     claims = (
         _parse_claims_from_block(
-            civile_block, claim_pattern, "CLAIM CIVILI (COPERTI)", "civile"
+            civile_block,
+            claim_pattern,
+            "CLAIM CIVILI (COPERTI)",
+            "civile",
+            source_file,
         )
         + _parse_claims_from_block(
-            penale_block, claim_pattern, "CLAIM PENALI (COPERTI)", "penale"
+            penale_block,
+            claim_pattern,
+            "CLAIM PENALI (COPERTI)",
+            "penale",
+            source_file,
         )
         + _parse_claims_from_block(
-            mixed_block, claim_pattern, "CLAIM MIXED (COPERTI)", "misto"
+            mixed_block,
+            claim_pattern,
+            "CLAIM MIXED (COPERTI)",
+            "misto",
+            source_file,
         )
         + _parse_claims_from_block(
             admin_block,
             claim_pattern,
             "CLAIM AMMINISTRATIVI (COPERTI)",
             "amministrativo",
+            source_file,
         )
     )
 
+    if include_non_covered:
+        claims += _parse_claims_from_block(
+            non_covered_block,
+            claim_pattern,
+            "CLAIM NON COPERTI (GAP NORMATIVI)",
+            "non_coperto",
+            source_file,
+        )
+
     non_covered_count = len(claim_pattern.findall(non_covered_block))
     return claims, non_covered_count
+
+
+def load_claims_from_files(
+    paths: list[Path], *, include_non_covered: bool = False
+) -> tuple[list[ClaimEntry], dict[str, int]]:
+    all_claims: list[ClaimEntry] = []
+    non_covered_counts: dict[str, int] = {}
+    for path in paths:
+        claims, non_covered_count = parse_claims_md(
+            path,
+            include_non_covered=include_non_covered,
+        )
+        all_claims.extend(claims)
+        non_covered_counts[path.name] = non_covered_count
+    return all_claims, non_covered_counts
 
 
 def _healthcheck(base_url: str, timeout_s: float = 10.0) -> None:
@@ -191,11 +236,75 @@ def _parse_timeout_arg(value: str) -> float | None:
     return parsed
 
 
+def _claim_entry_key(entry: ClaimEntry) -> str:
+    return f"{Path(entry.source_file).stem}:{entry.claim_id.upper()}"
+
+
+def _response_text_safe(resp: requests.Response) -> str:
+    try:
+        return resp.text or ""
+    except Exception:
+        return ""
+
+
+def _looks_like_maverick_down_message(text: str) -> bool:
+    raw = (text or "").lower()
+    if "maverick" not in raw and "llama-4-maverick" not in raw:
+        return False
+    return any(
+        marker in raw
+        for marker in (
+            "over capacity",
+            "currently unavailable",
+            "model not available",
+            "marked as down",
+        )
+    )
+
+
+def _wipe_claim_context_memory_db() -> int:
+    db_path = PROJECT_ROOT / "cache" / "claim_context_cache.sqlite"
+    if not db_path.exists():
+        return 0
+    with sqlite3.connect(str(db_path), timeout=10.0) as conn:
+        try:
+            deleted = int(
+                conn.execute("SELECT COUNT(*) FROM claim_context_cache").fetchone()[0]
+            )
+        except sqlite3.OperationalError:
+            return 0
+        conn.execute("DELETE FROM claim_context_cache")
+        conn.commit()
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except sqlite3.OperationalError:
+            pass
+    return deleted
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument(
+        "--claims-files",
+        nargs="*",
+        default=None,
+        help="Claim markdown files to process (default: claims.md old_claims.md if present).",
+    )
     parser.add_argument("--top-k", type=int, default=30)
     parser.add_argument("--max-precedents", type=int, default=5)
+    parser.add_argument(
+        "--search-min-kept-statutes",
+        type=int,
+        default=8,
+        help="Forwarded to /api/chat settings for deterministic claim-context cache signature.",
+    )
+    parser.add_argument(
+        "--search-use-top-n-libri",
+        type=int,
+        default=3,
+        help="Forwarded to /api/chat settings for deterministic retrieval behavior/signature.",
+    )
     parser.add_argument(
         "--timeout",
         type=_parse_timeout_arg,
@@ -207,7 +316,12 @@ def main() -> int:
         "--domains",
         nargs="*",
         default=[],
-        help="Optional subset: penale civile amministrativo misto",
+        help="Optional subset: penale civile amministrativo misto non_coperto",
+    )
+    parser.add_argument(
+        "--include-non-covered",
+        action="store_true",
+        help="Include NC* claims from 'CLAIM NON COPERTI' sections (default: covered sections only).",
     )
     parser.add_argument(
         "--search-query-terms-mode",
@@ -235,14 +349,57 @@ def main() -> int:
         action="store_true",
         help="Warm backend claim-context memory but skip writing per-claim JSON capture files.",
     )
+    parser.add_argument(
+        "--retrieval-model-order-aliases",
+        nargs="+",
+        default=None,
+        help="Override retrieval model alias order for /api/chat request settings (e.g. groq_llama_maverick_17b).",
+    )
+    parser.add_argument(
+        "--maverick-only",
+        action="store_true",
+        help="Shortcut for --retrieval-model-order-aliases groq_llama_maverick_17b",
+    )
+    parser.add_argument(
+        "--maverick-down-wait-seconds",
+        type=float,
+        default=300.0,
+        help="When --maverick-only and Maverick is down/over-capacity, wait this many seconds before retrying the same claim.",
+    )
+    parser.add_argument(
+        "--wipe-claim-context-memory",
+        action="store_true",
+        help="Delete all rows from cache/claim_context_cache.sqlite before running.",
+    )
     args = parser.parse_args()
 
     if args.overwrite_claim_context_memory:
         args.claim_context_memory = True
 
+    if args.maverick_only:
+        args.retrieval_model_order_aliases = ["groq_llama_maverick_17b"]
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    claims, non_covered_count = parse_claims_md(CLAIMS_MD_PATH)
+    claim_files_raw = list(args.claims_files or [])
+    if not claim_files_raw:
+        claim_files_raw = [str(CLAIMS_MD_PATH.name)]
+        if OLD_CLAIMS_MD_PATH.exists():
+            claim_files_raw.append(str(OLD_CLAIMS_MD_PATH.name))
+    claim_paths: list[Path] = []
+    for raw in claim_files_raw:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = PROJECT_ROOT / p
+        if not p.exists():
+            print(f"Claims file not found: {p}")
+            return 1
+        claim_paths.append(p)
+
+    claims, non_covered_counts = load_claims_from_files(
+        claim_paths,
+        include_non_covered=bool(args.include_non_covered),
+    )
     domain_filter = {d.strip().lower() for d in args.domains if d.strip()}
     if domain_filter:
         claims = [c for c in claims if c.domain in domain_filter]
@@ -257,24 +414,47 @@ def main() -> int:
         print(f"Healthcheck failed on {args.base_url}: {exc}")
         return 2
 
+    if args.wipe_claim_context_memory:
+        deleted = _wipe_claim_context_memory_db()
+        print(f"Wiped claim-context memory rows: {deleted}")
+
+    settings_payload: dict[str, Any] = {
+        "search_query_terms_mode": args.search_query_terms_mode,
+        "search_min_kept_statutes": int(args.search_min_kept_statutes),
+        "search_use_top_n_libri": int(args.search_use_top_n_libri),
+    }
+    if args.retrieval_model_order_aliases:
+        settings_payload["retrieval_model_order_aliases"] = list(
+            args.retrieval_model_order_aliases
+        )
+    if args.maverick_only:
+        # Enforce fail-fast on retrieval-side LLM filtering errors so cache is never
+        # populated with degraded fallback decisions when Maverick is down.
+        settings_payload["retrieval_strict_llm_errors"] = True
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     manifest_path = OUTPUT_DIR / f"{ts}_manifest.json"
 
     manifest: dict[str, Any] = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "base_url": args.base_url,
-        "claims_path": str(CLAIMS_MD_PATH),
-        "non_covered_excluded": non_covered_count,
+        "claims_paths": [str(p) for p in claim_paths],
+        "non_covered_excluded": non_covered_counts,
         "request": {
             "top_k": int(args.top_k),
             "include_precedents": True,
             "max_precedents": int(args.max_precedents),
-            "settings": {"search_query_terms_mode": args.search_query_terms_mode},
+            "settings": settings_payload,
             "timeout": None if args.timeout is None else float(args.timeout),
             "delay": float(args.delay),
             "claim_context_memory_enabled": bool(args.claim_context_memory),
             "claim_context_memory_overwrite": bool(args.overwrite_claim_context_memory),
             "cache_only": bool(args.cache_only),
+            "maverick_only": bool(args.maverick_only),
+            "maverick_down_wait_seconds": float(args.maverick_down_wait_seconds),
+            "wipe_claim_context_memory": bool(args.wipe_claim_context_memory),
+            "include_non_covered": bool(args.include_non_covered),
+            "retrieval_strict_llm_errors": bool(args.maverick_only),
         },
         "counts": {"selected_claims": len(claims)},
         "results": [],
@@ -282,20 +462,28 @@ def main() -> int:
 
     ok = 0
     failed = 0
-    existing_claim_ids: set[str] = set()
+    existing_claim_keys: set[str] = set()
     if args.skip_existing:
         for p in OUTPUT_DIR.glob("*.json"):
-            m = re.search(r"_([A-Z]\d+)_", p.name)
-            if m and not p.name.endswith("_manifest.json"):
-                existing_claim_ids.add(m.group(1).upper())
+            if p.name.endswith("_manifest.json"):
+                continue
+            m_new = re.search(
+                r"^\d{8}_\d{6}_([a-zA-Z0-9_]+)_([A-Z]\d+)_",
+                p.name,
+            )
+            if m_new:
+                existing_claim_keys.add(f"{m_new.group(1)}:{m_new.group(2).upper()}")
+                continue
         manifest["resume"] = {
             "skip_existing": True,
-            "existing_claim_ids_detected": sorted(existing_claim_ids),
+            "existing_claim_keys_detected": sorted(existing_claim_keys),
         }
 
     for idx, entry in enumerate(claims, start=1):
-        if entry.claim_id.upper() in existing_claim_ids:
+        entry_key = _claim_entry_key(entry)
+        if entry_key in existing_claim_keys:
             skipped_record = {
+                "source_file": entry.source_file,
                 "claim_id": entry.claim_id,
                 "domain": entry.domain,
                 "title": entry.title,
@@ -310,17 +498,18 @@ def main() -> int:
                 encoding="utf-8",
             )
             print(
-                f"[{idx}/{len(claims)}] {entry.claim_id} ({entry.domain}) - skipped existing",
+                f"[{idx}/{len(claims)}] {entry.source_file}:{entry.claim_id} ({entry.domain}) - skipped existing",
                 flush=True,
             )
             continue
 
         print(
-            f"[{idx}/{len(claims)}] {entry.claim_id} ({entry.domain}) - {entry.title}",
+            f"[{idx}/{len(claims)}] {entry.source_file}:{entry.claim_id} ({entry.domain}) - {entry.title}",
             flush=True,
         )
         started = time.time()
         record: dict[str, Any] = {
+            "source_file": entry.source_file,
             "claim_id": entry.claim_id,
             "domain": entry.domain,
             "title": entry.title,
@@ -328,26 +517,42 @@ def main() -> int:
             "status": "error",
         }
         try:
-            resp = _call_api_chat(
-                base_url=args.base_url,
-                claim=entry.text,
-                top_k=int(args.top_k),
-                max_precedents=int(args.max_precedents),
-                timeout_s=None if args.timeout is None else float(args.timeout),
-                settings_payload={
-                    "search_query_terms_mode": args.search_query_terms_mode
-                },
-                claim_context_memory_enabled=bool(args.claim_context_memory),
-                claim_context_memory_overwrite=bool(
-                    args.overwrite_claim_context_memory
-                ),
-            )
+            model_down_waits = 0
+            while True:
+                resp = _call_api_chat(
+                    base_url=args.base_url,
+                    claim=entry.text,
+                    top_k=int(args.top_k),
+                    max_precedents=int(args.max_precedents),
+                    timeout_s=None if args.timeout is None else float(args.timeout),
+                    settings_payload=settings_payload,
+                    claim_context_memory_enabled=bool(args.claim_context_memory),
+                    claim_context_memory_overwrite=bool(
+                        args.overwrite_claim_context_memory
+                    ),
+                )
+                if resp.status_code == 200:
+                    break
+                body_text = _response_text_safe(resp)
+                if args.maverick_only and _looks_like_maverick_down_message(body_text):
+                    model_down_waits += 1
+                    wait_s = float(args.maverick_down_wait_seconds)
+                    print(
+                        f"    Maverick down/over-capacity detected (HTTP {resp.status_code}); "
+                        f"waiting {wait_s:.0f}s then retrying claim...",
+                        flush=True,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                break
             elapsed = round(time.time() - started, 3)
             record["elapsed_s"] = elapsed
+            if model_down_waits:
+                record["maverick_down_waits"] = model_down_waits
             record["http_status"] = resp.status_code
 
             if resp.status_code != 200:
-                text = resp.text
+                text = _response_text_safe(resp)
                 record["error"] = text[:4000]
                 failed += 1
             else:
@@ -369,8 +574,11 @@ def main() -> int:
                     }
                 )
                 if not args.cache_only:
+                    source_stem = _slugify_filename(
+                        Path(entry.source_file).stem, max_len=20
+                    )
                     claim_file = OUTPUT_DIR / (
-                        f"{ts}_{entry.claim_id}_{_slugify_filename(entry.title, max_len=40)}.json"
+                        f"{ts}_{source_stem}_{entry.claim_id}_{_slugify_filename(entry.title, max_len=40)}.json"
                     )
                     claim_payload = {
                         "captured_at": datetime.now().isoformat(timespec="seconds"),

@@ -10,7 +10,9 @@ Provides common functionality for all agents including:
 
 import re
 import sys
+import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -28,6 +30,23 @@ from services.groq_client import (  # noqa: E402
     resilient_chat_call,
     resilient_chat_stream,
 )
+
+_retrieval_llm_fail_fast_state = threading.local()
+
+
+def _retrieval_llm_fail_fast_enabled() -> bool:
+    return bool(getattr(_retrieval_llm_fail_fast_state, "enabled", False))
+
+
+@contextmanager
+def retrieval_llm_fail_fast_scope(enabled: bool):
+    """Thread-local fail-fast mode for retrieval-side LLM filtering calls."""
+    prev = bool(getattr(_retrieval_llm_fail_fast_state, "enabled", False))
+    _retrieval_llm_fail_fast_state.enabled = bool(enabled)
+    try:
+        yield
+    finally:
+        _retrieval_llm_fail_fast_state.enabled = prev
 
 
 @dataclass
@@ -564,6 +583,10 @@ class BaseAgent(ABC):
                 self._log(
                     f"⚠️ LLM call failed for article {article_number}: {e}", "warning"
                 )
+                if _retrieval_llm_fail_fast_enabled():
+                    raise RuntimeError(
+                        f"Retrieval relevance LLM failure for article {article_number}: {e}"
+                    ) from e
                 answer = "YES"
 
             token = answer.split()[0] if answer else ""
@@ -615,6 +638,8 @@ class BaseAgent(ABC):
                 return context[:200]
         except Exception as e:
             self._log(f"⚠️ Legal context extraction failed: {e}", "warning")
+            if _retrieval_llm_fail_fast_enabled():
+                raise RuntimeError(f"Retrieval legal-context LLM failure: {e}") from e
 
         fallback = "General legal dispute context"
         self._legal_context_cache[claim_key] = fallback
@@ -690,6 +715,10 @@ class BaseAgent(ABC):
                         f"⚠️ Applicability check failed for {article_number}: {e}",
                         "warning",
                     )
+                    if _retrieval_llm_fail_fast_enabled():
+                        raise RuntimeError(
+                            f"Retrieval applicability LLM failure for article {article_number}: {e}"
+                        ) from e
                     answer = "YES"  # safe default: keep on error
 
                 first_token = answer.split()[0] if answer else ""
@@ -885,6 +914,10 @@ class BaseAgent(ABC):
                     f"⚠️ LLM call failed for precedent [{idx}] {title}: {e}",
                     "warning",
                 )
+                if _retrieval_llm_fail_fast_enabled():
+                    raise RuntimeError(
+                        f"Retrieval precedent relevance LLM failure for precedent [{idx}] {title}: {e}"
+                    ) from e
                 answer = "YES"  # safe default: keep on error
 
             token = answer.split()[0] if answer else ""

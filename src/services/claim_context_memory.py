@@ -89,7 +89,7 @@ class ClaimContextMemory:
             "include_precedents": bool(include_precedents),
             "max_statutes": int(max_statutes),
             "max_precedents": int(max_precedents),
-            "signature": signature or {},
+            "signature": dict(signature or {}),
         }
 
     def build_cache_key(
@@ -131,7 +131,7 @@ class ClaimContextMemory:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT statutes_json, precedents_json, request_meta_json
+                SELECT cache_key, statutes_json, precedents_json, request_meta_json
                 FROM claim_context_cache
                 WHERE cache_key = ?
                 """,
@@ -139,6 +139,7 @@ class ClaimContextMemory:
             ).fetchone()
             if row is None:
                 return None
+            row_cache_key = str(row["cache_key"])
             now = datetime.now().isoformat(timespec="seconds")
             conn.execute(
                 """
@@ -146,7 +147,7 @@ class ClaimContextMemory:
                 SET hit_count = hit_count + 1, last_hit_at = ?
                 WHERE cache_key = ?
                 """,
-                (now, cache_key),
+                (now, row_cache_key),
             )
             conn.commit()
 
@@ -161,7 +162,7 @@ class ClaimContextMemory:
             return None
 
         return {
-            "cache_key": cache_key,
+            "cache_key": row_cache_key,
             "statutes": statutes,
             "precedents": precedents,
             "request_meta": request_meta if isinstance(request_meta, dict) else {},

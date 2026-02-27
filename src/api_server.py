@@ -43,6 +43,7 @@ from agents import (  # noqa: E402
     RetrievalFilterAgent,
 )
 from agents.base import AgentConfig  # noqa: E402
+from agents.base import retrieval_llm_fail_fast_scope  # noqa: E402
 from agents.router import Router, RoutingDecision  # noqa: E402
 from agents.tools import config_loader  # noqa: E402
 from agents.tools.neo4j_tools import (  # noqa: E402
@@ -61,6 +62,7 @@ CORS(app)
 _pipeline_lock = threading.Lock()
 _active_stream_run_lock = threading.Lock()
 _active_stream_run: dict | None = None
+_retrieval_model_override_lock = threading.Lock()
 
 # ─── Pipeline file logging ──────────────────────────────────────────
 LOG_DIR = Path(project_root) / "logs"
@@ -389,7 +391,6 @@ def _build_claim_context_memory_signature() -> dict:
         "search_hybrid_admin_fulltext_weight": float(
             settings.search_hybrid_admin_fulltext_weight
         ),
-        "retrieval_model_order_aliases": list(settings.retrieval_model_order_aliases),
     }
 
 
@@ -854,6 +855,56 @@ def _parse_claim_context_memory_flags(data: dict | None) -> tuple[bool, bool]:
     return enabled, overwrite
 
 
+def _parse_retrieval_model_order_override(value) -> list[str] | None:
+    """Parse request-scoped retrieval model alias order override."""
+    if value is None:
+        return None
+    aliases: list[str] = []
+    if isinstance(value, str):
+        aliases = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        aliases = [str(part).strip() for part in value if str(part).strip()]
+    else:
+        raise ValueError(
+            "settings.retrieval_model_order_aliases must be a list or string"
+        )
+
+    if not aliases:
+        return None
+
+    available = set(settings.available_model_aliases)
+    invalid = [alias for alias in aliases if alias not in available]
+    if invalid:
+        raise ValueError(
+            "Invalid retrieval model alias(es): "
+            + ", ".join(invalid)
+            + ". Available: "
+            + ", ".join(sorted(available))
+        )
+    return aliases
+
+
+@contextmanager
+def _temporary_retrieval_model_order_override(aliases: list[str] | None):
+    """Temporarily override retrieval model fallback alias order for a request."""
+    if not aliases:
+        yield
+        return
+
+    with _retrieval_model_override_lock:
+        cfg_cls = settings.__class__
+        previous = list(cfg_cls.RETRIEVAL_MODEL_ORDER_ALIASES)
+        cfg_cls.RETRIEVAL_MODEL_ORDER_ALIASES = list(aliases)
+        try:
+            print(
+                "⚙️  [Retrieval] Model order override (request): "
+                + " -> ".join(cfg_cls.RETRIEVAL_MODEL_ORDER_ALIASES)
+            )
+            yield
+        finally:
+            cfg_cls.RETRIEVAL_MODEL_ORDER_ALIASES = previous
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
@@ -939,6 +990,12 @@ def chat():
         )
         fe_settings = data.get("settings", {}) or {}
         fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
+        fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
+        fe_search_use_top_n_libri = fe_settings.get("search_use_top_n_libri")
+        fe_retrieval_model_order_aliases = fe_settings.get(
+            "retrieval_model_order_aliases"
+        )
+        fe_retrieval_strict_llm_errors = fe_settings.get("retrieval_strict_llm_errors")
 
         if not claim:
             return jsonify({"error": 'Campo "message" obbligatorio'}), 400
@@ -947,34 +1004,47 @@ def chat():
             mode = str(fe_search_query_terms_mode).strip().lower()
             if mode == "llm":
                 settings.search_query_terms_mode = mode
+        if fe_search_min_kept_statutes is not None:
+            settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
+        if fe_search_use_top_n_libri is not None:
+            settings.search_use_top_n_libri = int(fe_search_use_top_n_libri)
 
-        # Align /api/chat retrieval with the full pipeline retrieval stack:
-        # hybrid retrieval + CITES expansion + relevance filter + applicability filter
-        statutes, precedents = prepare_claim_context(
-            claim=claim,
-            include_precedents=bool(include_precedents),
-            max_statutes=int(top_k),
-            max_precedents=int(max_precedents),
-            claim_context_memory_enabled=claim_memory_enabled,
-            claim_context_memory_overwrite=claim_memory_overwrite,
+        retrieval_model_order_override = _parse_retrieval_model_order_override(
+            fe_retrieval_model_order_aliases
         )
-        classification = pipe.classifier.classify(claim)
-        chat_result = SimpleNamespace(
-            claim=claim,
-            classification=classification,
-            articles=[
-                SimpleNamespace(
-                    source=art.get("source"),
-                    articolo=art.get("articolo"),
-                    titolo=art.get("titolo"),
-                    testo=art.get("testo"),
-                    libro=art.get("libro"),
-                    score=float(art.get("score", 0.0)),
-                )
-                for art in statutes
-            ],
-        )
-        response_text = format_search_result(chat_result)
+        retrieval_strict_llm_errors = bool(fe_retrieval_strict_llm_errors)
+
+        with (
+            _temporary_retrieval_model_order_override(retrieval_model_order_override),
+            retrieval_llm_fail_fast_scope(retrieval_strict_llm_errors),
+        ):
+            # Align /api/chat retrieval with the full pipeline retrieval stack:
+            # hybrid retrieval + CITES expansion + relevance filter + applicability filter
+            statutes, precedents = prepare_claim_context(
+                claim=claim,
+                include_precedents=bool(include_precedents),
+                max_statutes=int(top_k),
+                max_precedents=int(max_precedents),
+                claim_context_memory_enabled=claim_memory_enabled,
+                claim_context_memory_overwrite=claim_memory_overwrite,
+            )
+            classification = pipe.classifier.classify(claim)
+            chat_result = SimpleNamespace(
+                claim=claim,
+                classification=classification,
+                articles=[
+                    SimpleNamespace(
+                        source=art.get("source"),
+                        articolo=art.get("articolo"),
+                        titolo=art.get("titolo"),
+                        testo=art.get("testo"),
+                        libro=art.get("libro"),
+                        score=float(art.get("score", 0.0)),
+                    )
+                    for art in statutes
+                ],
+            )
+            response_text = format_search_result(chat_result)
 
         return jsonify(
             {
@@ -1208,6 +1278,7 @@ def _run_full_pipeline(
     fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
     fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
     fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
+    fe_search_use_top_n_libri = fe_settings.get("search_use_top_n_libri")
     fe_chain_min_steps = fe_settings.get("chain_min_steps")
     fe_chain_max_steps = fe_settings.get("chain_max_steps")
     fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
@@ -1250,6 +1321,8 @@ def _run_full_pipeline(
             settings.chain_max_steps = int(fe_chain_max_steps)
         if fe_search_min_kept_statutes is not None:
             settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
+        if fe_search_use_top_n_libri is not None:
+            settings.search_use_top_n_libri = int(fe_search_use_top_n_libri)
         if fe_search_query_terms_mode is not None:
             mode = str(fe_search_query_terms_mode).strip().lower()
             if mode == "llm":

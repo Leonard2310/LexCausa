@@ -164,7 +164,7 @@ export default function App() {
     llm_temperature: 0.3,
     llm_max_tokens: 8192,
     search_top_k_default: 100,
-    search_min_kept_statutes: 10,
+    search_min_kept_statutes: 8,
     search_use_top_n_libri: 3,
     precedents_limit_default: 5,
     include_precedents: true,
@@ -179,7 +179,7 @@ export default function App() {
     aqa_allow_factual_attacks: true,
     aqa_allow_cross_codice: true,
     enable_causality: true,
-    claim_context_memory_enabled: false,
+    claim_context_memory_enabled: true,
     claim_context_memory_overwrite: false,
   });
   const messagesEndRef = useRef(null);
@@ -2229,13 +2229,18 @@ export default function App() {
     liveMode = false,
     variant = 'default',
   }) => {
-    const chainSteps = parsed.chainSteps?.length > 0
-      ? parsed.chainSteps
-      : liveSteps;
-    const norms = parsed.norms?.length > 0
-      ? parsed.norms
-      : extractNormCitations(
-        `${parsed.premessa || ''} ${parsed.nesso || ''} ${parsed.conclusione || ''} ${chainSteps.join(' ')}`,
+    const hasLiveChain = liveMode && Array.isArray(liveSteps) && liveSteps.length > 0;
+    const chainSteps = hasLiveChain
+      ? liveSteps
+      : (parsed.chainSteps?.length > 0 ? parsed.chainSteps : liveSteps);
+    const norms = hasLiveChain
+      ? extractNormCitations(`${chainSteps.join(' ')} ${liveConclusion || ''}`)
+      : (
+        parsed.norms?.length > 0
+          ? parsed.norms
+          : extractNormCitations(
+            `${parsed.premessa || ''} ${parsed.nesso || ''} ${parsed.conclusione || ''} ${chainSteps.join(' ')}`,
+          )
       );
     return (
       <div className={`structured-response ${variant === 'repaired' ? 'repaired-chain' : ''}`}>

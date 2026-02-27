@@ -40,6 +40,7 @@ _SUFFIX_TOKENS = (
     "bis",
 )
 _SUFFIX_PATTERN = "|".join(_SUFFIX_TOKENS)
+_SUFFIX_TOKEN_SET = {token.lower() for token in _SUFFIX_TOKENS}
 _ARTICLE_ID_PATTERN = rf"\d{{1,4}}(?:[-\s]?(?:[a-z0-9]{{2,}}|{_SUFFIX_PATTERN}))?"
 _CODE_PATTERN = (
     r"c\.?\s*[cp]\.?|"
@@ -78,6 +79,22 @@ def normalize_article_id(raw: str) -> str:
     text = re.sub(r"^(\d{1,4})([a-z]{2,})$", r"\1-\2", text)
     text = re.sub(r"-+", "-", text).strip("-")
     return text
+
+
+def _sanitize_article_suffix(article_id: str, raw_article: str) -> str:
+    """Drop spurious non-legal suffixes captured from narrative prose.
+
+    Example: ``art. 1218 per ...`` should map to ``1218`` (not ``1218-per``).
+    """
+    match = re.fullmatch(r"(\d{1,4})-([a-z]{2,})", article_id)
+    if not match:
+        return article_id
+
+    suffix = match.group(2).lower()
+    has_explicit_hyphen = "-" in raw_article.translate(_UNICODE_CITATION_TRANSLATION)
+    if has_explicit_hyphen or suffix in _SUFFIX_TOKEN_SET:
+        return article_id
+    return match.group(1)
 
 
 def article_id_to_regex(article_id: str) -> str:
@@ -134,6 +151,7 @@ def extract_article_mentions(
         article_id = normalize_article_id(raw_article)
         if not article_id:
             continue
+        article_id = _sanitize_article_suffix(article_id, raw_article)
 
         source_hint = infer_source_hint(raw_code)
         mentions.append(

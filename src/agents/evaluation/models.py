@@ -83,6 +83,7 @@ class ConsistencyReport:
     text_mismatches: int = 0
     repaired_citations: int = 0
     dropped_citations: int = 0
+    relevance_gate_dropped_citations: int = 0
     citation_checks: list[CitationCheck] = field(default_factory=list)
     consistency_score: float = 0.0
     issues: list[str] = field(default_factory=list)
@@ -97,6 +98,7 @@ class ConsistencyReport:
             "text_mismatches": self.text_mismatches,
             "repaired_citations": self.repaired_citations,
             "dropped_citations": self.dropped_citations,
+            "relevance_gate_dropped_citations": self.relevance_gate_dropped_citations,
             "citation_checks": [c.to_dict() for c in self.citation_checks],
             "consistency_score": self.consistency_score,
             "issues": self.issues,

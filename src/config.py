@@ -799,6 +799,15 @@ class Settings(BaseSettings):
         alias="CC_CONSISTENCY_TEXT_WEIGHT",
         description="Weight for text match in the consistency score.",
     )
+    cc_relevance_drop_penalty_weight: float = Field(
+        default=0.25,
+        alias="CC_RELEVANCE_DROP_PENALTY_WEIGHT",
+        description=(
+            "Penalty weight applied when citations are dropped by pre-repair "
+            "relevance gate. Final score is multiplied by "
+            "(1 - weight * relevance_drop_ratio)."
+        ),
+    )
     cc_core_threshold: int = Field(
         default=2,
         alias="CC_CORE_THRESHOLD",

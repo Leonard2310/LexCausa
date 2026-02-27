@@ -35,8 +35,18 @@ Modifica `experiments/doe/doe_settings.json` fissando:
 - max_statutes / max_precedents
 - chain_min/max_steps
 - pesi AQA
+- flags causality:
+  - `reasoner_enable_causality` (default consigliato: `true`)
+  - `counter_enable_causality` (viene comunque pilotato da A/B nel run plan)
+  - `counter_pass_causal_identity`, `counter_pass_taxonomy_attacks`, `counter_pass_norms`
+    (default: `false`, attivare solo se vuoi passare questi input tassonomici al Counter)
 
-Nota: durante il DoE cambierai solo `enable_causality` (gestito automaticamente da `run_plan.csv`).
+Nota: il contesto pre-retrieval (statuti + precedenti) viene sempre passato al Counter;
+`counter_pass_norms` controlla solo il passaggio di `anchor_norms` e `principle_tests`.
+
+Nota: nel DoE il run plan pilota `counter_enable_causality` per A/B (isolamento Counter).
+In condizione A, `counter_pass_*` viene forzato a `false`; in B usa i valori configurati.
+Il flag legacy `enable_causality` resta inviato per compatibilità.
 
 ### 2) Genera il piano sperimentale
 

@@ -1172,7 +1172,6 @@ ORIGINAL CONTEXT (to correct):
 "[[cited_text]]"
 
 Rewrite using only the official summary.""",
-
 }
 
 

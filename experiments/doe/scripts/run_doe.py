@@ -115,7 +115,21 @@ def build_payload(
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
     settings = dict(cfg.get("settings", {}))
-    settings["enable_causality"] = as_bool(plan_row["enable_causality"])
+    condition_enabled = as_bool(plan_row["enable_causality"])
+    # Legacy global switch retained for backward compatibility.
+    settings["enable_causality"] = condition_enabled
+    # DoE isolation: by default toggle causality on Counter only.
+    settings["reasoner_enable_causality"] = as_bool(
+        settings.get("reasoner_enable_causality", True)
+    )
+    settings["counter_enable_causality"] = condition_enabled
+    # Counter inputs are opt-in and default disabled (can be overridden in config).
+    pass_causal_cfg = as_bool(settings.get("counter_pass_causal_identity", False))
+    pass_attacks_cfg = as_bool(settings.get("counter_pass_taxonomy_attacks", False))
+    pass_norms_cfg = as_bool(settings.get("counter_pass_norms", False))
+    settings["counter_pass_causal_identity"] = condition_enabled and pass_causal_cfg
+    settings["counter_pass_taxonomy_attacks"] = condition_enabled and pass_attacks_cfg
+    settings["counter_pass_norms"] = condition_enabled and pass_norms_cfg
 
     return {
         "claim": plan_row["claim_text"],

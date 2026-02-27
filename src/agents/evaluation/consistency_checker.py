@@ -407,7 +407,6 @@ class ConsistencyMixin:
         self._log("      ⚠️ No text found for Art. " + str(article_num))
         return "", "none"
 
-
     def _compute_text_similarity(self, cited_text: str, db_text: str) -> float:
         """
         Compute similarity between cited text and database text.
@@ -570,7 +569,6 @@ class ConsistencyMixin:
             self._log(f"      ⚠️ LLM pertinence check failed: {e}", "warning")
             # In case of error, assume pertinent to be conservative (repair > drop)
             return True
-
 
     def _pre_repair_statute_relevance_gate(
         self,
@@ -1366,8 +1364,10 @@ class ConsistencyMixin:
                 self._log(f"   ✅ Art. {article_num} -> EXISTS in Neo4j")
 
                 # Extract cited text from the reasoning chain / raw response
-                cited_text, cited_source = self._extract_cited_text_for_article_with_source(
-                    verification_text, article_num, aspic_ir
+                cited_text, cited_source = (
+                    self._extract_cited_text_for_article_with_source(
+                        verification_text, article_num, aspic_ir
+                    )
                 )
 
                 if cited_text:
@@ -1376,7 +1376,9 @@ class ConsistencyMixin:
 
                 # Classify core/peripheral BEFORE applying any relevance gate.
                 # Core norms must never be dropped by the pre-repair gate.
-                is_core = self._is_article_core(article_num, aspic_ir, verification_text)
+                is_core = self._is_article_core(
+                    article_num, aspic_ir, verification_text
+                )
                 check.is_core = is_core
 
                 run_relevance_gate = (
@@ -1466,7 +1468,9 @@ class ConsistencyMixin:
                             db_title=db_title,
                             precomputed_is_core=is_core,
                             prechecked_pertinent=(
-                                True if run_relevance_gate and relevance_label == "RELEVANT" else None
+                                True
+                                if run_relevance_gate and relevance_label == "RELEVANT"
+                                else None
                             ),
                         )
                 elif not cited_text and db_text:
@@ -1643,8 +1647,7 @@ class ConsistencyMixin:
 
         relevance_penalty_factor = max(
             0.0,
-            1.0
-            - settings.cc_relevance_drop_penalty_weight * relevance_drop_ratio,
+            1.0 - settings.cc_relevance_drop_penalty_weight * relevance_drop_ratio,
         )
         report.consistency_score = base_score * relevance_penalty_factor
         report.issues = self._deduplicate_issue_list(report.issues)
@@ -1772,7 +1775,6 @@ class ConsistencyMixin:
 
         return "\n".join(lines)
 
-
     def _regenerate_reasoning_chain_with_llm(
         self,
         original_chain: str,
@@ -1875,7 +1877,6 @@ class ConsistencyMixin:
     # ------------------------------------------------------------------
     # Per-step LLM regeneration (only for severe mismatches)
     # ------------------------------------------------------------------
-
 
     def _inject_text_after_article(
         self, chain: str, citation: str, repaired_text: str

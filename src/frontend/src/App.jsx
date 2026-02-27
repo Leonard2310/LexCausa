@@ -9,6 +9,7 @@ const TABS = {
   SEARCH: 'search',
   REASON: 'reason',
   PIPELINE: 'pipeline',
+  DOE: 'doe',
 };
 
 // API base URL - uses proxy in development
@@ -16,11 +17,13 @@ const API_BASE = '/api';
 
 const TAB_WELCOME_MESSAGES = {
   [TABS.SEARCH]:
-    'Ciao! Sono LexCausa, il tuo assistente per ricerche legali nel Codice Civile, Penale e Amministrativo italiano. Descrivimi il tuo caso e ti aiuterò a trovare gli articoli e i precedenti più rilevanti.',
+    'Ciao! Sono LexCausa. Ti aiuto a cercare norme e precedenti rilevanti per il tuo claim.',
   [TABS.REASON]:
-    'Ciao! Sono LexCausa, il tuo assistente per il ragionamento giuridico. Inserisci un claim e costruirò un percorso argomentativo strutturato, passo dopo passo.',
+    'Ciao! Sono LexCausa. Ti aiuto a costruire la tesi principale con ragionamento giuridico strutturato.',
   [TABS.PIPELINE]:
-    'Ciao! Sono LexCausa, il tuo assistente per l’analisi completa del caso. Inserisci un claim e riceverai una valutazione strutturata con tesi principale e controtesi, più un esito finale.',
+    'Ciao! Sono LexCausa. Ti aiuto con la pipeline completa: retrieval, Reasoner, Counter-Reasoner e Polisher-Evaluator.',
+  [TABS.DOE]:
+    'Ciao! Sono LexCausa. Ti aiuto a eseguire il DoE con confronto A/B automatico del Counter-Reasoner.',
 };
 
 const PIPELINE_PHASES = [
@@ -179,7 +182,19 @@ export default function App() {
     aqa_damage_factor: 0.5,
     aqa_allow_factual_attacks: true,
     aqa_allow_cross_codice: true,
-    enable_causality: true,
+    reasoner_enable_causality: true,
+    counter_enable_causality: true,
+    counter_pass_causal_identity: true,
+    counter_pass_taxonomy_attacks: true,
+    counter_pass_norms: true,
+    claim_context_memory_enabled: true,
+    claim_context_memory_overwrite: false,
+  });
+  const [doeSettings, setDoeSettings] = useState({
+    reasoner_enable_causality: true,
+    counter_pass_causal_identity: false,
+    counter_pass_taxonomy_attacks: false,
+    counter_pass_norms: false,
     claim_context_memory_enabled: true,
     claim_context_memory_overwrite: false,
   });
@@ -218,7 +233,9 @@ export default function App() {
 
   useEffect(() => {
     if (activeTab !== TABS.PIPELINE) {
-      setClaimMemoryMenuOpen(false);
+      if (activeTab !== TABS.DOE) {
+        setClaimMemoryMenuOpen(false);
+      }
     }
   }, [activeTab]);
 
@@ -253,6 +270,20 @@ export default function App() {
           aqa_damage_factor: d.aqa_damage_factor ?? prev.aqa_damage_factor,
           aqa_allow_factual_attacks: d.aqa_allow_factual_attacks ?? prev.aqa_allow_factual_attacks,
           aqa_allow_cross_codice: d.aqa_allow_cross_codice ?? prev.aqa_allow_cross_codice,
+          // Pipeline defaults: full causality enabled
+          reasoner_enable_causality: true,
+          counter_enable_causality: true,
+          counter_pass_causal_identity: true,
+          counter_pass_taxonomy_attacks: true,
+          counter_pass_norms: true,
+        }));
+        setDoeSettings((prev) => ({
+          ...prev,
+          // DoE defaults: Counter causality disabled by default
+          reasoner_enable_causality: true,
+          counter_pass_causal_identity: false,
+          counter_pass_taxonomy_attacks: false,
+          counter_pass_norms: false,
         }));
       })
       .catch((err) => console.warn('Could not load settings:', err));
@@ -260,6 +291,10 @@ export default function App() {
 
   const updateSetting = (key, value) => {
     setPipelineSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const updateDoeSetting = (key, value) => {
+    setDoeSettings((prev) => ({ ...prev, [key]: value }));
   };
 
   const handleSearchSubmit = async () => {
@@ -333,6 +368,7 @@ export default function App() {
           settings: {
             reasoner_model: pipelineSettings.reasoner_model,
             reasoner_temperature: pipelineSettings.reasoner_temperature,
+            reasoner_enable_causality: pipelineSettings.reasoner_enable_causality,
             llm_max_tokens: pipelineSettings.llm_max_tokens,
           },
         }),
@@ -367,7 +403,7 @@ export default function App() {
   };
 
   const handleStopPipeline = async () => {
-    if (!isLoading || activeTab !== TABS.PIPELINE) return;
+    if (!isLoading || (activeTab !== TABS.PIPELINE && activeTab !== TABS.DOE)) return;
 
     manualPipelineStopRef.current = true;
     setIsStoppingPipeline(true);
@@ -403,29 +439,355 @@ export default function App() {
     }
   };
 
-  const handlePipelineSubmit = async () => {
+  const isCompletedPipelineRun = (run) => Boolean(
+    run
+    && !run.error
+    && run.evaluation
+    && (
+      run._stream?.phases?.final_evaluation === 'done'
+      || run.evaluation?.aqa_report
+      || run.evaluation?.summary
+    ),
+  );
+
+  const buildPipelinePayload = (claim, activeSettings) => ({
+    claim,
+    include_precedents: activeSettings.include_precedents,
+    max_statutes: activeSettings.search_top_k_default,
+    max_precedents: activeSettings.precedents_limit_default,
+    claim_context_memory_enabled: !!activeSettings.claim_context_memory_enabled,
+    claim_context_memory_overwrite:
+      !!activeSettings.claim_context_memory_enabled &&
+      !!activeSettings.claim_context_memory_overwrite,
+    settings: {
+      reasoner_model: activeSettings.reasoner_model,
+      counter_model: activeSettings.counter_model,
+      reasoner_temperature: activeSettings.reasoner_temperature,
+      counter_temperature: activeSettings.counter_temperature,
+      llm_max_tokens: activeSettings.llm_max_tokens,
+      search_min_kept_statutes: activeSettings.search_min_kept_statutes,
+      search_use_top_n_libri: activeSettings.search_use_top_n_libri,
+      chain_min_steps: activeSettings.chain_min_steps,
+      chain_max_steps: activeSettings.chain_max_steps,
+      aqa_alpha: activeSettings.aqa_alpha,
+      aqa_beta: activeSettings.aqa_beta,
+      aqa_gamma: activeSettings.aqa_gamma,
+      aqa_min_semantic_overlap: activeSettings.aqa_min_semantic_overlap,
+      aqa_min_strength_ratio: activeSettings.aqa_min_strength_ratio,
+      aqa_damage_factor: activeSettings.aqa_damage_factor,
+      aqa_allow_factual_attacks: activeSettings.aqa_allow_factual_attacks,
+      aqa_allow_cross_codice: activeSettings.aqa_allow_cross_codice,
+      reasoner_enable_causality: activeSettings.reasoner_enable_causality,
+      counter_enable_causality: activeSettings.counter_enable_causality,
+      counter_pass_causal_identity: activeSettings.counter_pass_causal_identity,
+      counter_pass_taxonomy_attacks: activeSettings.counter_pass_taxonomy_attacks,
+      counter_pass_norms: activeSettings.counter_pass_norms,
+    },
+  });
+
+  const extractDoeMetrics = (run = {}) => {
+    const aqa = run?.evaluation?.aqa_report || {};
+    const consistency = run?.evaluation?.consistency_report || {};
+    return {
+      verdict: aqa?.verdict || 'n/a',
+      final_score: Number(aqa?.net_plausibility?.final ?? NaN),
+      pro_score: Number(aqa?.net_plausibility?.pro ?? NaN),
+      contra_score: Number(aqa?.net_plausibility?.contra ?? NaN),
+      pro_links: Array.isArray(aqa?.links?.pro) ? aqa.links.pro.length : 0,
+      contra_links: Array.isArray(aqa?.links?.contra) ? aqa.links.contra.length : 0,
+      reasoner_consistency: Number(consistency?.reasoner?.consistency_score ?? NaN),
+      counter_consistency: Number(consistency?.counter_reasoner?.consistency_score ?? NaN),
+    };
+  };
+
+  const computeDoeDelta = (baselineMetrics = {}, treatmentMetrics = {}) => {
+    const deltaNumber = (a, b) => {
+      const left = Number(a);
+      const right = Number(b);
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+      return right - left;
+    };
+    return {
+      final_score: deltaNumber(baselineMetrics.final_score, treatmentMetrics.final_score),
+      pro_score: deltaNumber(baselineMetrics.pro_score, treatmentMetrics.pro_score),
+      contra_score: deltaNumber(baselineMetrics.contra_score, treatmentMetrics.contra_score),
+      reasoner_consistency: deltaNumber(
+        baselineMetrics.reasoner_consistency,
+        treatmentMetrics.reasoner_consistency,
+      ),
+      counter_consistency: deltaNumber(
+        baselineMetrics.counter_consistency,
+        treatmentMetrics.counter_consistency,
+      ),
+      pro_links: (treatmentMetrics.pro_links ?? 0) - (baselineMetrics.pro_links ?? 0),
+      contra_links: (treatmentMetrics.contra_links ?? 0) - (baselineMetrics.contra_links ?? 0),
+    };
+  };
+
+  const describeCounterTaxonomySetup = (settings = {}) => {
+    if (!settings?.counter_enable_causality) {
+      return 'Counter tassonomia OFF';
+    }
+    const enabledParts = [];
+    if (settings?.counter_pass_causal_identity) enabledParts.push('identity');
+    if (settings?.counter_pass_taxonomy_attacks) enabledParts.push('attacks');
+    if (settings?.counter_pass_norms) enabledParts.push('norms');
+    if (enabledParts.length === 0) {
+      return 'Counter tassonomia ON (senza pass-through)';
+    }
+    return `Counter tassonomia ON (${enabledParts.join(' + ')})`;
+  };
+
+  const handleDoeSubmit = async () => {
     if (!input.trim() || isLoading) return;
 
     const claim = input.trim();
+    const mergedDoeSettings = { ...pipelineSettings, ...doeSettings };
+    const setupAPassCausalIdentity = !!mergedDoeSettings.counter_pass_causal_identity;
+    const setupAPassTaxonomyAttacks = !!mergedDoeSettings.counter_pass_taxonomy_attacks;
+    const setupAPassNorms = !!mergedDoeSettings.counter_pass_norms;
+    const setupACounterEnabled = (
+      setupAPassCausalIdentity
+      || setupAPassTaxonomyAttacks
+      || setupAPassNorms
+    );
+    const setupASettings = {
+      ...mergedDoeSettings,
+      counter_enable_causality: setupACounterEnabled,
+      counter_pass_causal_identity: setupAPassCausalIdentity,
+      counter_pass_taxonomy_attacks: setupAPassTaxonomyAttacks,
+      counter_pass_norms: setupAPassNorms,
+    };
+    const setupBSettings = {
+      ...mergedDoeSettings,
+      counter_enable_causality: true,
+      counter_pass_causal_identity: true,
+      counter_pass_taxonomy_attacks: true,
+      counter_pass_norms: true,
+    };
+    const setupADescription = describeCounterTaxonomySetup(setupASettings);
+    const setupBDescription = describeCounterTaxonomySetup(setupBSettings);
+
+    const payloadA = buildPipelinePayload(claim, setupASettings);
+    const payloadB = buildPipelinePayload(claim, setupBSettings);
+
     setClaimMemoryMenuOpen(false);
     manualPipelineStopRef.current = false;
     activePipelineRunIdRef.current = null;
     pipelineAbortControllerRef.current = null;
     setIsStoppingPipeline(false);
-    const isCompletedRun = (run) => Boolean(
-      run
-      && !run.error
-      && run.evaluation
-      && (
-        run._stream?.phases?.final_evaluation === 'done'
-        || run.evaluation?.aqa_report
-        || run.evaluation?.summary
-      ),
-    );
+
     setInput('');
     shouldAutoScrollRef.current = true;
     setIsLoading(true);
-    if (isCompletedRun(pipelineResult)) {
+    if (isCompletedPipelineRun(pipelineResult)) {
+      setPipelineHistory((prev) => [...prev, pipelineResult].slice(-10));
+    }
+    setPipelineMessages((prev) => [...prev, { role: 'user', content: claim }]);
+    const doeLiveSeed = createLivePipelineResult(claim);
+    setPipelineResult({
+      ...doeLiveSeed,
+      _stream: {
+        ...doeLiveSeed._stream,
+        phases: {
+          context_setup: 'done',
+          support: 'active',
+          counter: 'pending',
+          final_evaluation: 'pending',
+        },
+        phase_progress: {
+          context_setup: 100,
+          support: 20,
+          counter: 0,
+          final_evaluation: 0,
+        },
+        phase_details: {
+          context_setup: 'Configurazione DoE automatica pronta',
+          support: `Run A (baseline): ${setupADescription}`,
+          counter: 'In attesa',
+          final_evaluation: 'In attesa',
+        },
+      },
+    });
+
+    const runPipelineJson = async (payload, controller) => {
+      const response = await fetch(`${API_BASE}/pipeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        let errText = 'Errore nella pipeline';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore json parse failures
+        }
+        throw new Error(errText);
+      }
+      return response.json();
+    };
+
+    try {
+      const runAController = new AbortController();
+      pipelineAbortControllerRef.current = runAController;
+      const runAStart = performance.now();
+      const runAResult = await runPipelineJson(payloadA, runAController);
+      const runADurationMs = Math.round(performance.now() - runAStart);
+
+      setPipelineResult((prev) => ({
+        ...(prev || createLivePipelineResult(claim)),
+        _stream: {
+          ...(prev?._stream || {}),
+          phases: {
+            context_setup: 'done',
+            support: 'done',
+            counter: 'active',
+            final_evaluation: 'pending',
+          },
+          phase_progress: {
+            context_setup: 100,
+            support: 100,
+            counter: 30,
+            final_evaluation: 0,
+          },
+          phase_details: {
+            context_setup: 'Run A completato',
+            support: `Run A completato (${runADurationMs} ms)`,
+            counter: `Run B (treatment): ${setupBDescription}`,
+            final_evaluation: 'Confronto A/B in attesa',
+          },
+        },
+      }));
+
+      const runBController = new AbortController();
+      pipelineAbortControllerRef.current = runBController;
+      const runBStart = performance.now();
+      const runBResult = await runPipelineJson(payloadB, runBController);
+      const runBDurationMs = Math.round(performance.now() - runBStart);
+
+      const baselineMetrics = extractDoeMetrics(runAResult);
+      const treatmentMetrics = extractDoeMetrics(runBResult);
+      const deltaMetrics = computeDoeDelta(baselineMetrics, treatmentMetrics);
+
+      const doeComparison = {
+        mode: 'automatic_ab',
+        baseline: {
+          label: 'A (Baseline)',
+          description: setupADescription,
+          settings: {
+            reasoner_enable_causality: setupASettings.reasoner_enable_causality,
+            counter_enable_causality: setupASettings.counter_enable_causality,
+            counter_pass_causal_identity: setupASettings.counter_pass_causal_identity,
+            counter_pass_taxonomy_attacks: setupASettings.counter_pass_taxonomy_attacks,
+            counter_pass_norms: setupASettings.counter_pass_norms,
+          },
+          duration_ms: runADurationMs,
+          metrics: baselineMetrics,
+        },
+        treatment: {
+          label: 'B (Treatment)',
+          description: setupBDescription,
+          settings: {
+            reasoner_enable_causality: setupBSettings.reasoner_enable_causality,
+            counter_enable_causality: setupBSettings.counter_enable_causality,
+            counter_pass_causal_identity: setupBSettings.counter_pass_causal_identity,
+            counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
+            counter_pass_norms: setupBSettings.counter_pass_norms,
+          },
+          duration_ms: runBDurationMs,
+          metrics: treatmentMetrics,
+        },
+        delta: {
+          ...deltaMetrics,
+          duration_ms: runBDurationMs - runADurationMs,
+        },
+      };
+
+      setPipelineResult({
+        ...runBResult,
+        claim,
+        doe_ab_comparison: doeComparison,
+        _stream: {
+          ...(runBResult?._stream || {}),
+          phases: {
+            context_setup: 'done',
+            support: 'done',
+            counter: 'done',
+            final_evaluation: 'done',
+          },
+          phase_details: {
+            context_setup: 'Run A/B completati',
+            support: `A baseline completato (${runADurationMs} ms)`,
+            counter: `B treatment completato (${runBDurationMs} ms)`,
+            final_evaluation: 'Confronto A/B completato',
+          },
+          phase_progress: {
+            context_setup: 100,
+            support: 100,
+            counter: 100,
+            final_evaluation: 100,
+          },
+        },
+      });
+    } catch (error) {
+      console.error('Errore DoE automatico:', error);
+      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      const isManualStop = (
+        manualPipelineStopRef.current
+        || error?.name === 'AbortError'
+        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+      );
+      if (isManualStop) {
+        setPipelineResult((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            _stream: {
+              ...(prev._stream || {}),
+              phase_details: {
+                ...(prev._stream?.phase_details || {}),
+                final_evaluation: 'DoE interrotto manualmente',
+              },
+            },
+          };
+        });
+      } else {
+        setPipelineResult(null);
+        setPipelineMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `DoE interrotto: ${errorMessage}.`,
+          },
+        ]);
+      }
+    } finally {
+      pipelineAbortControllerRef.current = null;
+      activePipelineRunIdRef.current = null;
+      setIsStoppingPipeline(false);
+      setIsLoading(false);
+    }
+  };
+
+  const handlePipelineSubmit = async () => {
+    if (!input.trim() || isLoading) return;
+
+    const claim = input.trim();
+    const activePipelineSettings = activeTab === TABS.DOE
+      ? { ...pipelineSettings, ...doeSettings }
+      : pipelineSettings;
+    setClaimMemoryMenuOpen(false);
+    manualPipelineStopRef.current = false;
+    activePipelineRunIdRef.current = null;
+    pipelineAbortControllerRef.current = null;
+    setIsStoppingPipeline(false);
+    setInput('');
+    shouldAutoScrollRef.current = true;
+    setIsLoading(true);
+    if (isCompletedPipelineRun(pipelineResult)) {
       setPipelineHistory((prev) => [...prev, pipelineResult].slice(-10));
     }
     setPipelineMessages((prev) => [...prev, { role: 'user', content: claim }]);
@@ -540,7 +902,7 @@ export default function App() {
               92,
               Math.max(
                 12,
-                (next._stream.support_max_step / Math.max(1, pipelineSettings.chain_max_steps)) * 92,
+                (next._stream.support_max_step / Math.max(1, activePipelineSettings.chain_max_steps)) * 92,
               ),
             );
             next._stream.phase_progress.support = approxProgress;
@@ -567,7 +929,7 @@ export default function App() {
               92,
               Math.max(
                 12,
-                (next._stream.counter_max_step / Math.max(1, pipelineSettings.chain_max_steps)) * 92,
+                (next._stream.counter_max_step / Math.max(1, activePipelineSettings.chain_max_steps)) * 92,
               ),
             );
             next._stream.phase_progress.counter = approxProgress;
@@ -647,32 +1009,36 @@ export default function App() {
 
     const requestBody = JSON.stringify({
       claim,
-      include_precedents: pipelineSettings.include_precedents,
-      max_statutes: pipelineSettings.search_top_k_default,
-      max_precedents: pipelineSettings.precedents_limit_default,
-      claim_context_memory_enabled: !!pipelineSettings.claim_context_memory_enabled,
+      include_precedents: activePipelineSettings.include_precedents,
+      max_statutes: activePipelineSettings.search_top_k_default,
+      max_precedents: activePipelineSettings.precedents_limit_default,
+      claim_context_memory_enabled: !!activePipelineSettings.claim_context_memory_enabled,
       claim_context_memory_overwrite:
-        !!pipelineSettings.claim_context_memory_enabled &&
-        !!pipelineSettings.claim_context_memory_overwrite,
+        !!activePipelineSettings.claim_context_memory_enabled &&
+        !!activePipelineSettings.claim_context_memory_overwrite,
       settings: {
-        reasoner_model: pipelineSettings.reasoner_model,
-        counter_model: pipelineSettings.counter_model,
-        reasoner_temperature: pipelineSettings.reasoner_temperature,
-        counter_temperature: pipelineSettings.counter_temperature,
-        llm_max_tokens: pipelineSettings.llm_max_tokens,
-        search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
-        search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
-        chain_min_steps: pipelineSettings.chain_min_steps,
-        chain_max_steps: pipelineSettings.chain_max_steps,
-        aqa_alpha: pipelineSettings.aqa_alpha,
-        aqa_beta: pipelineSettings.aqa_beta,
-        aqa_gamma: pipelineSettings.aqa_gamma,
-        aqa_min_semantic_overlap: pipelineSettings.aqa_min_semantic_overlap,
-        aqa_min_strength_ratio: pipelineSettings.aqa_min_strength_ratio,
-        aqa_damage_factor: pipelineSettings.aqa_damage_factor,
-        aqa_allow_factual_attacks: pipelineSettings.aqa_allow_factual_attacks,
-        aqa_allow_cross_codice: pipelineSettings.aqa_allow_cross_codice,
-        enable_causality: pipelineSettings.enable_causality,
+        reasoner_model: activePipelineSettings.reasoner_model,
+        counter_model: activePipelineSettings.counter_model,
+        reasoner_temperature: activePipelineSettings.reasoner_temperature,
+        counter_temperature: activePipelineSettings.counter_temperature,
+        llm_max_tokens: activePipelineSettings.llm_max_tokens,
+        search_min_kept_statutes: activePipelineSettings.search_min_kept_statutes,
+        search_use_top_n_libri: activePipelineSettings.search_use_top_n_libri,
+        chain_min_steps: activePipelineSettings.chain_min_steps,
+        chain_max_steps: activePipelineSettings.chain_max_steps,
+        aqa_alpha: activePipelineSettings.aqa_alpha,
+        aqa_beta: activePipelineSettings.aqa_beta,
+        aqa_gamma: activePipelineSettings.aqa_gamma,
+        aqa_min_semantic_overlap: activePipelineSettings.aqa_min_semantic_overlap,
+        aqa_min_strength_ratio: activePipelineSettings.aqa_min_strength_ratio,
+        aqa_damage_factor: activePipelineSettings.aqa_damage_factor,
+        aqa_allow_factual_attacks: activePipelineSettings.aqa_allow_factual_attacks,
+        aqa_allow_cross_codice: activePipelineSettings.aqa_allow_cross_codice,
+        reasoner_enable_causality: activePipelineSettings.reasoner_enable_causality,
+        counter_enable_causality: activePipelineSettings.counter_enable_causality,
+        counter_pass_causal_identity: activePipelineSettings.counter_pass_causal_identity,
+        counter_pass_taxonomy_attacks: activePipelineSettings.counter_pass_taxonomy_attacks,
+        counter_pass_norms: activePipelineSettings.counter_pass_norms,
       },
     });
 
@@ -1196,6 +1562,9 @@ export default function App() {
       case TABS.PIPELINE:
         handlePipelineSubmit();
         break;
+      case TABS.DOE:
+        handleDoeSubmit();
+        break;
       default:
         handleSearchSubmit();
     }
@@ -1204,11 +1573,13 @@ export default function App() {
   const getPlaceholder = () => {
     switch (activeTab) {
       case TABS.SEARCH:
-        return 'Descrivi il tuo caso legale...';
+        return 'Inserisci un claim per eseguire la ricerca: norme e precedenti...';
       case TABS.REASON:
-        return 'Inserisci un claim da analizzare...';
+        return 'Inserisci un claim per eseguire il ragionamento: tesi principale...';
       case TABS.PIPELINE:
-        return 'Inserisci un claim per la pipeline completa...';
+        return 'Inserisci un claim per eseguire la pipeline completa: retrieval, tesi, controtesi e valutazione...';
+      case TABS.DOE:
+        return 'Inserisci un claim per eseguire il DoE automatico: run A baseline vs run B treatment...';
       default:
         return 'Scrivi un messaggio...';
     }
@@ -1361,6 +1732,23 @@ export default function App() {
   };
 
   const aqaReport = pipelineResult?.evaluation?.aqa_report;
+  const doeComparison = pipelineResult?.doe_ab_comparison;
+  const formatDoePercent = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '—';
+    return `${(numeric * 100).toFixed(0)}%`;
+  };
+  const formatDoeSignedPp = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '—';
+    const pp = numeric * 100;
+    return `${pp >= 0 ? '+' : ''}${pp.toFixed(1)} pp`;
+  };
+  const formatDoeSignedInt = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '—';
+    return `${numeric >= 0 ? '+' : ''}${Math.round(numeric)}`;
+  };
   const normalizeLiveStepText = (value = '') =>
     value
       .replace(/\s+/g, ' ')
@@ -2305,6 +2693,33 @@ export default function App() {
     );
   };
 
+  const isPipelineLikeTab = activeTab === TABS.PIPELINE || activeTab === TABS.DOE;
+  const isSearchTab = activeTab === TABS.SEARCH;
+  const isReasonTab = activeTab === TABS.REASON;
+  const isPipelineTab = activeTab === TABS.PIPELINE;
+  const isDoeTab = activeTab === TABS.DOE;
+  const searchMessagesVisible = messages.filter(
+    (msg, idx) => !(
+      idx === 0
+      && msg.role === 'assistant'
+      && msg.content === TAB_WELCOME_MESSAGES[TABS.SEARCH]
+    ),
+  );
+  const showModelsSection = isReasonTab || isPipelineLikeTab;
+  const showRetrievalSection = isSearchTab || isPipelineLikeTab;
+  const showCounterModelControls = isPipelineLikeTab;
+  const showAdvancedPipelineSections = isPipelineLikeTab;
+  const showTaxonomySection = isPipelineTab;
+  const settingsPanelTitle = isSearchTab
+    ? 'Impostazioni Ricerca'
+    : isDoeTab
+      ? 'Impostazioni DoE'
+      : isReasonTab
+        ? 'Impostazioni Ragionamento'
+        : 'Impostazioni Pipeline';
+  const inlineSettings = activeTab === TABS.DOE ? doeSettings : pipelineSettings;
+  const updateInlineSetting = activeTab === TABS.DOE ? updateDoeSetting : updateSetting;
+
   return (
     <div className="chatbot-container">
       {/* Header */}
@@ -2314,8 +2729,10 @@ export default function App() {
             <Scale size={24} />
           </div>
           <div>
-            <h1 className="header-title">LexCausa AI</h1>
-            <p className="header-subtitle">Assistente Legale con Ragionamento Causale</p>
+            <h1 className="header-title">LexCausa</h1>
+            <p className="header-subtitle">
+              Framework per il ragionamento giuridico causale
+            </p>
           </div>
         </div>
       </div>
@@ -2328,6 +2745,13 @@ export default function App() {
         >
           <FileText size={16} />
           <span>Pipeline Completa</span>
+        </button>
+        <button
+          className={`tab-button ${activeTab === TABS.DOE ? 'tab-active' : ''}`}
+          onClick={() => setActiveTab(TABS.DOE)}
+        >
+          <GitBranch size={16} />
+          <span>DoE</span>
         </button>
         <button
           className={`tab-button ${activeTab === TABS.REASON ? 'tab-active' : ''}`}
@@ -2349,285 +2773,361 @@ export default function App() {
       <div className="settings-panel">
         <button className="settings-toggle" onClick={() => setSettingsOpen(!settingsOpen)}>
           <Settings size={16} />
-          <span>Impostazioni Pipeline</span>
+          <span>{settingsPanelTitle}</span>
           <span className={`settings-chevron ${settingsOpen ? 'open' : ''}`}>▸</span>
         </button>
 
         {settingsOpen && (
           <div className="settings-body">
-            {/* Models per step */}
-            <fieldset className="settings-group">
-              <legend>🤖 Modelli LLM per Step</legend>
-              <div className="settings-row">
-                <label>
-                  <span>Reasoner</span>
-                  <select
-                    value={pipelineSettings.reasoner_model}
-                    onChange={(e) => updateSetting('reasoner_model', e.target.value)}
-                  >
-                    {availableModels.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Counter-Reasoner</span>
-                  <select
-                    value={pipelineSettings.counter_model}
-                    onChange={(e) => updateSetting('counter_model', e.target.value)}
-                  >
-                    {availableModels.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </fieldset>
+            {showModelsSection && (
+              <>
+                {/* Models per step */}
+                <fieldset className="settings-group">
+                  <legend>{isReasonTab ? '🤖 Modello Reasoner' : '🤖 Modelli LLM per Step'}</legend>
+                  <div className="settings-row">
+                    <label>
+                      <span>Reasoner</span>
+                      <select
+                        value={pipelineSettings.reasoner_model}
+                        onChange={(e) => updateSetting('reasoner_model', e.target.value)}
+                      >
+                        {availableModels.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {showCounterModelControls && (
+                      <label>
+                        <span>Counter-Reasoner</span>
+                        <select
+                          value={pipelineSettings.counter_model}
+                          onChange={(e) => updateSetting('counter_model', e.target.value)}
+                        >
+                          {availableModels.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                </fieldset>
 
-            {/* Temperature & Max Tokens */}
-            <fieldset className="settings-group">
-              <legend>🎛️ Parametri LLM</legend>
-              <div className="settings-row">
-                <label>
-                  <span>Temperature Reasoner <strong>{pipelineSettings.reasoner_temperature.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.reasoner_temperature}
-                    onChange={(e) => updateSetting('reasoner_temperature', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>Temperature Counter <strong>{pipelineSettings.counter_temperature.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.counter_temperature}
-                    onChange={(e) => updateSetting('counter_temperature', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>Max Tokens</span>
-                  <input
-                    type="number"
-                    min="256"
-                    max="32768"
-                    step="256"
-                    value={pipelineSettings.llm_max_tokens}
-                    onChange={(e) => updateSetting('llm_max_tokens', parseInt(e.target.value, 10))}
-                  />
-                </label>
-              </div>
-            </fieldset>
+                {/* Temperature & Max Tokens */}
+                <fieldset className="settings-group">
+                  <legend>🎛️ Parametri LLM</legend>
+                  <div className="settings-row">
+                    <label>
+                      <span>Temperature Reasoner <strong>{pipelineSettings.reasoner_temperature.toFixed(2)}</strong></span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={pipelineSettings.reasoner_temperature}
+                        onChange={(e) => updateSetting('reasoner_temperature', parseFloat(e.target.value))}
+                      />
+                    </label>
+                    {showCounterModelControls && (
+                      <label>
+                        <span>Temperature Counter <strong>{pipelineSettings.counter_temperature.toFixed(2)}</strong></span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={pipelineSettings.counter_temperature}
+                          onChange={(e) => updateSetting('counter_temperature', parseFloat(e.target.value))}
+                        />
+                      </label>
+                    )}
+                    <label>
+                      <span>Max Tokens</span>
+                      <input
+                        type="number"
+                        min="256"
+                        max="32768"
+                        step="256"
+                        value={pipelineSettings.llm_max_tokens}
+                        onChange={(e) => updateSetting('llm_max_tokens', parseInt(e.target.value, 10))}
+                      />
+                    </label>
+                  </div>
+                </fieldset>
+              </>
+            )}
 
             {/* Search & Retrieval */}
-            <fieldset className="settings-group">
-              <legend>🔍 Ricerca e Retrieval</legend>
-              <div className="settings-row">
-                <label>
-                  <span>Top-K Articoli</span>
-                  <input
-                    type="number"
-                    min="10"
-                    max="500"
-                    step="10"
-                    value={pipelineSettings.search_top_k_default}
-                    onChange={(e) => updateSetting('search_top_k_default', parseInt(e.target.value, 10))}
-                  />
-                </label>
-                <label>
-                  <span>Min Statuti Mantenuti</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="300"
-                    step="1"
-                    value={pipelineSettings.search_min_kept_statutes}
-                    onChange={(e) => updateSetting('search_min_kept_statutes', parseInt(e.target.value, 10))}
-                  />
-                </label>
-                <label>
-                  <span>Top-N Libri</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="10"
-                    value={pipelineSettings.search_use_top_n_libri}
-                    onChange={(e) => updateSetting('search_use_top_n_libri', parseInt(e.target.value, 10))}
-                  />
-                </label>
-                <label>
-                  <span>Max Precedenti</span>
-                  <input
-                    type="number"
-                    min="0"
-                    max="50"
-                    value={pipelineSettings.precedents_limit_default}
-                    onChange={(e) => updateSetting('precedents_limit_default', parseInt(e.target.value, 10))}
-                  />
-                </label>
-              </div>
-              <div className="settings-row">
-                <label className="settings-toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={pipelineSettings.include_precedents}
-                    onChange={(e) => updateSetting('include_precedents', e.target.checked)}
-                  />
-                  <span>Includi Precedenti</span>
-                </label>
-              </div>
-            </fieldset>
+            {showRetrievalSection && (
+              <fieldset className="settings-group">
+                <legend>🔍 Ricerca e Retrieval</legend>
+                <div className="settings-row">
+                  <label>
+                    <span>Top-K Articoli</span>
+                    <input
+                      type="number"
+                      min="10"
+                      max="500"
+                      step="10"
+                      value={pipelineSettings.search_top_k_default}
+                      onChange={(e) => updateSetting('search_top_k_default', parseInt(e.target.value, 10))}
+                    />
+                  </label>
+                  <label>
+                    <span>Min Statuti Mantenuti</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="300"
+                      step="1"
+                      value={pipelineSettings.search_min_kept_statutes}
+                      onChange={(e) => updateSetting('search_min_kept_statutes', parseInt(e.target.value, 10))}
+                    />
+                  </label>
+                  <label>
+                    <span>Top-N Libri</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={pipelineSettings.search_use_top_n_libri}
+                      onChange={(e) => updateSetting('search_use_top_n_libri', parseInt(e.target.value, 10))}
+                    />
+                  </label>
+                  <label>
+                    <span>Max Precedenti</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="50"
+                      value={pipelineSettings.precedents_limit_default}
+                      onChange={(e) => updateSetting('precedents_limit_default', parseInt(e.target.value, 10))}
+                    />
+                  </label>
+                </div>
+                {isPipelineLikeTab && (
+                  <div className="settings-row">
+                    <label className="settings-toggle-label">
+                      <input
+                        type="checkbox"
+                        checked={pipelineSettings.include_precedents}
+                        onChange={(e) => updateSetting('include_precedents', e.target.checked)}
+                      />
+                      <span>Includi Precedenti</span>
+                    </label>
+                  </div>
+                )}
+              </fieldset>
+            )}
 
-            {/* Chain Steps */}
-            <fieldset className="settings-group">
-              <legend>🔗 Catena di Ragionamento</legend>
-              <div className="settings-row">
-                <label>
-                  <span>Min Steps</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="10"
-                    value={pipelineSettings.chain_min_steps}
-                    onChange={(e) => updateSetting('chain_min_steps', parseInt(e.target.value, 10))}
-                  />
-                </label>
-                <label>
-                  <span>Max Steps</span>
-                  <input
-                    type="number"
-                    min="3"
-                    max="20"
-                    value={pipelineSettings.chain_max_steps}
-                    onChange={(e) => updateSetting('chain_max_steps', parseInt(e.target.value, 10))}
-                  />
-                </label>
-              </div>
-            </fieldset>
+            {showAdvancedPipelineSections && (
+              <fieldset className="settings-group">
+                <legend>🔗 Catena di Ragionamento</legend>
+                <div className="settings-row">
+                  <label>
+                    <span>Min Steps</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={pipelineSettings.chain_min_steps}
+                      onChange={(e) => updateSetting('chain_min_steps', parseInt(e.target.value, 10))}
+                    />
+                  </label>
+                  <label>
+                    <span>Max Steps</span>
+                    <input
+                      type="number"
+                      min="3"
+                      max="20"
+                      value={pipelineSettings.chain_max_steps}
+                      onChange={(e) => updateSetting('chain_max_steps', parseInt(e.target.value, 10))}
+                    />
+                  </label>
+                </div>
+              </fieldset>
+            )}
 
             {/* Causal Taxonomy */}
-            <fieldset className="settings-group">
-              <legend>🧬 Tassonomia Causale</legend>
-              <div className="settings-row">
-                <label className="settings-toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={pipelineSettings.enable_causality}
-                    onChange={(e) => updateSetting('enable_causality', e.target.checked)}
-                  />
-                  <span>Abilita Tassonomia Causale</span>
-                </label>
+            {showTaxonomySection && (
+              <fieldset className="settings-group">
+                <legend>🧬 Tassonomia Causale</legend>
+                <div className="settings-row">
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.reasoner_enable_causality}
+                      onChange={(e) => updateSetting('reasoner_enable_causality', e.target.checked)}
+                    />
+                    <span>Abilita Tassonomia nel Reasoner</span>
+                  </label>
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.counter_enable_causality}
+                      onChange={(e) =>
+                        setPipelineSettings((prev) => ({
+                          ...prev,
+                          counter_enable_causality: e.target.checked,
+                          ...(e.target.checked
+                            ? {}
+                            : {
+                                counter_pass_causal_identity: false,
+                                counter_pass_taxonomy_attacks: false,
+                                counter_pass_norms: false,
+                              }),
+                        }))
+                      }
+                    />
+                    <span>Abilita Tassonomia nel Counter</span>
+                  </label>
+                </div>
+                <div className="settings-row">
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.counter_pass_causal_identity}
+                      onChange={(e) => updateSetting('counter_pass_causal_identity', e.target.checked)}
+                      disabled={!pipelineSettings.counter_enable_causality}
+                    />
+                    <span>Passa causal_type_id/theory_id al Counter</span>
+                  </label>
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.counter_pass_taxonomy_attacks}
+                      onChange={(e) => updateSetting('counter_pass_taxonomy_attacks', e.target.checked)}
+                      disabled={!pipelineSettings.counter_enable_causality}
+                    />
+                    <span>Passa pool attacchi tassonomici al Counter</span>
+                  </label>
+                </div>
+                <div className="settings-row">
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.counter_pass_norms}
+                      onChange={(e) => updateSetting('counter_pass_norms', e.target.checked)}
+                      disabled={!pipelineSettings.counter_enable_causality}
+                    />
+                    <span>Passa norme tassonomiche al Counter</span>
+                  </label>
+                </div>
+              </fieldset>
+            )}
+
+            {isDoeTab && (
+              <div className="settings-note">
+                I controlli DoE del Counter permettono di isolare l’effetto della tassonomia sul contro-ragionamento.
               </div>
-            </fieldset>
+            )}
 
             {/* AQA Weights */}
-            <fieldset className="settings-group">
-              <legend>⚖️ Pesi AQA (α + β + γ = 1)</legend>
-              <div className="settings-row">
-                <label>
-                  <span>α Cogency <strong>{pipelineSettings.aqa_alpha.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.aqa_alpha}
-                    onChange={(e) => updateSetting('aqa_alpha', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>β NormSupport <strong>{pipelineSettings.aqa_beta.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.aqa_beta}
-                    onChange={(e) => updateSetting('aqa_beta', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>γ Semantics <strong>{pipelineSettings.aqa_gamma.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.aqa_gamma}
-                    onChange={(e) => updateSetting('aqa_gamma', parseFloat(e.target.value))}
-                  />
-                </label>
-              </div>
-              <div className="aqa-weight-sum">
-                Somma: {(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma).toFixed(2)}
-                {Math.abs(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma - 1) > 0.01 && (
-                  <span className="aqa-weight-warning"> ⚠️ Dovrebbe essere 1.00</span>
-                )}
-              </div>
-            </fieldset>
+            {showAdvancedPipelineSections && (
+              <fieldset className="settings-group">
+                <legend>⚖️ Pesi AQA (α + β + γ = 1)</legend>
+                <div className="settings-row">
+                  <label>
+                    <span>α Cogency <strong>{pipelineSettings.aqa_alpha.toFixed(2)}</strong></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={pipelineSettings.aqa_alpha}
+                      onChange={(e) => updateSetting('aqa_alpha', parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    <span>β NormSupport <strong>{pipelineSettings.aqa_beta.toFixed(2)}</strong></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={pipelineSettings.aqa_beta}
+                      onChange={(e) => updateSetting('aqa_beta', parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    <span>γ Semantics <strong>{pipelineSettings.aqa_gamma.toFixed(2)}</strong></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={pipelineSettings.aqa_gamma}
+                      onChange={(e) => updateSetting('aqa_gamma', parseFloat(e.target.value))}
+                    />
+                  </label>
+                </div>
+                <div className="aqa-weight-sum">
+                  Somma: {(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma).toFixed(2)}
+                  {Math.abs(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma - 1) > 0.01 && (
+                    <span className="aqa-weight-warning"> ⚠️ Dovrebbe essere 1.00</span>
+                  )}
+                </div>
+              </fieldset>
+            )}
 
             {/* AQA Cross-Attack Parameters */}
-            <fieldset className="settings-group">
-              <legend>⚔️ Parametri Cross-Attack</legend>
-              <div className="settings-row">
-                <label>
-                  <span>Min Overlap Semantico <strong>{pipelineSettings.aqa_min_semantic_overlap.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.aqa_min_semantic_overlap}
-                    onChange={(e) => updateSetting('aqa_min_semantic_overlap', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>Min Strength Ratio <strong>{pipelineSettings.aqa_min_strength_ratio.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="2.0"
-                    step="0.05"
-                    value={pipelineSettings.aqa_min_strength_ratio}
-                    onChange={(e) => updateSetting('aqa_min_strength_ratio', parseFloat(e.target.value))}
-                  />
-                </label>
-                <label>
-                  <span>Damage Factor <strong>{pipelineSettings.aqa_damage_factor.toFixed(2)}</strong></span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={pipelineSettings.aqa_damage_factor}
-                    onChange={(e) => updateSetting('aqa_damage_factor', parseFloat(e.target.value))}
-                  />
-                </label>
-              </div>
-              <div className="settings-row">
-                <label className="settings-toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={pipelineSettings.aqa_allow_factual_attacks}
-                    onChange={(e) => updateSetting('aqa_allow_factual_attacks', e.target.checked)}
-                  />
-                  <span>Attacchi Fattuali su Norme</span>
-                </label>
-                <label className="settings-toggle-label">
-                  <input
-                    type="checkbox"
-                    checked={pipelineSettings.aqa_allow_cross_codice}
-                    onChange={(e) => updateSetting('aqa_allow_cross_codice', e.target.checked)}
-                  />
-                  <span>Cross-Codice (doppia rilevanza)</span>
-                </label>
-              </div>
-            </fieldset>
+            {showAdvancedPipelineSections && (
+              <fieldset className="settings-group">
+                <legend>⚔️ Parametri Cross-Attack</legend>
+                <div className="settings-row">
+                  <label>
+                    <span>Min Overlap Semantico <strong>{pipelineSettings.aqa_min_semantic_overlap.toFixed(2)}</strong></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={pipelineSettings.aqa_min_semantic_overlap}
+                      onChange={(e) => updateSetting('aqa_min_semantic_overlap', parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    <span>Min Strength Ratio <strong>{pipelineSettings.aqa_min_strength_ratio.toFixed(2)}</strong></span>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.05"
+                      value={pipelineSettings.aqa_min_strength_ratio}
+                      onChange={(e) => updateSetting('aqa_min_strength_ratio', parseFloat(e.target.value))}
+                    />
+                  </label>
+                  <label>
+                    <span>Damage Factor <strong>{pipelineSettings.aqa_damage_factor.toFixed(2)}</strong></span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={pipelineSettings.aqa_damage_factor}
+                      onChange={(e) => updateSetting('aqa_damage_factor', parseFloat(e.target.value))}
+                    />
+                  </label>
+                </div>
+                <div className="settings-row">
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.aqa_allow_factual_attacks}
+                      onChange={(e) => updateSetting('aqa_allow_factual_attacks', e.target.checked)}
+                    />
+                    <span>Attacchi Fattuali su Norme</span>
+                  </label>
+                  <label className="settings-toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={pipelineSettings.aqa_allow_cross_codice}
+                      onChange={(e) => updateSetting('aqa_allow_cross_codice', e.target.checked)}
+                    />
+                    <span>Cross-Codice (doppia rilevanza)</span>
+                  </label>
+                </div>
+              </fieldset>
+            )}
           </div>
         )}
       </div>
@@ -2639,20 +3139,18 @@ export default function App() {
         onScroll={handleMessagesScroll}
       >
         <div className="messages-container">
-          {activeTab !== TABS.SEARCH && (
-            <div className="message message-assistant">
-              <div className="message-avatar assistant-avatar">
-                <Bot size={20} />
-              </div>
-              <div className="message-bubble bubble-assistant">
-                <p className="message-text">{TAB_WELCOME_MESSAGES[activeTab]}</p>
-              </div>
+          <div className="message message-assistant">
+            <div className="message-avatar assistant-avatar">
+              <Bot size={20} />
             </div>
-          )}
+            <div className="message-bubble bubble-assistant">
+              <p className="message-text">{TAB_WELCOME_MESSAGES[activeTab]}</p>
+            </div>
+          </div>
 
           {activeTab === TABS.SEARCH && (
             <>
-              {messages.map((msg, idx) => (
+              {searchMessagesVisible.map((msg, idx) => (
                 <div
                   key={idx}
                   className={`message ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}
@@ -2666,6 +3164,13 @@ export default function App() {
                 </div>
               ))}
             </>
+          )}
+
+          {activeTab === TABS.SEARCH && searchMessagesVisible.length === 0 && !isLoading && (
+            <div className="empty-state">
+              <Search size={48} className="empty-icon" />
+              <p>Esegui retrieval di norme e precedenti rilevanti a partire dal claim.</p>
+            </div>
           )}
 
           {activeTab === TABS.REASON && (
@@ -2726,7 +3231,7 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === TABS.PIPELINE && pipelineHistory.length > 0 && (
+          {isPipelineLikeTab && pipelineHistory.length > 0 && (
             <>
               {pipelineHistory.map((run, idx) => {
                 const histReasonerParsed = parseStructuredResponse(run?.reasoner?.raw_response || '');
@@ -2925,7 +3430,7 @@ export default function App() {
             </>
           )}
 
-          {activeTab === TABS.PIPELINE && pipelineResult && (
+          {isPipelineLikeTab && pipelineResult && (
             <>
               <div className="message message-user">
                 <div className="message-avatar user-avatar">
@@ -2958,8 +3463,8 @@ export default function App() {
                 </button>
               </div>
               <h3 className="result-title">
-                <FileText size={20} />
-                Risultato Pipeline Completa
+                {activeTab === TABS.DOE ? <GitBranch size={20} /> : <FileText size={20} />}
+                {activeTab === TABS.DOE ? 'Risultato DoE' : 'Risultato Pipeline Completa'}
               </h3>
 
               {pipelineResult.error ? (
@@ -2970,6 +3475,96 @@ export default function App() {
                     <h4>Claim Analizzato</h4>
                     <p>{pipelineResult.claim}</p>
                   </div>
+
+                  {isDoeTab && doeComparison && (
+                    <div className="result-section pipeline-section">
+                      <h3 className="section-header">
+                        <GitBranch size={20} style={{ color: '#6366f1' }} />
+                        Confronto DoE Automatico (A/B)
+                      </h3>
+                      <div className="summary-cards-grid">
+                        <div className="summary-card">
+                          <div className="summary-card-title">
+                            {doeComparison.baseline?.label || 'Setup A'} - {doeComparison.baseline?.description || 'Baseline'}
+                          </div>
+                          <div className="summary-metrics">
+                            <div className="summary-metric summary-metric-info">
+                              <span className="summary-metric-label">AQA Verdetto</span>
+                              <span className="summary-metric-value">{doeComparison.baseline?.metrics?.verdict || 'n/a'}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">AQA Finale</span>
+                              <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.final_score)}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">Consistenza Counter</span>
+                              <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.counter_consistency)}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">Durata</span>
+                              <span className="summary-metric-value">
+                                {Number.isFinite(Number(doeComparison.baseline?.duration_ms))
+                                  ? `${Math.round(doeComparison.baseline.duration_ms)} ms`
+                                  : '—'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="summary-card">
+                          <div className="summary-card-title">
+                            {doeComparison.treatment?.label || 'Setup B'} - {doeComparison.treatment?.description || 'Treatment'}
+                          </div>
+                          <div className="summary-metrics">
+                            <div className="summary-metric summary-metric-info">
+                              <span className="summary-metric-label">AQA Verdetto</span>
+                              <span className="summary-metric-value">{doeComparison.treatment?.metrics?.verdict || 'n/a'}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">AQA Finale</span>
+                              <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.final_score)}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">Consistenza Counter</span>
+                              <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.counter_consistency)}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">Durata</span>
+                              <span className="summary-metric-value">
+                                {Number.isFinite(Number(doeComparison.treatment?.duration_ms))
+                                  ? `${Math.round(doeComparison.treatment.duration_ms)} ms`
+                                  : '—'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="summary-card">
+                          <div className="summary-card-title">Delta (B - A)</div>
+                          <div className="summary-metrics">
+                            <div className="summary-metric summary-metric-positive">
+                              <span className="summary-metric-label">AQA Finale</span>
+                              <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.final_score)}</span>
+                            </div>
+                            <div className="summary-metric summary-metric-info">
+                              <span className="summary-metric-label">Consistenza Counter</span>
+                              <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.counter_consistency)}</span>
+                            </div>
+                            <div className="summary-metric summary-metric-warning">
+                              <span className="summary-metric-label">Link Contro</span>
+                              <span className="summary-metric-value">{formatDoeSignedInt(doeComparison.delta?.contra_links)}</span>
+                            </div>
+                            <div className="summary-metric">
+                              <span className="summary-metric-label">Durata</span>
+                              <span className="summary-metric-value">
+                                {Number.isFinite(Number(doeComparison.delta?.duration_ms))
+                                  ? `${doeComparison.delta.duration_ms >= 0 ? '+' : ''}${Math.round(doeComparison.delta.duration_ms)} ms`
+                                  : '—'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {pipelineResult._stream && (
                     <div className="result-section stream-progress-section">
@@ -3771,18 +4366,24 @@ export default function App() {
           {activeTab === TABS.REASON && !reasoningResult && reasonMessages.length === 0 && !isLoading && (
             <div className="empty-state">
               <Brain size={48} className="empty-icon" />
-              <p>Inserisci un claim legale per analizzare la catena causale</p>
+              <p>Esegui il Reasoner per costruire la tesi principale con catena argomentativa.</p>
             </div>
           )}
 
-          {activeTab === TABS.PIPELINE && !pipelineResult && pipelineMessages.length === 0 && !isLoading && (
+          {isPipelineLikeTab && !pipelineResult && pipelineMessages.length === 0 && !isLoading && (
             <div className="empty-state">
-              <FileText size={48} className="empty-icon" />
-              <p>Inserisci un claim per eseguire la pipeline completa: Reasoner → Counter-Reasoner</p>
+              {activeTab === TABS.DOE
+                ? <GitBranch size={48} className="empty-icon" />
+                : <FileText size={48} className="empty-icon" />}
+              <p>
+                {activeTab === TABS.DOE
+                  ? 'Esegui il DoE automatico: due run A/B sullo stesso claim con confronto diretto delle metriche.'
+                  : 'Esegui la pipeline completa: retrieval, Reasoner, Counter-Reasoner e Polisher-Evaluator.'}
+              </p>
             </div>
           )}
 
-          {isLoading && activeTab !== TABS.PIPELINE && (
+          {isLoading && activeTab !== TABS.PIPELINE && activeTab !== TABS.DOE && (
             <div className="message message-assistant">
               <div className="message-avatar assistant-avatar">
                 <Loader2 size={20} className="loading-spinner" />
@@ -3813,16 +4414,16 @@ export default function App() {
               }}
               placeholder={getPlaceholder()}
               rows={1}
-              className={`input-textarea ${activeTab === TABS.PIPELINE ? 'has-inline-tool' : ''}`}
+              className={`input-textarea ${isPipelineLikeTab ? 'has-inline-tool' : ''}`}
               disabled={isLoading}
             />
-            {activeTab === TABS.PIPELINE && (
+            {isPipelineLikeTab && (
               <div className="input-tools">
                 <button
                   type="button"
                   className={`input-plus-button ${claimMemoryMenuOpen ? 'is-open' : ''}`}
-                  title="Opzioni memoria pre-retrieval"
-                  aria-label="Apri opzioni memoria pre-retrieval"
+                  title={activeTab === TABS.DOE ? 'Opzioni DoE' : 'Opzioni memoria pre-retrieval'}
+                  aria-label={activeTab === TABS.DOE ? 'Apri opzioni DoE' : 'Apri opzioni memoria pre-retrieval'}
                   aria-expanded={claimMemoryMenuOpen}
                   onClick={() => setClaimMemoryMenuOpen((prev) => !prev)}
                   disabled={isLoading}
@@ -3830,8 +4431,10 @@ export default function App() {
                   <Plus size={18} />
                 </button>
                 {claimMemoryMenuOpen && (
-                  <div className="input-tools-menu" role="dialog" aria-label="Opzioni memoria">
-                    <div className="input-tools-menu-header">Memoria pre-retrieval</div>
+                  <div className="input-tools-menu" role="dialog" aria-label="Opzioni aggiuntive">
+                    <div className="input-tools-menu-header">
+                      {activeTab === TABS.DOE ? 'Opzioni DoE' : 'Memoria pre-retrieval'}
+                    </div>
 
                     <div className="ios-toggle-row">
                       <div className="ios-toggle-copy">
@@ -3843,11 +4446,12 @@ export default function App() {
                       <button
                         type="button"
                         role="switch"
-                        aria-checked={!!pipelineSettings.claim_context_memory_enabled}
-                        className={`ios-switch ${pipelineSettings.claim_context_memory_enabled ? 'is-on' : ''}`}
+                        aria-checked={!!inlineSettings.claim_context_memory_enabled}
+                        className={`ios-switch ${inlineSettings.claim_context_memory_enabled ? 'is-on' : ''}`}
                         onClick={() => {
-                          const checked = !pipelineSettings.claim_context_memory_enabled;
-                          setPipelineSettings((prev) => ({
+                          const checked = !inlineSettings.claim_context_memory_enabled;
+                          const updater = activeTab === TABS.DOE ? setDoeSettings : setPipelineSettings;
+                          updater((prev) => ({
                             ...prev,
                             claim_context_memory_enabled: checked,
                             claim_context_memory_overwrite: checked
@@ -3860,7 +4464,7 @@ export default function App() {
                       </button>
                     </div>
 
-                    <div className={`ios-toggle-row ${!pipelineSettings.claim_context_memory_enabled ? 'is-disabled' : ''}`}>
+                    <div className={`ios-toggle-row ${!inlineSettings.claim_context_memory_enabled ? 'is-disabled' : ''}`}>
                       <div className="ios-toggle-copy">
                         <div className="ios-toggle-title">Sovrascrivi</div>
                         <div className="ios-toggle-subtitle">
@@ -3870,19 +4474,119 @@ export default function App() {
                       <button
                         type="button"
                         role="switch"
-                        aria-checked={!!pipelineSettings.claim_context_memory_overwrite}
-                        className={`ios-switch ${pipelineSettings.claim_context_memory_overwrite ? 'is-on' : ''}`}
+                        aria-checked={!!inlineSettings.claim_context_memory_overwrite}
+                        className={`ios-switch ${inlineSettings.claim_context_memory_overwrite ? 'is-on' : ''}`}
                         onClick={() =>
-                          updateSetting(
+                          updateInlineSetting(
                             'claim_context_memory_overwrite',
-                            !pipelineSettings.claim_context_memory_overwrite,
+                            !inlineSettings.claim_context_memory_overwrite,
                           )
                         }
-                        disabled={!pipelineSettings.claim_context_memory_enabled}
+                        disabled={!inlineSettings.claim_context_memory_enabled}
                       >
                         <span className="ios-switch-knob" />
                       </button>
                     </div>
+
+                    {activeTab === TABS.DOE && (
+                      <>
+                        <div className="input-tools-menu-header" style={{ marginTop: 10 }}>
+                          Controlli Counter Setup A (DoE)
+                        </div>
+
+                        <div className="ios-toggle-row">
+                          <div className="ios-toggle-copy">
+                            <div className="ios-toggle-title">Reasoner: tassonomia</div>
+                            <div className="ios-toggle-subtitle">
+                              Abilita/disabilita classificazione causale nel Reasoner (uguale per run A e run B)
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!!doeSettings.reasoner_enable_causality}
+                            className={`ios-switch ${doeSettings.reasoner_enable_causality ? 'is-on' : ''}`}
+                            onClick={() =>
+                              updateDoeSetting(
+                                'reasoner_enable_causality',
+                                !doeSettings.reasoner_enable_causality,
+                              )
+                            }
+                          >
+                            <span className="ios-switch-knob" />
+                          </button>
+                        </div>
+
+                        <div className="ios-toggle-row">
+                          <div className="ios-toggle-copy">
+                            <div className="ios-toggle-title">Passa causal_type/theory (Setup A)</div>
+                            <div className="ios-toggle-subtitle">
+                              Invia al Counter causal_type_id e theory_id del Reasoner
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!!doeSettings.counter_pass_causal_identity}
+                            className={`ios-switch ${doeSettings.counter_pass_causal_identity ? 'is-on' : ''}`}
+                            onClick={() =>
+                              updateDoeSetting(
+                                'counter_pass_causal_identity',
+                                !doeSettings.counter_pass_causal_identity,
+                              )
+                            }
+                          >
+                            <span className="ios-switch-knob" />
+                          </button>
+                        </div>
+
+                        <div className="ios-toggle-row">
+                          <div className="ios-toggle-copy">
+                            <div className="ios-toggle-title">Passa attacchi tassonomici (Setup A)</div>
+                            <div className="ios-toggle-subtitle">
+                              Invia al Counter il pool di attack ids da tassonomia
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!!doeSettings.counter_pass_taxonomy_attacks}
+                            className={`ios-switch ${doeSettings.counter_pass_taxonomy_attacks ? 'is-on' : ''}`}
+                            onClick={() =>
+                              updateDoeSetting(
+                                'counter_pass_taxonomy_attacks',
+                                !doeSettings.counter_pass_taxonomy_attacks,
+                              )
+                            }
+                          >
+                            <span className="ios-switch-knob" />
+                          </button>
+                        </div>
+
+                        <div className="ios-toggle-row">
+                          <div className="ios-toggle-copy">
+                            <div className="ios-toggle-title">Passa norme tassonomiche (Setup A)</div>
+                            <div className="ios-toggle-subtitle">
+                              Invia al Counter anchor norms e principle tests (non la KB pre-retrieval)
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={!!doeSettings.counter_pass_norms}
+                            className={`ios-switch ${doeSettings.counter_pass_norms ? 'is-on' : ''}`}
+                            onClick={() =>
+                              updateDoeSetting(
+                                'counter_pass_norms',
+                                !doeSettings.counter_pass_norms,
+                              )
+                            }
+                          >
+                            <span className="ios-switch-knob" />
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -3895,7 +4599,7 @@ export default function App() {
           >
             <Send size={20} />
           </button>
-          {activeTab === TABS.PIPELINE && isLoading && (
+          {isPipelineLikeTab && isLoading && (
             <button
               onClick={handleStopPipeline}
               disabled={isStoppingPipeline}

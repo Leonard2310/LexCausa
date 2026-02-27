@@ -846,6 +846,22 @@ def _clone_context_items(items: list[dict]) -> list[dict]:
     return [dict(item) for item in (items or [])]
 
 
+def _coerce_bool(value, default: bool = False) -> bool:
+    """Parse bool-like values from API payloads with safe defaults."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return default
+
+
 def _parse_claim_context_memory_flags(data: dict | None) -> tuple[bool, bool]:
     payload = data if isinstance(data, dict) else {}
     enabled = bool(payload.get("claim_context_memory_enabled", False))
@@ -954,6 +970,11 @@ def get_settings():
                 "aqa_allow_cross_codice": settings.aqa_allow_cross_codice,
                 "aqa_strength_ratio_by_type": settings.aqa_strength_ratio_by_type,
                 "enable_causality": True,
+                "reasoner_enable_causality": True,
+                "counter_enable_causality": False,
+                "counter_pass_causal_identity": False,
+                "counter_pass_taxonomy_attacks": False,
+                "counter_pass_norms": False,
             },
         }
     )
@@ -1091,6 +1112,18 @@ def reason():
         fe_reasoner_temperature = fe_settings.get(
             "reasoner_temperature", fe_settings.get("llm_temperature")
         )
+        fe_legacy_enable_causality = fe_settings.get("enable_causality")
+        fe_reasoner_enable_causality = _coerce_bool(
+            fe_settings.get(
+                "reasoner_enable_causality",
+                (
+                    True
+                    if fe_legacy_enable_causality is None
+                    else _coerce_bool(fe_legacy_enable_causality, True)
+                ),
+            ),
+            True,
+        )
         fe_max_tokens = fe_settings.get("llm_max_tokens")
         fe_reasoner_model = fe_settings.get("reasoner_model")
         include_precedents = data.get("include_precedents", True)
@@ -1123,6 +1156,7 @@ def reason():
             routing_decision=routing_decision,
             pre_retrieved_statutes=statutes,
             pre_retrieved_precedents=precedents,
+            enable_causality=fe_reasoner_enable_causality,
         )
 
         return jsonify(
@@ -1165,6 +1199,41 @@ def counter_reason():
         fe_counter_temperature = fe_settings.get(
             "counter_temperature", fe_settings.get("llm_temperature")
         )
+        fe_legacy_enable_causality = fe_settings.get("enable_causality")
+        fe_legacy_mode = (
+            "enable_causality" in fe_settings
+            and "reasoner_enable_causality" not in fe_settings
+            and "counter_enable_causality" not in fe_settings
+            and "counter_pass_causal_identity" not in fe_settings
+            and "counter_pass_taxonomy_attacks" not in fe_settings
+            and "counter_pass_norms" not in fe_settings
+        )
+        fe_counter_enable_causality = _coerce_bool(
+            fe_settings.get(
+                "counter_enable_causality",
+                (
+                    True
+                    if fe_legacy_enable_causality is None
+                    else _coerce_bool(fe_legacy_enable_causality, True)
+                ),
+            ),
+            True,
+        )
+        default_counter_pass = (
+            _coerce_bool(fe_legacy_enable_causality, False) if fe_legacy_mode else False
+        )
+        fe_counter_pass_causal_identity = _coerce_bool(
+            fe_settings.get("counter_pass_causal_identity", default_counter_pass),
+            default_counter_pass,
+        )
+        fe_counter_pass_taxonomy_attacks = _coerce_bool(
+            fe_settings.get("counter_pass_taxonomy_attacks", default_counter_pass),
+            default_counter_pass,
+        )
+        fe_counter_pass_norms = _coerce_bool(
+            fe_settings.get("counter_pass_norms", default_counter_pass),
+            default_counter_pass,
+        )
         fe_max_tokens = fe_settings.get("llm_max_tokens")
         fe_counter_model = fe_settings.get("counter_model")
         include_precedents = data.get("include_precedents", True)
@@ -1196,6 +1265,38 @@ def counter_reason():
             claim_context_memory_enabled=claim_memory_enabled,
             claim_context_memory_overwrite=claim_memory_overwrite,
         )
+        counter_routing_decision = RoutingDecision(
+            claim=claim,
+            domain=routing_decision.domain,
+            causal_type_id=(
+                routing_decision.causal_type_id
+                if fe_counter_pass_causal_identity
+                else ""
+            ),
+            theory_id=(
+                routing_decision.theory_id if fe_counter_pass_causal_identity else ""
+            ),
+            anchor_norms=(
+                routing_decision.anchor_norms
+                if (fe_counter_enable_causality and fe_counter_pass_norms)
+                else {}
+            ),
+            principle_tests=(
+                routing_decision.principle_tests
+                if (fe_counter_enable_causality and fe_counter_pass_norms)
+                else []
+            ),
+            additional_causal_types=(
+                routing_decision.additional_causal_types
+                if fe_counter_pass_causal_identity
+                else []
+            ),
+        )
+        counter_enable_causality_effective = (
+            fe_counter_enable_causality
+            and fe_counter_pass_taxonomy_attacks
+            and fe_counter_pass_causal_identity
+        )
 
         counter_config = _build_agent_config(
             model_override=fe_counter_model or settings.counter_default_model,
@@ -1207,9 +1308,10 @@ def counter_reason():
         # Esegui il counter-reasoning con contesto pre-retrieved
         result = cr.run(
             claim=claim,
-            routing_decision=routing_decision,
+            routing_decision=counter_routing_decision,
             pre_retrieved_statutes=_clone_context_items(statutes),
             pre_retrieved_precedents=_clone_context_items(precedents),
+            enable_causality=counter_enable_causality_effective,
             reasoner_conclusion=reasoner_conclusion,
         )
 
@@ -1317,7 +1419,52 @@ def _run_full_pipeline(
     fe_search_query_terms_llm_max_tokens = fe_settings.get(
         "search_query_terms_llm_max_tokens"
     )
-    fe_enable_causality = fe_settings.get("enable_causality", True)
+    fe_legacy_enable_causality = fe_settings.get("enable_causality")
+    fe_legacy_mode = (
+        "enable_causality" in fe_settings
+        and "reasoner_enable_causality" not in fe_settings
+        and "counter_enable_causality" not in fe_settings
+        and "counter_pass_causal_identity" not in fe_settings
+        and "counter_pass_taxonomy_attacks" not in fe_settings
+        and "counter_pass_norms" not in fe_settings
+    )
+    fe_reasoner_enable_causality = _coerce_bool(
+        fe_settings.get(
+            "reasoner_enable_causality",
+            (
+                True
+                if fe_legacy_enable_causality is None
+                else _coerce_bool(fe_legacy_enable_causality, True)
+            ),
+        ),
+        True,
+    )
+    fe_counter_enable_causality = _coerce_bool(
+        fe_settings.get(
+            "counter_enable_causality",
+            (
+                True
+                if fe_legacy_enable_causality is None
+                else _coerce_bool(fe_legacy_enable_causality, True)
+            ),
+        ),
+        True,
+    )
+    default_counter_pass = (
+        _coerce_bool(fe_legacy_enable_causality, False) if fe_legacy_mode else False
+    )
+    fe_counter_pass_causal_identity = _coerce_bool(
+        fe_settings.get("counter_pass_causal_identity", default_counter_pass),
+        default_counter_pass,
+    )
+    fe_counter_pass_taxonomy_attacks = _coerce_bool(
+        fe_settings.get("counter_pass_taxonomy_attacks", default_counter_pass),
+        default_counter_pass,
+    )
+    fe_counter_pass_norms = _coerce_bool(
+        fe_settings.get("counter_pass_norms", default_counter_pass),
+        default_counter_pass,
+    )
 
     if not claim:
         raise ValueError('Campo "claim" obbligatorio')
@@ -1334,8 +1481,18 @@ def _run_full_pipeline(
 
         if fe_settings:
             print(f"⚙️  Frontend settings override: {fe_settings}")
-        if not fe_enable_causality:
-            print("🔬 Causality taxonomy DISABLED by frontend settings")
+        if not fe_reasoner_enable_causality:
+            print("🔬 Reasoner causality taxonomy DISABLED by frontend settings")
+        if not fe_counter_enable_causality:
+            print("🔬 Counter causality taxonomy DISABLED by frontend settings")
+        if not fe_counter_pass_causal_identity:
+            print("🧩 Counter input: causal_type_id/theory_id pass-through DISABLED")
+        if not fe_counter_pass_taxonomy_attacks:
+            print("⚔️ Counter input: taxonomy attack pool pass-through DISABLED")
+        if not fe_counter_pass_norms:
+            print(
+                "📚 Counter input: taxonomy anchor norms/principle tests pass-through DISABLED"
+            )
         if claim_memory_enabled:
             print(
                 "💾 Claim-context memory ENABLED"
@@ -1406,8 +1563,10 @@ def _run_full_pipeline(
         )
         _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
         reasoner_statutes = _clone_context_items(statutes)
-        counter_statutes = _clone_context_items(statutes)
         reasoner_precedents = _clone_context_items(precedents)
+        # Counter always receives pre-retrieval KB (statutes + precedents).
+        # Taxonomy-specific norms are controlled separately via counter_pass_norms.
+        counter_statutes = _clone_context_items(statutes)
         counter_precedents = _clone_context_items(precedents)
 
         # STEP 1: primary reasoning on the claim
@@ -1447,7 +1606,7 @@ def _run_full_pipeline(
             routing_decision=routing_decision,
             pre_retrieved_statutes=reasoner_statutes,
             pre_retrieved_precedents=reasoner_precedents,
-            enable_causality=fe_enable_causality,
+            enable_causality=fe_reasoner_enable_causality,
             stream_callback=_reasoner_stream_callback,
         )
         _check_cancel()
@@ -1462,6 +1621,47 @@ def _run_full_pipeline(
             principle_tests=reasoner_result.principle_tests,
             additional_causal_types=reasoner_result.causal_type_ids_for_counter,
         )
+        counter_routing_decision = RoutingDecision(
+            claim=claim,
+            domain=routing_decision.domain,
+            causal_type_id=(
+                reasoner_result.causal_type_id
+                if fe_counter_pass_causal_identity
+                else ""
+            ),
+            theory_id=(
+                reasoner_result.theory_id if fe_counter_pass_causal_identity else ""
+            ),
+            anchor_norms=(
+                reasoner_result.anchor_norms
+                if (fe_counter_enable_causality and fe_counter_pass_norms)
+                else {}
+            ),
+            principle_tests=(
+                reasoner_result.principle_tests
+                if (fe_counter_enable_causality and fe_counter_pass_norms)
+                else []
+            ),
+            additional_causal_types=(
+                reasoner_result.causal_type_ids_for_counter
+                if fe_counter_pass_causal_identity
+                else []
+            ),
+        )
+        counter_enable_causality_effective = (
+            fe_counter_enable_causality
+            and fe_counter_pass_taxonomy_attacks
+            and fe_counter_pass_causal_identity
+        )
+        if (
+            fe_counter_enable_causality
+            and fe_counter_pass_taxonomy_attacks
+            and not fe_counter_pass_causal_identity
+        ):
+            print(
+                "⚠️ Counter taxonomy requested without causal identity; "
+                "falling back to open attacks (enable_causality=False)"
+            )
 
         print("✅ Reasoner completed")
         print(
@@ -1508,10 +1708,10 @@ def _run_full_pipeline(
 
         counter_result = cr.run(
             claim=claim,
-            routing_decision=final_routing_decision,
+            routing_decision=counter_routing_decision,
             pre_retrieved_statutes=counter_statutes,
             pre_retrieved_precedents=counter_precedents,
-            enable_causality=fe_enable_causality,
+            enable_causality=counter_enable_causality_effective,
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,
         )

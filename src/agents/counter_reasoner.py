@@ -3303,7 +3303,7 @@ class CounterReasoner(BaseAgent):
                                 step=plan_index,
                             )
                         )
-                        if stream_callback and attempt == 1
+                        if stream_callback
                         else None
                     ),
                 )

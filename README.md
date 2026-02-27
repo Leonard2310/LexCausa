@@ -25,7 +25,7 @@
 - **Citation Graph Expansion (Neo4j CITES)**: Retrieval expands seed statutes with cited statutes via `(:Statute)-[:CITES]->(:Statute)` before LLM relevance/applicability filters
 - **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
 - **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
-- **Unified Pipeline**: All functionalities (Search, Reasoning, Full Pipeline) share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
+- **Unified Pipeline**: Search, Reasoning, Full Pipeline, and DoE all share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
 - **Shared Retrieved Context**: Both Reasoner and CounterReasoner receive the same retrieved statutes/precedents and build opposing arguments from the same evidence base
 - **Planned Iterative Chain Generation**: Reasoner and Counter-Reasoner first create an execution plan (3-10 steps), then generate one LLM step per planned objective with anti-repetition and consistency checks
 - **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations, and a provisional causality bootstrap (plan → taxonomy anchors → enriched KB) before expensive step generation
@@ -41,14 +41,16 @@
 - **Resilient Groq Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient)
 - **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction and statute applicability decisions, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
 - **Cancellation & Interruptibility**: Pipeline stop endpoint and cooperative cancellation propagation across API, agents, and long-running generation/retrieval loops
+- **DoE A/B Workflow**: Dedicated DoE tab with one shared Reasoner run and two Counter/Evaluator setups (baseline vs. treatment), live A/B switching in the UI, consolidated DoE log/report persistence, and automatic delta analysis
 - **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
 - **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
 - **Centralized Configuration**: All parameters (90+ settings: models, retries, AQA weights, search, truncation, attack params, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
 - **Frontend Settings Panel**: Collapsible panel to configure per-step LLM model, temperature, max tokens, search parameters, AQA weights, chain min/max steps, and attack parameters — without touching code
 - **Per-Claim Pipeline Logging**: Every pipeline run is logged to `logs/<timestamp>_<slug>.log` for full auditability
+- **DoE and PDF Artifacts**: DoE runs can persist a consolidated A/B log + JSON report, and exported PDFs are saved automatically under `logs/pdf_exports/<pipeline|doe>/` in addition to browser download
 - **Pre-Retrieval Claim Context Memory (SQLite)**: Optional cache of final applicable statutes and precedents per claim (reusable across Search/Reasoner/Counter/Pipeline runs and warmable via script)
-- **React Frontend**: Modern three-tab interface (Search, Reasoning, Full Pipeline) with ASPIC+ Metagraph visualization on Vite + React 18
-- **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation (including retry attempts), refinement phase control events (`reasoner_refinement_started/completed`) with live chain reset/replace behavior in the frontend, and live evaluation/AQA status updates with pipeline stop support (`/api/pipeline/stop`)
+- **React Frontend**: Modern four-tab interface (Search, Reasoning, Full Pipeline, DoE) with ASPIC+ Metagraph visualization, attack details, PDF export, and A/B comparison controls on Vite + React 18
+- **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation (including retry attempts), refinement phase control events (`reasoner_refinement_started/completed`) with live chain reset/replace behavior in the frontend, plus SSE endpoints for full pipeline, standalone Counter-Reasoner, and standalone Evaluator
 
 
 
@@ -57,8 +59,8 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                       Frontend (React + Vite)                           │
-│   Search Tab │ Reasoning Tab │ Full Pipeline Tab │ ⚙️ Settings Panel    │
-│                    + ASPIC+ Metagraph SVG + Attack Details              │
+│ Search │ Reasoning │ Full Pipeline │ DoE (A/B) │ ⚙️ Settings Panel      │
+│      + ASPIC+ Metagraph SVG + Attack Details + PDF Export               │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
@@ -70,10 +72,14 @@
 │  POST /api/chat            → LegalSearchPipeline (unified retrieval)    │
 │  POST /api/reason          → Reasoner (iterative chain generation)      │
 │  POST /api/counter_reason  → Counter-Reasoner (iterative counter-chain) │
+│  POST /api/counter_reason/stream → Counter-Reasoner SSE                 │
 │  POST /api/pipeline        → Full Pipeline (Router→Reasoner→Counter→AQA)│
 │  POST /api/pipeline/stream → Full Pipeline SSE token streaming          │
 │  POST /api/pipeline/stop   → Stop active SSE pipeline run               │
 │  POST /api/evaluate        → Polisher-Evaluator (standalone evaluation) │
+│  POST /api/evaluate/stream → Polisher-Evaluator SSE                     │
+│  POST /api/doe/log         → Consolidated DoE log/report persistence    │
+│  POST /api/pdf/export      → Persist exported PDF artifacts             │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
                     ┌─────────────┴─────────────┐
@@ -230,7 +236,7 @@ The frontend will be available at `http://localhost:5173` and the API at `http:/
 LexCausa/
 ├── src/
 │   ├── config.py                  # Centralized configuration (90+ Pydantic Settings)
-│   ├── api_server.py              # Flask API server (10 endpoints incl. SSE stop)
+│   ├── api_server.py              # Flask API server (DoE, SSE, PDF export endpoints)
 │   ├── agents/                    # LangChain/LangGraph agents
 │   │   ├── base.py               # Base agent class + progressive search + filters
 │   │   ├── router.py             # Domain router (CIVILE/PENALE/ENTRAMBI)
@@ -264,11 +270,11 @@ LexCausa/
 │   │   └── statutes/              # Civil + Penal + Administrative CSVs (`*_normattiva.csv`)
 │   └── frontend/                  # React frontend (Vite + React 18)
 │       └── src/
-│           ├── App.jsx            # Main app with three tabs + settings
+│           ├── App.jsx            # Main app with Search/Reasoning/Pipeline/DoE tabs
 │           ├── AspicMetagraph.jsx # ASPIC+ meta-graph SVG visualization
 │           └── AttackTextDetails.jsx # Cross-attack detail panel
 ├── notebooks/                     # Normattiva extractors + embeddings notebooks
-├── logs/                          # Per-claim pipeline logs (auto-generated)
+├── logs/                          # Pipeline/DoE logs, reports, AQA artifacts, exported PDFs
 ├── compose.yml                    # Docker Compose for Neo4j
 ├── pyproject.toml                 # Poetry configuration
 └── README.md
@@ -484,7 +490,10 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Optional pre-retrieval claim context memory (SQLite) with frontend toggles and script-based warmup
 - [x] Reasoner provisional causality bootstrap (plan draft → provisional classification → taxonomy anchors → enriched KB before step generation)
 - [x] Reasoner post-hoc anchor refinement fallback with streaming control events and frontend live reset/replace of the support chain
-- [x] React frontend (Vite) with three tabs + ASPIC+ Metagraph + Attack Details + settings panel
+- [x] React frontend (Vite) with four tabs + ASPIC+ Metagraph + Attack Details + settings panel
+- [x] DoE A/B workflow with shared Reasoner, baseline/treatment Counter setups, consolidated log/report persistence, and comparative frontend analysis
+- [x] SSE endpoints for standalone Counter-Reasoner and standalone Evaluator
+- [x] Full PDF export for Pipeline/DoE results, including automatic artifact persistence under `logs/pdf_exports/`
 - [x] Precedent ingestion and fulltext search (ITA-CaseHold)
 - [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
 - [x] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)

@@ -57,6 +57,11 @@ API_HOST=127.0.0.1 API_PORT=8001 DEBUG=true poetry run python src/api_server.py
 cd src/frontend && npm run dev
 ```
 
+### Frontend lint
+```bash
+cd src/frontend && npm run lint
+```
+
 ### Frontend build (production bundle)
 ```bash
 cd src/frontend && npm run build
@@ -161,6 +166,25 @@ curl -X POST http://127.0.0.1:8000/api/counter_reason \
   }'
 ```
 
+### `/api/counter_reason/stream` (SSE)
+```bash
+curl -N -X POST http://127.0.0.1:8000/api/counter_reason/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "claim": "Put your claim here",
+    "reasoner_conclusion": "Put the reasoner conclusion here",
+    "include_precedents": true,
+    "max_statutes": 100,
+    "max_precedents": 5,
+    "settings": {
+      "counter_enable_causality": true,
+      "counter_pass_causal_identity": true,
+      "counter_pass_taxonomy_attacks": true,
+      "counter_pass_norms": true
+    }
+  }'
+```
+
 ### `/api/pipeline` (JSON)
 ```bash
 curl -X POST http://127.0.0.1:8000/api/pipeline \
@@ -206,6 +230,88 @@ curl -X POST http://127.0.0.1:8000/api/pipeline/stop \
   -d '{}'
 ```
 
+### `/api/evaluate`
+```bash
+curl -X POST http://127.0.0.1:8000/api/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "claim": "Put your claim here",
+    "domain": "CIVILE",
+    "reasoner_output": {},
+    "counter_output": {},
+    "settings": {
+      "aqa_alpha": 0.3,
+      "aqa_beta": 0.4,
+      "aqa_gamma": 0.3
+    }
+  }'
+```
+
+### `/api/evaluate/stream` (SSE)
+```bash
+curl -N -X POST http://127.0.0.1:8000/api/evaluate/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "claim": "Put your claim here",
+    "domain": "CIVILE",
+    "reasoner_output": {},
+    "counter_output": {},
+    "settings": {
+      "aqa_alpha": 0.3,
+      "aqa_beta": 0.4,
+      "aqa_gamma": 0.3
+    }
+  }'
+```
+
+### `/api/doe/log` (persist one consolidated DoE log/report)
+```bash
+curl -X POST http://127.0.0.1:8000/api/doe/log \
+  -H "Content-Type: application/json" \
+  -d '{
+    "claim": "Put your claim here",
+    "mode": "automatic_ab",
+    "reasoner_shared": {},
+    "baseline": {
+      "label": "A (Baseline)",
+      "description": "Counter tassonomia ON (norms)",
+      "settings": {},
+      "status": "done",
+      "duration_ms": 1000,
+      "metrics": {},
+      "view": {
+        "counter_reasoner": {},
+        "evaluation": {}
+      }
+    },
+    "treatment": {
+      "label": "B (Treatment)",
+      "description": "Counter tassonomia ON (identity + attacks + norms)",
+      "settings": {},
+      "status": "done",
+      "duration_ms": 900,
+      "metrics": {},
+      "view": {
+        "counter_reasoner": {},
+        "evaluation": {}
+      }
+    },
+    "delta": {
+      "duration_ms": -100
+    }
+  }'
+```
+
+### `/api/pdf/export` (persist one exported PDF artifact)
+```bash
+curl -X POST http://127.0.0.1:8000/api/pdf/export \
+  -F "pdf=@/absolute/path/to/report.pdf" \
+  -F "claim=Put your claim here" \
+  -F "prefix=doe_automatico" \
+  -F "export_context=doe" \
+  -F "client_filename=lexcausa_doe_report.pdf"
+```
+
 ## 5. Pipeline Configuration via API / Frontend-equivalent payload
 
 ### Example `/api/pipeline` with selected runtime overrides
@@ -221,13 +327,18 @@ curl -X POST http://127.0.0.1:8000/api/pipeline \
     "settings": {
       "reasoner_model": "gpt_oss_120b",
       "counter_model": "gpt_oss_120b",
-      "llm_temperature": 0.3,
+      "reasoner_temperature": 0.0,
+      "counter_temperature": 0.3,
       "llm_max_tokens": 8192,
       "search_min_kept_statutes": 8,
       "search_use_top_n_libri": 3,
       "chain_min_steps": 3,
       "chain_max_steps": 10,
-      "enable_causality": true
+      "reasoner_enable_causality": true,
+      "counter_enable_causality": true,
+      "counter_pass_causal_identity": true,
+      "counter_pass_taxonomy_attacks": true,
+      "counter_pass_norms": true
     }
   }'
 ```
@@ -376,6 +487,21 @@ poetry run python experiments/doe/scripts/analyze_doe.py --help
 ls -lt logs | head
 ```
 
+### Latest consolidated DoE logs
+```bash
+ls -lt logs/*_doe.log | head
+```
+
+### Latest DoE JSON reports
+```bash
+ls -lt logs/doe_reports | head
+```
+
+### Latest exported PDFs persisted by the backend
+```bash
+ls -lt logs/pdf_exports/pipeline logs/pdf_exports/doe
+```
+
 ### Latest retrieval capture outputs
 ```bash
 ls -lt logs/api_chat_memory | head
@@ -384,4 +510,9 @@ ls -lt logs/api_chat_memory | head
 ### Tail a specific pipeline log
 ```bash
 tail -f logs/<timestamp>_<claim_slug>.log
+```
+
+### Tail a specific consolidated DoE log
+```bash
+tail -f logs/<timestamp>_<claim_slug>_doe.log
 ```

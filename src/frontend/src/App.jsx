@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createRoot } from 'react-dom/client';
 import { Send, Bot, User, Loader2, Brain, Scale, Search, FileText, CheckCircle2, XCircle, AlertTriangle, ClipboardCheck, Wrench, Settings, GitBranch, Swords, Download, Square, Plus } from 'lucide-react';
 import './App.css';
 import AspicMetagraph from './AspicMetagraph';
@@ -210,6 +211,7 @@ export default function App() {
   const [exportingPdfKey, setExportingPdfKey] = useState(null);
   const [isStoppingPipeline, setIsStoppingPipeline] = useState(false);
   const [claimMemoryMenuOpen, setClaimMemoryMenuOpen] = useState(false);
+  const [doeDisplaySetup, setDoeDisplaySetup] = useState('treatment');
 
   const isNearBottom = () => {
     const el = messagesAreaRef.current;
@@ -295,6 +297,11 @@ export default function App() {
 
   const updateDoeSetting = (key, value) => {
     setDoeSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const applyDoeViewSelection = (viewKey) => {
+    const normalized = viewKey === 'baseline' ? 'baseline' : 'treatment';
+    setDoeDisplaySetup(normalized);
   };
 
   const handleSearchSubmit = async () => {
@@ -538,6 +545,76 @@ export default function App() {
     return `Counter tassonomia ON (${enabledParts.join(' + ')})`;
   };
 
+  const createEmptyDoeView = () => ({
+    counter_reasoner: {
+      raw_response: '',
+      statutes: [],
+      precedents: [],
+    },
+    evaluation: {},
+  });
+
+  const createDoeComparisonSeed = ({
+    setupASettings,
+    setupBSettings,
+    setupADescription,
+    setupBDescription,
+  }) => ({
+    mode: 'automatic_ab',
+    status: 'running',
+    baseline: {
+      label: 'A (Baseline)',
+      description: setupADescription,
+      settings: {
+        reasoner_enable_causality: setupASettings.reasoner_enable_causality,
+        counter_enable_causality: setupASettings.counter_enable_causality,
+        counter_pass_causal_identity: setupASettings.counter_pass_causal_identity,
+        counter_pass_taxonomy_attacks: setupASettings.counter_pass_taxonomy_attacks,
+        counter_pass_norms: setupASettings.counter_pass_norms,
+      },
+      status: 'running',
+      duration_ms: null,
+      metrics: {},
+      view: createEmptyDoeView(),
+    },
+    treatment: {
+      label: 'B (Treatment)',
+      description: setupBDescription,
+      settings: {
+        reasoner_enable_causality: setupBSettings.reasoner_enable_causality,
+        counter_enable_causality: setupBSettings.counter_enable_causality,
+        counter_pass_causal_identity: setupBSettings.counter_pass_causal_identity,
+        counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
+        counter_pass_norms: setupBSettings.counter_pass_norms,
+      },
+      status: 'queued',
+      duration_ms: null,
+      metrics: {},
+      view: createEmptyDoeView(),
+    },
+    delta: null,
+    artifacts: {},
+  });
+
+  const persistDoeArtifacts = async (payload) => {
+    const response = await fetch(`${API_BASE}/doe/log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      let errText = 'Errore nel salvataggio del log DoE';
+      try {
+        const err = await response.json();
+        errText = err?.error || errText;
+      } catch (_) {
+        // ignore json parse failures
+      }
+      throw new Error(errText);
+    }
+    return response.json();
+  };
+
   const handleDoeSubmit = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -567,15 +644,21 @@ export default function App() {
     };
     const setupADescription = describeCounterTaxonomySetup(setupASettings);
     const setupBDescription = describeCounterTaxonomySetup(setupBSettings);
+    const doeComparisonSeed = createDoeComparisonSeed({
+      setupASettings,
+      setupBSettings,
+      setupADescription,
+      setupBDescription,
+    });
 
     const payloadA = buildPipelinePayload(claim, setupASettings);
-    const payloadB = buildPipelinePayload(claim, setupBSettings);
 
     setClaimMemoryMenuOpen(false);
     manualPipelineStopRef.current = false;
     activePipelineRunIdRef.current = null;
     pipelineAbortControllerRef.current = null;
     setIsStoppingPipeline(false);
+    setDoeDisplaySetup('treatment');
 
     setInput('');
     shouldAutoScrollRef.current = true;
@@ -587,6 +670,7 @@ export default function App() {
     const doeLiveSeed = createLivePipelineResult(claim);
     setPipelineResult({
       ...doeLiveSeed,
+      doe_ab_comparison: doeComparisonSeed,
       _stream: {
         ...doeLiveSeed._stream,
         phases: {
@@ -602,16 +686,224 @@ export default function App() {
           final_evaluation: 0,
         },
         phase_details: {
-          context_setup: 'Configurazione DoE automatica pronta',
-          support: `Run A (baseline): ${setupADescription}`,
+          context_setup: `DoE pronto: A=${setupADescription} | B=${setupBDescription}`,
+          support: 'Reasoner condiviso A/B in esecuzione',
           counter: 'In attesa',
           final_evaluation: 'In attesa',
         },
       },
     });
 
-    const runPipelineJson = async (payload, controller) => {
-      const response = await fetch(`${API_BASE}/pipeline`, {
+    const updateDoeLivePipeline = (mutator) => {
+      setPipelineResult((prev) => {
+        if (!prev || prev.error) return prev;
+        return mutator(prev);
+      });
+    };
+
+    const updateDoeComparison = (mutator) => {
+      setPipelineResult((prev) => {
+        if (!prev) return prev;
+        const currentComparison = prev.doe_ab_comparison || doeComparisonSeed;
+        return {
+          ...prev,
+          doe_ab_comparison: mutator(currentComparison, prev),
+        };
+      });
+    };
+
+    const mergeDoeView = (setupKey, patch = {}) => {
+      updateDoeComparison((comparison) => ({
+        ...comparison,
+        [setupKey]: {
+          ...(comparison?.[setupKey] || {}),
+          view: {
+            ...createEmptyDoeView(),
+            ...(comparison?.[setupKey]?.view || {}),
+            ...patch,
+          },
+        },
+      }));
+    };
+
+    const mergeDoeEvaluationPartial = (setupKey, partial = {}) => {
+      updateDoeComparison((comparison) => ({
+        ...comparison,
+        [setupKey]: {
+          ...(comparison?.[setupKey] || {}),
+          view: {
+            ...createEmptyDoeView(),
+            ...(comparison?.[setupKey]?.view || {}),
+            evaluation: mergeEvaluationPartial(
+              comparison?.[setupKey]?.view?.evaluation,
+              partial || {},
+            ),
+          },
+        },
+      }));
+    };
+
+    const setDoePhaseStatus = (phaseKey, phaseValue, detail = null) => {
+      updateDoeLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phases: {
+            ...(prev._stream?.phases || {}),
+            [phaseKey]: phaseValue,
+          },
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            [phaseKey]:
+              detail !== null
+                ? detail
+                : prev._stream?.phase_details?.[phaseKey] || '',
+          },
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            [phaseKey]:
+              phaseValue === 'done'
+                ? 100
+                : phaseValue === 'active'
+                  ? Math.max(8, prev._stream?.phase_progress?.[phaseKey] || 0)
+                  : prev._stream?.phase_progress?.[phaseKey] || 0,
+          },
+        },
+      }));
+    };
+
+    const setDoePhaseDetail = (phaseKey, detail) => {
+      updateDoeLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_details: {
+            ...(prev._stream?.phase_details || {}),
+            [phaseKey]: detail || '',
+          },
+        },
+      }));
+    };
+
+    const setDoePhaseProgress = (phaseKey, value) => {
+      updateDoeLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            [phaseKey]: Math.max(0, Math.min(100, value)),
+          },
+        },
+      }));
+    };
+
+    const bumpDoePhaseProgress = (phaseKey, value) => {
+      updateDoeLivePipeline((prev) => ({
+        ...prev,
+        _stream: {
+          ...(prev._stream || {}),
+          phase_progress: {
+            ...(prev._stream?.phase_progress || {}),
+            [phaseKey]: Math.max(
+              prev._stream?.phase_progress?.[phaseKey] || 0,
+              Math.max(0, Math.min(100, value)),
+            ),
+          },
+        },
+      }));
+    };
+
+    const appendDoePhaseToken = (phase, token, stepNumber = null) => {
+      if (!token) return;
+      updateDoeLivePipeline((prev) => {
+        const next = {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            phase_progress: { ...(prev._stream?.phase_progress || {}) },
+            support_steps: { ...(prev._stream?.support_steps || {}) },
+            counter_steps: { ...(prev._stream?.counter_steps || {}) },
+            support_max_step: prev._stream?.support_max_step || 0,
+            counter_max_step: prev._stream?.counter_max_step || 0,
+            support_conclusion_live: prev._stream?.support_conclusion_live || '',
+          },
+        };
+        if (phase === 'support' || phase === 'support_conclusion') {
+          next.reasoner = {
+            ...(prev.reasoner || {}),
+            raw_response: `${prev.reasoner?.raw_response || ''}${token}`,
+          };
+          if (stepNumber != null && phase === 'support') {
+            const prevStepText = next._stream.support_steps[stepNumber] || '';
+            next._stream.support_steps[stepNumber] = `${prevStepText}${token}`;
+            next._stream.support_max_step = Math.max(
+              next._stream.support_max_step,
+              Number(stepNumber) || 0,
+            );
+            const approxProgress = Math.min(
+              92,
+              Math.max(
+                12,
+                (next._stream.support_max_step / Math.max(1, mergedDoeSettings.chain_max_steps)) * 92,
+              ),
+            );
+            next._stream.phase_progress.support = approxProgress;
+          } else if (phase === 'support_conclusion') {
+            next._stream.support_conclusion_live = `${next._stream.support_conclusion_live}${token}`;
+            next._stream.phase_progress.support = Math.max(
+              next._stream.phase_progress.support || 0,
+              96,
+            );
+          }
+        } else if (phase === 'counter') {
+          next.counter_reasoner = {
+            ...(prev.counter_reasoner || {}),
+            raw_response: `${prev.counter_reasoner?.raw_response || ''}${token}`,
+          };
+          if (stepNumber != null) {
+            const prevStepText = next._stream.counter_steps[stepNumber] || '';
+            next._stream.counter_steps[stepNumber] = `${prevStepText}${token}`;
+            next._stream.counter_max_step = Math.max(
+              next._stream.counter_max_step,
+              Number(stepNumber) || 0,
+            );
+            const approxProgress = Math.min(
+              92,
+              Math.max(
+                12,
+                (next._stream.counter_max_step / Math.max(1, mergedDoeSettings.chain_max_steps)) * 92,
+              ),
+            );
+            next._stream.phase_progress.counter = approxProgress;
+          }
+        }
+        return next;
+      });
+    };
+
+    const resetDoePhaseStepLive = (phase, stepNumber = null) => {
+      if (stepNumber == null) return;
+      updateDoeLivePipeline((prev) => {
+        const next = {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            support_steps: { ...(prev._stream?.support_steps || {}) },
+            counter_steps: { ...(prev._stream?.counter_steps || {}) },
+          },
+        };
+        if (phase === 'support') {
+          next._stream.support_steps[stepNumber] = '';
+        } else if (phase === 'counter') {
+          next._stream.counter_steps[stepNumber] = '';
+        }
+        return next;
+      });
+    };
+
+    const runPipelineStream = async (payload, controller) => {
+      const response = await fetch(`${API_BASE}/pipeline/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -627,15 +919,553 @@ export default function App() {
         }
         throw new Error(errText);
       }
-      return response.json();
+      if (!response.body) {
+        throw new Error('Streaming non disponibile: risposta senza body.');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      const reader = response.body.getReader();
+      let buffer = '';
+      let finalPayload = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const rawEvent of events) {
+          if (!rawEvent.trim()) continue;
+          const lines = rawEvent.split('\n');
+          let eventName = 'message';
+          let dataText = '';
+
+          lines.forEach((line) => {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataText += line.slice(5).trim();
+            }
+          });
+
+          if (!dataText) continue;
+
+          let eventPayload;
+          try {
+            eventPayload = JSON.parse(dataText);
+          } catch (_) {
+            continue;
+          }
+
+          if (eventName === 'heartbeat' || eventName === 'status') continue;
+
+          if (eventName === 'run_started') {
+            activePipelineRunIdRef.current = eventPayload?.run_id || null;
+            continue;
+          }
+
+          if (eventName === 'phase') {
+            const phaseKey = eventPayload?.phase;
+            const phaseStatus = eventPayload?.status;
+            const phaseProgress = Number(eventPayload?.progress);
+            const phaseDetail = eventPayload?.detail || '';
+            const isKnownPhase = PIPELINE_PHASES.some((phase) => phase.key === phaseKey);
+            if (!isKnownPhase) continue;
+            if (phaseStatus) {
+              setDoePhaseStatus(phaseKey, phaseStatus, phaseDetail || null);
+            }
+            if (Number.isFinite(phaseProgress)) {
+              setDoePhaseProgress(phaseKey, phaseProgress);
+            }
+            if (phaseDetail) {
+              setDoePhaseDetail(phaseKey, phaseDetail);
+            }
+            continue;
+          }
+
+          if (eventName === 'token') {
+            const phase = eventPayload.phase || 'generic';
+            if (eventPayload?.action === 'reset_step') {
+              resetDoePhaseStepLive(phase, eventPayload?.step ?? null);
+              continue;
+            }
+            if (phase === 'support' || phase === 'support_conclusion') {
+              setDoePhaseStatus('context_setup', 'done');
+              setDoePhaseStatus('support', 'active');
+              if (phase === 'support' && eventPayload?.step != null) {
+                setDoePhaseDetail(
+                  'support',
+                  `Step ${eventPayload.step}/${mergedDoeSettings.chain_max_steps}`,
+                );
+              } else if (phase === 'support_conclusion') {
+                setDoePhaseDetail('support', 'Sintesi e formattazione conclusione');
+              }
+            }
+            if (phase === 'counter') {
+              setDoePhaseStatus('support', 'done');
+              setDoePhaseStatus('counter', 'active');
+              if (eventPayload?.step != null) {
+                setDoePhaseDetail(
+                  'counter',
+                  `Step ${eventPayload.step}/${mergedDoeSettings.chain_max_steps}`,
+                );
+              }
+            }
+            appendDoePhaseToken(phase, eventPayload.token || '', eventPayload.step ?? null);
+            continue;
+          }
+
+          if (eventName === 'retrieval_context') {
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              retrieval_context: eventPayload || {
+                statutes: [],
+                precedents: [],
+                memory: {},
+              },
+            }));
+            continue;
+          }
+
+          if (eventName === 'reasoner_result') {
+            setDoePhaseStatus('support', 'done', 'Argomentazione e ASPIC+ completati');
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              reasoner: eventPayload || {},
+            }));
+            continue;
+          }
+
+          if (eventName === 'counter_result') {
+            setDoePhaseStatus('counter', 'done', 'Contro-argomentazione e ASPIC+ completati');
+            mergeDoeView('baseline', {
+              counter_reasoner: eventPayload || {},
+            });
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              counter_reasoner: eventPayload || {},
+            }));
+            continue;
+          }
+
+          if (eventName === 'evaluation_partial') {
+            setDoePhaseStatus('final_evaluation', 'active');
+            setDoePhaseDetail('final_evaluation', 'Aggiornamento valutazione in corso');
+            mergeDoeEvaluationPartial('baseline', eventPayload || {});
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              evaluation: mergeEvaluationPartial(prev?.evaluation, eventPayload || {}),
+            }));
+            continue;
+          }
+
+          if (eventName === 'evaluation_status') {
+            const relativeProgress = Number(eventPayload?.progress);
+            if (Number.isFinite(relativeProgress)) {
+              bumpDoePhaseProgress('final_evaluation', 78 + relativeProgress * 20);
+            } else {
+              bumpDoePhaseProgress('final_evaluation', 82);
+            }
+            continue;
+          }
+
+          if (eventName === 'evaluation_result') {
+            setDoePhaseStatus('final_evaluation', 'done', 'Report finale consolidato');
+            mergeDoeView('baseline', {
+              evaluation: eventPayload || {},
+            });
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              evaluation: eventPayload || {},
+            }));
+            continue;
+          }
+
+          if (eventName === 'error') {
+            throw new Error(eventPayload.message || 'Errore nella pipeline');
+          }
+
+          if (eventName === 'cancelled') {
+            throw new Error(eventPayload?.message || 'Esecuzione interrotta manualmente.');
+          }
+
+          if (eventName === 'final') {
+            finalPayload = eventPayload;
+            setPipelineResult((prev) => ({
+              ...eventPayload,
+              doe_ab_comparison: prev?.doe_ab_comparison || null,
+              _stream: {
+                ...(prev?._stream || {}),
+                phases: {
+                  context_setup: 'done',
+                  support: 'done',
+                  counter: 'done',
+                  final_evaluation: 'done',
+                },
+                phase_progress: {
+                  context_setup: 100,
+                  support: 100,
+                  counter: 100,
+                  final_evaluation: 100,
+                },
+              },
+            }));
+            continue;
+          }
+        }
+      }
+
+      if (!finalPayload) {
+        throw new Error('Streaming interrotto prima del risultato finale.');
+      }
+      return finalPayload;
+    };
+
+    const runCounterStream = async (payload, controller) => {
+      const response = await fetch(`${API_BASE}/counter_reason/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        let errText = 'Errore nel Counter-Reasoner (stream)';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore json parse failures
+        }
+        throw new Error(errText);
+      }
+      if (!response.body) {
+        throw new Error('Streaming counter non disponibile: risposta senza body.');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      const reader = response.body.getReader();
+      let buffer = '';
+      let finalPayload = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const rawEvent of events) {
+          if (!rawEvent.trim()) continue;
+          const lines = rawEvent.split('\n');
+          let eventName = 'message';
+          let dataText = '';
+
+          lines.forEach((line) => {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataText += line.slice(5).trim();
+            }
+          });
+
+          if (!dataText) continue;
+
+          let eventPayload;
+          try {
+            eventPayload = JSON.parse(dataText);
+          } catch (_) {
+            continue;
+          }
+
+          if (eventName === 'heartbeat') continue;
+          if (eventName === 'run_started') {
+            activePipelineRunIdRef.current = eventPayload?.run_id || null;
+            continue;
+          }
+          if (eventName === 'phase') {
+            const phaseKey = eventPayload?.phase;
+            const phaseStatus = eventPayload?.status;
+            const phaseProgress = Number(eventPayload?.progress);
+            const phaseDetail = eventPayload?.detail || '';
+            const isKnownPhase = PIPELINE_PHASES.some((phase) => phase.key === phaseKey);
+            if (!isKnownPhase) continue;
+            if (phaseStatus) {
+              setDoePhaseStatus(phaseKey, phaseStatus, phaseDetail || null);
+            }
+            if (Number.isFinite(phaseProgress)) {
+              setDoePhaseProgress(phaseKey, phaseProgress);
+            }
+            if (phaseDetail) {
+              setDoePhaseDetail(phaseKey, phaseDetail);
+            }
+            continue;
+          }
+          if (eventName === 'status') {
+            if (eventPayload?.message) {
+              setDoePhaseStatus('counter', 'active');
+              setDoePhaseDetail('counter', eventPayload.message);
+            }
+            continue;
+          }
+          if (eventName === 'retrieval_context') {
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              retrieval_context: eventPayload || {
+                statutes: [],
+                precedents: [],
+                memory: {},
+              },
+            }));
+            continue;
+          }
+          if (eventName === 'token') {
+            const phase = eventPayload.phase || 'counter';
+            if (eventPayload?.action === 'reset_step') {
+              resetDoePhaseStepLive(phase, eventPayload?.step ?? null);
+              continue;
+            }
+            setDoePhaseStatus('counter', 'active');
+            if (eventPayload?.step != null) {
+              setDoePhaseDetail(
+                'counter',
+                `Step ${eventPayload.step}/${mergedDoeSettings.chain_max_steps}`,
+              );
+            }
+            appendDoePhaseToken(phase, eventPayload.token || '', eventPayload.step ?? null);
+            continue;
+          }
+          if (eventName === 'counter_result') {
+            setDoePhaseStatus('counter', 'done', 'Contro-argomentazione e ASPIC+ completati');
+            mergeDoeView('treatment', {
+              counter_reasoner: eventPayload || {},
+            });
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              counter_reasoner: eventPayload || {},
+            }));
+            continue;
+          }
+          if (eventName === 'error') {
+            throw new Error(eventPayload.message || 'Errore nel Counter-Reasoner');
+          }
+          if (eventName === 'cancelled') {
+            throw new Error(eventPayload?.message || 'Counter-Reasoner interrotto manualmente.');
+          }
+          if (eventName === 'final') {
+            finalPayload = eventPayload;
+            continue;
+          }
+        }
+      }
+
+      if (!finalPayload) {
+        throw new Error('Streaming Counter interrotto prima del risultato finale.');
+      }
+      return finalPayload;
+    };
+
+    const runEvaluateStream = async (payload, controller) => {
+      const response = await fetch(`${API_BASE}/evaluate/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        let errText = 'Errore nella valutazione finale (stream)';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore json parse failures
+        }
+        throw new Error(errText);
+      }
+      if (!response.body) {
+        throw new Error('Streaming evaluator non disponibile: risposta senza body.');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      const reader = response.body.getReader();
+      let buffer = '';
+      let finalPayload = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const rawEvent of events) {
+          if (!rawEvent.trim()) continue;
+          const lines = rawEvent.split('\n');
+          let eventName = 'message';
+          let dataText = '';
+
+          lines.forEach((line) => {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataText += line.slice(5).trim();
+            }
+          });
+
+          if (!dataText) continue;
+
+          let eventPayload;
+          try {
+            eventPayload = JSON.parse(dataText);
+          } catch (_) {
+            continue;
+          }
+
+          if (eventName === 'heartbeat') continue;
+          if (eventName === 'run_started') {
+            activePipelineRunIdRef.current = eventPayload?.run_id || null;
+            continue;
+          }
+          if (eventName === 'phase') {
+            const phaseKey = eventPayload?.phase;
+            const phaseStatus = eventPayload?.status;
+            const phaseProgress = Number(eventPayload?.progress);
+            const phaseDetail = eventPayload?.detail || '';
+            const isKnownPhase = PIPELINE_PHASES.some((phase) => phase.key === phaseKey);
+            if (!isKnownPhase) continue;
+            if (phaseStatus) {
+              setDoePhaseStatus(phaseKey, phaseStatus, phaseDetail || null);
+            }
+            if (Number.isFinite(phaseProgress)) {
+              setDoePhaseProgress(phaseKey, phaseProgress);
+            }
+            if (phaseDetail) {
+              setDoePhaseDetail(phaseKey, phaseDetail);
+            }
+            continue;
+          }
+          if (eventName === 'evaluation_partial') {
+            setDoePhaseStatus('final_evaluation', 'active');
+            setDoePhaseDetail('final_evaluation', 'Aggiornamento valutazione in corso');
+            mergeDoeEvaluationPartial('treatment', eventPayload || {});
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              evaluation: mergeEvaluationPartial(prev?.evaluation, eventPayload || {}),
+            }));
+            continue;
+          }
+          if (eventName === 'evaluation_status') {
+            const stage = eventPayload?.stage || '';
+            const stageDetailMap = {
+              start: 'Check KB catena principale',
+              kb_reasoner_done: 'Check KB catena contraria',
+              kb_counter_done: 'Verifica opposizione tra tesi',
+              gate_done: 'Gate opposizione completato',
+              repair_start: 'Riparazione citazioni/catene in corso',
+              repair_done: 'Riparazione completata, avvio AQA',
+              aqa_done: 'AQA completata, preparazione report',
+              done: 'Valutazione completata',
+            };
+            if (stageDetailMap[stage]) {
+              setDoePhaseDetail('final_evaluation', stageDetailMap[stage]);
+            }
+            if (stage === 'done') {
+              setDoePhaseStatus('final_evaluation', 'done');
+              setDoePhaseProgress('final_evaluation', 100);
+              continue;
+            }
+            setDoePhaseStatus('final_evaluation', 'active');
+            const stageProgressMap = {
+              start: 12,
+              kb_reasoner_done: 46,
+              kb_counter_done: 72,
+              gate_done: 80,
+              repair_start: 84,
+              repair_done: 92,
+              aqa_done: 98,
+            };
+            if (stageProgressMap[stage] != null) {
+              setDoePhaseProgress('final_evaluation', stageProgressMap[stage]);
+            }
+            continue;
+          }
+          if (eventName === 'evaluation_aqa_progress') {
+            const message = eventPayload?.message || 'AQA in corso';
+            const relativeProgress = Number(eventPayload?.progress);
+            setDoePhaseStatus('final_evaluation', 'active');
+            setDoePhaseDetail('final_evaluation', message);
+            if (Number.isFinite(relativeProgress)) {
+              bumpDoePhaseProgress('final_evaluation', 78 + relativeProgress * 20);
+            } else {
+              bumpDoePhaseProgress('final_evaluation', 82);
+            }
+            continue;
+          }
+          if (eventName === 'evaluation_result') {
+            setDoePhaseStatus('final_evaluation', 'done', 'Report finale consolidato');
+            mergeDoeView('treatment', {
+              evaluation: eventPayload || {},
+            });
+            setPipelineResult((prev) => ({
+              ...(prev || {}),
+              evaluation: eventPayload || {},
+            }));
+            continue;
+          }
+          if (eventName === 'error') {
+            throw new Error(eventPayload.message || 'Errore nella valutazione finale');
+          }
+          if (eventName === 'cancelled') {
+            throw new Error(eventPayload?.message || 'Valutazione interrotta manualmente.');
+          }
+          if (eventName === 'final') {
+            finalPayload = eventPayload;
+            continue;
+          }
+        }
+      }
+
+      if (!finalPayload) {
+        throw new Error('Streaming Evaluator interrotto prima del risultato finale.');
+      }
+      return finalPayload;
     };
 
     try {
       const runAController = new AbortController();
       pipelineAbortControllerRef.current = runAController;
       const runAStart = performance.now();
-      const runAResult = await runPipelineJson(payloadA, runAController);
+      const runAResult = await runPipelineStream(payloadA, runAController);
       const runADurationMs = Math.round(performance.now() - runAStart);
+      const baselineMetrics = extractDoeMetrics(runAResult);
+
+      updateDoeComparison((comparison) => ({
+        ...comparison,
+        baseline: {
+          ...(comparison?.baseline || {}),
+          status: 'done',
+          duration_ms: runADurationMs,
+          metrics: baselineMetrics,
+          view: {
+            ...createEmptyDoeView(),
+            ...(comparison?.baseline?.view || {}),
+            counter_reasoner: runAResult?.counter_reasoner || {},
+            evaluation: runAResult?.evaluation || {},
+          },
+        },
+        treatment: {
+          ...(comparison?.treatment || {}),
+          status: 'running',
+        },
+      }));
+
+      const sharedReasonerConclusion = String(runAResult?.reasoner?.conclusion || '').trim();
+      if (!sharedReasonerConclusion) {
+        throw new Error('Conclusione del Reasoner non disponibile per il confronto DoE.');
+      }
 
       setPipelineResult((prev) => ({
         ...(prev || createLivePipelineResult(claim)),
@@ -654,10 +1484,10 @@ export default function App() {
             final_evaluation: 0,
           },
           phase_details: {
-            context_setup: 'Run A completato',
-            support: `Run A completato (${runADurationMs} ms)`,
-            counter: `Run B (treatment): ${setupBDescription}`,
-            final_evaluation: 'Confronto A/B in attesa',
+            context_setup: 'Run A baseline completato (Reasoner condiviso fissato)',
+            support: `Reasoner condiviso completato (${formatDurationHuman(runADurationMs)})`,
+            counter: `Run B treatment in corso (solo Counter + Evaluator): ${setupBDescription}`,
+            final_evaluation: 'Confronto A/B in preparazione',
           },
         },
       }));
@@ -665,15 +1495,134 @@ export default function App() {
       const runBController = new AbortController();
       pipelineAbortControllerRef.current = runBController;
       const runBStart = performance.now();
-      const runBResult = await runPipelineJson(payloadB, runBController);
+      const runBRouting =
+        runAResult?.final_routing
+        || runAResult?.routing
+        || {};
+      const runBRetrievalStatutes = Array.isArray(runAResult?.retrieval_context?.statutes)
+        ? runAResult.retrieval_context.statutes
+        : null;
+      const runBRetrievalPrecedents = Array.isArray(runAResult?.retrieval_context?.precedents)
+        ? runAResult.retrieval_context.precedents
+        : null;
+      const runBCounterPayload = {
+        claim,
+        include_precedents: setupBSettings.include_precedents,
+        max_statutes: setupBSettings.search_top_k_default,
+        max_precedents: setupBSettings.precedents_limit_default,
+        claim_context_memory_enabled: !!setupBSettings.claim_context_memory_enabled,
+        claim_context_memory_overwrite:
+          !!setupBSettings.claim_context_memory_enabled
+          && !!setupBSettings.claim_context_memory_overwrite,
+        reasoner_conclusion: sharedReasonerConclusion,
+        routing: runBRouting,
+        settings: {
+          counter_model: setupBSettings.counter_model,
+          counter_temperature: setupBSettings.counter_temperature,
+          llm_max_tokens: setupBSettings.llm_max_tokens,
+          counter_enable_causality: setupBSettings.counter_enable_causality,
+          counter_pass_causal_identity: setupBSettings.counter_pass_causal_identity,
+          counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
+          counter_pass_norms: setupBSettings.counter_pass_norms,
+        },
+      };
+      if (runBRetrievalStatutes && runBRetrievalPrecedents) {
+        runBCounterPayload.pre_retrieved_statutes = runBRetrievalStatutes;
+        runBCounterPayload.pre_retrieved_precedents = runBRetrievalPrecedents;
+      }
+      const runBCounterResult = await runCounterStream(runBCounterPayload, runBController);
+      const runBEvaluationPayload = {
+        claim,
+        domain:
+          runAResult?.final_routing?.domain
+          || runAResult?.routing?.domain
+          || 'ENTRAMBI',
+        reasoner_output: runAResult?.reasoner || {},
+        counter_output: runBCounterResult || {},
+        settings: {
+          aqa_alpha: setupBSettings.aqa_alpha,
+          aqa_beta: setupBSettings.aqa_beta,
+          aqa_gamma: setupBSettings.aqa_gamma,
+          aqa_min_semantic_overlap: setupBSettings.aqa_min_semantic_overlap,
+          aqa_min_strength_ratio: setupBSettings.aqa_min_strength_ratio,
+          aqa_damage_factor: setupBSettings.aqa_damage_factor,
+          aqa_allow_factual_attacks: setupBSettings.aqa_allow_factual_attacks,
+          aqa_allow_cross_codice: setupBSettings.aqa_allow_cross_codice,
+        },
+      };
+      const runBEvaluationResult = await runEvaluateStream(
+        runBEvaluationPayload,
+        runBController,
+      );
       const runBDurationMs = Math.round(performance.now() - runBStart);
+      const runBResult = {
+        ...runAResult,
+        claim,
+        counter_reasoner: runBCounterResult,
+        evaluation: runBEvaluationResult,
+      };
 
-      const baselineMetrics = extractDoeMetrics(runAResult);
       const treatmentMetrics = extractDoeMetrics(runBResult);
       const deltaMetrics = computeDoeDelta(baselineMetrics, treatmentMetrics);
 
+      let doeArtifacts = {};
+      try {
+        doeArtifacts = await persistDoeArtifacts({
+          claim,
+          mode: 'automatic_ab',
+          reasoner_shared: {
+            routing: runAResult?.final_routing || runAResult?.routing || {},
+            retrieval_context: runAResult?.retrieval_context || {},
+            reasoner: runAResult?.reasoner || {},
+          },
+          baseline: {
+            label: 'A (Baseline)',
+            description: setupADescription,
+            settings: {
+              reasoner_enable_causality: setupASettings.reasoner_enable_causality,
+              counter_enable_causality: setupASettings.counter_enable_causality,
+              counter_pass_causal_identity: setupASettings.counter_pass_causal_identity,
+              counter_pass_taxonomy_attacks: setupASettings.counter_pass_taxonomy_attacks,
+              counter_pass_norms: setupASettings.counter_pass_norms,
+            },
+            status: 'done',
+            duration_ms: runADurationMs,
+            metrics: baselineMetrics,
+            view: {
+              counter_reasoner: runAResult?.counter_reasoner || {},
+              evaluation: runAResult?.evaluation || {},
+            },
+          },
+          treatment: {
+            label: 'B (Treatment)',
+            description: setupBDescription,
+            settings: {
+              reasoner_enable_causality: setupBSettings.reasoner_enable_causality,
+              counter_enable_causality: setupBSettings.counter_enable_causality,
+              counter_pass_causal_identity: setupBSettings.counter_pass_causal_identity,
+              counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
+              counter_pass_norms: setupBSettings.counter_pass_norms,
+            },
+            status: 'done',
+            duration_ms: runBDurationMs,
+            metrics: treatmentMetrics,
+            view: {
+              counter_reasoner: runBResult?.counter_reasoner || {},
+              evaluation: runBResult?.evaluation || {},
+            },
+          },
+          delta: {
+            ...deltaMetrics,
+            duration_ms: runBDurationMs - runADurationMs,
+          },
+        });
+      } catch (persistError) {
+        console.warn('Salvataggio log DoE non riuscito:', persistError);
+      }
+
       const doeComparison = {
         mode: 'automatic_ab',
+        status: 'completed',
         baseline: {
           label: 'A (Baseline)',
           description: setupADescription,
@@ -684,8 +1633,13 @@ export default function App() {
             counter_pass_taxonomy_attacks: setupASettings.counter_pass_taxonomy_attacks,
             counter_pass_norms: setupASettings.counter_pass_norms,
           },
+          status: 'done',
           duration_ms: runADurationMs,
           metrics: baselineMetrics,
+          view: {
+            counter_reasoner: runAResult?.counter_reasoner || {},
+            evaluation: runAResult?.evaluation || {},
+          },
         },
         treatment: {
           label: 'B (Treatment)',
@@ -697,13 +1651,19 @@ export default function App() {
             counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
             counter_pass_norms: setupBSettings.counter_pass_norms,
           },
+          status: 'done',
           duration_ms: runBDurationMs,
           metrics: treatmentMetrics,
+          view: {
+            counter_reasoner: runBResult?.counter_reasoner || {},
+            evaluation: runBResult?.evaluation || {},
+          },
         },
         delta: {
           ...deltaMetrics,
           duration_ms: runBDurationMs - runADurationMs,
         },
+        artifacts: doeArtifacts || {},
       };
 
       setPipelineResult({
@@ -719,9 +1679,9 @@ export default function App() {
             final_evaluation: 'done',
           },
           phase_details: {
-            context_setup: 'Run A/B completati',
-            support: `A baseline completato (${runADurationMs} ms)`,
-            counter: `B treatment completato (${runBDurationMs} ms)`,
+            context_setup: 'Run A/B completati con Reasoner condiviso',
+            support: `A baseline completo (${formatDurationHuman(runADurationMs)}, include Reasoner)`,
+            counter: `B treatment completato (${formatDurationHuman(runBDurationMs)}, Counter+Evaluator)`,
             final_evaluation: 'Confronto A/B completato',
           },
           phase_progress: {
@@ -1600,19 +2560,55 @@ export default function App() {
     return `lexcausa_${prefix}_${sanitizeFilename(claim)}_${timestamp}.pdf`;
   };
 
+  const persistPdfExportArtifact = async ({
+    blob,
+    claim = '',
+    prefix = 'pipeline',
+    exportContext = 'pipeline',
+    filename = 'lexcausa_export.pdf',
+  }) => {
+    if (!(blob instanceof Blob) || blob.size === 0) return null;
+
+    const formData = new FormData();
+    formData.append('pdf', blob, filename);
+    formData.append('claim', claim || '');
+    formData.append('prefix', prefix || 'pipeline');
+    formData.append('export_context', exportContext || 'pipeline');
+    formData.append('client_filename', filename);
+
+    try {
+      const response = await fetch(`${API_BASE}/pdf/export`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        throw new Error(`Persistenza PDF fallita (${response.status})`);
+      }
+      const data = await response.json();
+      if (data?.pdf_file?.relative_path) {
+        console.info(`PDF salvato automaticamente in ${data.pdf_file.relative_path}`);
+      }
+      return data;
+    } catch (error) {
+      console.error('Errore salvataggio automatico PDF:', error);
+      return null;
+    }
+  };
+
   const downloadPipelineCardPdf = async ({
-    targetElement,
+    reportData = pipelineResult,
     claim = '',
     key = 'pipeline',
     prefix = 'pipeline',
-    openDetails = false,
+    exportContext = 'pipeline',
   }) => {
-    if (!targetElement || exportingPdfKey) return;
+    if (!reportData || exportingPdfKey) return;
     setExportingPdfKey(key);
     let sandbox = null;
+    let root = null;
     try {
-      const measuredWidth = Math.ceil(targetElement.getBoundingClientRect().width || 0);
-      const sourceWidth = Math.max(measuredWidth || targetElement.clientWidth || 0, 860);
+      const sourceWidth = exportContext === 'doe' ? 1120 : 920;
+      const pdfOrientation = exportContext === 'doe' ? 'landscape' : 'portrait';
       sandbox = document.createElement('div');
       sandbox.style.position = 'fixed';
       sandbox.style.left = '-100000px';
@@ -1620,81 +2616,35 @@ export default function App() {
       sandbox.style.width = `${sourceWidth}px`;
       sandbox.style.background = '#ffffff';
       sandbox.style.zIndex = '-1';
-
-      const cloned = targetElement.cloneNode(true);
-      cloned.style.width = `${sourceWidth}px`;
-      cloned.style.maxWidth = `${sourceWidth}px`;
-      cloned.style.boxSizing = 'border-box';
-      cloned.classList.add('pdf-export-root');
-
-      // Hide export controls from PDF copy
-      cloned.querySelectorAll('[data-pdf-ignore="true"]').forEach((node) => node.remove());
-
-      // Open only top-level archived run details (avoid huge nested blocks
-      // that can exceed canvas limits and generate blank PDFs).
-      if (openDetails) {
-        cloned.querySelectorAll('details.history-run-toggle').forEach((details) => {
-          details.open = true;
-        });
-      }
-
-      // Expand scroll/overflow blocks to avoid clipping and overlapping on page breaks.
-      const expandSelector = [
-        '.raw-response',
-        '.code-block',
-        '.aspic-full-pre',
-        '.citation-checks-list',
-        '.aqa-link-list',
-        '.metagraph-canvas-wrap',
-      ].join(',');
-      cloned.querySelectorAll(expandSelector).forEach((node) => {
-        node.style.maxHeight = 'none';
-        node.style.height = 'auto';
-        node.style.overflow = 'visible';
-      });
-
-      // Metagraph: capture full width/height, not only the visible scrolled viewport.
-      cloned.querySelectorAll('.metagraph-canvas-wrap').forEach((wrap) => {
-        const fullW = Math.max(wrap.scrollWidth, wrap.clientWidth);
-        const fullH = Math.max(wrap.scrollHeight, wrap.clientHeight);
-        wrap.style.width = '100%';
-        wrap.style.minWidth = '0';
-        wrap.style.maxWidth = '100%';
-        wrap.style.maxHeight = 'none';
-        wrap.style.overflow = 'visible';
-        wrap.style.backgroundColor = '#ffffff';
-        wrap.style.backgroundImage = 'none';
-
-        const svg = wrap.querySelector('svg');
-        if (svg) {
-          svg.setAttribute('viewBox', `0 0 ${fullW} ${fullH}`);
-          svg.setAttribute('width', `${fullW}`);
-          svg.setAttribute('height', `${fullH}`);
-          svg.style.width = '100%';
-          svg.style.maxWidth = '100%';
-          svg.style.height = 'auto';
-        }
-      });
-
-      sandbox.appendChild(cloned);
       document.body.appendChild(sandbox);
+      root = createRoot(sandbox);
+      root.render(renderPdfExportContent({ reportData, exportContext }));
 
+      if (document.fonts?.ready) {
+        try {
+          await document.fonts.ready;
+        } catch (error) {
+          console.warn('Font readiness failed during PDF export:', error);
+        }
+      }
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await new Promise((resolve) => setTimeout(resolve, exportContext === 'doe' ? 220 : 140));
 
-      const exportWidth = sourceWidth;
-      const exportHeight = Math.max(cloned.scrollHeight, cloned.clientHeight);
-      const maxCanvasPixels = 14000;
+      const exportElement = sandbox.firstElementChild || sandbox;
+      const exportWidth = Math.ceil(exportElement.getBoundingClientRect().width || exportElement.scrollWidth || sourceWidth);
+      const exportHeight = Math.max(exportElement.scrollHeight, exportElement.clientHeight);
+      const maxCanvasPixels = exportContext === 'doe' ? 30000 : 24000;
       const canvasScale = Math.max(
-        0.35,
-        Math.min(1.6, maxCanvasPixels / Math.max(exportHeight, exportWidth, 1)),
+        exportContext === 'doe' ? 0.5 : 0.55,
+        Math.min(exportContext === 'doe' ? 1.2 : 1.35, maxCanvasPixels / Math.max(exportHeight, exportWidth, 1)),
       );
+      const pdfFilename = buildPipelinePdfFilename(claim, prefix);
       const html2pdfModule = await import('html2pdf.js/dist/html2pdf.bundle.min.js');
       const html2pdf = html2pdfModule.default || html2pdfModule;
-
-      await html2pdf()
+      const worker = html2pdf()
         .set({
           margin: [8, 8, 8, 8],
-          filename: buildPipelinePdfFilename(claim, prefix),
+          filename: pdfFilename,
           image: { type: 'jpeg', quality: 0.98 },
           html2canvas: {
             scale: canvasScale,
@@ -1704,26 +2654,44 @@ export default function App() {
             windowHeight: Math.min(exportHeight, 5000),
             scrollX: 0,
             scrollY: 0,
-            ignoreElements: (element) => element?.dataset?.pdfIgnore === 'true',
+            ignoreElements: (element) =>
+              element?.dataset?.pdfIgnore === 'true'
+              || element?.classList?.contains('settings-panel')
+              || element?.classList?.contains('input-area'),
           },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: pdfOrientation },
           pagebreak: {
             mode: ['css', 'legacy'],
             avoid: [
-              '.result-section',
               '.pipeline-section',
               '.subsection',
+              '.structured-block',
+              '.causality-card',
               '.metagraph-wrapper',
               '.summary-card',
-              '.citation-check-item',
+              '.aqa-full-section',
+              '.pdf-export-kicker-block',
             ],
           },
         })
-        .from(cloned)
-        .save();
+        .from(exportElement);
+
+      const pdfBlob = await worker.outputPdf('blob');
+      const persistPromise = persistPdfExportArtifact({
+        blob: pdfBlob,
+        claim,
+        prefix,
+        exportContext,
+        filename: pdfFilename,
+      });
+      await worker.save();
+      await persistPromise;
     } catch (error) {
       console.error('Errore durante export PDF:', error);
     } finally {
+      if (root) {
+        root.unmount();
+      }
       if (sandbox && sandbox.parentNode) {
         sandbox.parentNode.removeChild(sandbox);
       }
@@ -1731,8 +2699,28 @@ export default function App() {
     }
   };
 
-  const aqaReport = pipelineResult?.evaluation?.aqa_report;
+  const isDoeTab = activeTab === TABS.DOE;
   const doeComparison = pipelineResult?.doe_ab_comparison;
+  const doeHasComparison = Boolean(doeComparison);
+  const doeHasCompletedComparison = Boolean(doeComparison?.delta);
+  const doeBaselineView = doeComparison?.baseline?.view || null;
+  const doeTreatmentView = doeComparison?.treatment?.view || null;
+  const doeSelectedView = isDoeTab
+    ? (doeDisplaySetup === 'baseline' ? doeBaselineView : doeTreatmentView)
+    : null;
+  const displayedCounterReasoner = isDoeTab
+    ? (doeSelectedView?.counter_reasoner || {})
+    : (pipelineResult?.counter_reasoner || {});
+  const displayedEvaluation = isDoeTab
+    ? (doeSelectedView?.evaluation || {})
+    : (pipelineResult?.evaluation || {});
+  const activeDoeRunKey = (
+    doeComparison?.treatment?.status === 'running'
+      ? 'treatment'
+      : doeComparison?.baseline?.status === 'running'
+        ? 'baseline'
+        : null
+  );
   const formatDoePercent = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return '—';
@@ -1748,6 +2736,35 @@ export default function App() {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return '—';
     return `${numeric >= 0 ? '+' : ''}${Math.round(numeric)}`;
+  };
+  const formatDurationHuman = (valueMs, { signed = false } = {}) => {
+    const numeric = Number(valueMs);
+    if (!Number.isFinite(numeric)) return '—';
+
+    const sign = signed
+      ? (numeric > 0 ? '+' : numeric < 0 ? '-' : '')
+      : '';
+    const absMs = Math.abs(Math.round(numeric));
+
+    if (absMs < 1000) {
+      return signed ? '≈ 0 s' : 'meno di 1 s';
+    }
+
+    let totalSeconds = Math.round(absMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    totalSeconds -= days * 86400;
+    const hours = Math.floor(totalSeconds / 3600);
+    totalSeconds -= hours * 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds - minutes * 60;
+
+    const parts = [];
+    if (days > 0) parts.push(`${days} g`);
+    if (hours > 0) parts.push(`${hours} h`);
+    if (minutes > 0) parts.push(`${minutes} min`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds} s`);
+
+    return `${sign}${parts.join(' ')}`;
   };
   const normalizeLiveStepText = (value = '') =>
     value
@@ -2585,7 +3602,16 @@ export default function App() {
   const liveCounterStepTexts = liveCounterSteps.map(([, stepText]) => stepText);
 
   const liveCounterPhaseActive = pipelineResult?._stream?.phases?.counter === 'active';
+  const selectedCounterLiveMode = isDoeTab
+    ? (doeDisplaySetup === activeDoeRunKey && liveCounterPhaseActive)
+    : liveCounterPhaseActive;
+  const selectedCounterLiveSteps = selectedCounterLiveMode ? liveCounterStepTexts : [];
+  const selectedCounterLiveBadgeLabel = isDoeTab
+    ? (doeDisplaySetup === 'baseline' ? 'Setup A' : 'Setup B')
+    : '';
+  const selectedCounterLiveBadgeTone = doeDisplaySetup === 'baseline' ? 'baseline' : 'treatment';
 
+  const aqaReport = displayedEvaluation?.aqa_report;
   const aqaProScore = aqaReport?.net_plausibility?.pro ?? 0;
   const aqaContraScore = aqaReport?.net_plausibility?.contra ?? 0;
   const aqaFinalScore = aqaReport?.net_plausibility?.final ?? 0;
@@ -2604,23 +3630,29 @@ export default function App() {
       : 'aqa-verdict-uncertain';
 
   const reasonerParsedResponse = parseStructuredResponse(pipelineResult?.reasoner?.raw_response || '');
-  const counterParsedResponse = parseStructuredResponse(pipelineResult?.counter_reasoner?.raw_response || '');
+  const counterParsedResponse = parseStructuredResponse(displayedCounterReasoner?.raw_response || '');
+  const doeBaselineCounterParsed = parseStructuredResponse(
+    doeBaselineView?.counter_reasoner?.raw_response || '',
+  );
+  const doeTreatmentCounterParsed = parseStructuredResponse(
+    doeTreatmentView?.counter_reasoner?.raw_response || '',
+  );
   const repairedReasonerParsedResponse = parseStructuredResponse(
-    pipelineResult?.evaluation?.repaired_reasoner_chain || '',
+    displayedEvaluation?.repaired_reasoner_chain || '',
   );
   const repairedCounterParsedResponse = parseStructuredResponse(
-    pipelineResult?.evaluation?.repaired_counter_chain || '',
+    displayedEvaluation?.repaired_counter_chain || '',
   );
-  const parsedSummary = parseConsistencySummary(pipelineResult?.evaluation?.summary || '');
+  const parsedSummary = parseConsistencySummary(displayedEvaluation?.summary || '');
   const reasonerLiveConclusion = normalizeSectionText(pipelineResult?._stream?.support_conclusion_live || '');
-  const reasonerRepairStats = pipelineResult?.evaluation?.consistency_report?.reasoner || {};
-  const counterRepairStats = pipelineResult?.evaluation?.consistency_report?.counter_reasoner || {};
+  const reasonerRepairStats = displayedEvaluation?.consistency_report?.reasoner || {};
+  const counterRepairStats = displayedEvaluation?.consistency_report?.counter_reasoner || {};
   const hasReasonerRepairs = Number(reasonerRepairStats.repaired_citations || 0) > 0
     || Number(reasonerRepairStats.dropped_citations || 0) > 0;
   const hasCounterRepairs = Number(counterRepairStats.repaired_citations || 0) > 0
     || Number(counterRepairStats.dropped_citations || 0) > 0;
   const hasAnyRepairs = hasReasonerRepairs || hasCounterRepairs;
-  const evaluationConsistencyReport = pipelineResult?.evaluation?.consistency_report || {};
+  const evaluationConsistencyReport = displayedEvaluation?.consistency_report || {};
   const evaluationReasonerReport = evaluationConsistencyReport.reasoner;
   const evaluationCounterReport = evaluationConsistencyReport.counter_reasoner;
   const evaluationPhaseStatus = pipelineResult?._stream?.phases?.final_evaluation || 'pending';
@@ -2629,6 +3661,311 @@ export default function App() {
     Number(pipelineResult?._stream?.phase_progress?.final_evaluation || 0),
   );
   const evaluationPhaseDetail = pipelineResult?._stream?.phase_details?.final_evaluation || '';
+  const getUniqueNormalizedStrings = (items = []) => {
+    const seen = new Set();
+    const ordered = [];
+    (items || []).forEach((item) => {
+      const value = String(item || '').replace(/\s+/g, ' ').trim();
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      ordered.push(value);
+    });
+    return ordered;
+  };
+  const getCounterAttackLabels = (counterData = {}) => {
+    const selectedIds = Array.isArray(counterData?.selected_attack_ids)
+      ? counterData.selected_attack_ids
+      : [];
+    const fallbackId = counterData?.selected_attack_id ? [counterData.selected_attack_id] : [];
+    return getUniqueNormalizedStrings(
+      (selectedIds.length > 0 ? selectedIds : fallbackId).map(normalizeAttackLabel),
+    );
+  };
+  const doeBaselineAttackLabels = getCounterAttackLabels(doeBaselineView?.counter_reasoner);
+  const doeTreatmentAttackLabels = getCounterAttackLabels(doeTreatmentView?.counter_reasoner);
+  const doeBaselineNorms = getUniqueNormalizedStrings(doeBaselineCounterParsed?.norms || []);
+  const doeTreatmentNorms = getUniqueNormalizedStrings(doeTreatmentCounterParsed?.norms || []);
+  const doeBaselineOnlyNorms = doeBaselineNorms.filter(
+    (norm) => !doeTreatmentNorms.some((item) => item.toLowerCase() === norm.toLowerCase()),
+  );
+  const doeTreatmentOnlyNorms = doeTreatmentNorms.filter(
+    (norm) => !doeBaselineNorms.some((item) => item.toLowerCase() === norm.toLowerCase()),
+  );
+  const buildDoeAnalysisSnapshot = (comparison = null, baselineView = null, treatmentView = null) => {
+    if (!comparison?.delta) return null;
+    const baselineParsed = parseStructuredResponse(
+      baselineView?.counter_reasoner?.raw_response || '',
+    );
+    const treatmentParsed = parseStructuredResponse(
+      treatmentView?.counter_reasoner?.raw_response || '',
+    );
+    const baselineAttackLabels = getCounterAttackLabels(baselineView?.counter_reasoner);
+    const treatmentAttackLabels = getCounterAttackLabels(treatmentView?.counter_reasoner);
+    const baselineNorms = getUniqueNormalizedStrings(baselineParsed?.norms || []);
+    const treatmentNorms = getUniqueNormalizedStrings(treatmentParsed?.norms || []);
+    const baselineOnlyNorms = baselineNorms.filter(
+      (norm) => !treatmentNorms.some((item) => item.toLowerCase() === norm.toLowerCase()),
+    );
+    const treatmentOnlyNorms = treatmentNorms.filter(
+      (norm) => !baselineNorms.some((item) => item.toLowerCase() === norm.toLowerCase()),
+    );
+    const deltaFinal = Number(comparison?.delta?.final_score);
+    const deltaCounterConsistency = Number(comparison?.delta?.counter_consistency);
+    const deltaContraLinks = Number(comparison?.delta?.contra_links);
+    const deltaDuration = Number(comparison?.delta?.duration_ms);
+    let headline = 'Impatto DoE neutro';
+    let toneClass = 'summary-metric-info';
+    if (Number.isFinite(deltaFinal) && deltaFinal > 0.01) {
+      headline = 'Setup B migliora la forza dialettica del Counter';
+      toneClass = 'summary-metric-positive';
+    } else if (Number.isFinite(deltaFinal) && deltaFinal < -0.01) {
+      headline = 'Setup A resta piu incisivo sul claim corrente';
+      toneClass = 'summary-metric-warning';
+    }
+    const notes = [];
+    if (Number.isFinite(deltaFinal)) {
+      notes.push(
+        deltaFinal > 0.01
+          ? `Il treatment aumenta l'AQA finale di ${formatDoeSignedPp(deltaFinal)} rispetto al baseline.`
+          : deltaFinal < -0.01
+            ? `Il baseline mantiene un vantaggio di ${formatDoeSignedPp(deltaFinal)} sull'AQA finale.`
+            : 'La differenza di AQA finale tra A e B e quasi nulla su questo claim.',
+      );
+    }
+    if (treatmentAttackLabels.length > baselineAttackLabels.length) {
+      notes.push(
+        `Setup B usa attacchi tassonomici espliciti (${treatmentAttackLabels.join(', ')}) mentre Setup A resta piu attack-agnostic.`,
+      );
+    } else if (baselineAttackLabels.length > 0) {
+      notes.push(`Setup A espone attacchi espliciti: ${baselineAttackLabels.join(', ')}.`);
+    } else {
+      notes.push('Setup A non espone attacchi tassonomici espliciti nella risposta finale.');
+    }
+    if (baselineOnlyNorms.length > 0 || treatmentOnlyNorms.length > 0) {
+      notes.push(
+        `Le norme distintive cambiano: A-only ${baselineOnlyNorms.join(', ') || 'nessuna'} | B-only ${treatmentOnlyNorms.join(', ') || 'nessuna'}.`,
+      );
+    }
+    if (Number.isFinite(deltaContraLinks) && deltaContraLinks !== 0) {
+      notes.push(
+        `Il numero di link contro varia di ${formatDoeSignedInt(deltaContraLinks)} tra treatment e baseline.`,
+      );
+    }
+    if (Number.isFinite(deltaCounterConsistency) && Math.abs(deltaCounterConsistency) >= 0.001) {
+      notes.push(
+        `La consistenza del Counter cambia di ${formatDoeSignedPp(deltaCounterConsistency)} tra i due setup.`,
+      );
+    }
+    if (Number.isFinite(deltaDuration)) {
+      notes.push(
+        deltaDuration < 0
+          ? `Setup B completa piu rapidamente di ${formatDurationHuman(Math.abs(deltaDuration))}.`
+          : deltaDuration > 0
+            ? `Setup B impiega ${formatDurationHuman(deltaDuration)} in piu rispetto ad A.`
+            : 'I tempi di esecuzione A/B sono equivalenti.',
+      );
+    }
+    return {
+      headline,
+      toneClass,
+      notes,
+    };
+  };
+  const doeAnalysis = doeHasCompletedComparison
+    ? buildDoeAnalysisSnapshot(doeComparison, doeBaselineView, doeTreatmentView)
+    : null;
+
+  const renderDoeComparisonSection = () => {
+    if (!isDoeTab || !doeHasComparison) return null;
+    return (
+      <div className="result-section pipeline-section" data-pdf-section="doe-comparison">
+        <h3 className="section-header">
+          <GitBranch size={20} style={{ color: '#6366f1' }} />
+          Confronto DoE Automatico (A/B)
+        </h3>
+        <div className="summary-cards-grid">
+          <div className="summary-card">
+            <div className="summary-card-title">
+              {doeComparison.baseline?.label || 'Setup A'} - {doeComparison.baseline?.description || 'Baseline'}
+            </div>
+            <div className="summary-metrics">
+              <div className="summary-metric summary-metric-info">
+                <span className="summary-metric-label">AQA Verdetto</span>
+                <span className="summary-metric-value">{doeComparison.baseline?.metrics?.verdict || 'n/a'}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.final_score)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(doeComparison.baseline?.duration_ms))
+                    ? formatDurationHuman(doeComparison.baseline.duration_ms)
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">
+              {doeComparison.treatment?.label || 'Setup B'} - {doeComparison.treatment?.description || 'Treatment'}
+            </div>
+            <div className="summary-metrics">
+              <div className="summary-metric summary-metric-info">
+                <span className="summary-metric-label">AQA Verdetto</span>
+                <span className="summary-metric-value">{doeComparison.treatment?.metrics?.verdict || 'n/a'}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.final_score)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(doeComparison.treatment?.duration_ms))
+                    ? formatDurationHuman(doeComparison.treatment.duration_ms)
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">Delta (B - A)</div>
+            <div className="summary-metrics">
+              <div className="summary-metric summary-metric-positive">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.final_score)}</span>
+              </div>
+              <div className="summary-metric summary-metric-info">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric summary-metric-warning">
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{formatDoeSignedInt(doeComparison.delta?.contra_links)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(doeComparison.delta?.duration_ms))
+                    ? formatDurationHuman(doeComparison.delta.duration_ms, { signed: true })
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="summary-cards-grid" style={{ marginTop: 12 }}>
+          <div className="summary-card">
+            <div className="summary-card-title">Counter A (baseline) - vista parallela</div>
+            {(doeBaselineView?.counter_reasoner?.raw_response || doeComparison?.baseline?.status === 'done')
+              ? renderStructuredResponse({ parsed: doeBaselineCounterParsed })
+              : <p className="aqa-tree-empty">In attesa dell&apos;output baseline.</p>}
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">Counter B (treatment) - vista parallela</div>
+            {(doeTreatmentView?.counter_reasoner?.raw_response || doeComparison?.treatment?.status === 'done')
+              ? renderStructuredResponse({ parsed: doeTreatmentCounterParsed })
+              : <p className="aqa-tree-empty">Treatment non ancora disponibile o in generazione.</p>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDoeAnalysisSection = () => {
+    if (!isDoeTab || !doeAnalysis) return null;
+    return (
+      <div className="result-section pipeline-section" data-pdf-section="doe-analysis">
+        <h3 className="section-header">
+          <GitBranch size={20} style={{ color: '#2563eb' }} />
+          Analisi DoE - Differenze A/B
+        </h3>
+        <div className="summary-cards-grid">
+          <div className="summary-card">
+            <div className="summary-card-title">Lettura tecnica</div>
+            <div className={`summary-metric ${doeAnalysis.toneClass}`} style={{ marginBottom: 12 }}>
+              <span className="summary-metric-label">Sintesi</span>
+              <span className="summary-metric-value">{doeAnalysis.headline}</span>
+            </div>
+            <ul className="summary-notes-list">
+              {doeAnalysis.notes.map((note, idx) => (
+                <li key={`doe-analysis-note-${idx}`}>{note}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">Attacchi e Norme Distintive</div>
+            <div className="structured-block" style={{ marginBottom: 10 }}>
+              <h5>Attacchi Setup A</h5>
+              {doeBaselineAttackLabels.length > 0 ? (
+                <ul className="structured-list">
+                  {doeBaselineAttackLabels.map((label, idx) => (
+                    <li key={`doe-a-attack-${idx}`}>{label}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p>Nessun attacco tassonomico esplicito.</p>
+              )}
+            </div>
+            <div className="structured-block" style={{ marginBottom: 10 }}>
+              <h5>Attacchi Setup B</h5>
+              {doeTreatmentAttackLabels.length > 0 ? (
+                <ul className="structured-list">
+                  {doeTreatmentAttackLabels.map((label, idx) => (
+                    <li key={`doe-b-attack-${idx}`}>{label}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p>Nessun attacco tassonomico esplicito.</p>
+              )}
+            </div>
+            <div className="structured-block">
+              <h5>Norme solo A / solo B</h5>
+              <p>
+                <strong>A:</strong> {doeBaselineOnlyNorms.join(', ') || 'nessuna'}
+              </p>
+              <p>
+                <strong>B:</strong> {doeTreatmentOnlyNorms.join(', ') || 'nessuna'}
+              </p>
+            </div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">Conclusioni Counter</div>
+            <div className="structured-block" style={{ marginBottom: 10 }}>
+              <h5>Setup A</h5>
+              <p>{doeBaselineCounterParsed?.conclusione || 'Conclusione non disponibile.'}</p>
+            </div>
+            <div className="structured-block">
+              <h5>Setup B</h5>
+              <p>{doeTreatmentCounterParsed?.conclusione || 'Conclusione non disponibile.'}</p>
+            </div>
+            {doeComparison?.artifacts?.doe_log_file?.relative_path && (
+              <div className="structured-block doe-log-artifact">
+                <h5>Artefatti DoE</h5>
+                <p>Log: {doeComparison.artifacts.doe_log_file.relative_path}</p>
+                {doeComparison?.artifacts?.doe_report_file?.relative_path && (
+                  <p>Report: {doeComparison.artifacts.doe_report_file.relative_path}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   const renderStructuredResponse = ({
     parsed,
@@ -2636,6 +3973,8 @@ export default function App() {
     liveConclusion = '',
     liveMode = false,
     variant = 'default',
+    liveStepBadgeLabel = '',
+    liveStepBadgeTone = 'neutral',
   }) => {
     const hasLiveChain = liveMode && Array.isArray(liveSteps) && liveSteps.length > 0;
     const chainSteps = hasLiveChain
@@ -2685,7 +4024,17 @@ export default function App() {
             <h5>Catena di Ragionamento</h5>
             <ol className="live-steps-list">
               {chainSteps.map((stepText, idx) => (
-                <li key={`chain-step-${idx}`}>{stepText}</li>
+                <li
+                  key={`chain-step-${idx}`}
+                  className={hasLiveChain && liveStepBadgeLabel ? 'live-step-with-badge' : ''}
+                >
+                  {hasLiveChain && liveStepBadgeLabel && (
+                    <span className={`live-step-badge tone-${liveStepBadgeTone}`}>
+                      {liveStepBadgeLabel}
+                    </span>
+                  )}
+                  <span>{stepText}</span>
+                </li>
               ))}
             </ol>
           </div>
@@ -2696,18 +4045,625 @@ export default function App() {
         {liveMode && (
           <div className="structured-live-tag">
             <Loader2 size={14} className="loading-spinner" />
-            <span>Aggiornamento live in corso...</span>
+            <span>
+              Aggiornamento live in corso
+              {liveStepBadgeLabel ? ` - ${liveStepBadgeLabel}` : ''}
+              ...
+            </span>
           </div>
         )}
       </div>
     );
   };
 
+  const renderPdfStatuteList = (title, statutes = [], keyPrefix = 'pdf-statutes') => {
+    if (!Array.isArray(statutes) || statutes.length === 0) return null;
+    return (
+      <div className="subsection">
+        <h4>{title} ({statutes.length})</h4>
+        <ul className="articles-list pdf-export-list">
+          {statutes.map((art, idx) => (
+            <li key={`${keyPrefix}-${art?.articolo || art?.statute_id || idx}`}>
+              <strong>{idx + 1}. Art. {art?.articolo || art?.statute_id || '-'}</strong>
+              {art?.source && ` (${sourceShortLabel(art.source)})`}
+              {art?.titolo && ` - ${art.titolo}`}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
+  const renderPdfPrecedentList = (title, precedents = [], keyPrefix = 'pdf-precedents') => {
+    if (!Array.isArray(precedents) || precedents.length === 0) return null;
+    return (
+      <div className="subsection">
+        <h4>{title} ({precedents.length})</h4>
+        <ul className="articles-list pdf-export-list">
+          {precedents.map((prec, idx) => (
+            <li key={`${keyPrefix}-${prec?.id || prec?.title || idx}`}>
+              <strong>{idx + 1}. {prec?.title || `Precedente ${idx + 1}`}</strong>
+              {prec?.id ? ` - ${prec.id}` : ''}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
+  const renderPdfSummaryCards = (summaryText = '') => {
+    if (!summaryText) return null;
+    const summary = parseConsistencySummary(summaryText);
+    if (summary.sections.length === 0) {
+      return (
+        <div className="summary-card">
+          <div className="raw-response">{summaryText}</div>
+        </div>
+      );
+    }
+    return (
+      <div className="summary-cards-grid">
+        {summary.sections.map((section, idx) => (
+          <div key={`pdf-summary-${section.name}-${idx}`} className="summary-card">
+            <div className="summary-card-title">{section.name}</div>
+            {section.metrics.length > 0 && (
+              <div className="summary-metrics">
+                {section.metrics.map((metric, metricIdx) => (
+                  <div
+                    key={`pdf-summary-metric-${section.name}-${metric.label}-${metricIdx}`}
+                    className={`summary-metric ${getSummaryMetricClass(metric.label)}`}
+                  >
+                    <span className="summary-metric-label">{metric.label}</span>
+                    <span className="summary-metric-value">{metric.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {section.freeText.length > 0 && (
+              <ul className="summary-notes-list">
+                {section.freeText.map((note, noteIdx) => (
+                  <li key={`pdf-summary-note-${section.name}-${noteIdx}`}>{note}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderPdfConsistencyAgentCard = (title, report = {}, keyPrefix = 'pdf-consistency') => {
+    if (!report || typeof report !== 'object' || Object.keys(report).length === 0) return null;
+    const totalCitations = Number(report.total_citations || 0);
+    const totalTextChecks = Number(report.text_matches || 0) + Number(report.text_mismatches || 0);
+    return (
+      <div className="summary-card">
+        <div className="summary-card-title">{title}</div>
+        <div className="summary-metrics">
+          <div className="summary-metric summary-metric-positive">
+            <span className="summary-metric-label">Score</span>
+            <span className="summary-metric-value">
+              {formatDoePercent(report.consistency_score)}
+            </span>
+          </div>
+          <div className="summary-metric">
+            <span className="summary-metric-label">Citazioni valide</span>
+            <span className="summary-metric-value">
+              {Number(report.valid_citations || 0)}/{totalCitations}
+            </span>
+          </div>
+          <div className="summary-metric">
+            <span className="summary-metric-label">Testo verificato</span>
+            <span className="summary-metric-value">
+              {Number(report.text_matches || 0)}/{totalTextChecks}
+            </span>
+          </div>
+          {(Number(report.repaired_citations || 0) > 0 || Number(report.dropped_citations || 0) > 0) && (
+            <div className="summary-metric summary-metric-warning">
+              <span className="summary-metric-label">Riparazioni</span>
+              <span className="summary-metric-value">
+                {Number(report.repaired_citations || 0)} rip., {Number(report.dropped_citations || 0)} scart.
+              </span>
+            </div>
+          )}
+        </div>
+        {Array.isArray(report.issues) && report.issues.length > 0 && (
+          <ul className="summary-notes-list" key={`${keyPrefix}-issues`}>
+            {report.issues.map((issue, idx) => (
+              <li key={`${keyPrefix}-issue-${idx}`}>{issue}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  };
+
+  const renderPdfEvaluationSection = (evaluation = {}, keyPrefix = 'pdf-evaluation') => {
+    const consistencyReport = evaluation?.consistency_report || {};
+    const summaryText = evaluation?.summary || '';
+    const hasConsistency = Boolean(consistencyReport.reasoner || consistencyReport.counter_reasoner);
+    if (!hasConsistency && !summaryText) return null;
+    return (
+      <div className="subsection">
+        <h4>Evaluator - Verifica Consistenza</h4>
+        {hasConsistency && (
+          <div className="summary-cards-grid">
+            {renderPdfConsistencyAgentCard(
+              'Reasoner',
+              consistencyReport.reasoner,
+              `${keyPrefix}-reasoner`,
+            )}
+            {renderPdfConsistencyAgentCard(
+              'Counter-Reasoner',
+              consistencyReport.counter_reasoner,
+              `${keyPrefix}-counter`,
+            )}
+          </div>
+        )}
+        {summaryText && renderPdfSummaryCards(summaryText)}
+      </div>
+    );
+  };
+
+  const renderPdfRepairSection = (evaluation = {}) => {
+    const repairedReasonerChain = evaluation?.repaired_reasoner_chain || '';
+    const repairedCounterChain = evaluation?.repaired_counter_chain || '';
+    const consistencyReport = evaluation?.consistency_report || {};
+    const hasRepairs = Boolean(repairedReasonerChain || repairedCounterChain);
+    const hasRepairStats = Boolean(consistencyReport.reasoner || consistencyReport.counter_reasoner);
+    if (!hasRepairs && !hasRepairStats) return null;
+    return (
+      <div className="subsection">
+        <h4>Catene di Ragionamento Riparate</h4>
+        {repairedReasonerChain && (
+          <div className="structured-block">
+            <h5>Reasoner - Catena Riparata</h5>
+            {renderStructuredResponse({
+              parsed: parseStructuredResponse(repairedReasonerChain),
+              variant: 'repaired',
+            })}
+          </div>
+        )}
+        {repairedCounterChain && (
+          <div className="structured-block">
+            <h5>Counter-Reasoner - Catena Riparata</h5>
+            {renderStructuredResponse({
+              parsed: parseStructuredResponse(repairedCounterChain),
+              variant: 'repaired',
+            })}
+          </div>
+        )}
+        {hasRepairStats && (
+          <div className="consistency-stats">
+            {consistencyReport.reasoner && (
+              <span className="stat-item stat-repaired">
+                🔧 Reasoner: {consistencyReport.reasoner.repaired_citations || 0} riparate, {consistencyReport.reasoner.dropped_citations || 0} scartate
+              </span>
+            )}
+            {consistencyReport.counter_reasoner && (
+              <span className="stat-item stat-repaired">
+                🔧 Counter: {consistencyReport.counter_reasoner.repaired_citations || 0} riparate, {consistencyReport.counter_reasoner.dropped_citations || 0} scartate
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderPdfAqaSection = (evaluation = {}) => {
+    const aqaData = evaluation?.aqa_report;
+    const proLinks = Array.isArray(aqaData?.links?.pro) ? aqaData.links.pro : [];
+    const contraLinks = Array.isArray(aqaData?.links?.contra) ? aqaData.links.contra : [];
+    if (!aqaData || typeof aqaData !== 'object' || Object.keys(aqaData).length === 0) return null;
+    return (
+      <>
+        <div className="subsection">
+          <h4>AQA - Valutazione Argomentativa</h4>
+          {renderAqaFullView(aqaData)}
+        </div>
+        {aqaData.enabled && (proLinks.length > 0 || contraLinks.length > 0) && (
+          <div className="subsection pdf-export-metagraph-subsection">
+            <h4>ASPIC+ Metagrafo</h4>
+            <AspicMetagraph
+              aqaReport={aqaData}
+              reasonerIr={evaluation?.repaired_reasoner_aspic_ir}
+              counterIr={evaluation?.repaired_counter_aspic_ir}
+            />
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const renderPdfSharedReasonerSection = (reportData = {}) => {
+    const reasoner = reportData?.reasoner || {};
+    const parsedReasoner = parseStructuredResponse(reasoner?.raw_response || '');
+    const hasReasonerContent = Boolean(
+      reasoner?.raw_response
+      || reasoner?.causality
+      || reasoner?.statutes?.length
+      || reasoner?.precedents?.length,
+    );
+    if (!hasReasonerContent) return null;
+    return (
+      <div className="result-section pipeline-section">
+        <h3 className="section-header">
+          <CheckCircle2 size={20} style={{ color: '#10b981' }} />
+          2. REASONER CONDIVISO
+        </h3>
+        <p className="pdf-export-context-note">
+          La tesi principale viene generata una sola volta e riusata da Setup A e Setup B.
+        </p>
+        {reasoner?.causality && (
+          <div className="subsection">
+            <h4>Classificazione Causalità</h4>
+            {renderCausalityCard('Mappatura Causale', reasoner.causality)}
+          </div>
+        )}
+        {renderPdfStatuteList('Articoli Trovati (Reasoner)', reasoner?.statutes, 'pdf-reasoner-statutes')}
+        {renderPdfPrecedentList('Precedenti Trovati (Reasoner)', reasoner?.precedents, 'pdf-reasoner-precedents')}
+        {reasoner?.raw_response && (
+          <div className="subsection">
+            <h4>Risposta Completa</h4>
+            {renderStructuredResponse({ parsed: parsedReasoner })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderPdfDoeSetupSection = ({
+    stepNumber,
+    setupKey,
+    comparisonEntry = {},
+    view = {},
+  }) => {
+    const counterData = view?.counter_reasoner || {};
+    const evaluation = view?.evaluation || {};
+    const parsedCounter = parseStructuredResponse(counterData?.raw_response || '');
+    const title = `${stepNumber}. SETUP ${setupKey} - ${comparisonEntry?.label || setupKey}`;
+    const description = comparisonEntry?.description || '';
+    return (
+      <div className="result-section pipeline-section pdf-export-setup-section">
+        <div className={`pdf-export-kicker-block tone-${setupKey === 'A' ? 'baseline' : 'treatment'}`}>
+          <span>Setup {setupKey}</span>
+          <strong>{description || 'Counter-Reasoner'}</strong>
+        </div>
+        <h3 className="section-header">
+          <XCircle size={20} style={{ color: setupKey === 'A' ? '#ef4444' : '#2563eb' }} />
+          {title}
+        </h3>
+        <div className="summary-cards-grid">
+          <div className="summary-card">
+            <div className="summary-card-title">Metriche Setup {setupKey}</div>
+            <div className="summary-metrics">
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Verdetto</span>
+                <span className="summary-metric-value">{comparisonEntry?.metrics?.verdict || 'n/a'}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoePercent(comparisonEntry?.metrics?.final_score)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoePercent(comparisonEntry?.metrics?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(comparisonEntry?.duration_ms))
+                    ? formatDurationHuman(comparisonEntry.duration_ms)
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        {counterData?.reasoner_causality && (
+          <div className="subsection">
+            <h4>Causalità del Reasoner (da Attaccare)</h4>
+            {renderCausalityCard('Target Causale da Attaccare', counterData.reasoner_causality)}
+          </div>
+        )}
+        {renderCounterAttacksUsed(counterData, `pdf-counter-attacks-${setupKey}`)}
+        {renderPdfStatuteList(
+          'Articoli Trovati (Counter-Reasoner)',
+          counterData?.statutes,
+          `pdf-counter-statutes-${setupKey}`,
+        )}
+        {renderPdfPrecedentList(
+          'Precedenti Trovati (Counter-Reasoner)',
+          counterData?.precedents,
+          `pdf-counter-precedents-${setupKey}`,
+        )}
+        {counterData?.raw_response && (
+          <div className="subsection">
+            <h4>Controtesi</h4>
+            {renderStructuredResponse({ parsed: parsedCounter })}
+          </div>
+        )}
+        {renderPdfEvaluationSection(evaluation, `pdf-eval-${setupKey}`)}
+        {renderPdfRepairSection(evaluation)}
+        {renderPdfAqaSection(evaluation)}
+      </div>
+    );
+  };
+
+  const renderPdfDoeComparisonSection = (comparison = {}, baselineView = {}, treatmentView = {}) => {
+    if (!comparison || typeof comparison !== 'object') return null;
+    const baselineCounterParsed = parseStructuredResponse(
+      baselineView?.counter_reasoner?.raw_response || '',
+    );
+    const treatmentCounterParsed = parseStructuredResponse(
+      treatmentView?.counter_reasoner?.raw_response || '',
+    );
+    return (
+      <div className="result-section pipeline-section">
+        <h3 className="section-header">
+          <GitBranch size={20} style={{ color: '#6366f1' }} />
+          5. CONFRONTO DOE AUTOMATICO (A/B)
+        </h3>
+        <div className="summary-cards-grid">
+          <div className="summary-card">
+            <div className="summary-card-title">
+              {comparison?.baseline?.label || 'Setup A'} - {comparison?.baseline?.description || 'Baseline'}
+            </div>
+            <div className="summary-metrics">
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoePercent(comparison?.baseline?.metrics?.final_score)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoePercent(comparison?.baseline?.metrics?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(comparison?.baseline?.duration_ms))
+                    ? formatDurationHuman(comparison.baseline.duration_ms)
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">
+              {comparison?.treatment?.label || 'Setup B'} - {comparison?.treatment?.description || 'Treatment'}
+            </div>
+            <div className="summary-metrics">
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoePercent(comparison?.treatment?.metrics?.final_score)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoePercent(comparison?.treatment?.metrics?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(comparison?.treatment?.duration_ms))
+                    ? formatDurationHuman(comparison.treatment.duration_ms)
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">Delta (B - A)</div>
+            <div className="summary-metrics">
+              <div className="summary-metric">
+                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.final_score)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Consistenza Counter</span>
+                <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.counter_consistency)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{formatDoeSignedInt(comparison?.delta?.contra_links)}</span>
+              </div>
+              <div className="summary-metric">
+                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-value">
+                  {Number.isFinite(Number(comparison?.delta?.duration_ms))
+                    ? formatDurationHuman(comparison.delta.duration_ms, { signed: true })
+                    : '—'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="summary-cards-grid">
+          <div className="summary-card">
+            <div className="summary-card-title">Controtesi A - Sintesi</div>
+            {baselineView?.counter_reasoner?.raw_response
+              ? renderStructuredResponse({ parsed: baselineCounterParsed })
+              : <p className="aqa-tree-empty">Output baseline non disponibile.</p>}
+          </div>
+          <div className="summary-card">
+            <div className="summary-card-title">Controtesi B - Sintesi</div>
+            {treatmentView?.counter_reasoner?.raw_response
+              ? renderStructuredResponse({ parsed: treatmentCounterParsed })
+              : <p className="aqa-tree-empty">Output treatment non disponibile.</p>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPdfDoeAnalysisSection = (comparison = {}, baselineView = {}, treatmentView = {}) => {
+    const analysis = buildDoeAnalysisSnapshot(comparison, baselineView, treatmentView);
+    if (!analysis) return null;
+    return (
+      <div className="result-section pipeline-section">
+        <h3 className="section-header">
+          <GitBranch size={20} style={{ color: '#2563eb' }} />
+          6. ANALISI DOE - DIFFERENZE A/B
+        </h3>
+        <div className="summary-cards-grid">
+          <div className="summary-card">
+            <div className="summary-card-title">Lettura tecnica</div>
+            <div className={`summary-metric ${analysis.toneClass}`} style={{ marginBottom: 12 }}>
+              <span className="summary-metric-label">Sintesi</span>
+              <span className="summary-metric-value">{analysis.headline}</span>
+            </div>
+            <ul className="summary-notes-list">
+              {analysis.notes.map((note, idx) => (
+                <li key={`pdf-doe-analysis-${idx}`}>{note}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPdfPipelineHeader = (exportContext = 'pipeline', reportData = {}) => {
+    const isDoeExport = exportContext === 'doe' && reportData?.doe_ab_comparison;
+    const exportLabel = isDoeExport ? 'Esportazione DoE' : 'Esportazione Pipeline';
+    const exportTitle = isDoeExport
+      ? 'Report Completo DoE + Pipeline'
+      : 'Report Pipeline Completa';
+    const exportSubtitle = isDoeExport
+      ? 'Il PDF include pipeline condivisa, Setup A, Setup B, confronto finale DoE e metagrafi dei due Counter-Reasoner.'
+      : 'Il PDF include retrieval, Reasoner, Counter-Reasoner, Evaluator e metagrafo finale.';
+    return (
+      <div className="pdf-export-header">
+        <div className="pdf-export-kicker">{exportLabel}</div>
+        <h2 className="pdf-export-heading">{exportTitle}</h2>
+        <p className="pdf-export-subtitle">{exportSubtitle}</p>
+      </div>
+    );
+  };
+
+  const renderPdfPipelineExportContent = (reportData = {}) => {
+    const counterData = reportData?.counter_reasoner || {};
+    const evaluation = reportData?.evaluation || {};
+    const parsedCounter = parseStructuredResponse(counterData?.raw_response || '');
+    return (
+      <div className="pdf-export-shell pdf-export-root pdf-export-context-pipeline">
+        {renderPdfPipelineHeader('pipeline', reportData)}
+        <div className="result-section pipeline-section">
+          <h3 className="section-header">
+            <FileText size={20} style={{ color: '#111827' }} />
+            Claim Analizzato
+          </h3>
+          <p>{reportData?.claim || '—'}</p>
+        </div>
+        {(reportData?.retrieval_context?.statutes?.length > 0 || reportData?.retrieval_context?.precedents?.length > 0) && (
+          <div className="result-section pipeline-section">
+            <h3 className="section-header">
+              <CheckCircle2 size={20} style={{ color: '#64748b' }} />
+              1. CONTESTO PRE-RETRIEVAL
+            </h3>
+            <p className="pdf-export-context-note">
+              Knowledge base condivisa
+              {reportData?.retrieval_context?.memory?.enabled
+                ? reportData?.retrieval_context?.memory?.hit
+                  ? ' da memoria cache.'
+                  : ' da retrieval live.'
+                : '.'}
+            </p>
+            {renderPdfStatuteList('Articoli', reportData?.retrieval_context?.statutes, 'pdf-pipeline-ctx-statutes')}
+            {renderPdfPrecedentList('Precedenti', reportData?.retrieval_context?.precedents, 'pdf-pipeline-ctx-precedents')}
+          </div>
+        )}
+        {renderPdfSharedReasonerSection(reportData)}
+        <div className="result-section pipeline-section">
+          <h3 className="section-header">
+            <XCircle size={20} style={{ color: '#ef4444' }} />
+            3. COUNTER-REASONER
+          </h3>
+          {counterData?.reasoner_causality && (
+            <div className="subsection">
+              <h4>Causalità del Reasoner (da Attaccare)</h4>
+              {renderCausalityCard('Target Causale da Attaccare', counterData.reasoner_causality)}
+            </div>
+          )}
+          {renderCounterAttacksUsed(counterData, 'pdf-single-counter-attacks')}
+          {renderPdfStatuteList('Articoli Trovati (Counter-Reasoner)', counterData?.statutes, 'pdf-single-counter-statutes')}
+          {renderPdfPrecedentList('Precedenti Trovati (Counter-Reasoner)', counterData?.precedents, 'pdf-single-counter-precedents')}
+          {counterData?.raw_response && (
+            <div className="subsection">
+              <h4>Risposta Completa</h4>
+              {renderStructuredResponse({ parsed: parsedCounter })}
+            </div>
+          )}
+          {renderPdfEvaluationSection(evaluation, 'pdf-single-eval')}
+          {renderPdfRepairSection(evaluation)}
+          {renderPdfAqaSection(evaluation)}
+        </div>
+      </div>
+    );
+  };
+
+  const renderPdfDoeExportContent = (reportData = {}) => {
+    const comparison = reportData?.doe_ab_comparison || {};
+    const baselineView = comparison?.baseline?.view || {};
+    const treatmentView = comparison?.treatment?.view || {};
+    return (
+      <div className="pdf-export-shell pdf-export-root pdf-export-context-doe">
+        {renderPdfPipelineHeader('doe', reportData)}
+        <div className="result-section pipeline-section">
+          <h3 className="section-header">
+            <GitBranch size={20} style={{ color: '#111827' }} />
+            Claim Analizzato
+          </h3>
+          <p>{reportData?.claim || '—'}</p>
+        </div>
+        {(reportData?.retrieval_context?.statutes?.length > 0 || reportData?.retrieval_context?.precedents?.length > 0) && (
+          <div className="result-section pipeline-section">
+            <h3 className="section-header">
+              <CheckCircle2 size={20} style={{ color: '#64748b' }} />
+              1. CONTESTO PRE-RETRIEVAL
+            </h3>
+            <p className="pdf-export-context-note">
+              Knowledge base condivisa tra Setup A e Setup B
+              {reportData?.retrieval_context?.memory?.enabled
+                ? reportData?.retrieval_context?.memory?.hit
+                  ? ', recuperata da memoria cache.'
+                  : ', recuperata live.'
+                : '.'}
+            </p>
+            {renderPdfStatuteList('Articoli', reportData?.retrieval_context?.statutes, 'pdf-doe-ctx-statutes')}
+            {renderPdfPrecedentList('Precedenti', reportData?.retrieval_context?.precedents, 'pdf-doe-ctx-precedents')}
+          </div>
+        )}
+        {renderPdfSharedReasonerSection(reportData)}
+        {renderPdfDoeSetupSection({
+          stepNumber: 3,
+          setupKey: 'A',
+          comparisonEntry: comparison?.baseline,
+          view: baselineView,
+        })}
+        {renderPdfDoeSetupSection({
+          stepNumber: 4,
+          setupKey: 'B',
+          comparisonEntry: comparison?.treatment,
+          view: treatmentView,
+        })}
+        {renderPdfDoeComparisonSection(comparison, baselineView, treatmentView)}
+        {renderPdfDoeAnalysisSection(comparison, baselineView, treatmentView)}
+      </div>
+    );
+  };
+
+  const renderPdfExportContent = ({ reportData, exportContext }) => {
+    if (exportContext === 'doe' && reportData?.doe_ab_comparison) {
+      return renderPdfDoeExportContent(reportData);
+    }
+    return renderPdfPipelineExportContent(reportData);
+  };
+
   const isPipelineLikeTab = activeTab === TABS.PIPELINE || activeTab === TABS.DOE;
   const isSearchTab = activeTab === TABS.SEARCH;
   const isReasonTab = activeTab === TABS.REASON;
   const isPipelineTab = activeTab === TABS.PIPELINE;
-  const isDoeTab = activeTab === TABS.DOE;
   const searchMessagesVisible = messages.filter(
     (msg, idx) => !(
       idx === 0
@@ -3261,11 +5217,11 @@ export default function App() {
                             event.preventDefault();
                             event.stopPropagation();
                             downloadPipelineCardPdf({
-                              targetElement: historyPipelinePdfRefs.current[idx],
+                              reportData: run,
                               claim: run?.claim || '',
                               key: `history-${idx}`,
-                              prefix: `pipeline_precedente_${idx + 1}`,
-                              openDetails: true,
+                              prefix: `${run?.doe_ab_comparison ? 'doe_precedente' : 'pipeline_precedente'}_${idx + 1}`,
+                              exportContext: run?.doe_ab_comparison ? 'doe' : 'pipeline',
                             });
                           }}
                           disabled={exportingPdfKey !== null}
@@ -3414,11 +5370,11 @@ export default function App() {
                   className="pdf-download-btn"
                   onClick={() => {
                     downloadPipelineCardPdf({
-                      targetElement: currentPipelinePdfRef.current,
+                      reportData: pipelineResult,
                       claim: pipelineResult?.claim || '',
                       key: 'current',
-                      prefix: 'pipeline_completa',
-                      openDetails: false,
+                      prefix: activeTab === TABS.DOE ? 'doe_automatico' : 'pipeline_completa',
+                      exportContext: activeTab === TABS.DOE ? 'doe' : 'pipeline',
                     });
                   }}
                   disabled={exportingPdfKey !== null}
@@ -3438,103 +5394,48 @@ export default function App() {
                 <p className="error-text">Errore: {pipelineResult.error}</p>
               ) : (
                 <>
-                  <div className="result-section">
+                  <div className="result-section" data-pdf-section="claim">
                     <h4>Claim Analizzato</h4>
                     <p>{pipelineResult.claim}</p>
                   </div>
 
-                  {isDoeTab && doeComparison && (
-                    <div className="result-section pipeline-section">
-                      <h3 className="section-header">
-                        <GitBranch size={20} style={{ color: '#6366f1' }} />
-                        Confronto DoE Automatico (A/B)
-                      </h3>
-                      <div className="summary-cards-grid">
-                        <div className="summary-card">
-                          <div className="summary-card-title">
-                            {doeComparison.baseline?.label || 'Setup A'} - {doeComparison.baseline?.description || 'Baseline'}
-                          </div>
-                          <div className="summary-metrics">
-                            <div className="summary-metric summary-metric-info">
-                              <span className="summary-metric-label">AQA Verdetto</span>
-                              <span className="summary-metric-value">{doeComparison.baseline?.metrics?.verdict || 'n/a'}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">AQA Finale</span>
-                              <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.final_score)}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">Consistenza Counter</span>
-                              <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.counter_consistency)}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">Durata</span>
-                              <span className="summary-metric-value">
-                                {Number.isFinite(Number(doeComparison.baseline?.duration_ms))
-                                  ? `${Math.round(doeComparison.baseline.duration_ms)} ms`
-                                  : '—'}
-                              </span>
-                            </div>
+                  {isDoeTab && doeHasComparison && (
+                    <div className="doe-floating-switch-wrap" data-pdf-ignore="true">
+                      <div className="doe-inline-switch doe-floating-switch">
+                        <div className="ios-toggle-copy">
+                          <div className="ios-toggle-title">Vista Counter</div>
+                          <div className="ios-toggle-subtitle">
+                            {doeDisplaySetup === 'baseline'
+                              ? `Setup A baseline${doeComparison?.baseline?.status === 'running' ? ' in generazione' : ''}`
+                              : `Setup B treatment${doeComparison?.treatment?.status === 'running' ? ' in generazione' : ''}`}
                           </div>
                         </div>
-                        <div className="summary-card">
-                          <div className="summary-card-title">
-                            {doeComparison.treatment?.label || 'Setup B'} - {doeComparison.treatment?.description || 'Treatment'}
-                          </div>
-                          <div className="summary-metrics">
-                            <div className="summary-metric summary-metric-info">
-                              <span className="summary-metric-label">AQA Verdetto</span>
-                              <span className="summary-metric-value">{doeComparison.treatment?.metrics?.verdict || 'n/a'}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">AQA Finale</span>
-                              <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.final_score)}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">Consistenza Counter</span>
-                              <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.counter_consistency)}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">Durata</span>
-                              <span className="summary-metric-value">
-                                {Number.isFinite(Number(doeComparison.treatment?.duration_ms))
-                                  ? `${Math.round(doeComparison.treatment.duration_ms)} ms`
-                                  : '—'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="summary-card">
-                          <div className="summary-card-title">Delta (B - A)</div>
-                          <div className="summary-metrics">
-                            <div className="summary-metric summary-metric-positive">
-                              <span className="summary-metric-label">AQA Finale</span>
-                              <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.final_score)}</span>
-                            </div>
-                            <div className="summary-metric summary-metric-info">
-                              <span className="summary-metric-label">Consistenza Counter</span>
-                              <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.counter_consistency)}</span>
-                            </div>
-                            <div className="summary-metric summary-metric-warning">
-                              <span className="summary-metric-label">Link Contro</span>
-                              <span className="summary-metric-value">{formatDoeSignedInt(doeComparison.delta?.contra_links)}</span>
-                            </div>
-                            <div className="summary-metric">
-                              <span className="summary-metric-label">Durata</span>
-                              <span className="summary-metric-value">
-                                {Number.isFinite(Number(doeComparison.delta?.duration_ms))
-                                  ? `${doeComparison.delta.duration_ms >= 0 ? '+' : ''}${Math.round(doeComparison.delta.duration_ms)} ms`
-                                  : '—'}
-                              </span>
-                            </div>
-                          </div>
+                        <div className="doe-inline-switch-controls">
+                          <span className={`doe-inline-switch-label ${doeDisplaySetup === 'baseline' ? 'is-active' : ''}`}>A</span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-label="Cambia vista Counter tra Setup A e Setup B"
+                            aria-checked={doeDisplaySetup === 'treatment'}
+                            aria-valuetext={doeDisplaySetup === 'baseline' ? 'Setup A baseline' : 'Setup B treatment'}
+                            className={`ios-switch ${doeDisplaySetup === 'treatment' ? 'is-on' : ''}`}
+                            onClick={() =>
+                              applyDoeViewSelection(
+                                doeDisplaySetup === 'baseline' ? 'treatment' : 'baseline',
+                              )
+                            }
+                            title="Switch vista Counter tra Setup A e Setup B"
+                          >
+                            <span className="ios-switch-knob" />
+                          </button>
+                          <span className={`doe-inline-switch-label ${doeDisplaySetup === 'treatment' ? 'is-active' : ''}`}>B</span>
                         </div>
                       </div>
                     </div>
                   )}
 
                   {pipelineResult._stream && (
-                    <div className="result-section stream-progress-section">
+                    <div className="result-section stream-progress-section" data-pdf-section="stream">
                       <h4>Avanzamento Live</h4>
                       <div className="stream-phase-grid">
                         {PIPELINE_PHASES.map((phase) => {
@@ -3575,7 +5476,7 @@ export default function App() {
 
                   {(pipelineResult.retrieval_context?.statutes?.length > 0
                     || pipelineResult.retrieval_context?.precedents?.length > 0) && (
-                    <div className="result-section pipeline-section">
+                    <div className="result-section pipeline-section" data-pdf-section="retrieval">
                       <h3 className="section-header">
                         <CheckCircle2 size={20} style={{ color: '#64748b' }} />
                         Contesto Pre-retrieval
@@ -3630,7 +5531,7 @@ export default function App() {
                   )}
 
                   {/* SEZIONE REASONER */}
-                  <div className="result-section pipeline-section">
+                  <div className="result-section pipeline-section" data-pdf-section="reasoner">
                     <h3 className="section-header">
                       <CheckCircle2 size={20} style={{ color: '#10b981' }} />
                       1. REASONER - Tesi Principale
@@ -3708,13 +5609,30 @@ export default function App() {
                   </div>
 
                   {/* SEZIONE COUNTER-REASONER */}
-                  <div className="result-section pipeline-section">
+                  <div className="result-section pipeline-section" data-pdf-section="counter">
                     <h3 className="section-header">
                       <XCircle size={20} style={{ color: '#ef4444' }} />
                       2. COUNTER-REASONER - Controtesi
                     </h3>
 
-                    {pipelineResult.counter_reasoner?.abstained && (
+                    {isDoeTab
+                      && doeHasComparison
+                      && !displayedCounterReasoner?.raw_response
+                      && selectedCounterLiveSteps.length === 0
+                      && !displayedCounterReasoner?.aspic_ir && (
+                        <div className="subsection">
+                          <div className="structured-live-tag">
+                            <Loader2 size={14} className="loading-spinner" />
+                            <span>
+                              {doeDisplaySetup === 'baseline'
+                                ? 'Setup A non ha ancora prodotto output del Counter.'
+                                : 'Setup B non ha ancora prodotto output del Counter o e in attesa di partire.'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                    {displayedCounterReasoner?.abstained && (
                       <div className="subsection" style={{ 
                         background: 'rgba(234, 179, 8, 0.1)', 
                         border: '1px solid rgba(234, 179, 8, 0.3)', 
@@ -3726,52 +5644,52 @@ export default function App() {
                           <AlertTriangle size={18} />
                           Astensione del Counter-Reasoner
                         </h4>
-                        {pipelineResult.evaluation?.consistency_report?.counter_reasoner_gate?.abstain && (
+                        {displayedEvaluation?.consistency_report?.counter_reasoner_gate?.abstain && (
                           <p style={{ margin: '8px 0 0', opacity: 0.95 }}>
                             Astensione applicata dal Polisher gate
-                            {pipelineResult.evaluation.consistency_report.counter_reasoner_gate.label
-                              ? ` (label: ${pipelineResult.evaluation.consistency_report.counter_reasoner_gate.label})`
+                            {displayedEvaluation.consistency_report.counter_reasoner_gate.label
+                              ? ` (label: ${displayedEvaluation.consistency_report.counter_reasoner_gate.label})`
                               : ''}.
                           </p>
                         )}
                         <p style={{ margin: '8px 0 0', opacity: 0.9 }}>
-                          {pipelineResult.counter_reasoner.abstention_reason || 
+                          {displayedCounterReasoner.abstention_reason || 
                            'Il sistema non ha individuato contro-argomentazioni giuridicamente solide per questo caso.'}
                         </p>
                         <details className="ir-toggle" style={{ marginTop: '10px' }}>
                           <summary>Conclusione del Reasoner passata al Counter-Reasoner</summary>
                           <div className="raw-response" style={{ marginTop: '8px' }}>
-                            {pipelineResult.counter_reasoner.reasoner_conclusion_context || 'Conclusione non disponibile.'}
+                            {displayedCounterReasoner.reasoner_conclusion_context || 'Conclusione non disponibile.'}
                           </div>
                         </details>
                       </div>
                     )}
 
-                    {pipelineResult.counter_reasoner?.reasoner_causality && (
+                    {displayedCounterReasoner?.reasoner_causality && (
                       <div className="subsection">
                         <h4>Causalità del Reasoner (da Attaccare)</h4>
-                        {renderCausalityCard('Target Causale da Attaccare', pipelineResult.counter_reasoner.reasoner_causality)}
+                        {renderCausalityCard('Target Causale da Attaccare', displayedCounterReasoner.reasoner_causality)}
                       </div>
                     )}
 
                     {renderCounterAttacksUsed(
-                      pipelineResult.counter_reasoner,
+                      displayedCounterReasoner,
                       'pipeline-counter-attacks',
                     )}
 
-                    {pipelineResult.counter_reasoner?.warrant_info && (
+                    {displayedCounterReasoner?.warrant_info && (
                       <div className="subsection">
                         <h4>Warrant e Causalità Attaccanti</h4>
                         <pre className="code-block">
-                          {JSON.stringify(pipelineResult.counter_reasoner.warrant_info, null, 2)}
+                          {JSON.stringify(displayedCounterReasoner.warrant_info, null, 2)}
                         </pre>
                       </div>
                     )}
 
-                    {pipelineResult.counter_reasoner?.statutes && pipelineResult.counter_reasoner.statutes.length > 0 && (
+                    {displayedCounterReasoner?.statutes && displayedCounterReasoner.statutes.length > 0 && (
                       <div className="subsection">
-                        <h4>Articoli Trovati (Counter-Reasoner) ({pipelineResult.counter_reasoner.statutes.length})</h4>
-                        <CollapsibleList items={pipelineResult.counter_reasoner.statutes} limit={5} renderItem={(art, idx) => (
+                        <h4>Articoli Trovati (Counter-Reasoner) ({displayedCounterReasoner.statutes.length})</h4>
+                        <CollapsibleList items={displayedCounterReasoner.statutes} limit={5} renderItem={(art, idx) => (
                           <li key={idx}>
                             <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
                             {art.source && ` (${sourceShortLabel(art.source)})`}
@@ -3781,10 +5699,10 @@ export default function App() {
                       </div>
                     )}
 
-                    {pipelineResult.counter_reasoner?.precedents && pipelineResult.counter_reasoner.precedents.length > 0 && (
+                    {displayedCounterReasoner?.precedents && displayedCounterReasoner.precedents.length > 0 && (
                       <div className="subsection">
-                        <h4>Precedenti Trovati (Counter-Reasoner) ({pipelineResult.counter_reasoner.precedents.length})</h4>
-                        <CollapsibleList items={pipelineResult.counter_reasoner.precedents} limit={5} renderItem={(prec, idx) => (
+                        <h4>Precedenti Trovati (Counter-Reasoner) ({displayedCounterReasoner.precedents.length})</h4>
+                        <CollapsibleList items={displayedCounterReasoner.precedents} limit={5} renderItem={(prec, idx) => (
                           <li key={idx}>
                             <strong>{idx + 1}. {prec.title || `Precedente ${idx + 1}`}</strong>
                           </li>
@@ -3792,12 +5710,12 @@ export default function App() {
                       </div>
                     )}
 
-                    {pipelineResult.counter_reasoner?.aspic_ir && (
+                    {displayedCounterReasoner?.aspic_ir && (
                       <div className="subsection">
-                        {renderAspicOverview('ASPIC+ IR (Counter-Reasoner)', pipelineResult.counter_reasoner.aspic_ir, true)}
+                        {renderAspicOverview('ASPIC+ IR (Counter-Reasoner)', displayedCounterReasoner.aspic_ir, true)}
                       </div>
                     )}
-                    {pipelineResult._stream?.phases?.counter === 'active' && !pipelineResult.counter_reasoner?.aspic_ir && (
+                    {selectedCounterLiveMode && !displayedCounterReasoner?.aspic_ir && (
                       <div className="subsection">
                         <h4>ASPIC+ IR (Counter-Reasoner)</h4>
                         <div className="structured-live-tag">
@@ -3807,21 +5725,25 @@ export default function App() {
                       </div>
                     )}
 
-                    {(pipelineResult.counter_reasoner?.raw_response || liveCounterSteps.length > 0) && (
+                    {(displayedCounterReasoner?.raw_response || selectedCounterLiveSteps.length > 0) && (
                       <div className="subsection">
                         <h4>Risposta Completa</h4>
                         {renderStructuredResponse({
                           parsed: counterParsedResponse,
-                          liveSteps: liveCounterStepTexts,
-                          liveMode: liveCounterPhaseActive,
+                          liveSteps: selectedCounterLiveSteps,
+                          liveMode: selectedCounterLiveMode,
+                          liveStepBadgeLabel: selectedCounterLiveMode
+                            ? selectedCounterLiveBadgeLabel
+                            : '',
+                          liveStepBadgeTone: selectedCounterLiveBadgeTone,
                         })}
                       </div>
                     )}
                   </div>
 
                   {/* SEZIONE EVALUATOR - Verifica Consistenza */}
-                  {(evaluationPhaseActive || pipelineResult.evaluation?.consistency_report) && (
-                    <div className="result-section pipeline-section">
+                  {(evaluationPhaseActive || displayedEvaluation?.consistency_report) && (
+                    <div className="result-section pipeline-section" data-pdf-section="evaluator">
                       <h3 className="section-header">
                         <ClipboardCheck size={20} style={{ color: '#8b5cf6' }} />
                         3. EVALUATOR - Verifica Consistenza
@@ -3980,7 +5902,7 @@ export default function App() {
                       )}
 
                       {/* Summary */}
-                      {pipelineResult.evaluation.summary && (
+                      {displayedEvaluation.summary && (
                         <div className="subsection">
                           <h4>{parsedSummary.title || 'Riepilogo'}</h4>
                           <div className="summary-cards-grid">
@@ -4011,7 +5933,7 @@ export default function App() {
                             ))}
                             {parsedSummary.sections.length === 0 && (
                               <div className="summary-card">
-                                <div className="raw-response">{pipelineResult.evaluation.summary}</div>
+                                <div className="raw-response">{displayedEvaluation.summary}</div>
                               </div>
                             )}
                           </div>
@@ -4022,15 +5944,15 @@ export default function App() {
                   )}
 
                   {/* SEZIONE CATENE RIPARATE */}
-                  {pipelineResult.evaluation && hasAnyRepairs && (
-                    <div className="result-section pipeline-section">
+                  {displayedEvaluation && hasAnyRepairs && (
+                    <div className="result-section pipeline-section" data-pdf-section="repaired">
                       <h3 className="section-header">
                         <Wrench size={20} style={{ color: '#f59e0b' }} />
                         4. CATENE DI RAGIONAMENTO RIPARATE
                       </h3>
 
                       {/* Repaired Reasoner Chain */}
-                      {hasReasonerRepairs && pipelineResult.evaluation.repaired_reasoner_chain && (
+                      {hasReasonerRepairs && displayedEvaluation.repaired_reasoner_chain && (
                         <div className="subsection">
                           <h4 className="subsection-title-with-icon">
                             <CheckCircle2 size={20} style={{ color: '#10b981' }} />
@@ -4042,11 +5964,11 @@ export default function App() {
                           })}
 
                           {/* Show repaired ASPIC IR if available */}
-                          {pipelineResult.evaluation.repaired_reasoner_aspic_ir && Object.keys(pipelineResult.evaluation.repaired_reasoner_aspic_ir).length > 0 && (
+                          {displayedEvaluation.repaired_reasoner_aspic_ir && Object.keys(displayedEvaluation.repaired_reasoner_aspic_ir).length > 0 && (
                             <>
                               {renderAspicOverview(
                                 'ASPIC+ IR Riparato (Reasoner)',
-                                pipelineResult.evaluation.repaired_reasoner_aspic_ir,
+                                displayedEvaluation.repaired_reasoner_aspic_ir,
                                 true,
                               )}
                             </>
@@ -4055,7 +5977,7 @@ export default function App() {
                       )}
 
                       {/* Repaired Counter-Reasoner Chain */}
-                      {hasCounterRepairs && pipelineResult.evaluation.repaired_counter_chain && (
+                      {hasCounterRepairs && displayedEvaluation.repaired_counter_chain && (
                         <div className="subsection">
                           <h4 className="subsection-title-with-icon">
                             <XCircle size={20} style={{ color: '#ef4444' }} />
@@ -4067,11 +5989,11 @@ export default function App() {
                           })}
 
                           {/* Show repaired ASPIC IR if available */}
-                          {pipelineResult.evaluation.repaired_counter_aspic_ir && Object.keys(pipelineResult.evaluation.repaired_counter_aspic_ir).length > 0 && (
+                          {displayedEvaluation.repaired_counter_aspic_ir && Object.keys(displayedEvaluation.repaired_counter_aspic_ir).length > 0 && (
                             <>
                               {renderAspicOverview(
                                 'ASPIC+ IR Riparato (Counter-Reasoner)',
-                                pipelineResult.evaluation.repaired_counter_aspic_ir,
+                                displayedEvaluation.repaired_counter_aspic_ir,
                                 true,
                               )}
                             </>
@@ -4080,21 +6002,21 @@ export default function App() {
                       )}
 
                       {/* Repair Statistics */}
-                      {pipelineResult.evaluation.consistency_report && (
+                      {displayedEvaluation.consistency_report && (
                         <div className="subsection repair-stats">
                           <h4>Statistiche Riparazione</h4>
                           <div className="consistency-stats">
-                            {pipelineResult.evaluation.consistency_report.reasoner && (
+                            {displayedEvaluation.consistency_report.reasoner && (
                               <>
                                 <span className="stat-item stat-repaired">
-                                  🔧 Reasoner: {pipelineResult.evaluation.consistency_report.reasoner.repaired_citations || 0} riparate, {pipelineResult.evaluation.consistency_report.reasoner.dropped_citations || 0} scartate
+                                  🔧 Reasoner: {displayedEvaluation.consistency_report.reasoner.repaired_citations || 0} riparate, {displayedEvaluation.consistency_report.reasoner.dropped_citations || 0} scartate
                                 </span>
                               </>
                             )}
-                            {pipelineResult.evaluation.consistency_report.counter_reasoner && (
+                            {displayedEvaluation.consistency_report.counter_reasoner && (
                               <>
                                 <span className="stat-item stat-repaired">
-                                  🔧 Counter: {pipelineResult.evaluation.consistency_report.counter_reasoner.repaired_citations || 0} riparate, {pipelineResult.evaluation.consistency_report.counter_reasoner.dropped_citations || 0} scartate
+                                  🔧 Counter: {displayedEvaluation.consistency_report.counter_reasoner.repaired_citations || 0} riparate, {displayedEvaluation.consistency_report.counter_reasoner.dropped_citations || 0} scartate
                                 </span>
                               </>
                             )}
@@ -4113,7 +6035,7 @@ export default function App() {
 
                   {/* SEZIONE AQA - Valutazione Argomentativa (sulle catene riparate) */}
                   {aqaReport && (
-                    <div className="result-section pipeline-section">
+                    <div className="result-section pipeline-section" data-pdf-section="aqa">
                       <h3 className="section-header">
                         <Scale size={20} style={{ color: '#06b6d4' }} />
                         5. AQA - Valutazione Argomentativa
@@ -4295,7 +6217,7 @@ export default function App() {
 
                   {/* SEZIONE METAGRAFO ASPIC+ */}
                   {aqaReport && aqaReport.enabled && (aqaProLinks.length > 0 || aqaContraLinks.length > 0) && (
-                    <div className="result-section pipeline-section">
+                    <div className="result-section pipeline-section" data-pdf-section="attacks-metagraph">
                       <h3 className="section-header">
                         <GitBranch size={20} style={{ color: '#7c3aed' }} />
                         6. ASPIC+ Metagrafo — Attacchi Incrociati
@@ -4305,15 +6227,15 @@ export default function App() {
                       </p>
                       <AspicMetagraph
                         aqaReport={aqaReport}
-                        reasonerIr={pipelineResult.evaluation?.repaired_reasoner_aspic_ir}
-                        counterIr={pipelineResult.evaluation?.repaired_counter_aspic_ir}
+                        reasonerIr={displayedEvaluation?.repaired_reasoner_aspic_ir}
+                        counterIr={displayedEvaluation?.repaired_counter_aspic_ir}
                       />
                     </div>
                   )}
 
                   {/* SEZIONE DETTAGLIO TESTUALE ATTACCHI */}
                   {aqaReport && aqaReport.enabled && (aqaProLinks.length > 0 || aqaContraLinks.length > 0) && (
-                    <div className="result-section pipeline-section">
+                    <div className="result-section pipeline-section" data-pdf-section="attacks-detail">
                       <h3 className="section-header">
                         <Swords size={20} style={{ color: '#ef4444' }} />
                         7. Dettaglio Testuale Attacchi
@@ -4324,6 +6246,9 @@ export default function App() {
                       <AttackTextDetails aqaReport={aqaReport} />
                     </div>
                   )}
+
+                  {renderDoeComparisonSection()}
+                  {renderDoeAnalysisSection()}
                 </>
               )}
               </div>

@@ -11,6 +11,7 @@ MANIFEST
 
 # Logs / reports
 logs/
+logs/pdf_exports/
 *.log
 .coverage
 .pytest_cache/

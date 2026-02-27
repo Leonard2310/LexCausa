@@ -19,6 +19,7 @@ from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
+from typing import Any
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
@@ -204,6 +205,193 @@ def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
         "relative_path": str(path.relative_to(project_root)),
     }
     print(f"📊 Report AQA salvato: {payload}")
+    return payload
+
+
+def _artifact_file_payload(path: Path) -> dict[str, str]:
+    """Build standard absolute/relative file payload."""
+    return {
+        "absolute_path": str(path),
+        "relative_path": str(path.relative_to(project_root)),
+    }
+
+
+def _render_doe_log_section(section_name: str, payload: dict) -> str:
+    """Render one human-readable DoE section with summary + raw artifacts."""
+    entry: dict[str, Any] = payload if isinstance(payload, dict) else {}
+    view_raw = entry.get("view")
+    view: dict[str, Any] = view_raw if isinstance(view_raw, dict) else {}
+    counter_raw = view.get("counter_reasoner")
+    counter: dict[str, Any] = counter_raw if isinstance(counter_raw, dict) else {}
+    evaluation_raw = view.get("evaluation")
+    evaluation: dict[str, Any] = (
+        evaluation_raw if isinstance(evaluation_raw, dict) else {}
+    )
+    lines = [f"[{section_name}]"]
+    lines.append(f"label: {entry.get('label') or section_name}")
+    lines.append(f"description: {entry.get('description') or '-'}")
+    lines.append(f"status: {entry.get('status') or '-'}")
+    lines.append(f"duration_ms: {entry.get('duration_ms')}")
+    lines.append("[SETTINGS]")
+    lines.append(json.dumps(entry.get("settings") or {}, ensure_ascii=False, indent=2))
+    lines.append("[METRICS]")
+    lines.append(json.dumps(entry.get("metrics") or {}, ensure_ascii=False, indent=2))
+
+    if counter:
+        counter_meta = {
+            "selected_attack_id": counter.get("selected_attack_id"),
+            "selected_attack_ids": counter.get("selected_attack_ids") or [],
+            "reasoner_causality": counter.get("reasoner_causality") or {},
+            "abstained": bool(counter.get("abstained")),
+            "statutes_count": len(counter.get("statutes") or []),
+            "precedents_count": len(counter.get("precedents") or []),
+        }
+        lines.append("[COUNTER_METADATA]")
+        lines.append(json.dumps(counter_meta, ensure_ascii=False, indent=2))
+        if counter.get("raw_response"):
+            lines.append("[COUNTER_RESPONSE]")
+            lines.append(str(counter.get("raw_response") or "").strip())
+
+    if evaluation:
+        if evaluation.get("summary"):
+            lines.append("[EVALUATION_SUMMARY]")
+            lines.append(str(evaluation.get("summary") or "").strip())
+        if evaluation.get("aqa_report"):
+            lines.append("[AQA_REPORT]")
+            lines.append(
+                json.dumps(
+                    evaluation.get("aqa_report") or {},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        if evaluation.get("repaired_aspic_files"):
+            lines.append("[REPAIRED_ASPIC_FILES]")
+            lines.append(
+                json.dumps(
+                    evaluation.get("repaired_aspic_files") or {},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        if evaluation.get("aqa_report_file"):
+            lines.append("[AQA_REPORT_FILE]")
+            lines.append(
+                json.dumps(
+                    evaluation.get("aqa_report_file") or {},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+
+    return "\n".join(lines).strip()
+
+
+def _persist_doe_experiment_files(claim: str, doe_payload: dict) -> dict:
+    """Persist one consolidated DoE log + JSON report with explicit A/B sections."""
+    if not isinstance(doe_payload, dict):
+        return {}
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = _slugify_filename(claim)
+    report_dir = LOG_DIR / "doe_reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    log_path = LOG_DIR / f"{ts}_{slug}_doe.log"
+    report_path = report_dir / f"{ts}_{slug}_doe_report.json"
+
+    reasoner_shared = (
+        doe_payload.get("reasoner_shared")
+        if isinstance(doe_payload.get("reasoner_shared"), dict)
+        else {}
+    )
+    baseline_raw = doe_payload.get("baseline")
+    baseline: dict[str, Any] = baseline_raw if isinstance(baseline_raw, dict) else {}
+    treatment_raw = doe_payload.get("treatment")
+    treatment: dict[str, Any] = treatment_raw if isinstance(treatment_raw, dict) else {}
+    delta = (
+        doe_payload.get("delta") if isinstance(doe_payload.get("delta"), dict) else {}
+    )
+
+    log_sections = [
+        f"[{datetime.now().isoformat()}] DoE log for claim:",
+        claim,
+        "=" * 70,
+        "",
+        "[DOE_META]",
+        json.dumps(
+            {
+                "mode": doe_payload.get("mode") or "automatic_ab",
+                "generated_at": datetime.now().isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "",
+        "[SHARED_REASONER]",
+        json.dumps(reasoner_shared, ensure_ascii=False, indent=2),
+        "",
+        _render_doe_log_section("DOE-A", baseline),
+        "",
+        _render_doe_log_section("DOE-B", treatment),
+        "",
+        "[DOE-DELTA]",
+        json.dumps(delta, ensure_ascii=False, indent=2),
+        "",
+    ]
+
+    try:
+        log_path.write_text("\n".join(log_sections), encoding="utf-8")
+        report_path.write_text(
+            json.dumps(doe_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        print(f"⚠️ Errore salvataggio report/log DoE: {exc}")
+        return {}
+
+    artifacts = {
+        "doe_log_file": _artifact_file_payload(log_path),
+        "doe_report_file": _artifact_file_payload(report_path),
+    }
+    print(f"🧪 DoE consolidato salvato: {artifacts}")
+    return artifacts
+
+
+def _persist_pdf_export_file(
+    claim: str,
+    pdf_bytes: bytes,
+    *,
+    export_context: str = "pipeline",
+    prefix: str = "pipeline",
+    client_filename: str = "",
+) -> dict:
+    """Persist one exported PDF under logs/pdf_exports/<context>/."""
+    if not pdf_bytes:
+        raise ValueError("Contenuto PDF mancante")
+
+    normalized_context = (export_context or "pipeline").strip().lower()
+    if normalized_context not in {"pipeline", "doe"}:
+        normalized_context = "pipeline"
+
+    out_dir = LOG_DIR / "pdf_exports" / normalized_context
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = _slugify_filename(claim or client_filename or "claim")
+    prefix_slug = _slugify_filename(prefix or normalized_context, max_len=40)
+    filename = f"{ts}_{slug}_{prefix_slug}.pdf"
+    path = out_dir / filename
+
+    try:
+        path.write_bytes(pdf_bytes)
+    except Exception as exc:
+        print(f"⚠️ Errore salvataggio PDF export: {exc}")
+        return {}
+
+    payload = _artifact_file_payload(path)
+    print(f"📄 PDF export salvato: {payload}")
     return payload
 
 
@@ -1181,84 +1369,126 @@ def reason():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/counter_reason", methods=["POST"])
-def counter_reason():
-    """
-    Endpoint per il contro-ragionamento.
+def _run_counter_reason_only(
+    data: dict,
+    *,
+    status_callback=None,
+    token_callback=None,
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Execute Counter-Reasoner only (JSON + SSE shared implementation)."""
+    if not isinstance(data, dict):
+        data = {}
 
-    Riceve:
-    - claim: il claim legale
-    - (opzionale) causal_type_id/theory_id: se assenti, vengono scelti dal Router
-    - reasoner_conclusion: conclusione del Reasoner da contestare
+    status_callback = status_callback or (lambda _msg: None)
+    token_callback = token_callback or (lambda _payload: None)
+    progress_callback = progress_callback or (lambda _event, _payload: None)
 
-    Restituisce contro-argomenti basati sulla config di causalità.
-    """
-    try:
-        data = request.get_json()
-        claim = data.get("claim", "").strip()
-        fe_settings = data.get("settings", {}) or {}
-        fe_counter_temperature = fe_settings.get(
-            "counter_temperature",
-            fe_settings.get("llm_temperature", settings.counter_default_temperature),
+    def _check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
+    def _emit_progress(event_name: str, payload: dict) -> None:
+        _check_cancel()
+        try:
+            progress_callback(event_name, payload)
+        except PipelineCancelled:
+            raise
+        except Exception:
+            pass
+
+    def _emit_phase(
+        phase: str, status: str, progress: int, detail: str | None = None
+    ) -> None:
+        _emit_progress(
+            "phase",
+            {
+                "phase": phase,
+                "status": status,
+                "progress": max(0, min(100, int(progress))),
+                "detail": detail or "",
+            },
         )
-        fe_legacy_enable_causality = fe_settings.get("enable_causality")
-        fe_legacy_mode = (
-            "enable_causality" in fe_settings
-            and "reasoner_enable_causality" not in fe_settings
-            and "counter_enable_causality" not in fe_settings
-            and "counter_pass_causal_identity" not in fe_settings
-            and "counter_pass_taxonomy_attacks" not in fe_settings
-            and "counter_pass_norms" not in fe_settings
-        )
-        fe_counter_enable_causality = _coerce_bool(
-            fe_settings.get(
-                "counter_enable_causality",
-                (
-                    True
-                    if fe_legacy_enable_causality is None
-                    else _coerce_bool(fe_legacy_enable_causality, True)
-                ),
+
+    claim = (data.get("claim", "") or "").strip()
+    fe_settings = data.get("settings", {}) or {}
+    fe_counter_temperature = fe_settings.get(
+        "counter_temperature",
+        fe_settings.get("llm_temperature", settings.counter_default_temperature),
+    )
+    fe_legacy_enable_causality = fe_settings.get("enable_causality")
+    fe_legacy_mode = (
+        "enable_causality" in fe_settings
+        and "reasoner_enable_causality" not in fe_settings
+        and "counter_enable_causality" not in fe_settings
+        and "counter_pass_causal_identity" not in fe_settings
+        and "counter_pass_taxonomy_attacks" not in fe_settings
+        and "counter_pass_norms" not in fe_settings
+    )
+    fe_counter_enable_causality = _coerce_bool(
+        fe_settings.get(
+            "counter_enable_causality",
+            (
+                True
+                if fe_legacy_enable_causality is None
+                else _coerce_bool(fe_legacy_enable_causality, True)
             ),
-            True,
-        )
-        default_counter_pass = (
-            _coerce_bool(fe_legacy_enable_causality, False) if fe_legacy_mode else False
-        )
-        fe_counter_pass_causal_identity = _coerce_bool(
-            fe_settings.get("counter_pass_causal_identity", default_counter_pass),
-            default_counter_pass,
-        )
-        fe_counter_pass_taxonomy_attacks = _coerce_bool(
-            fe_settings.get("counter_pass_taxonomy_attacks", default_counter_pass),
-            default_counter_pass,
-        )
-        fe_counter_pass_norms = _coerce_bool(
-            fe_settings.get("counter_pass_norms", default_counter_pass),
-            default_counter_pass,
-        )
-        fe_max_tokens = fe_settings.get("llm_max_tokens")
-        fe_counter_model = fe_settings.get("counter_model")
-        include_precedents = data.get("include_precedents", True)
-        max_statutes = data.get("max_statutes", settings.search_top_k_default)
-        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
-        reasoner_conclusion = (data.get("reasoner_conclusion", "") or "").strip()
-        claim_memory_enabled, claim_memory_overwrite = (
-            _parse_claim_context_memory_flags(data)
+        ),
+        True,
+    )
+    default_counter_pass = (
+        _coerce_bool(fe_legacy_enable_causality, False) if fe_legacy_mode else False
+    )
+    fe_counter_pass_causal_identity = _coerce_bool(
+        fe_settings.get("counter_pass_causal_identity", default_counter_pass),
+        default_counter_pass,
+    )
+    fe_counter_pass_taxonomy_attacks = _coerce_bool(
+        fe_settings.get("counter_pass_taxonomy_attacks", default_counter_pass),
+        default_counter_pass,
+    )
+    fe_counter_pass_norms = _coerce_bool(
+        fe_settings.get("counter_pass_norms", default_counter_pass),
+        default_counter_pass,
+    )
+    fe_max_tokens = fe_settings.get("llm_max_tokens")
+    fe_counter_model = fe_settings.get("counter_model")
+    include_precedents = data.get("include_precedents", True)
+    max_statutes = data.get("max_statutes", settings.search_top_k_default)
+    max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+    reasoner_conclusion = (data.get("reasoner_conclusion", "") or "").strip()
+    claim_memory_enabled, claim_memory_overwrite = _parse_claim_context_memory_flags(
+        data
+    )
+
+    if not claim:
+        raise ValueError('Campo "claim" obbligatorio')
+    if not reasoner_conclusion:
+        raise ValueError(
+            'Campo "reasoner_conclusion" obbligatorio per il Counter-Reasoner'
         )
 
-        if not claim:
-            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
-        if not reasoner_conclusion:
-            return (
-                jsonify(
-                    {
-                        "error": 'Campo "reasoner_conclusion" obbligatorio per il Counter-Reasoner'
-                    }
-                ),
-                400,
-            )
+    _check_cancel()
+    status_callback("Preparazione contesto counter...")
+    _emit_phase("context_setup", "active", 12, "Routing e setup Counter-Reasoner")
 
-        routing_decision = resolve_routing_decision(claim, data)
+    routing_decision = resolve_routing_decision(claim, data)
+    _emit_phase("context_setup", "active", 28, "Recupero contesto condiviso")
+
+    retrieval_context_meta: dict = {}
+    pre_retrieved_statutes = data.get("pre_retrieved_statutes")
+    pre_retrieved_precedents = data.get("pre_retrieved_precedents")
+    if isinstance(pre_retrieved_statutes, list) and isinstance(
+        pre_retrieved_precedents, list
+    ):
+        statutes = _clone_context_items(pre_retrieved_statutes)
+        precedents = _clone_context_items(pre_retrieved_precedents)
+        print(
+            "ℹ️ [CounterReason] Using pre-retrieved shared context: "
+            f"{len(statutes)} statutes, {len(precedents)} precedents"
+        )
+    else:
         statutes, precedents = prepare_claim_context(
             claim=claim,
             include_precedents=include_precedents,
@@ -1266,65 +1496,212 @@ def counter_reason():
             max_precedents=max_precedents,
             claim_context_memory_enabled=claim_memory_enabled,
             claim_context_memory_overwrite=claim_memory_overwrite,
-        )
-        counter_routing_decision = RoutingDecision(
-            claim=claim,
-            domain=routing_decision.domain,
-            causal_type_id=(
-                routing_decision.causal_type_id
-                if fe_counter_pass_causal_identity
-                else ""
+            progress_callback=lambda detail, progress: _emit_phase(
+                "context_setup", "active", progress, detail
             ),
-            theory_id=(
-                routing_decision.theory_id if fe_counter_pass_causal_identity else ""
-            ),
-            anchor_norms=(
-                routing_decision.anchor_norms
-                if (fe_counter_enable_causality and fe_counter_pass_norms)
-                else {}
-            ),
-            principle_tests=(
-                routing_decision.principle_tests
-                if (fe_counter_enable_causality and fe_counter_pass_norms)
-                else []
-            ),
-            additional_causal_types=(
-                routing_decision.additional_causal_types
-                if fe_counter_pass_causal_identity
-                else []
-            ),
-        )
-        counter_enable_causality_effective = (
-            fe_counter_enable_causality
-            and fe_counter_pass_taxonomy_attacks
-            and fe_counter_pass_causal_identity
+            result_metadata=retrieval_context_meta,
+            cancel_checker=lambda: cancel_event is not None and cancel_event.is_set(),
         )
 
-        counter_config = _build_agent_config(
-            model_override=fe_counter_model or settings.counter_default_model,
-            temperature=fe_counter_temperature,
-            max_tokens=fe_max_tokens,
-        )
-        cr = CounterReasoner(config=counter_config)
+    _emit_progress(
+        "retrieval_context",
+        {
+            "statutes": _clone_context_items(statutes),
+            "precedents": _clone_context_items(precedents),
+            "memory": {
+                "enabled": bool(retrieval_context_meta.get("memory_enabled"))
+                or bool(claim_memory_enabled),
+                "overwrite": bool(retrieval_context_meta.get("memory_overwrite"))
+                or bool(claim_memory_overwrite),
+                "hit": bool(retrieval_context_meta.get("memory_hit")),
+            },
+        },
+    )
+    _emit_phase("context_setup", "done", 100, "Contesto counter pronto")
+    _emit_phase("counter", "active", 8, "Generazione contro-argomentazione")
+    status_callback("Generazione contro-argomentazione in corso...")
 
-        # Esegui il counter-reasoning con contesto pre-retrieved
-        result = cr.run(
-            claim=claim,
-            routing_decision=counter_routing_decision,
-            pre_retrieved_statutes=_clone_context_items(statutes),
-            pre_retrieved_precedents=_clone_context_items(precedents),
-            enable_causality=counter_enable_causality_effective,
-            reasoner_conclusion=reasoner_conclusion,
-        )
+    counter_routing_decision = RoutingDecision(
+        claim=claim,
+        domain=routing_decision.domain,
+        causal_type_id=(
+            routing_decision.causal_type_id if fe_counter_pass_causal_identity else ""
+        ),
+        theory_id=(
+            routing_decision.theory_id if fe_counter_pass_causal_identity else ""
+        ),
+        anchor_norms=(
+            routing_decision.anchor_norms
+            if (fe_counter_enable_causality and fe_counter_pass_norms)
+            else {}
+        ),
+        principle_tests=(
+            routing_decision.principle_tests
+            if (fe_counter_enable_causality and fe_counter_pass_norms)
+            else []
+        ),
+        additional_causal_types=(
+            routing_decision.additional_causal_types
+            if fe_counter_pass_causal_identity
+            else []
+        ),
+    )
+    counter_enable_causality_effective = (
+        fe_counter_enable_causality
+        and fe_counter_pass_taxonomy_attacks
+        and fe_counter_pass_causal_identity
+    )
 
-        return jsonify(result.to_dict())
+    counter_config = _build_agent_config(
+        model_override=fe_counter_model or settings.counter_default_model,
+        temperature=fe_counter_temperature,
+        max_tokens=fe_max_tokens,
+    )
+    cr = CounterReasoner(config=counter_config)
+    cr.set_cancel_checker(lambda: cancel_event is not None and cancel_event.is_set())
 
+    def _counter_stream_callback(payload: dict) -> None:
+        _check_cancel()
+        token_callback(payload)
+
+    result = cr.run(
+        claim=claim,
+        routing_decision=counter_routing_decision,
+        pre_retrieved_statutes=_clone_context_items(statutes),
+        pre_retrieved_precedents=_clone_context_items(precedents),
+        enable_causality=counter_enable_causality_effective,
+        reasoner_conclusion=reasoner_conclusion,
+        stream_callback=_counter_stream_callback,
+    )
+
+    _emit_phase("counter", "active", 97, "Costruzione ASPIC+ e output finale")
+    payload = result.to_dict()
+    _emit_progress("counter_result", payload)
+    _emit_phase("counter", "done", 100, "Contro-argomentazione completata")
+    status_callback("Counter-Reasoner completato.")
+    return payload
+
+
+@app.route("/api/counter_reason", methods=["POST"])
+def counter_reason():
+    """
+    Endpoint per il contro-ragionamento.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        result = _run_counter_reason_only(data)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         print(f"❌ Errore counter-reasoning: {e}")
         import traceback
 
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/counter_reason/stream", methods=["POST"])
+def counter_reason_stream():
+    """Endpoint SSE con streaming token-by-token del solo Counter-Reasoner."""
+    if not _pipeline_lock.acquire(blocking=False):
+        return jsonify({"error": "A pipeline is already running. Please wait."}), 429
+
+    data = request.get_json(silent=True) or {}
+    event_queue: Queue = Queue()
+    sentinel = object()
+    run_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        _active_stream_run = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "started_at": time.time(),
+            "kind": "counter_reason_stream",
+        }
+
+    def push_status(message: str) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put(("status", {"message": message}))
+
+    def push_token(payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put(("token", payload))
+
+    def push_progress(event_name: str, payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put((event_name, payload))
+
+    def push_error(message: str, code: int) -> None:
+        event_queue.put(("error", {"message": message, "code": code}))
+
+    def _worker() -> None:
+        global _active_stream_run
+        try:
+            result = _run_counter_reason_only(
+                data,
+                status_callback=push_status,
+                token_callback=push_token,
+                progress_callback=push_progress,
+                cancel_event=cancel_event,
+            )
+            event_queue.put(("final", result))
+        except PipelineCancelled as e:
+            event_queue.put(
+                ("cancelled", {"message": str(e), "run_id": run_id, "ok": True})
+            )
+        except ValueError as e:
+            push_error(str(e), 400)
+        except Exception as e:
+            print(f"\n{'='*70}")
+            print("❌ COUNTER STREAM ERROR")
+            print(f"{'='*70}")
+            print(f"Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            push_error(str(e), 500)
+        finally:
+            event_queue.put(("done", {"ok": True}))
+            event_queue.put(sentinel)
+            with _active_stream_run_lock:
+                if (
+                    isinstance(_active_stream_run, dict)
+                    and _active_stream_run.get("run_id") == run_id
+                ):
+                    _active_stream_run = None
+            _pipeline_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    event_queue.put(("run_started", {"run_id": run_id}))
+
+    @stream_with_context
+    def generate():
+        while True:
+            try:
+                item = event_queue.get(timeout=12)
+            except Empty:
+                yield _sse_event("heartbeat", {"ts": int(time.time())})
+                continue
+            if item is sentinel:
+                break
+            event, payload = item
+            yield _sse_event(event, payload)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _sse_event(event: str, payload: dict) -> str:
@@ -2052,6 +2429,131 @@ def pipeline_stop():
     return jsonify({"ok": True, "run_id": active_run_id})
 
 
+def _run_evaluate_only(
+    data: dict,
+    *,
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Execute evaluator only (JSON + SSE shared implementation)."""
+    if not isinstance(data, dict):
+        data = {}
+
+    progress_callback = progress_callback or (lambda _event, _payload: None)
+
+    def _check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
+    def _emit_progress(event_name: str, payload: dict) -> None:
+        _check_cancel()
+        try:
+            progress_callback(event_name, payload)
+        except PipelineCancelled:
+            raise
+        except Exception:
+            pass
+
+    def _emit_phase(
+        phase: str, status: str, progress: int, detail: str | None = None
+    ) -> None:
+        _emit_progress(
+            "phase",
+            {
+                "phase": phase,
+                "status": status,
+                "progress": max(0, min(100, int(progress))),
+                "detail": detail or "",
+            },
+        )
+
+    claim = (data.get("claim", "") or "").strip()
+    domain = data.get("domain", "ENTRAMBI")
+    reasoner_output = data.get("reasoner_output", {}) or {}
+    counter_output = data.get("counter_output", {}) or {}
+    fe_settings = data.get("settings", {}) or {}
+
+    if not claim:
+        raise ValueError('Campo "claim" obbligatorio')
+
+    _check_cancel()
+    _emit_phase("final_evaluation", "active", 10, "Avvio verifica consistenza")
+
+    fe_aqa_alpha = fe_settings.get("aqa_alpha")
+    fe_aqa_beta = fe_settings.get("aqa_beta")
+    fe_aqa_gamma = fe_settings.get("aqa_gamma")
+    fe_aqa_min_semantic_overlap = fe_settings.get("aqa_min_semantic_overlap")
+    fe_aqa_min_strength_ratio = fe_settings.get("aqa_min_strength_ratio")
+    fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
+    fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
+    fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
+    fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
+
+    if fe_aqa_alpha is not None:
+        settings.aqa_alpha = float(fe_aqa_alpha)
+    if fe_aqa_beta is not None:
+        settings.aqa_beta = float(fe_aqa_beta)
+    if fe_aqa_gamma is not None:
+        settings.aqa_gamma = float(fe_aqa_gamma)
+    if fe_aqa_min_semantic_overlap is not None:
+        settings.aqa_min_semantic_overlap = float(fe_aqa_min_semantic_overlap)
+    if fe_aqa_min_strength_ratio is not None:
+        settings.aqa_min_strength_ratio = float(fe_aqa_min_strength_ratio)
+    if fe_aqa_damage_factor is not None:
+        settings.aqa_damage_factor = float(fe_aqa_damage_factor)
+    if fe_aqa_allow_factual_attacks is not None:
+        settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
+    if fe_aqa_allow_cross_codice is not None:
+        settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
+    if fe_aqa_strength_ratio_by_type is not None:
+        settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
+
+    pe = get_polisher_evaluator()
+    pe.set_cancel_checker(lambda: cancel_event is not None and cancel_event.is_set())
+    result = pe.run(
+        claim=claim,
+        domain=domain,
+        reasoner_output=reasoner_output,
+        counter_reasoner_output=counter_output,
+        progress_callback=_emit_progress,
+    )
+
+    _check_cancel()
+    payload = result.to_dict()
+    # Keep /api/evaluate aligned with /api/pipeline winning-side semantics.
+    aqa = payload.get("aqa_report") or {}
+    aqa_verdict = aqa.get("verdict", "uncertain")
+    aqa_net = aqa.get("net_plausibility", {}) or {}
+    legacy_verdict_map = {
+        "plausible": "support",
+        "implausible": "counter",
+        "uncertain": "undecided",
+    }
+    canonical_verdict_map = {
+        "plausible": "primary_thesis",
+        "implausible": "counter_thesis",
+        "uncertain": "undecided",
+    }
+    payload["winning_side"] = legacy_verdict_map.get(aqa_verdict, "undecided")
+    payload["winning_side_canonical"] = canonical_verdict_map.get(
+        aqa_verdict, "undecided"
+    )
+    payload["confidence"] = abs(float(aqa_net.get("final", 0.0)))
+    repaired_aspic_files = _persist_repaired_aspic_files(claim, payload)
+    if repaired_aspic_files:
+        payload["repaired_aspic_files"] = repaired_aspic_files
+        _emit_progress(
+            "evaluation_partial", {"repaired_aspic_files": repaired_aspic_files}
+        )
+    aqa_report_file = _persist_aqa_report_file(claim, payload)
+    if aqa_report_file:
+        payload["aqa_report_file"] = aqa_report_file
+        _emit_progress("evaluation_partial", {"aqa_report_file": aqa_report_file})
+    _emit_progress("evaluation_result", payload)
+    _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
+    return payload
+
+
 @app.route("/api/evaluate", methods=["POST"])
 def evaluate():
     """
@@ -2059,35 +2561,162 @@ def evaluate():
     Verifica la consistenza delle argomentazioni con la knowledge base via Neo4j.
     """
     try:
-        data = request.get_json()
-        claim = data.get("claim", "").strip()
-        domain = data.get("domain", "ENTRAMBI")
-        reasoner_output = data.get("reasoner_output", {})
-        counter_output = data.get("counter_output", {})
-
-        if not claim:
-            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
-
-        pe = get_polisher_evaluator()
-        pe.set_cancel_checker(None)
-        result = pe.run(
-            claim=claim,
-            domain=domain,
-            reasoner_output=reasoner_output,
-            counter_reasoner_output=counter_output,
-        )
-
-        payload = result.to_dict()
-        repaired_aspic_files = _persist_repaired_aspic_files(claim, payload)
-        if repaired_aspic_files:
-            payload["repaired_aspic_files"] = repaired_aspic_files
-        aqa_report_file = _persist_aqa_report_file(claim, payload)
-        if aqa_report_file:
-            payload["aqa_report_file"] = aqa_report_file
+        data = request.get_json(silent=True) or {}
+        payload = _run_evaluate_only(data)
         return jsonify(payload)
-
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         print(f"❌ Errore evaluation: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/evaluate/stream", methods=["POST"])
+def evaluate_stream():
+    """Endpoint SSE con streaming live del solo Polisher-Evaluator."""
+    if not _pipeline_lock.acquire(blocking=False):
+        return jsonify({"error": "A pipeline is already running. Please wait."}), 429
+
+    data = request.get_json(silent=True) or {}
+    event_queue: Queue = Queue()
+    sentinel = object()
+    run_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        _active_stream_run = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "started_at": time.time(),
+            "kind": "evaluate_stream",
+        }
+
+    def push_progress(event_name: str, payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put((event_name, payload))
+
+    def push_error(message: str, code: int) -> None:
+        event_queue.put(("error", {"message": message, "code": code}))
+
+    def _worker() -> None:
+        global _active_stream_run
+        try:
+            result = _run_evaluate_only(
+                data,
+                progress_callback=push_progress,
+                cancel_event=cancel_event,
+            )
+            event_queue.put(("final", result))
+        except PipelineCancelled as e:
+            event_queue.put(
+                ("cancelled", {"message": str(e), "run_id": run_id, "ok": True})
+            )
+        except ValueError as e:
+            push_error(str(e), 400)
+        except Exception as e:
+            print(f"\n{'='*70}")
+            print("❌ EVALUATE STREAM ERROR")
+            print(f"{'='*70}")
+            print(f"Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            push_error(str(e), 500)
+        finally:
+            event_queue.put(("done", {"ok": True}))
+            event_queue.put(sentinel)
+            with _active_stream_run_lock:
+                if (
+                    isinstance(_active_stream_run, dict)
+                    and _active_stream_run.get("run_id") == run_id
+                ):
+                    _active_stream_run = None
+            _pipeline_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    event_queue.put(("run_started", {"run_id": run_id}))
+
+    @stream_with_context
+    def generate():
+        while True:
+            try:
+                item = event_queue.get(timeout=12)
+            except Empty:
+                yield _sse_event("heartbeat", {"ts": int(time.time())})
+                continue
+            if item is sentinel:
+                break
+            event, payload = item
+            yield _sse_event(event, payload)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/doe/log", methods=["POST"])
+def persist_doe_log():
+    """Persist one consolidated DoE experiment log/report."""
+    try:
+        data = request.get_json(silent=True) or {}
+        claim = (data.get("claim", "") or "").strip()
+        if not claim:
+            raise ValueError('Campo "claim" obbligatorio')
+        artifacts = _persist_doe_experiment_files(claim, data)
+        return jsonify(artifacts)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        print(f"❌ Errore persistenza log DoE: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/pdf/export", methods=["POST"])
+def persist_pdf_export():
+    """Persist one exported PDF artifact from the frontend."""
+    try:
+        pdf_file = request.files.get("pdf")
+        if pdf_file is None:
+            raise ValueError('Campo file "pdf" obbligatorio')
+
+        pdf_bytes = pdf_file.read()
+        if not pdf_bytes:
+            raise ValueError("PDF vuoto")
+
+        claim = (request.form.get("claim", "") or "").strip()
+        prefix = (request.form.get("prefix", "") or "pipeline").strip()
+        export_context = (request.form.get("export_context", "") or "pipeline").strip()
+        client_filename = (request.form.get("client_filename", "") or "").strip()
+
+        artifact = _persist_pdf_export_file(
+            claim,
+            pdf_bytes,
+            export_context=export_context,
+            prefix=prefix,
+            client_filename=client_filename,
+        )
+        if not artifact:
+            raise RuntimeError("Salvataggio PDF non riuscito")
+
+        return jsonify({"pdf_file": artifact})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        print(f"❌ Errore persistenza PDF export: {e}")
         import traceback
 
         traceback.print_exc()
@@ -2161,10 +2790,14 @@ if __name__ == "__main__":
     print("  • POST /api/chat            - Ricerca legale (Tab Ricerca)")
     print("  • POST /api/reason          - Ragionamento causale (Tab Ragionamento)")
     print("  • POST /api/counter_reason  - Contro-ragionamento")
+    print("  • POST /api/counter_reason/stream - Contro-ragionamento (SSE)")
     print("  • POST /api/pipeline        - Pipeline completa")
     print("  • POST /api/pipeline/stream - Pipeline completa (SSE token streaming)")
     print("  • POST /api/pipeline/stop   - Interrompe pipeline SSE attiva")
     print("  • POST /api/evaluate        - Valutazione finale (stub)")
+    print("  • POST /api/evaluate/stream - Valutazione finale (SSE)")
+    print("  • POST /api/doe/log         - Persistenza log/report DoE")
+    print("  • POST /api/pdf/export      - Persistenza PDF esportato")
     print()
     print("=" * 70)
     print()

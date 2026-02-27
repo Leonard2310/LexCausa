@@ -162,7 +162,7 @@ export default function App() {
     reasoner_model: 'gpt_oss_120b',
     counter_model: 'gpt_oss_120b',
     reasoner_temperature: 0,
-    counter_temperature: 0,
+    counter_temperature: 0.2,
     llm_max_tokens: 8192,
     search_top_k_default: 100,
     search_min_kept_statutes: 8,
@@ -1617,10 +1617,20 @@ export default function App() {
     const byStepRaw = counterData?.aspic_ir?.metadata?.selected_attack_by_step;
     const byStep = Array.isArray(byStepRaw)
       ? byStepRaw
-        .filter((item) => item && typeof item === 'object' && item.attack_id)
+        .filter((item) => {
+          if (!item || typeof item !== 'object') return false;
+          if (item.attack_id) return true;
+          return Array.isArray(item.attack_ids) && item.attack_ids.some(Boolean);
+        })
         .map((item) => ({
           step: Number(item.step || 0),
-          attack_id: String(item.attack_id),
+          attack_ids: (
+            Array.isArray(item.attack_ids)
+              ? item.attack_ids
+              : [item.attack_id]
+          )
+            .filter(Boolean)
+            .map((id) => String(id)),
         }))
         .sort((a, b) => a.step - b.step)
       : [];
@@ -1648,7 +1658,7 @@ export default function App() {
             {byStep.map((item, idx) => (
               <li key={`${keyPrefix}-step-${item.step}-${idx}`}>
                 <strong>Step {item.step || idx + 1}</strong>
-                <span>{normalizeAttackLabel(item.attack_id)}</span>
+                <span>{item.attack_ids.map(normalizeAttackLabel).join(', ')}</span>
               </li>
             ))}
           </ul>

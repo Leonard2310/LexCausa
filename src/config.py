@@ -118,6 +118,16 @@ class Settings(BaseSettings):
     # LLM Configuration
     # =========================================================================
     llm_temperature: float = Field(default=0.0, alias="LLM_TEMPERATURE")
+    reasoner_default_temperature: float = Field(
+        default=0.0,
+        alias="REASONER_DEFAULT_TEMPERATURE",
+        description="Default UI temperature for the Reasoner agent.",
+    )
+    counter_default_temperature: float = Field(
+        default=0.2,
+        alias="COUNTER_DEFAULT_TEMPERATURE",
+        description="Default UI temperature for the Counter-Reasoner agent.",
+    )
     llm_max_tokens: int = Field(default=8192, alias="LLM_MAX_TOKENS")
 
     # =========================================================================
@@ -859,6 +869,19 @@ class Settings(BaseSettings):
         mode = str(self.search_query_terms_mode or "").strip().lower()
         if mode != "llm":
             object.__setattr__(self, "search_query_terms_mode", "llm")
+
+        reasoner_temp = float(self.reasoner_default_temperature)
+        counter_temp = float(self.counter_default_temperature)
+        object.__setattr__(
+            self,
+            "reasoner_default_temperature",
+            max(0.0, min(1.0, reasoner_temp)),
+        )
+        object.__setattr__(
+            self,
+            "counter_default_temperature",
+            max(0.0, min(1.0, counter_temp)),
+        )
 
         reasoner_aliases = [
             str(a).strip()

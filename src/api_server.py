@@ -931,6 +931,8 @@ def get_settings():
                 "counter_model": settings.counter_default_model,
                 "pipeline_model_order": settings.pipeline_model_order_aliases,
                 "llm_temperature": settings.llm_temperature,
+                "reasoner_temperature": settings.llm_temperature,
+                "counter_temperature": settings.llm_temperature,
                 "llm_max_tokens": settings.llm_max_tokens,
                 "search_top_k_default": settings.search_top_k_default,
                 "search_min_kept_statutes": settings.search_min_kept_statutes,
@@ -1085,6 +1087,12 @@ def reason():
     try:
         data = request.get_json()
         claim = data.get("claim", data.get("message", "")).strip()
+        fe_settings = data.get("settings", {}) or {}
+        fe_reasoner_temperature = fe_settings.get(
+            "reasoner_temperature", fe_settings.get("llm_temperature")
+        )
+        fe_max_tokens = fe_settings.get("llm_max_tokens")
+        fe_reasoner_model = fe_settings.get("reasoner_model")
         include_precedents = data.get("include_precedents", True)
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
@@ -1103,7 +1111,12 @@ def reason():
             claim_context_memory_enabled=claim_memory_enabled,
             claim_context_memory_overwrite=claim_memory_overwrite,
         )
-        reas = get_reasoner()
+        reasoner_config = _build_agent_config(
+            model_override=fe_reasoner_model or settings.reasoner_default_model,
+            temperature=fe_reasoner_temperature,
+            max_tokens=fe_max_tokens,
+        )
+        reas = Reasoner(config=reasoner_config)
 
         result = reas.run(
             claim=claim,
@@ -1148,6 +1161,12 @@ def counter_reason():
     try:
         data = request.get_json()
         claim = data.get("claim", "").strip()
+        fe_settings = data.get("settings", {}) or {}
+        fe_counter_temperature = fe_settings.get(
+            "counter_temperature", fe_settings.get("llm_temperature")
+        )
+        fe_max_tokens = fe_settings.get("llm_max_tokens")
+        fe_counter_model = fe_settings.get("counter_model")
         include_precedents = data.get("include_precedents", True)
         max_statutes = data.get("max_statutes", settings.search_top_k_default)
         max_precedents = data.get("max_precedents", settings.precedents_limit_default)
@@ -1178,7 +1197,12 @@ def counter_reason():
             claim_context_memory_overwrite=claim_memory_overwrite,
         )
 
-        cr = get_counter_reasoner()
+        counter_config = _build_agent_config(
+            model_override=fe_counter_model or settings.counter_default_model,
+            temperature=fe_counter_temperature,
+            max_tokens=fe_max_tokens,
+        )
+        cr = CounterReasoner(config=counter_config)
 
         # Esegui il counter-reasoning con contesto pre-retrieved
         result = cr.run(
@@ -1261,7 +1285,12 @@ def _run_full_pipeline(
 
     # ── Frontend-configurable settings ────────────────────────────────
     fe_settings = data.get("settings", {}) or {}
-    fe_temperature = fe_settings.get("llm_temperature")
+    fe_reasoner_temperature = fe_settings.get(
+        "reasoner_temperature", fe_settings.get("llm_temperature")
+    )
+    fe_counter_temperature = fe_settings.get(
+        "counter_temperature", fe_settings.get("llm_temperature")
+    )
     fe_max_tokens = fe_settings.get("llm_max_tokens")
     # Per-step model selection (alias resolved via settings model map)
     fe_reasoner_model = fe_settings.get("reasoner_model")
@@ -1395,7 +1424,7 @@ def _run_full_pipeline(
         _check_cancel()
         reasoner_config = _build_agent_config(
             model_override=fe_reasoner_model or settings.reasoner_default_model,
-            temperature=fe_temperature,
+            temperature=fe_reasoner_temperature,
             max_tokens=fe_max_tokens,
         )
         reas = Reasoner(config=reasoner_config)
@@ -1460,7 +1489,7 @@ def _run_full_pipeline(
         _check_cancel()
         counter_config = _build_agent_config(
             model_override=fe_counter_model or settings.counter_default_model,
-            temperature=fe_temperature,
+            temperature=fe_counter_temperature,
             max_tokens=fe_max_tokens,
         )
         cr = CounterReasoner(config=counter_config)

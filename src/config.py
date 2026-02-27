@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     # =========================================================================
     # LLM Configuration
     # =========================================================================
-    llm_temperature: float = Field(default=0.3, alias="LLM_TEMPERATURE")
+    llm_temperature: float = Field(default=0.0, alias="LLM_TEMPERATURE")
     llm_max_tokens: int = Field(default=8192, alias="LLM_MAX_TOKENS")
 
     # =========================================================================

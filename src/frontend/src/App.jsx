@@ -161,7 +161,8 @@ export default function App() {
   const [pipelineSettings, setPipelineSettings] = useState({
     reasoner_model: 'gpt_oss_120b',
     counter_model: 'gpt_oss_120b',
-    llm_temperature: 0.3,
+    reasoner_temperature: 0,
+    counter_temperature: 0,
     llm_max_tokens: 8192,
     search_top_k_default: 100,
     search_min_kept_statutes: 8,
@@ -232,7 +233,10 @@ export default function App() {
           ...prev,
           reasoner_model: d.reasoner_model || prev.reasoner_model,
           counter_model: d.counter_model || prev.counter_model,
-          llm_temperature: d.llm_temperature ?? prev.llm_temperature,
+          reasoner_temperature:
+            d.reasoner_temperature ?? d.llm_temperature ?? prev.reasoner_temperature,
+          counter_temperature:
+            d.counter_temperature ?? d.llm_temperature ?? prev.counter_temperature,
           llm_max_tokens: d.llm_max_tokens ?? prev.llm_max_tokens,
           search_top_k_default: d.search_top_k_default ?? prev.search_top_k_default,
           search_min_kept_statutes: d.search_min_kept_statutes ?? prev.search_min_kept_statutes,
@@ -326,6 +330,11 @@ export default function App() {
           claim,
           include_precedents: true,
           use_context: false,
+          settings: {
+            reasoner_model: pipelineSettings.reasoner_model,
+            reasoner_temperature: pipelineSettings.reasoner_temperature,
+            llm_max_tokens: pipelineSettings.llm_max_tokens,
+          },
         }),
       });
 
@@ -648,7 +657,8 @@ export default function App() {
       settings: {
         reasoner_model: pipelineSettings.reasoner_model,
         counter_model: pipelineSettings.counter_model,
-        llm_temperature: pipelineSettings.llm_temperature,
+        reasoner_temperature: pipelineSettings.reasoner_temperature,
+        counter_temperature: pipelineSettings.counter_temperature,
         llm_max_tokens: pipelineSettings.llm_max_tokens,
         search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
         search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
@@ -2379,14 +2389,25 @@ export default function App() {
               <legend>🎛️ Parametri LLM</legend>
               <div className="settings-row">
                 <label>
-                  <span>Temperature <strong>{pipelineSettings.llm_temperature.toFixed(2)}</strong></span>
+                  <span>Temperature Reasoner <strong>{pipelineSettings.reasoner_temperature.toFixed(2)}</strong></span>
                   <input
                     type="range"
                     min="0"
                     max="1"
                     step="0.05"
-                    value={pipelineSettings.llm_temperature}
-                    onChange={(e) => updateSetting('llm_temperature', parseFloat(e.target.value))}
+                    value={pipelineSettings.reasoner_temperature}
+                    onChange={(e) => updateSetting('reasoner_temperature', parseFloat(e.target.value))}
+                  />
+                </label>
+                <label>
+                  <span>Temperature Counter <strong>{pipelineSettings.counter_temperature.toFixed(2)}</strong></span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={pipelineSettings.counter_temperature}
+                    onChange={(e) => updateSetting('counter_temperature', parseFloat(e.target.value))}
                   />
                 </label>
                 <label>

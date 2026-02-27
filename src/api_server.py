@@ -947,8 +947,8 @@ def get_settings():
                 "counter_model": settings.counter_default_model,
                 "pipeline_model_order": settings.pipeline_model_order_aliases,
                 "llm_temperature": settings.llm_temperature,
-                "reasoner_temperature": settings.llm_temperature,
-                "counter_temperature": settings.llm_temperature,
+                "reasoner_temperature": settings.reasoner_default_temperature,
+                "counter_temperature": settings.counter_default_temperature,
                 "llm_max_tokens": settings.llm_max_tokens,
                 "search_top_k_default": settings.search_top_k_default,
                 "search_min_kept_statutes": settings.search_min_kept_statutes,
@@ -1110,7 +1110,8 @@ def reason():
         claim = data.get("claim", data.get("message", "")).strip()
         fe_settings = data.get("settings", {}) or {}
         fe_reasoner_temperature = fe_settings.get(
-            "reasoner_temperature", fe_settings.get("llm_temperature")
+            "reasoner_temperature",
+            fe_settings.get("llm_temperature", settings.reasoner_default_temperature),
         )
         fe_legacy_enable_causality = fe_settings.get("enable_causality")
         fe_reasoner_enable_causality = _coerce_bool(
@@ -1197,7 +1198,8 @@ def counter_reason():
         claim = data.get("claim", "").strip()
         fe_settings = data.get("settings", {}) or {}
         fe_counter_temperature = fe_settings.get(
-            "counter_temperature", fe_settings.get("llm_temperature")
+            "counter_temperature",
+            fe_settings.get("llm_temperature", settings.counter_default_temperature),
         )
         fe_legacy_enable_causality = fe_settings.get("enable_causality")
         fe_legacy_mode = (
@@ -1388,10 +1390,12 @@ def _run_full_pipeline(
     # ── Frontend-configurable settings ────────────────────────────────
     fe_settings = data.get("settings", {}) or {}
     fe_reasoner_temperature = fe_settings.get(
-        "reasoner_temperature", fe_settings.get("llm_temperature")
+        "reasoner_temperature",
+        fe_settings.get("llm_temperature", settings.reasoner_default_temperature),
     )
     fe_counter_temperature = fe_settings.get(
-        "counter_temperature", fe_settings.get("llm_temperature")
+        "counter_temperature",
+        fe_settings.get("llm_temperature", settings.counter_default_temperature),
     )
     fe_max_tokens = fe_settings.get("llm_max_tokens")
     # Per-step model selection (alias resolved via settings model map)

@@ -42,19 +42,24 @@ class PromptKey(StrEnum):
     COUNTER_REASONER_PICK_ATTACKS = "counter_reasoner.pick_attacks"
     COUNTER_REASONER_OPEN_ATTACKS = "counter_reasoner.open_attacks"
     COUNTER_REASONER_TARGET_MAP = "counter_reasoner.target_map"
+    COUNTER_REASONER_DECOMPOSE_CONCLUSION = "counter_reasoner.decompose_conclusion"
     COUNTER_REASONER_GENERATE_PLAN = "counter_reasoner.generate_plan"
     COUNTER_REASONER_PLAN_TARGET_ALIGNMENT = "counter_reasoner.plan_target_alignment"
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
     COUNTER_REASONER_SEMANTIC_REDUNDANCY = "counter_reasoner.semantic_redundancy"
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
-    COUNTER_REASONER_ATTACK_FEASIBILITY = "counter_reasoner.attack_feasibility"
+    COUNTER_REASONER_ATTACK_SAFETY = "counter_reasoner.attack_safety"
     COUNTER_REASONER_ATTACK_COMPATIBILITY = "counter_reasoner.attack_compatibility"
     COUNTER_REASONER_ATTACK_PRECONDITION_CHECK = (
         "counter_reasoner.attack_precondition_check"
     )
     COUNTER_REASONER_STEP_OPPOSITION_CHECK = "counter_reasoner.step_opposition_check"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
+    COUNTER_REASONER_FACT_LOCK_CHECK = "counter_reasoner.fact_lock_check"
     COUNTER_REASONER_NO_NEW_FACTS = "counter_reasoner.no_new_facts"
+    COUNTER_REASONER_PLAN_FEASIBILITY_REWRITE = (
+        "counter_reasoner.plan_feasibility_rewrite"
+    )
     AQA_ENGINE_ATTACK_TYPE_SYSTEM = "aqa_engine.attack_type_system"
     AQA_ENGINE_ATTACK_TYPE_USER = "aqa_engine.attack_type_user"
     NLP_UTILS_NLI_SYSTEM = "nlp_utils.nli_system"
@@ -691,6 +696,40 @@ Rules:
 - forbidden_assumptions must include hypothetical factual completions not in claim.
 - Do not output prose or markdown.
 """,
+    PromptKey.COUNTER_REASONER_DECOMPOSE_CONCLUSION: """You are a legal decomposition engine for counter-argument planning.
+
+CLAIM:
+[[claim]]
+
+REASONER CONCLUSION:
+[[reasoner_conclusion]]
+
+Task:
+- Decompose ONLY the reasoner conclusion into atomic legal commitments.
+- Identify which commitments are attackable without inventing new facts.
+- Keep claim facts fixed; do not introduce new events.
+
+Return ONLY JSON:
+{
+  "attack_points": [
+    {
+      "id": "P1",
+      "statement": "atomic legal commitment from conclusion",
+      "point_type": "norm_application | causal_link | burden_of_proof | quantification | remedy_scope | interpretation | other",
+      "attack_vector": "short hint on how this point can be challenged"
+    }
+  ],
+  "fixed_commitments": [
+    "commitment that should be preserved as factual/legal baseline"
+  ]
+}
+
+Rules:
+- Use at most 8 attack_points.
+- statement must be concise (max 30 words) and traceable to the conclusion text.
+- fixed_commitments should include only non-controversial baseline commitments.
+- If no clear decomposition is possible, return empty arrays.
+""",
     PromptKey.COUNTER_REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian counter-argumentation.
 
 Create a step-by-step plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
@@ -717,6 +756,8 @@ CLAIM FACT ANCHORS (use only these factual premises):
 [[claim_facts]]
 TARGET MAP (counter scope):
 [[target_map]]
+SUGGESTED ATTACK POINTS (optional hints):
+[[conclusion_points]]
 DOMAIN: [[routing_domain]]
 CAUSAL TYPE: [[causal_type_id]]
 THEORY: [[theory_id]]
@@ -749,8 +790,10 @@ RULES:
 - Use only facts explicitly present in claim (no assumptions, no hypothetical factual completions).
 - Never introduce hypothetical external events not in claim (e.g., mechanical failure, weather conditions, third-party interventions) as if they were case facts.
 - For causal-alternative attacks, contest certainty/weight/completeness of the existing evidence or legal imputability; do NOT fabricate alternative factual scenarios.
-- Each step must include one attack_id from the selected attack ids.
-- Distribute selected attacks across the plan whenever possible.
+- If selected attack ids are available, each step should include one attack_id from that set.
+- If selected attack ids are empty, set attack_id as empty string and build attack-agnostic steps.
+- Suggested attack points are OPTIONAL guidance, not hard constraints.
+- You may ignore any suggested point if it risks contradiction with fixed claim facts.
 - Set "citation_requirement" using the same policy:
   * "required" for norm-based attacks / legal qualification attacks
   * "optional" for inferential bridge or factual elaboration steps
@@ -797,6 +840,8 @@ DOMAIN: [[routing_domain]]
 CAUSAL TYPE: [[causal_type_id]]
 THEORY: [[theory_id]]
 ATTACK STRATEGY: [[attack_id]] - [[attack_desc]]
+AVAILABLE ATTACKS FOR THIS STEP:
+[[attack_pool_lines]]
 
 KNOWLEDGE BASE (use only these sources):
 [[knowledge_base]]
@@ -812,9 +857,11 @@ GLOBAL PLAN:
 CURRENT STEP TO EXECUTE: [[plan_index]]
 - Goal: [[plan_goal]]
 - Focus: [[plan_focus]]
+- Suggested attack points (optional):
+[[suggested_points_text]]
 - Expected norm: [[plan_expected_norm]]
 - Citation requirement: [[plan_citation_requirement]]
-- Attack id for this step: [[plan_attack_id]]
+- Preferred attack id for this step: [[plan_attack_id]]
 - Step type: [[plan_step_type]]
 - Novelty key: [[plan_novelty_key]]
 
@@ -839,9 +886,10 @@ HARD RULES:
 - If citation requirement is "required", cite at least one statute.
 - If citation requirement is "optional", citation is recommended but not mandatory.
 - If citation requirement is "none", do not force a citation.
-- Align this step explicitly to attack "[[plan_attack_id]]".
+[[attack_usage_rules]]
 
 RESPONSE FORMAT:
+[[attacks_used_format]]
 STEP: [italian atomic counter-step]
 """,
     PromptKey.COUNTER_REASONER_SEMANTIC_REDUNDANCY: """Assess whether the NEW step truly adds new legal information.
@@ -887,34 +935,44 @@ Rules:
 
 Answer with EXACTLY one word: ALIGNED or MISALIGNED.
 """,
-    PromptKey.COUNTER_REASONER_ATTACK_FEASIBILITY: """You are evaluating whether a counter-attack type is feasible under strict factual grounding.
+    PromptKey.COUNTER_REASONER_ATTACK_SAFETY: """You are a legal safety rewriter for counter-attack strategies.
 
-CLAIM (facts are fixed):
+CLAIM (explicit facts are fixed):
 [[claim]]
 
 REASONER CONCLUSION TO OPPOSE:
 [[reasoner_conclusion]]
 
-ATTACK ID:
-[[attack_id]]
+CLAIM FACT ANCHORS:
+[[claim_facts]]
 
-ATTACK DESCRIPTION:
-[[attack_desc]]
-
-Constraints:
-- Counter steps may challenge legal inference, norm application, evidentiary sufficiency, or imputability.
-- Counter steps MUST NOT contradict explicit claim facts.
-- Counter steps MUST NOT add new factual allegations not present in the claim.
+ATTACK CANDIDATES:
+[[attack_catalog]]
 
 Task:
-Classify feasibility of using this attack under the constraints above.
+For each candidate attack, classify whether it can be used without contradicting explicit claim facts.
 
 Labels:
-- FEASIBLE: can be used without needing new facts or factual contradiction.
-- LOW_FEASIBILITY: only limited use is possible; high risk of violating constraints.
-- INFEASIBLE: would almost inevitably require new facts or contradiction of explicit claim facts.
+- SAFE: can be used directly.
+- LIMITED: must be reformulated as limitation/containment of effects (not direct denial of fixed facts).
+- UNSAFE: cannot be made compatible without factual contradiction/invention.
 
-Answer with EXACTLY one word: FEASIBLE or LOW_FEASIBILITY or INFEASIBLE.
+Return ONLY JSON:
+{
+  "attacks": [
+    {
+      "id": "attack_id",
+      "status": "SAFE | LIMITED | UNSAFE",
+      "description": "short operational description (max 22 words, mandatory for SAFE/LIMITED)"
+    }
+  ]
+}
+
+Rules:
+- Preserve the attack id exactly.
+- If claim contains an explicit fixed fact, do not propose descriptions that deny it.
+- Prefer LIMITED over UNSAFE when the attack can be reframed as legal limitation (scope, burden, quantification, effects).
+- Do not add new facts or hypothetical events.
 """,
     PromptKey.COUNTER_REASONER_ATTACK_COMPATIBILITY: """You are evaluating semantic compatibility between a legal claim and a counter-attack strategy.
 
@@ -990,7 +1048,32 @@ Do not add new facts. Do not make it agree with the targeted thesis / Reasoner c
 The rewritten step must clearly weaken or limit the opposing thesis.
 
 RESPONSE FORMAT:
+[[attacks_used_format]]
 STEP: [Italian text, max 4 sentences]""",
+    PromptKey.COUNTER_REASONER_FACT_LOCK_CHECK: """You are a strict factual contradiction checker for COUNTER legal steps.
+
+CLAIM (explicit facts only):
+\"\"\"[[claim]]\"\"\"
+
+CANDIDATE COUNTER STEP:
+\"\"\"[[candidate_step]]\"\"\"
+
+Task:
+Decide whether the candidate step DIRECTLY contradicts an explicit claim fact.
+
+Label as DIRECT_CONTRADICTION ONLY when at least one explicit claim fact is negated/reversed.
+
+Do NOT label contradiction when the step:
+- questions legal qualification, weight, sufficiency, or evidentiary certainty;
+- limits legal consequences while keeping facts fixed;
+- argues uncertainty without denying an explicit fact.
+
+If doubtful, choose CONSISTENT_OR_INTERPRETIVE.
+
+Answer with EXACTLY one word:
+- DIRECT_CONTRADICTION
+- CONSISTENT_OR_INTERPRETIVE
+""",
     PromptKey.COUNTER_REASONER_NO_NEW_FACTS: """You are a factual grounding checker for legal counter-argument steps.
 
 CLAIM (all explicit facts are fixed and exhaustive):
@@ -1010,6 +1093,41 @@ Important:
 - If doubtful, prefer GROUNDED unless there is a clear added factual allegation.
 
 Answer with EXACTLY one word: GROUNDED or LEGAL_INFERENCE or ADDS_FACTS.
+""",
+    PromptKey.COUNTER_REASONER_PLAN_FEASIBILITY_REWRITE: """You are rewriting a planned counter step to make it fact-safe.
+
+CLAIM:
+\"\"\"[[claim]]\"\"\"
+
+REASONER CONCLUSION TO OPPOSE:
+\"\"\"[[reasoner_conclusion]]\"\"\"
+
+TARGET MAP:
+[[target_map]]
+
+ORIGINAL PLAN STEP:
+- Goal: [[plan_goal]]
+- Focus: [[plan_focus]]
+- Expected norm: [[expected_norm]]
+- Citation requirement: [[citation_requirement]]
+
+INVALID REASON:
+[[invalid_reason]]
+
+Task:
+- Rewrite ONLY goal/focus to stay counter-oppositional while preserving explicit claim facts.
+- Do NOT add hypothetical events or unstated facts.
+- Keep the same argumentative direction when possible.
+- Keep expected_norm and citation_requirement coherent.
+- If no citation is feasible, set expected_norm to \"N/A\" and citation_requirement to \"optional\".
+
+Return ONLY compact JSON:
+{
+  "goal": "max 25 words",
+  "focus": "max 25 words",
+  "expected_norm": "article or N/A",
+  "citation_requirement": "required | optional | none"
+}
 """,
     # ---------------------------------------------------------------------
     # AQA / NLP / Polisher

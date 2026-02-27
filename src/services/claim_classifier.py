@@ -160,7 +160,7 @@ class ClaimClassifier:
     def classify(
         self,
         claim: str,
-        temperature: float = 0.3,
+        temperature: Optional[float] = None,
         stream: bool = False,
     ) -> ClassificationResult:
         """
@@ -174,12 +174,17 @@ class ClaimClassifier:
         Returns:
             ClassificationResult with top 3 categories.
         """
+        resolved_temperature = (
+            settings.classifier_temperature
+            if temperature is None
+            else float(temperature)
+        )
         messages = self._build_messages(claim)
 
         if stream:
-            return self._classify_stream(claim, messages, temperature)
+            return self._classify_stream(claim, messages, resolved_temperature)
         else:
-            return self._classify_sync(claim, messages, temperature)
+            return self._classify_sync(claim, messages, resolved_temperature)
 
     def _classify_sync(
         self,

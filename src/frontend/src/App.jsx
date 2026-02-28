@@ -3693,6 +3693,15 @@ export default function App() {
   const doeTreatmentOnlyNorms = doeTreatmentNorms.filter(
     (norm) => !doeBaselineNorms.some((item) => item.toLowerCase() === norm.toLowerCase()),
   );
+  const doeHasRenderableComparison = Boolean(
+    doeHasCompletedComparison
+    || doeBaselineView?.counter_reasoner?.raw_response
+    || doeTreatmentView?.counter_reasoner?.raw_response
+    || doeBaselineView?.counter_reasoner?.aspic_ir
+    || doeTreatmentView?.counter_reasoner?.aspic_ir
+    || doeBaselineAttackLabels.length > 0
+    || doeTreatmentAttackLabels.length > 0,
+  );
   const buildDoeAnalysisSnapshot = (comparison = null, baselineView = null, treatmentView = null) => {
     if (!comparison?.delta) return null;
     const baselineParsed = parseStructuredResponse(
@@ -3778,7 +3787,7 @@ export default function App() {
     : null;
 
   const renderDoeComparisonSection = () => {
-    if (!isDoeTab || !doeHasComparison) return null;
+    if (!isDoeTab || !doeHasRenderableComparison) return null;
     return (
       <div className="result-section pipeline-section" data-pdf-section="doe-comparison">
         <h3 className="section-header">
@@ -3973,8 +3982,6 @@ export default function App() {
     liveConclusion = '',
     liveMode = false,
     variant = 'default',
-    liveStepBadgeLabel = '',
-    liveStepBadgeTone = 'neutral',
   }) => {
     const hasLiveChain = liveMode && Array.isArray(liveSteps) && liveSteps.length > 0;
     const chainSteps = hasLiveChain
@@ -4024,15 +4031,7 @@ export default function App() {
             <h5>Catena di Ragionamento</h5>
             <ol className="live-steps-list">
               {chainSteps.map((stepText, idx) => (
-                <li
-                  key={`chain-step-${idx}`}
-                  className={hasLiveChain && liveStepBadgeLabel ? 'live-step-with-badge' : ''}
-                >
-                  {hasLiveChain && liveStepBadgeLabel && (
-                    <span className={`live-step-badge tone-${liveStepBadgeTone}`}>
-                      {liveStepBadgeLabel}
-                    </span>
-                  )}
+                <li key={`chain-step-${idx}`}>
                   <span>{stepText}</span>
                 </li>
               ))}
@@ -4045,11 +4044,7 @@ export default function App() {
         {liveMode && (
           <div className="structured-live-tag">
             <Loader2 size={14} className="loading-spinner" />
-            <span>
-              Aggiornamento live in corso
-              {liveStepBadgeLabel ? ` - ${liveStepBadgeLabel}` : ''}
-              ...
-            </span>
+            <span>Aggiornamento live in corso...</span>
           </div>
         )}
       </div>
@@ -5613,6 +5608,11 @@ export default function App() {
                     <h3 className="section-header">
                       <XCircle size={20} style={{ color: '#ef4444' }} />
                       2. COUNTER-REASONER - Controtesi
+                      {isDoeTab && (
+                        <span className={`doe-setup-badge tone-${selectedCounterLiveBadgeTone}`}>
+                          {selectedCounterLiveBadgeLabel}
+                        </span>
+                      )}
                     </h3>
 
                     {isDoeTab
@@ -5626,7 +5626,7 @@ export default function App() {
                             <span>
                               {doeDisplaySetup === 'baseline'
                                 ? 'Setup A non ha ancora prodotto output del Counter.'
-                                : 'Setup B non ha ancora prodotto output del Counter o e in attesa di partire.'}
+                                : 'Setup B non ha ancora prodotto output del Counter.'}
                             </span>
                           </div>
                         </div>
@@ -5732,10 +5732,6 @@ export default function App() {
                           parsed: counterParsedResponse,
                           liveSteps: selectedCounterLiveSteps,
                           liveMode: selectedCounterLiveMode,
-                          liveStepBadgeLabel: selectedCounterLiveMode
-                            ? selectedCounterLiveBadgeLabel
-                            : '',
-                          liveStepBadgeTone: selectedCounterLiveBadgeTone,
                         })}
                       </div>
                     )}
@@ -5982,6 +5978,11 @@ export default function App() {
                           <h4 className="subsection-title-with-icon">
                             <XCircle size={20} style={{ color: '#ef4444' }} />
                             Counter-Reasoner - Catena Riparata
+                            {isDoeTab && (
+                              <span className={`doe-setup-badge tone-${selectedCounterLiveBadgeTone}`}>
+                                {selectedCounterLiveBadgeLabel}
+                              </span>
+                            )}
                           </h4>
                           {renderStructuredResponse({
                             parsed: repairedCounterParsedResponse,

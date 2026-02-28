@@ -293,6 +293,7 @@ def _persist_doe_experiment_files(claim: str, doe_payload: dict) -> dict:
         return {}
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    generated_at = datetime.now().isoformat()
     slug = _slugify_filename(claim)
     report_dir = LOG_DIR / "doe_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -313,17 +314,34 @@ def _persist_doe_experiment_files(claim: str, doe_payload: dict) -> dict:
     delta = (
         doe_payload.get("delta") if isinstance(doe_payload.get("delta"), dict) else {}
     )
+    existing_artifacts_raw = doe_payload.get("artifacts")
+    existing_artifacts: dict[str, Any] = (
+        existing_artifacts_raw if isinstance(existing_artifacts_raw, dict) else {}
+    )
+    artifacts = {
+        **existing_artifacts,
+        "doe_log_file": _artifact_file_payload(log_path),
+        "doe_report_file": _artifact_file_payload(report_path),
+    }
+    persisted_report = {
+        **doe_payload,
+        "mode": doe_payload.get("mode") or "automatic_ab",
+        "status": doe_payload.get("status") or "completed",
+        "generated_at": doe_payload.get("generated_at") or generated_at,
+        "artifacts": artifacts,
+    }
 
     log_sections = [
-        f"[{datetime.now().isoformat()}] DoE log for claim:",
+        f"[{generated_at}] DoE log for claim:",
         claim,
         "=" * 70,
         "",
         "[DOE_META]",
         json.dumps(
             {
-                "mode": doe_payload.get("mode") or "automatic_ab",
-                "generated_at": datetime.now().isoformat(),
+                "mode": persisted_report.get("mode") or "automatic_ab",
+                "status": persisted_report.get("status") or "completed",
+                "generated_at": persisted_report.get("generated_at") or generated_at,
             },
             ensure_ascii=False,
             indent=2,
@@ -344,17 +362,13 @@ def _persist_doe_experiment_files(claim: str, doe_payload: dict) -> dict:
     try:
         log_path.write_text("\n".join(log_sections), encoding="utf-8")
         report_path.write_text(
-            json.dumps(doe_payload, ensure_ascii=False, indent=2),
+            json.dumps(persisted_report, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception as exc:
         print(f"⚠️ Errore salvataggio report/log DoE: {exc}")
         return {}
 
-    artifacts = {
-        "doe_log_file": _artifact_file_payload(log_path),
-        "doe_report_file": _artifact_file_payload(report_path),
-    }
     print(f"🧪 DoE consolidato salvato: {artifacts}")
     return artifacts
 

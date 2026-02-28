@@ -711,37 +711,37 @@ class Settings(BaseSettings):
     # Text Truncation (prompt context limits)
     # =========================================================================
     truncation_nli_text: int = Field(
-        default=600,
+        default=700,
         alias="TRUNCATION_NLI_TEXT",
         description="Max chars per passage for NLI / attack-type prompts.",
     )
     truncation_chain_text: int = Field(
-        default=3000,
+        default=4000,
         alias="TRUNCATION_CHAIN_TEXT",
         description="Max chars of full chain text for repair prompts.",
     )
     truncation_context: int = Field(
-        default=500,
+        default=800,
         alias="TRUNCATION_CONTEXT",
         description="Max chars of contextual snippets in prompts.",
     )
     truncation_tool_testo: int = Field(
-        default=500,
+        default=1200,
         alias="TRUNCATION_TOOL_TESTO",
         description="Max chars of statute text returned by search tools (neo4j_tools).",
     )
     truncation_tool_summary: int = Field(
-        default=500,
+        default=700,
         alias="TRUNCATION_TOOL_SUMMARY",
         description="Max chars of precedent summary returned by search tools.",
     )
     truncation_prompt_testo: int = Field(
-        default=500,
+        default=1200,
         alias="TRUNCATION_PROMPT_TESTO",
         description="Max chars of statute text in base agent prompt formatting.",
     )
     truncation_prompt_summary: int = Field(
-        default=300,
+        default=450,
         alias="TRUNCATION_PROMPT_SUMMARY",
         description="Max chars of precedent summary in base agent prompt formatting.",
     )

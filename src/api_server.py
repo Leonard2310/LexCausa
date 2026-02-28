@@ -410,8 +410,6 @@ def _persist_pdf_export_file(
 
 
 # Agenti globali (lazy initialization)
-reasoner = None
-counter_reasoner = None
 polisher_evaluator = None
 router_agent = None
 retrieval_filter_agent = None
@@ -946,26 +944,6 @@ def prepare_claim_context(
             print(f"⚠️ [Retrieval] Claim-context memory save failed: {e}")
 
     return statutes, precedents
-
-
-def get_reasoner():
-    """Lazy load del Reasoner agent."""
-    global reasoner
-    if reasoner is None:
-        print("🔧 Inizializzazione Reasoner...")
-        reasoner = Reasoner()
-        print("✅ Reasoner pronto!")
-    return reasoner
-
-
-def get_counter_reasoner():
-    """Lazy load del Counter-Reasoner agent."""
-    global counter_reasoner
-    if counter_reasoner is None:
-        print("🔧 Inizializzazione Counter-Reasoner...")
-        counter_reasoner = CounterReasoner()
-        print("✅ Counter-Reasoner pronto!")
-    return counter_reasoner
 
 
 def get_router():

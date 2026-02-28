@@ -290,21 +290,6 @@ class ConsistencyMixin:
             return "codice_penale"
         return infer_source_hint(lower)
 
-    def _extract_cited_text_for_article(
-        self, full_text: str, article_num: str, aspic_ir: dict | None = None
-    ) -> str:
-        """
-        Extract the text cited in the reasoning chain for a specific article.
-
-        Returns only the extracted text for backward compatibility.
-        Use ``_extract_cited_text_for_article_with_source`` to also get the
-        extraction pattern metadata.
-        """
-        extracted, _source = self._extract_cited_text_for_article_with_source(
-            full_text, article_num, aspic_ir
-        )
-        return extracted
-
     def _extract_cited_text_for_article_with_source(
         self, full_text: str, article_num: str, aspic_ir: dict | None = None
     ) -> tuple[str, str]:

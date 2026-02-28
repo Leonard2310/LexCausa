@@ -562,38 +562,3 @@ def resilient_chat_stream(
         model_order=model_order,
         cancel_checker=cancel_checker,
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Resilient LangGraph ReAct agent invocation
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def resilient_react_invoke(
-    agent_builder,
-    input_data: dict,
-    *,
-    max_retries: Optional[int] = None,
-    model_order: Optional[list[str]] = None,
-    cancel_checker: Optional[Callable[[], bool]] = None,
-):
-    """
-    Invoke a LangGraph ReAct agent with smart retry strategy.
-
-    Args:
-        agent_builder: ``(api_key: str, model: str) -> agent``
-        input_data: The dict to pass to agent.invoke().
-        max_retries: Override for settings.groq_max_retries.
-    """
-
-    def _execute(key: str, model: str):
-        agent = agent_builder(key, model)
-        return agent.invoke(input_data)
-
-    return _resilient_loop(
-        _execute,
-        max_retries=max_retries,
-        label="ReAct",
-        model_order=model_order,
-        cancel_checker=cancel_checker,
-    )

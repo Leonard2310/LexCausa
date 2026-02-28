@@ -909,9 +909,11 @@ class AQAEngineMixin:
 
         type_counts: dict[str, int] = {}
         for attack in active_attacks:
-            attack_type = str(
-                attack.get("attack_type") or self._aqa_default_attack_type
-            ).strip().lower()
+            attack_type = (
+                str(attack.get("attack_type") or self._aqa_default_attack_type)
+                .strip()
+                .lower()
+            )
             if not attack_type:
                 attack_type = self._aqa_default_attack_type
             type_counts[attack_type] = type_counts.get(attack_type, 0) + 1
@@ -1722,9 +1724,7 @@ class AQAEngineMixin:
                     "net_plausibility_raw": contra_net_raw,
                     "net_plausibility_adjusted": contra_net_adjusted,
                     "redundancy_penalty": contra_redundancy.get("penalty", 0.0),
-                    "redundancy_index": contra_redundancy.get(
-                        "redundancy_index", 0.0
-                    ),
+                    "redundancy_index": contra_redundancy.get("redundancy_index", 0.0),
                     "diversity_bonus": contra_diversity.get("bonus", 0.0),
                     "diversity_index": contra_diversity.get("diversity_index", 0.0),
                 },

@@ -15,7 +15,6 @@ from typing import Dict, List, Optional
 from langchain_core.messages import HumanMessage
 
 from .base import AgentConfig, BaseAgent
-from .tools import config_loader
 from .tools.prompt_registry import get_prompt, render_prompt
 
 
@@ -51,10 +50,6 @@ class Router(BaseAgent):
 
     def __init__(self, config: Optional[AgentConfig] = None):
         super().__init__(config)
-        self._config = config_loader.load_config()
-        self._causal_types = config_loader.causal_types_by_id(self._config)
-        self._theories = config_loader.theories_by_id(self._config)
-        self._defaults = config_loader.default_mapping_by_causal(self._config)
 
     def route(self, claim: str) -> RoutingDecision:
         """Route a claim to a domain classification."""

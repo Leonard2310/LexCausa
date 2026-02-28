@@ -377,12 +377,6 @@ def load_gold_label_specs(path: Path) -> dict[str, GoldLabelSpec]:
     return labels
 
 
-def load_gold_labels(path: Path) -> dict[str, set[str]]:
-    """Legacy flat labels view used by evaluation metrics."""
-    specs = load_gold_label_specs(path)
-    return {cid: set(spec.gold) for cid, spec in specs.items() if spec.gold}
-
-
 def _mean_or_none(values: list[float]) -> Optional[float]:
     if not values:
         return None

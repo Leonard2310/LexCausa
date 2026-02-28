@@ -30,7 +30,6 @@ dependencies = [
     "groq (>=0.4.0,<1.0.0)",
     "langchain (>=0.2.0,<1.0.0)",
     "langchain-groq (>=0.1.0,<1.0.0)",
-    "langgraph (>=0.2.0,<1.0.0)",
     "transformers (>=4.40.0,<4.50.0)",
     "torch (>=2.2.0,<2.3.0)",
 ]

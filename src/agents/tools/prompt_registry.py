@@ -28,17 +28,12 @@ class PromptKey(StrEnum):
     LEGAL_SEARCH_QUERY_TERMS_USER = "legal_search.query_terms_user"
     NEO4J_TOOLS_EXTRACT_KEYWORDS = "neo4j_tools.extract_keywords"
     TAXONOMY_TOOLS_CLASSIFICATION = "taxonomy_tools.classification"
-    TAXONOMY_TOOLS_CAUSALITY_CLAIM_PROMPT = "taxonomy_tools.causality_claim_prompt"
     TAXONOMY_TOOLS_FILTER_NORM = "taxonomy_tools.filter_norm"
-    REASONER_SYSTEM = "reasoner.system"
     REASONER_CLASSIFY_CAUSALITY = "reasoner.classify_causality"
     REASONER_GENERATE_PLAN = "reasoner.generate_plan"
     REASONER_SUPPORT_STEP = "reasoner.support_step"
     REASONER_SUPPORT_PLAN_REWRITE = "reasoner.support_plan_rewrite"
-    REASONER_SEMANTIC_REDUNDANCY = "reasoner.semantic_redundancy"
     REASONER_GENERATE_CONCLUSION = "reasoner.generate_conclusion"
-    REASONER_REASONING_WITH_CONTEXT = "reasoner.reasoning_with_context"
-    COUNTER_REASONER_SYSTEM = "counter_reasoner.system"
     COUNTER_REASONER_PICK_ATTACKS = "counter_reasoner.pick_attacks"
     COUNTER_REASONER_OPEN_ATTACKS = "counter_reasoner.open_attacks"
     COUNTER_REASONER_TARGET_MAP = "counter_reasoner.target_map"
@@ -46,7 +41,6 @@ class PromptKey(StrEnum):
     COUNTER_REASONER_GENERATE_PLAN = "counter_reasoner.generate_plan"
     COUNTER_REASONER_PLAN_TARGET_ALIGNMENT = "counter_reasoner.plan_target_alignment"
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
-    COUNTER_REASONER_SEMANTIC_REDUNDANCY = "counter_reasoner.semantic_redundancy"
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
     COUNTER_REASONER_ATTACK_SAFETY = "counter_reasoner.attack_safety"
     COUNTER_REASONER_ATTACK_COMPATIBILITY = "counter_reasoner.attack_compatibility"
@@ -297,15 +291,6 @@ Rules:
 
 CLAIM:
 [[claim]]""",
-    PromptKey.TAXONOMY_TOOLS_CAUSALITY_CLAIM_PROMPT: """CLAIM
-<<<
-[[claim]]
->>>
-
-CONTEXT (if available)
-<<<
-[[context]]
->>>""",
     PromptKey.TAXONOMY_TOOLS_FILTER_NORM: """Legal Claim:
 "[[claim]]"
 
@@ -319,24 +304,6 @@ Respond with a single token: YES or NO.""",
     # ---------------------------------------------------------------------
     # Reasoner
     # ---------------------------------------------------------------------
-    PromptKey.REASONER_SYSTEM: """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
-
-You are the Reasoner. The router already set causal_type_id and theory_id.
-Do NOT re-classify. Use these as structural constraints:
-- anchor_norms (core + accessory) from config
-- principle_tests for the causal type
-
-You receive a pre-retrieved KNOWLEDGE BASE (statutes/precedents) filtered for relevance.
-Build the primary legal reasoning on the claim using the provided sources.
-
-Critical rules:
-- Cite ONLY statutes and precedents present in the KNOWLEDGE BASE.
-- If a needed statute is missing, state "articolo non disponibile nella knowledge base".
-- Keep reasoning independent: do not reference the Counter-Reasoner.
-- Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
-- Your response MUST end with a **Catena di ragionamento**: section containing a numbered list.
-- Numbered lists (1. 2. 3. ...) are ONLY allowed inside **Catena di ragionamento**. Use prose or bullet points ("-") everywhere else.
-- MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English.""",
     PromptKey.REASONER_CLASSIFY_CAUSALITY: """You are a classifier. Based PRIMARILY on the CITED ARTICLES from the reasoning chain, choose the most appropriate causal_type_id.
 
 Allowed causal_type_id values (domain=[[domain]]):
@@ -491,25 +458,6 @@ Rewrite only this step. Keep the same planned objective, but produce NEW,
 non-redundant and logically consistent content.
 RESPONSE FORMAT:
 STEP: [italian atomic step]""",
-    PromptKey.REASONER_SEMANTIC_REDUNDANCY: """Assess whether the NEW step truly adds new legal information.
-
-CLAIM:
-[[claim]]
-
-ARGUMENTATIVE ROLE: [[role]]
-
-PREVIOUS STEPS:
-[[context_prev]]
-
-NEW STEP:
-[[candidate_step]]
-
-Rule:
-- Answer REPEAT if the new step is substantially a paraphrase/duplication of previous steps.
-- Answer NEW if it introduces a genuinely different legal/factual point.
-
-Answer with EXACTLY one word: NEW or REPEAT.
-""",
     PromptKey.REASONER_GENERATE_CONCLUSION: """You are an expert Italian jurist. Based on the legal reasoning chain below, generate a concise and precise CONCLUSION.
 
 ORIGINAL CLAIM:
@@ -529,102 +477,9 @@ INSTRUCTIONS:
 - Your ENTIRE response must be written in Italian.
 
         CONCLUSION:""",
-    PromptKey.REASONER_REASONING_WITH_CONTEXT: """Analyze the following claim and build a primary legal reasoning.
-
-CLAIM:
-"[[claim]]"
-
-DOMAIN (from router):
-[[routing_domain]]
-
-ANCHOR NORMS (structural constraints):
-[[anchor_text]]
-
-PRINCIPLE TESTS (evaluation criteria):
-[[principle_text]]
-
-=== KNOWLEDGE BASE (USE ONLY THESE SOURCES) ===
-[[knowledge_base]]
-=== END KNOWLEDGE BASE ===
-
-ALLOWED STATUTE REFERENCES (do not cite others):
-[[statutes_list]]
-
-ALLOWED PRECEDENT REFERENCES (do not cite others):
-[[precedents_list]]
-
-INSTRUCTIONS:
-1) Build arguments appropriate for the [[routing_domain]] domain.
-2) Use anchor norms and principle tests as structural constraints, but DO NOT limit yourself to them.
-   Your reasoning MUST cite multiple statutes from the KNOWLEDGE BASE — not only anchor norms.
-   Anchor norms provide the framework, but you MUST integrate additional non-anchor statutes
-   from the ALLOWED STATUTES list that are relevant to the specific facts of the claim.
-   A good legal argument combines the general principle (anchor) with specific rules that apply
-   to the concrete case (e.g., warranty, defects, remedies, damages, obligations).
-3) If the knowledge base lacks a statute's text, still cite the article but do NOT invent quotes.
-4) Build arguments using ONLY knowledge base sources, with EXACTLY these Italian headers:
-   **Premessa**: (premise — write in prose, NO numbered lists)
-   **Norma**: (statute with precise citation from ALLOWED STATUTES; if absent, write "articolo non disponibile nella knowledge base" — use bullet points with "-" if listing multiple norms, NEVER numbered lists)
-   **Precedente**: (only if present in ALLOWED PRECEDENTS; otherwise omit — NO numbered lists)
-   **Nesso Causale**: (causal link — write in prose, NO numbered lists)
-   **Conclusione**: (conclusion — write in prose, NO numbered lists)
-5) After the arguments, you MUST add the following header and numbered chain.
-   This section is MANDATORY and must NEVER be omitted:
-
-   **Catena di ragionamento**:
-   1. [First reasoning step — cite the specific article(s) it relies on, e.g. Art. XX c.p.]
-   2. [Second reasoning step — cite the specific article(s)]
-   3. [Continue for each logical step...]
-
-   RULES for the numbered chain:
-   - Use EXACTLY the header "**Catena di ragionamento**:" before the numbered list.
-   - Each step MUST be on its own line, starting with "N. " (e.g. "1. ", "2. ", "3. ").
-   - Each step MUST reference at least one specific article (e.g. "Art. 2043 c.c.").
-   - The chain must have AT LEAST 3 numbered steps.
-
-FORMATTING RULE — CRITICAL:
-- Numbered lists ("1. ", "2. ", "3. ", etc.) are ONLY allowed inside the **Catena di ragionamento** section.
-- In ALL other sections (Premessa, Norma, Precedente, Nesso Causale, Conclusione), use ONLY
-  prose text or bullet points with "-". NEVER use numbered lists outside the chain.
-
-IMPORTANT - NORM USAGE REQUIREMENTS:
-- You have [[allowed_statutes_count]] statutes available. Cite EVERY article you deem pertinent
-  to the case — do not artificially limit yourself to a fixed number.
-- Do NOT rely on a single anchor norm for the entire chain.
-- For each factual aspect of the claim (contract formation, defects, remedies, damages, etc.),
-  identify the most specific applicable statute from the ALLOWED STATUTES list.
-- Quote the relevant text from each statute when available in the KNOWLEDGE BASE.
-- COHERENCE RULE: Every norm you cite in the **Norma** section MUST appear in at least one
-  step of the numbered reasoning chain, with an explanation of its specific role in the argument.
-  Do NOT list norms in **Norma** that you never use in the chain.
-
-CRITICAL: Do not introduce external sources.
-MANDATORY LANGUAGE RULE: Your ENTIRE response MUST be written in Italian. Do NOT write in English. Every sentence, header, and explanation must be in Italian.""",
     # ---------------------------------------------------------------------
     # Counter-Reasoner
     # ---------------------------------------------------------------------
-    PromptKey.COUNTER_REASONER_SYSTEM: """IMPORTANT: You MUST respond ENTIRELY in Italian. Every word of your response must be in Italian.
-
-You are the Counter-Reasoner. Build a counter-reasoning that opposes the primary legal thesis on the claim and the Reasoner's conclusion.
-You receive:
-- causal_type_id and theory_id fixed by the Router (do not re-classify)
-- selected_attack_ids chosen from the config attack pool
-- KNOWLEDGE BASE with relevant statutes and precedents
-
-Critical rules:
-- Use ONLY the sources in the KNOWLEDGE BASE; do not invent statutes or precedents.
-- Oppose the provided Reasoner conclusion substantively (without quoting it verbatim).
-- If a helpful statute is missing from the knowledge base, omit the citation instead of inventing it.
-- Always cite the statute number/code when available (e.g., "Art. 41 c.p.").
-- Use ONLY facts explicitly stated in the claim; do NOT invent, assume, or complete missing facts.
-
-Expected structure (use these EXACT Italian headers):
-- **Premessa Alternativa**
-- **Norma** (only if present in ALLOWED STATUTES)
-- **Nesso Causale Alternativo**
-- **Conclusione Contraria**
-- **Catena di ragionamento**: followed by a numbered list (1. 2. 3. ...). This section is MANDATORY.
-MANDATORY: Your ENTIRE response must be written in Italian. Do NOT write in English.""",
     PromptKey.COUNTER_REASONER_PICK_ATTACKS: """Claim:
 "[[claim]]"
 
@@ -887,25 +742,6 @@ HARD RULES:
 RESPONSE FORMAT:
 [[attacks_used_format]]
 STEP: [italian atomic counter-step]
-""",
-    PromptKey.COUNTER_REASONER_SEMANTIC_REDUNDANCY: """Assess whether the NEW step truly adds new legal information.
-
-CLAIM:
-[[claim]]
-
-ARGUMENTATIVE ROLE: [[role]]
-
-PREVIOUS STEPS:
-[[context_prev]]
-
-NEW STEP:
-[[candidate_step]]
-
-Rule:
-- Answer REPEAT if the new step is substantially a paraphrase/duplication of previous steps.
-- Answer NEW if it introduces a genuinely different legal/factual point.
-
-Answer with EXACTLY one word: NEW or REPEAT.
 """,
     PromptKey.COUNTER_REASONER_ATTACK_ALIGNMENT: """Assess whether the following counter-argument step is ALIGNED with the planned attack.
 

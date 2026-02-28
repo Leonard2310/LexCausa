@@ -237,7 +237,7 @@ LexCausa/
 ├── src/
 │   ├── config.py                  # Centralized configuration (90+ Pydantic Settings)
 │   ├── api_server.py              # Flask API server (DoE, SSE, PDF export endpoints)
-│   ├── agents/                    # LangChain/LangGraph agents
+│   ├── agents/                    # LLM agents with explicit orchestration
 │   │   ├── base.py               # Base agent class + progressive search + filters
 │   │   ├── router.py             # Domain router (CIVILE/PENALE/ENTRAMBI)
 │   │   ├── reasoner.py           # Iterative reasoning agent (ASPIC+)

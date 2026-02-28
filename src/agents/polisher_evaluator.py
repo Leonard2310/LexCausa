@@ -79,12 +79,6 @@ class PolisherEvaluator(
         r"legge\s*241(?:\s*/\s*1990)?)?",
         re.IGNORECASE,
     )
-    PRECEDENT_PATTERN = re.compile(
-        r"(?:Cass(?:azione)?\.?\s*(?:civ(?:ile)?|pen(?:ale)?)?\.?\s*"
-        r"(?:n\.?\s*)?(\d+)(?:/(\d{4}))?)|"
-        r"(?:sentenza\s+n\.?\s*(\d+)(?:/(\d{4}))?)",
-        re.IGNORECASE,
-    )
 
     def __init__(self, config: Optional[AgentConfig] = None):
         """Initialize the Polisher-Evaluator agent."""

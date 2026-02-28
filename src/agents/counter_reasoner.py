@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage
-from langgraph.prebuilt import create_react_agent
 
 from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
@@ -31,12 +30,11 @@ from .citation_utils import (
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_legal_search_pipeline, get_statute_by_article_tool
-from .tools.prompt_registry import get_prompt, render_prompt
+from .tools.prompt_registry import render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
-from services.groq_client import get_chat_groq  # noqa: E402
 from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 
@@ -98,10 +96,6 @@ class CounterReasonerOutput:
         }
 
 
-# System prompt for the Counter-Reasoner (with pre-retrieved context)
-COUNTER_REASONER_SYSTEM_PROMPT = get_prompt("counter_reasoner.system")
-
-
 _DEFAULT_ATTACK_DESCRIPTION_EN = "Counter-argument to weaken the primary legal thesis."
 _DEFAULT_ATTACK_DESCRIPTION_IT = (
     "le norme citate indeboliscono la tesi giuridica primaria"
@@ -119,13 +113,12 @@ class CounterReasoner(BaseAgent):
     Flow:
     1. api_server pre-retrieves statutes and precedents
     2. CounterReasoner.run() receives the Router decision + pre-retrieved knowledge
-    3. ReAct agent builds counter-arguments using the retrieved relevant sources
+    3. Planner/executor prompts build counter-arguments using the retrieved relevant sources
     """
 
     def __init__(self, config: Optional[AgentConfig] = None):
         """Initialize the Counter-Reasoner agent."""
         super().__init__(config)
-        self._react_agent = None
         self._config = config_loader.load_config()
         self._attack_descriptions_en = config_loader.counter_attack_descriptions(
             self._config,
@@ -1237,43 +1230,6 @@ class CounterReasoner(BaseAgent):
 
         return statutes
 
-    @property
-    def tools(self) -> list:
-        """
-        Get the tools available to this agent.
-
-        NOTE: No search tools - the agent works with pre-retrieved context.
-        Only statute lookup to keep independence from Reasoner.
-        """
-        return [
-            get_statute_by_article_tool,  # For looking up specific articles by number
-        ]
-
-    @property
-    def react_agent(self):
-        """Lazy initialization of the ReAct agent using LangGraph."""
-        if self._react_agent is None:
-            self._react_agent = create_react_agent(
-                self.llm,
-                self.tools,
-                prompt=COUNTER_REASONER_SYSTEM_PROMPT,
-            )
-        return self._react_agent
-
-    def _build_react_agent(self, api_key: str, model: str):
-        """Build a fresh ReAct agent with specified key and model (for resilient invocation)."""
-        llm = get_chat_groq(
-            model=model,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            api_key=api_key,
-        )
-        return create_react_agent(
-            llm,
-            self.tools,
-            prompt=COUNTER_REASONER_SYSTEM_PROMPT,
-        )
-
     def run(
         self,
         claim: str,
@@ -1679,36 +1635,6 @@ class CounterReasoner(BaseAgent):
             abstention_reason=reason,
             reasoner_conclusion_context=reasoner_conclusion,
         )
-
-    def _extract_failed_generation(self, exc: Exception) -> str:
-        """Extract the valid response from a Groq tool_use_failed error."""
-        error_str = str(exc)
-        if "tool_use_failed" not in error_str:
-            return ""
-        # Try to extract from exception body (groq.BadRequestError)
-        body = getattr(exc, "body", None)
-        if isinstance(body, dict):
-            error_data = body.get("error", {})
-            failed = error_data.get("failed_generation", "")
-            if failed and len(failed) > 50:
-                return failed
-        # Fallback: parse from string representation
-        marker = "'failed_generation': \""
-        idx = error_str.find(marker)
-        if idx == -1:
-            marker = "'failed_generation': '"
-            idx = error_str.find(marker)
-        if idx != -1:
-            start = idx + len(marker)
-            end = error_str.find('"}}', start)
-            if end == -1:
-                end = error_str.find("'}", start)
-            if end != -1:
-                text = error_str[start:end]
-                text = text.replace("\\n", "\n")
-                if len(text) > 50:
-                    return text
-        return ""
 
     def _extract_cited_articles(self, text: str) -> List[str]:
         """Extract article references cited in the text."""
@@ -2698,41 +2624,6 @@ class CounterReasoner(BaseAgent):
             )
         return plan
 
-    def _pick_attack_for_plan_step(
-        self,
-        *,
-        claim: str,
-        reasoner_conclusion: str,
-        plan_step: Dict[str, str],
-        candidate_attack_ids: List[str],
-        attack_desc_map: Dict[str, str],
-        attack_fail_count: Dict[str, int],
-        blocked_attack_ids: Optional[set[str]] = None,
-    ) -> str:
-        """
-        Pick an attack for a planned step.
-
-        Selection is lightweight here; no extra scoring filters are applied.
-        """
-        _ = (claim, reasoner_conclusion, attack_desc_map, attack_fail_count)
-        if not candidate_attack_ids:
-            return ""
-        blocked = {aid for aid in (blocked_attack_ids or set()) if aid}
-        active_candidates = [
-            aid for aid in candidate_attack_ids if aid and aid not in blocked
-        ]
-        if not active_candidates:
-            # If all are temporarily blocked, fall back to the full set.
-            active_candidates = list(candidate_attack_ids)
-        if not active_candidates:
-            return ""
-
-        hinted = str(plan_step.get("attack_id", "")).strip()
-        if hinted and hinted in active_candidates:
-            return hinted
-
-        return active_candidates[0]
-
     def _is_counter_plan_step_feasible(
         self,
         *,
@@ -3050,21 +2941,6 @@ class CounterReasoner(BaseAgent):
         return aliases.get(value, "OTHER")
 
     @staticmethod
-    def _has_min_counter_plan_type_coverage(plan_steps: List[Dict[str, str]]) -> bool:
-        """Require minimal diversity of counter step types for non-trivial plans."""
-        if len(plan_steps) <= 2:
-            return True
-        concrete = [
-            str(step.get("step_type", "")).strip().upper()
-            for step in plan_steps
-            if str(step.get("step_type", "")).strip().upper() not in {"", "OTHER"}
-        ]
-        if len(concrete) < 2:
-            return True
-        min_required = 2 if len(plan_steps) <= 4 else 3
-        return len(set(concrete)) >= min_required
-
-    @staticmethod
     def _normalize_plan_citation_requirement(
         *,
         expected_norm: str,
@@ -3103,47 +2979,6 @@ class CounterReasoner(BaseAgent):
             return False
         expected = str(expected_norm or "").strip().upper()
         return bool(expected and expected not in {"N/A", "NA", "NONE", "-"})
-
-    def _has_overlapping_plan_steps(self, plan_steps: List[Dict[str, str]]) -> bool:
-        """Detect overlap across planned goals/focuses (lexical + semantic)."""
-        normalized = []
-        texts: List[str] = []
-        for step in plan_steps:
-            text = f"{step.get('goal', '')} {step.get('focus', '')}".lower()
-            text = re.sub(r"[^a-z0-9\s]", " ", text)
-            words = {w for w in text.split() if len(w) > 3}
-            normalized.append(words)
-            texts.append(
-                re.sub(
-                    r"\s+",
-                    " ",
-                    f"{step.get('goal', '')}. {step.get('focus', '')}",
-                ).strip()
-            )
-
-        for i in range(len(normalized)):
-            for j in range(i + 1, len(normalized)):
-                a = normalized[i]
-                b = normalized[j]
-                if not a or not b:
-                    continue
-                overlap = len(a & b) / len(a | b)
-                if overlap >= 0.65:
-                    return True
-                if overlap >= 0.40:
-                    rel_ab = self._nli_relation(
-                        target_text=texts[i],
-                        attacker_text=texts[j],
-                        actor_label="CounterPlanner",
-                    )
-                    rel_ba = self._nli_relation(
-                        target_text=texts[j],
-                        attacker_text=texts[i],
-                        actor_label="CounterPlanner",
-                    )
-                    if rel_ab == "entailment" and rel_ba == "entailment":
-                        return True
-        return False
 
     def _prune_counter_plan_against_existing_history(
         self,

@@ -165,17 +165,3 @@ def extract_article_mentions(
         )
 
     return mentions
-
-
-def strip_article_mentions(text: str) -> str:
-    """Remove article citations from text while preserving the surrounding content."""
-    if not text:
-        return ""
-    spans = [(m.start, m.end) for m in extract_article_mentions(text)]
-    if not spans:
-        return text
-
-    cleaned = text
-    for start, end in sorted(spans, reverse=True):
-        cleaned = cleaned[:start] + " " + cleaned[end:]
-    return re.sub(r"\s+", " ", cleaned).strip()

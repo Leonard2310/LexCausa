@@ -136,7 +136,6 @@ class Settings(BaseSettings):
     embedding_model: str = Field(
         default="nlpaueb/legal-bert-base-uncased", alias="EMBEDDING_MODEL"
     )
-    embedding_dim: int = Field(default=768, alias="EMBEDDING_DIM")
     embedding_max_length: int = Field(default=512, alias="EMBEDDING_MAX_LENGTH")
 
     # =========================================================================
@@ -354,11 +353,6 @@ class Settings(BaseSettings):
         default=0,
         alias="SEARCH_RETRIEVAL_DEBUG_TOP_N",
         description="How many top retrieved statutes are printed in retrieval debug logs per stage.",
-    )
-    search_filter_log_top_n: int = Field(
-        default=100,
-        alias="SEARCH_FILTER_LOG_TOP_N",
-        description="Maximum number of per-item keep/discard filter logs for statutes/precedents; remaining items are summarized.",
     )
     precedents_limit_default: int = Field(
         default=5,
@@ -638,11 +632,6 @@ class Settings(BaseSettings):
         description="Temperature for classification tasks (stance, causality, attack-type). "
         "Deterministic by default.",
     )
-    classifier_max_tokens: int = Field(
-        default=50,
-        alias="CLASSIFIER_MAX_TOKENS",
-        description="Max tokens for short classification responses.",
-    )
     nli_max_tokens: int = Field(
         default=64,
         alias="NLI_MAX_TOKENS",
@@ -721,16 +710,6 @@ class Settings(BaseSettings):
     # =========================================================================
     # Text Truncation (prompt context limits)
     # =========================================================================
-    truncation_statute_text: int = Field(
-        default=800,
-        alias="TRUNCATION_STATUTE_TEXT",
-        description="Max chars of statute text sent to classifier prompts.",
-    )
-    truncation_summary: int = Field(
-        default=600,
-        alias="TRUNCATION_SUMMARY",
-        description="Max chars of summary / precedent text for prompts.",
-    )
     truncation_nli_text: int = Field(
         default=600,
         alias="TRUNCATION_NLI_TEXT",
@@ -755,11 +734,6 @@ class Settings(BaseSettings):
         default=500,
         alias="TRUNCATION_TOOL_SUMMARY",
         description="Max chars of precedent summary returned by search tools.",
-    )
-    truncation_tool_excerpt: int = Field(
-        default=300,
-        alias="TRUNCATION_TOOL_EXCERPT",
-        description="Max chars of precedent chunk_text excerpt returned by search tools.",
     )
     truncation_prompt_testo: int = Field(
         default=500,
@@ -843,23 +817,6 @@ class Settings(BaseSettings):
         default=0.8,
         alias="CC_TEXT_MATCH_THRESHOLD",
         description="Minimum cosine similarity for a cited text to be considered matching the DB text.",
-    )
-    cc_repair_credit_weight: float = Field(
-        default=0.7,
-        alias="CC_REPAIR_CREDIT_WEIGHT",
-        description=(
-            "Partial credit assigned to repaired citations when computing the "
-            "post-repair text score."
-        ),
-    )
-    cc_missing_text_penalty_weight: float = Field(
-        default=0.12,
-        alias="CC_MISSING_TEXT_PENALTY_WEIGHT",
-        description=(
-            "Penalty weight applied to citations with missing cited text. "
-            "Final score is multiplied by "
-            "(1 - weight * missing_text_ratio)."
-        ),
     )
     cc_core_threshold: int = Field(
         default=2,

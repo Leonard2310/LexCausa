@@ -6,7 +6,7 @@ The Reasoner is responsible for:
 2. Generating a primary legal reasoning based on the provided knowledge base
 3. Building a reasoning chain that connects the claim to legal norms
 
-Uses LangGraph with Groq Cloud for LLM-powered reasoning.
+Uses explicit planner/executor orchestration over resilient LLM calls.
 """
 
 import json
@@ -16,8 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import HumanMessage
 
 from .aspic_formatter import AspicFormatter
 from .base import AgentConfig, BaseAgent
@@ -29,16 +28,12 @@ from .citation_utils import (
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.prompt_registry import get_prompt, render_prompt
+from .tools.prompt_registry import render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
-from services.groq_client import get_chat_groq, resilient_react_invoke  # noqa: E402
 from services.pipeline_control import PipelineCancelled  # noqa: E402
-
-# System prompt for the Reasoner (with pre-retrieved context)
-REASONER_SYSTEM_PROMPT = get_prompt("reasoner.system")
 
 
 @dataclass
@@ -92,14 +87,12 @@ class Reasoner(BaseAgent):
     1. api_server pre-retrieves statutes and precedents
     2. api_server filters statutes using filter_irrelevant_statutes()
     3. Reasoner.run() receives the filtered knowledge base
-    4. ReAct agent uses tools (classify_causality, get_causality_theory)
-       to build arguments based on the provided knowledge
+    4. Planner/executor prompts build arguments based on the provided knowledge
     """
 
     def __init__(self, config: Optional[AgentConfig] = None):
         """Initialize the Reasoner agent."""
         super().__init__(config)
-        self._react_agent = None
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
 
@@ -109,43 +102,6 @@ class Reasoner(BaseAgent):
         selected = settings.resolve_model_name(self.config.model_name)
         order = [selected] + [m for m in preferred_chain if m != selected]
         return order
-
-    @property
-    def tools(self) -> list:
-        """
-        Get the tools available to this agent.
-
-        NOTE: No search tools - the agent works with pre-retrieved context.
-        Tools are limited to statute lookup to keep the chain deterministic.
-        """
-        return [
-            get_statute_by_article_tool,  # For looking up specific articles by number
-        ]
-
-    @property
-    def react_agent(self):
-        """Lazy initialization of the ReAct agent using LangGraph."""
-        if self._react_agent is None:
-            self._react_agent = create_react_agent(
-                self.llm,
-                self.tools,
-                prompt=REASONER_SYSTEM_PROMPT,
-            )
-        return self._react_agent
-
-    def _build_react_agent(self, api_key: str, model: str):
-        """Build a fresh ReAct agent with specified key and model (for resilient invocation)."""
-        llm = get_chat_groq(
-            model=model,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            api_key=api_key,
-        )
-        return create_react_agent(
-            llm,
-            self.tools,
-            prompt=REASONER_SYSTEM_PROMPT,
-        )
 
     def run(
         self,
@@ -676,79 +632,6 @@ class Reasoner(BaseAgent):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _invoke_reasoner(self, prompt: str) -> tuple[str, list]:
-        """Invoke the ReAct agent with resilient retry/key-rotation/fallback."""
-        messages = [HumanMessage(content=prompt)]
-        try:
-            result = resilient_react_invoke(
-                self._build_react_agent,
-                {"messages": messages},
-                model_order=self._resilient_model_order(),
-                cancel_checker=self._cancel_checker,
-            )
-        except Exception as e:
-            # Handle Groq tool_use_failed: the model generated a valid response
-            # but the tool-calling mechanism failed. Extract the response.
-            raw_response = self._extract_failed_generation(e)
-            if raw_response:
-                self._log(
-                    "⚠️ Tool call failed but valid response recovered from failed_generation",
-                    "warning",
-                )
-                return raw_response, []
-            raise
-
-        messages_out = result.get("messages", [])
-
-        tool_names: list[str] = []
-        for msg in messages_out:
-            if hasattr(msg, "name") and msg.name:
-                tool_names.append(msg.name)
-        if tool_names:
-            self._log(f"📊 Tools used: {', '.join(set(tool_names))}")
-
-        raw_output = ""
-        for msg in reversed(messages_out):
-            if isinstance(msg, ToolMessage):
-                continue
-            msg_content = getattr(msg, "content", None)
-            if msg_content:
-                raw_output = str(msg_content)
-                break
-        return raw_output, messages_out
-
-    def _extract_failed_generation(self, exc: Exception) -> str:
-        """Extract the valid response from a Groq tool_use_failed error."""
-        error_str = str(exc)
-        if "tool_use_failed" not in error_str:
-            return ""
-        # Try to extract from exception body (groq.BadRequestError)
-        body = getattr(exc, "body", None)
-        if isinstance(body, dict):
-            error_data = body.get("error", {})
-            failed = error_data.get("failed_generation", "")
-            if failed and len(failed) > 50:
-                return failed
-        # Fallback: parse from string representation
-        marker = "'failed_generation': \""
-        idx = error_str.find(marker)
-        if idx == -1:
-            marker = "'failed_generation': '"
-            idx = error_str.find(marker)
-        if idx != -1:
-            start = idx + len(marker)
-            # Find the closing quote
-            end = error_str.find('"}}', start)
-            if end == -1:
-                end = error_str.find("'}", start)
-            if end != -1:
-                text = error_str[start:end]
-                # Unescape newlines
-                text = text.replace("\\n", "\n")
-                if len(text) > 50:
-                    return text
-        return ""
-
     def _extract_cited_articles(self, text: str) -> list[str]:
         """Extract article references cited in the reasoning chain."""
         mentions = extract_article_mentions(text, require_code=True)
@@ -2180,33 +2063,6 @@ class Reasoner(BaseAgent):
         # semantic-repetition rejection is too aggressive during current tuning.
         return True, ""
 
-    def _is_semantically_redundant_step(
-        self,
-        candidate_step: str,
-        previous_steps: list[str],
-        claim: str,
-        role: str,
-    ) -> bool:
-        """LLM-based semantic redundancy check (NEW vs REPEAT)."""
-        if not previous_steps:
-            return False
-        context_prev = "\n".join(
-            f"{idx}. {step}" for idx, step in enumerate(previous_steps[-3:], start=1)
-        )
-        prompt = render_prompt(
-            "reasoner.semantic_redundancy",
-            claim=claim,
-            role=role,
-            context_prev=context_prev,
-            candidate_step=candidate_step,
-        )
-        try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            answer = (resp.content or "").strip().upper()
-            return "REPEAT" in answer
-        except Exception:
-            return False
-
     @staticmethod
     def _compact_step_summary(step_text: str) -> str:
         """Compact summary used as execution memory for following steps."""
@@ -2484,36 +2340,6 @@ class Reasoner(BaseAgent):
             f"{chain_section}"
         )
         return raw
-
-    def _build_reasoning_prompt_with_context(
-        self,
-        claim: str,
-        routing_decision: RoutingDecision,
-        anchor_text: str,
-        principle_text: str,
-        knowledge_base: str,
-        allowed_statutes: list[str],
-        allowed_precedents: list[str],
-    ) -> str:
-        """Build the prompt for the reasoning task with pre-retrieved context."""
-        statutes_list = (
-            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
-        )
-        precedents_list = (
-            "\n".join(f"- {p}" for p in allowed_precedents)
-            or "- No precedents available"
-        )
-        return render_prompt(
-            "reasoner.reasoning_with_context",
-            claim=claim,
-            routing_domain=routing_decision.domain,
-            anchor_text=anchor_text,
-            principle_text=principle_text,
-            knowledge_base=knowledge_base,
-            statutes_list=statutes_list,
-            precedents_list=precedents_list,
-            allowed_statutes_count=len(allowed_statutes),
-        )
 
     def _format_anchor_norms(self, anchor_norms: dict) -> str:
         """Format anchor norms for prompt readability."""

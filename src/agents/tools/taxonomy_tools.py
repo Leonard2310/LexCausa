@@ -15,7 +15,7 @@ from groq import Groq
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .prompt_registry import get_prompt, render_prompt
+from .prompt_registry import render_prompt
 
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -63,9 +63,6 @@ def _build_classification_prompt(claim: str, cfg: dict) -> str:
         options_text=options_text,
         claim=claim,
     )
-
-
-CAUSALITY_CLAIM_PROMPT = get_prompt("taxonomy_tools.causality_claim_prompt")
 
 
 class ClassifyCausalityInput(BaseModel):

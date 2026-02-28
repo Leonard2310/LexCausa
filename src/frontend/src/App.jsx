@@ -3714,20 +3714,23 @@ export default function App() {
     const deltaDuration = Number(comparison?.delta?.duration_ms);
     let headline = 'Impatto DoE neutro';
     let toneClass = 'summary-metric-info';
-    if (Number.isFinite(deltaFinal) && deltaFinal > 0.01) {
+    // In AQA, final_score = pro - contra:
+    // lower final_score => stronger counter side.
+    if (Number.isFinite(deltaFinal) && deltaFinal < -0.01) {
       headline = 'Setup B migliora la forza dialettica del Counter';
       toneClass = 'summary-metric-positive';
-    } else if (Number.isFinite(deltaFinal) && deltaFinal < -0.01) {
+    } else if (Number.isFinite(deltaFinal) && deltaFinal > 0.01) {
       headline = 'Setup A resta piu incisivo sul claim corrente';
       toneClass = 'summary-metric-warning';
     }
     const notes = [];
     if (Number.isFinite(deltaFinal)) {
+      const finalGap = formatDoePercent(Math.abs(deltaFinal));
       notes.push(
-        deltaFinal > 0.01
-          ? `Il treatment aumenta l'AQA finale di ${formatDoeSignedPp(deltaFinal)} rispetto al baseline.`
-          : deltaFinal < -0.01
-            ? `Il baseline mantiene un vantaggio di ${formatDoeSignedPp(deltaFinal)} sull'AQA finale.`
+        deltaFinal < -0.01
+          ? `Il treatment riduce l'AQA finale di ${finalGap} rispetto al baseline (counter piu incisivo).`
+          : deltaFinal > 0.01
+            ? `Il baseline mantiene un vantaggio di ${finalGap} sull'AQA finale.`
             : 'La differenza di AQA finale tra A e B e quasi nulla su questo claim.',
       );
     }

@@ -759,8 +759,6 @@ TARGET MAP (counter scope):
 SUGGESTED ATTACK POINTS (optional hints):
 [[conclusion_points]]
 DOMAIN: [[routing_domain]]
-CAUSAL TYPE: [[causal_type_id]]
-THEORY: [[theory_id]]
 SELECTED ATTACK IDS:
 [[selected_attack_ids]]
 
@@ -837,8 +835,6 @@ CLAIM:
 CLAIM FACT ANCHORS (fixed facts, do not alter):
 [[claim_facts]]
 DOMAIN: [[routing_domain]]
-CAUSAL TYPE: [[causal_type_id]]
-THEORY: [[theory_id]]
 ATTACK STRATEGY: [[attack_id]] - [[attack_desc]]
 AVAILABLE ATTACKS FOR THIS STEP:
 [[attack_pool_lines]]

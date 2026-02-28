@@ -10,6 +10,7 @@ Implements the full ASPIC+ evaluation pipeline:
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from datetime import datetime
@@ -162,6 +163,42 @@ class AQAEngineMixin:
     def _collect_links(self, aspic_ir: dict, role: str, domain: str) -> list[dict]:
         links: list[dict] = []
         reasoning_chain = aspic_ir.get("reasoning_chain", [])
+        source_statutes = (
+            aspic_ir.get("sources", {}).get("statutes", [])
+            if isinstance(aspic_ir.get("sources"), dict)
+            else []
+        )
+
+        normalizer = getattr(self, "_normalize_article_id", None)
+
+        def _norm_article(raw: object) -> str:
+            text = str(raw or "").strip()
+            if not text:
+                return ""
+            if callable(normalizer):
+                try:
+                    return str(normalizer(text) or "").strip()
+                except Exception:
+                    pass
+            return text.lower()
+
+        retrieved_exact: dict[tuple[str, str], dict] = {}
+        retrieved_by_article: dict[str, dict] = {}
+        for item in source_statutes:
+            if not isinstance(item, dict):
+                continue
+            articolo = _norm_article(item.get("articolo"))
+            source = str(item.get("source", "") or "").strip()
+            if not articolo:
+                continue
+            payload = {
+                "statute_id": item.get("statute_id"),
+                "articolo": articolo,
+                "source": source,
+                "title": item.get("title") or "",
+            }
+            retrieved_exact[(articolo, source)] = payload
+            retrieved_by_article.setdefault(articolo, payload)
 
         # Check if this is a repaired IR
         repair_meta = aspic_ir.get("_repair_metadata", {})
@@ -210,6 +247,40 @@ class AQAEngineMixin:
             # Extract citations from both steps
             citations_text = f"{premise_text} {conclusion_text}"
             statute_refs = self._extract_statute_refs_from_text(citations_text)
+            retrieved_norms: list[dict] = []
+            for ref in statute_refs:
+                articolo = _norm_article(ref.get("articolo", ""))
+                source_hint = str(ref.get("source", "") or "").strip()
+                exact = retrieved_exact.get((articolo, source_hint))
+                fallback = retrieved_by_article.get(articolo)
+                if exact:
+                    retrieved_norms.append(
+                        {
+                            **exact,
+                            "score": 1.0,
+                            "similarity": 1.0,
+                            "match_type": "exact",
+                        }
+                    )
+                elif fallback:
+                    retrieved_norms.append(
+                        {
+                            **fallback,
+                            "score": 0.85,
+                            "similarity": 0.85,
+                            "match_type": "article_fallback",
+                        }
+                    )
+                elif articolo:
+                    retrieved_norms.append(
+                        {
+                            "articolo": articolo,
+                            "source": source_hint,
+                            "score": 0.0,
+                            "similarity": 0.0,
+                            "match_type": "missing",
+                        }
+                    )
 
             libri = set()
             severities = set()
@@ -270,7 +341,7 @@ class AQAEngineMixin:
                     "libro": link_libro,
                     "source": link_source,
                     "severity_category": severity_category,
-                    "retrieved_norms": None,
+                    "retrieved_norms": retrieved_norms or None,
                 }
             )
 
@@ -728,6 +799,162 @@ class AQAEngineMixin:
                 for a in link["attacks_received"]
                 if not a.get("filtered", False) and a.get("attack_value", 0.0) > 0
             )
+
+    def _compute_redundancy_penalty(self, links: list[dict]) -> dict:
+        """Estimate and penalize redundant intra-chain links for a single side."""
+        texts: list[str] = []
+        for link in links:
+            text = self._normalize_text(
+                " ".join(
+                    [
+                        str(link.get("premise_text", "") or ""),
+                        str(link.get("text", "") or ""),
+                        str(link.get("conclusion_text", "") or ""),
+                    ]
+                )
+            )
+            if text:
+                texts.append(text)
+
+        n_links = len(texts)
+        if n_links < 2:
+            return {
+                "links_count": n_links,
+                "pair_count": 0,
+                "avg_pair_similarity": 0.0,
+                "high_similarity_pair_ratio": 0.0,
+                "redundancy_index": 0.0,
+                "penalty": 0.0,
+            }
+
+        sims: list[float] = []
+        for i in range(n_links):
+            for j in range(i + 1, n_links):
+                sim = self._clamp01(
+                    self._safe_float(self._similarity(texts[i], texts[j]), 0.0)
+                )
+                sims.append(sim)
+
+        pair_count = len(sims)
+        threshold = self._clamp01(
+            self._safe_float(self._aqa_redundancy_similarity_threshold, 0.72)
+        )
+        denom = max(1e-6, 1.0 - threshold)
+        high_pairs = [s for s in sims if s >= threshold]
+        high_ratio = (
+            float(len(high_pairs)) / float(pair_count) if pair_count > 0 else 0.0
+        )
+        normalized_excess = [max(0.0, (s - threshold) / denom) for s in high_pairs]
+        redundancy_index = (
+            sum(normalized_excess) / len(normalized_excess)
+            if normalized_excess
+            else 0.0
+        )
+        length_factor = min(1.0, float(max(0, n_links - 1)) / 4.0)
+        raw_penalty = (
+            self._safe_float(self._aqa_redundancy_penalty_weight, 0.0)
+            * redundancy_index
+            * length_factor
+        )
+        penalty = min(
+            self._safe_float(self._aqa_redundancy_max_penalty, 0.18),
+            max(0.0, raw_penalty),
+        )
+
+        return {
+            "links_count": n_links,
+            "pair_count": pair_count,
+            "avg_pair_similarity": (sum(sims) / pair_count) if pair_count > 0 else 0.0,
+            "high_similarity_pair_ratio": high_ratio,
+            "redundancy_index": redundancy_index,
+            "penalty": penalty,
+        }
+
+    def _collect_active_attacks_for_role(
+        self, target_links: list[dict], attacker_role: str
+    ) -> list[dict]:
+        role = str(attacker_role or "").strip().lower()
+        out: list[dict] = []
+        for link in target_links:
+            for attack in link.get("attacks_received", []):
+                if not isinstance(attack, dict):
+                    continue
+                if str(attack.get("attacker_role", "")).strip().lower() != role:
+                    continue
+                if attack.get("filtered", False):
+                    continue
+                if self._safe_float(attack.get("attack_value"), 0.0) <= 0.0:
+                    continue
+                out.append(attack)
+        return out
+
+    def _compute_diversity_bonus(
+        self, target_links: list[dict], attacker_role: str
+    ) -> dict:
+        """Reward diverse active attack patterns launched by one side."""
+        active_attacks = self._collect_active_attacks_for_role(
+            target_links, attacker_role
+        )
+        total_active = len(active_attacks)
+        if total_active == 0:
+            return {
+                "active_attacks": 0,
+                "distinct_attack_types": 0,
+                "coverage": 0.0,
+                "entropy_norm": 0.0,
+                "diversity_index": 0.0,
+                "volume_factor": 0.0,
+                "bonus": 0.0,
+            }
+
+        type_counts: dict[str, int] = {}
+        for attack in active_attacks:
+            attack_type = str(
+                attack.get("attack_type") or self._aqa_default_attack_type
+            ).strip().lower()
+            if not attack_type:
+                attack_type = self._aqa_default_attack_type
+            type_counts[attack_type] = type_counts.get(attack_type, 0) + 1
+
+        distinct_types = len(type_counts)
+        target_types = max(
+            1,
+            int(self._safe_float(self._aqa_diversity_target_attack_types, 1)),
+        )
+        coverage = min(1.0, float(distinct_types) / float(target_types))
+
+        if distinct_types <= 1:
+            entropy_norm = 0.0
+        else:
+            probs = [count / total_active for count in type_counts.values()]
+            entropy = -sum(p * math.log(p) for p in probs if p > 0)
+            entropy_norm = entropy / math.log(distinct_types)
+
+        diversity_index = self._clamp01(0.5 * coverage + 0.5 * entropy_norm)
+        min_active = max(
+            1,
+            int(self._safe_float(self._aqa_diversity_min_active_attacks, 1)),
+        )
+        volume_factor = min(1.0, float(total_active) / float(min_active))
+        raw_bonus = (
+            self._safe_float(self._aqa_diversity_bonus_weight, 0.0)
+            * diversity_index
+            * volume_factor
+        )
+        bonus = min(
+            self._safe_float(self._aqa_diversity_max_bonus, 0.12),
+            max(0.0, raw_bonus),
+        )
+
+        return {
+            "active_attacks": total_active,
+            "distinct_attack_types": distinct_types,
+            "coverage": coverage,
+            "entropy_norm": entropy_norm,
+            "diversity_index": diversity_index,
+            "volume_factor": volume_factor,
+            "bonus": bonus,
+        }
 
     def _extract_year(self, text: str) -> int | None:
         if not text:
@@ -1286,9 +1513,47 @@ class AQAEngineMixin:
                 return 0.0
             return sum(i.get(field, 0.0) for i in items) / len(items)
 
-        pro_net = avg_field(pro_links, "nesso_plausibility")
-        contra_net = avg_field(contra_links, "nesso_plausibility")
-        final_plausibility = pro_net - contra_net
+        pro_net_raw = avg_field(pro_links, "nesso_plausibility")
+        contra_net_raw = avg_field(contra_links, "nesso_plausibility")
+        final_plausibility_raw = pro_net_raw - contra_net_raw
+
+        pro_redundancy = self._compute_redundancy_penalty(pro_links)
+        contra_redundancy = self._compute_redundancy_penalty(contra_links)
+        pro_diversity = self._compute_diversity_bonus(
+            contra_links,
+            attacker_role="support",
+        )
+        contra_diversity = self._compute_diversity_bonus(
+            pro_links,
+            attacker_role="contra",
+        )
+
+        structural_enabled = bool(self._aqa_structural_adjustments_enabled)
+        if structural_enabled:
+            pro_net_adjusted = self._clamp01(
+                pro_net_raw
+                - pro_redundancy.get("penalty", 0.0)
+                + pro_diversity.get("bonus", 0.0)
+            )
+            contra_net_adjusted = self._clamp01(
+                contra_net_raw
+                - contra_redundancy.get("penalty", 0.0)
+                + contra_diversity.get("bonus", 0.0)
+            )
+        else:
+            pro_net_adjusted = pro_net_raw
+            contra_net_adjusted = contra_net_raw
+
+        final_plausibility_adjusted = pro_net_adjusted - contra_net_adjusted
+        use_adjusted = bool(self._aqa_verdict_use_adjusted_score)
+        if structural_enabled and use_adjusted:
+            pro_net = pro_net_adjusted
+            contra_net = contra_net_adjusted
+            final_plausibility = final_plausibility_adjusted
+        else:
+            pro_net = pro_net_raw
+            contra_net = contra_net_raw
+            final_plausibility = final_plausibility_raw
 
         # Component averages (kept for reporting / explainability)
         pro_cogency_avg = avg_field(pro_links, "cogency")
@@ -1333,6 +1598,24 @@ class AQAEngineMixin:
             f"📈 net_plausibility: pro={pro_net:.2f}, "
             f"contra={contra_net:.2f}, final={final_plausibility:+.2f}"
         )
+        if structural_enabled:
+            self._log(
+                "🧱 Structural adjust PRO: "
+                f"-red={pro_redundancy.get('penalty', 0.0):.3f} "
+                f"+div={pro_diversity.get('bonus', 0.0):.3f} "
+                f"(raw={pro_net_raw:.3f} -> adj={pro_net_adjusted:.3f})"
+            )
+            self._log(
+                "🧱 Structural adjust CONTRA: "
+                f"-red={contra_redundancy.get('penalty', 0.0):.3f} "
+                f"+div={contra_diversity.get('bonus', 0.0):.3f} "
+                f"(raw={contra_net_raw:.3f} -> adj={contra_net_adjusted:.3f})"
+            )
+            self._log(
+                "🧱 Final raw/adj: "
+                f"{final_plausibility_raw:+.3f} -> {final_plausibility_adjusted:+.3f} "
+                f"(effective={'adjusted' if (structural_enabled and use_adjusted) else 'raw'})"
+            )
 
         if final_plausibility >= self._aqa_verdict_pos:
             verdict = "plausible"
@@ -1421,6 +1704,12 @@ class AQAEngineMixin:
                     "attacks_avg": pro_attacks_avg,
                     "precedent_delta_avg": pro_precedent_delta,
                     "net_plausibility": pro_net,
+                    "net_plausibility_raw": pro_net_raw,
+                    "net_plausibility_adjusted": pro_net_adjusted,
+                    "redundancy_penalty": pro_redundancy.get("penalty", 0.0),
+                    "redundancy_index": pro_redundancy.get("redundancy_index", 0.0),
+                    "diversity_bonus": pro_diversity.get("bonus", 0.0),
+                    "diversity_index": pro_diversity.get("diversity_index", 0.0),
                 },
                 "contra": {
                     "cogency_avg": contra_cogency_avg,
@@ -1430,12 +1719,27 @@ class AQAEngineMixin:
                     "attacks_avg": contra_attacks_avg,
                     "precedent_delta_avg": contra_precedent_delta,
                     "net_plausibility": contra_net,
+                    "net_plausibility_raw": contra_net_raw,
+                    "net_plausibility_adjusted": contra_net_adjusted,
+                    "redundancy_penalty": contra_redundancy.get("penalty", 0.0),
+                    "redundancy_index": contra_redundancy.get(
+                        "redundancy_index", 0.0
+                    ),
+                    "diversity_bonus": contra_diversity.get("bonus", 0.0),
+                    "diversity_index": contra_diversity.get("diversity_index", 0.0),
                 },
             },
             "net_plausibility": {
                 "pro": pro_net,
                 "contra": contra_net,
                 "final": final_plausibility,
+                "pro_raw": pro_net_raw,
+                "contra_raw": contra_net_raw,
+                "final_raw": final_plausibility_raw,
+                "pro_adjusted": pro_net_adjusted,
+                "contra_adjusted": contra_net_adjusted,
+                "final_adjusted": final_plausibility_adjusted,
+                "uses_adjusted_score": bool(structural_enabled and use_adjusted),
             },
             "verdict": verdict,
             "notes": {
@@ -1444,5 +1748,19 @@ class AQAEngineMixin:
                 "attacks_enabled": True,
                 "precedent_swings": precedent_swings,
                 "severity_debug": severity_debug,
+                "structural_adjustments": {
+                    "enabled": structural_enabled,
+                    "verdict_uses_adjusted_score": bool(
+                        structural_enabled and use_adjusted
+                    ),
+                    "pro": {
+                        "redundancy": pro_redundancy,
+                        "diversity": pro_diversity,
+                    },
+                    "contra": {
+                        "redundancy": contra_redundancy,
+                        "diversity": contra_diversity,
+                    },
+                },
             },
         }

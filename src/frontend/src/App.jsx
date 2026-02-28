@@ -494,7 +494,6 @@ export default function App() {
 
   const extractDoeMetrics = (run = {}) => {
     const aqa = run?.evaluation?.aqa_report || {};
-    const consistency = run?.evaluation?.consistency_report || {};
     return {
       verdict: aqa?.verdict || 'n/a',
       final_score: Number(aqa?.net_plausibility?.final ?? NaN),
@@ -502,8 +501,6 @@ export default function App() {
       contra_score: Number(aqa?.net_plausibility?.contra ?? NaN),
       pro_links: Array.isArray(aqa?.links?.pro) ? aqa.links.pro.length : 0,
       contra_links: Array.isArray(aqa?.links?.contra) ? aqa.links.contra.length : 0,
-      reasoner_consistency: Number(consistency?.reasoner?.consistency_score ?? NaN),
-      counter_consistency: Number(consistency?.counter_reasoner?.consistency_score ?? NaN),
     };
   };
 
@@ -518,14 +515,6 @@ export default function App() {
       final_score: deltaNumber(baselineMetrics.final_score, treatmentMetrics.final_score),
       pro_score: deltaNumber(baselineMetrics.pro_score, treatmentMetrics.pro_score),
       contra_score: deltaNumber(baselineMetrics.contra_score, treatmentMetrics.contra_score),
-      reasoner_consistency: deltaNumber(
-        baselineMetrics.reasoner_consistency,
-        treatmentMetrics.reasoner_consistency,
-      ),
-      counter_consistency: deltaNumber(
-        baselineMetrics.counter_consistency,
-        treatmentMetrics.counter_consistency,
-      ),
       pro_links: (treatmentMetrics.pro_links ?? 0) - (baselineMetrics.pro_links ?? 0),
       contra_links: (treatmentMetrics.contra_links ?? 0) - (baselineMetrics.contra_links ?? 0),
     };
@@ -3721,7 +3710,6 @@ export default function App() {
       (norm) => !baselineNorms.some((item) => item.toLowerCase() === norm.toLowerCase()),
     );
     const deltaFinal = Number(comparison?.delta?.final_score);
-    const deltaCounterConsistency = Number(comparison?.delta?.counter_consistency);
     const deltaContraLinks = Number(comparison?.delta?.contra_links);
     const deltaDuration = Number(comparison?.delta?.duration_ms);
     let headline = 'Impatto DoE neutro';
@@ -3760,11 +3748,6 @@ export default function App() {
     if (Number.isFinite(deltaContraLinks) && deltaContraLinks !== 0) {
       notes.push(
         `Il numero di link contro varia di ${formatDoeSignedInt(deltaContraLinks)} tra treatment e baseline.`,
-      );
-    }
-    if (Number.isFinite(deltaCounterConsistency) && Math.abs(deltaCounterConsistency) >= 0.001) {
-      notes.push(
-        `La consistenza del Counter cambia di ${formatDoeSignedPp(deltaCounterConsistency)} tra i due setup.`,
       );
     }
     if (Number.isFinite(deltaDuration)) {
@@ -3809,8 +3792,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.counter_consistency)}</span>
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{Number(doeComparison.baseline?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
                 <span className="summary-metric-label">Durata</span>
@@ -3836,8 +3819,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.counter_consistency)}</span>
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{Number(doeComparison.treatment?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
                 <span className="summary-metric-label">Durata</span>
@@ -3857,8 +3840,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.final_score)}</span>
               </div>
               <div className="summary-metric summary-metric-info">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.counter_consistency)}</span>
+                <span className="summary-metric-label">Contra Score</span>
+                <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.contra_score)}</span>
               </div>
               <div className="summary-metric summary-metric-warning">
                 <span className="summary-metric-label">Link Contro</span>
@@ -4135,12 +4118,6 @@ export default function App() {
       <div className="summary-card">
         <div className="summary-card-title">{title}</div>
         <div className="summary-metrics">
-          <div className="summary-metric summary-metric-positive">
-            <span className="summary-metric-label">Score</span>
-            <span className="summary-metric-value">
-              {formatDoePercent(report.consistency_score)}
-            </span>
-          </div>
           <div className="summary-metric">
             <span className="summary-metric-label">Citazioni valide</span>
             <span className="summary-metric-value">
@@ -4342,8 +4319,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(comparisonEntry?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoePercent(comparisonEntry?.metrics?.counter_consistency)}</span>
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{Number(comparisonEntry?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
                 <span className="summary-metric-label">Durata</span>
@@ -4411,8 +4388,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(comparison?.baseline?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoePercent(comparison?.baseline?.metrics?.counter_consistency)}</span>
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{Number(comparison?.baseline?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
                 <span className="summary-metric-label">Durata</span>
@@ -4434,8 +4411,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(comparison?.treatment?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoePercent(comparison?.treatment?.metrics?.counter_consistency)}</span>
+                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-value">{Number(comparison?.treatment?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
                 <span className="summary-metric-label">Durata</span>
@@ -4455,8 +4432,8 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Consistenza Counter</span>
-                <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.counter_consistency)}</span>
+                <span className="summary-metric-label">Contra Score</span>
+                <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.contra_score)}</span>
               </div>
               <div className="summary-metric">
                 <span className="summary-metric-label">Link Contro</span>
@@ -5761,7 +5738,7 @@ export default function App() {
                       {evaluationReasonerReport && (
                         <div className="subsection">
                           <h4>
-                            Reasoner - Score: {(((evaluationReasonerReport.consistency_score ?? 0) * 100)).toFixed(0)}%
+                            Reasoner - Verifica citazioni
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
@@ -5831,7 +5808,7 @@ export default function App() {
                       {evaluationCounterReport && (
                         <div className="subsection">
                           <h4>
-                            Counter-Reasoner - Score: {(((evaluationCounterReport.consistency_score ?? 0) * 100)).toFixed(0)}%
+                            Counter-Reasoner - Verifica citazioni
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">

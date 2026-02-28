@@ -116,10 +116,6 @@ def extract_row_metrics(row: dict[str, str], payload: dict[str, Any]) -> dict[st
         "contra_cogency_avg": as_float(chain_contra.get("cogency_avg")),
         "contra_semantics_avg": as_float(chain_contra.get("semantics_avg")),
         "contra_norm_support_avg": as_float(chain_contra.get("norm_support_avg")),
-        "reasoner_consistency_score": as_float(
-            reasoner_report.get("consistency_score")
-        ),
-        "counter_consistency_score": as_float(counter_report.get("consistency_score")),
         "reasoner_repaired_citations": as_int(
             reasoner_report.get("repaired_citations")
         ),
@@ -171,23 +167,6 @@ def build_paired_deltas(metrics_df: pd.DataFrame) -> pd.DataFrame:
             "delta_aqa_net_final": (
                 b.get("aqa_net_final") - a.get("aqa_net_final")
                 if pd.notna(a.get("aqa_net_final")) and pd.notna(b.get("aqa_net_final"))
-                else None
-            ),
-            "reasoner_consistency_A": a.get("reasoner_consistency_score"),
-            "reasoner_consistency_B": b.get("reasoner_consistency_score"),
-            "delta_reasoner_consistency": (
-                b.get("reasoner_consistency_score")
-                - a.get("reasoner_consistency_score")
-                if pd.notna(a.get("reasoner_consistency_score"))
-                and pd.notna(b.get("reasoner_consistency_score"))
-                else None
-            ),
-            "counter_consistency_A": a.get("counter_consistency_score"),
-            "counter_consistency_B": b.get("counter_consistency_score"),
-            "delta_counter_consistency": (
-                b.get("counter_consistency_score") - a.get("counter_consistency_score")
-                if pd.notna(a.get("counter_consistency_score"))
-                and pd.notna(b.get("counter_consistency_score"))
                 else None
             ),
             "reasoner_repair_fail_rate_A": a.get("reasoner_repair_fail_rate"),

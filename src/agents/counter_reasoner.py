@@ -1350,7 +1350,7 @@ class CounterReasoner(BaseAgent):
                     for aid in attack_selection.attack_ids
                 ]
                 self._log(f"📝 Attack descriptions: {' | '.join(descs)}")
-            # Add filtered anchor norms only when taxonomy attacks are actually used.
+            # Keep taxonomy anchor norms in the counter KB when taxonomy mode is active.
             if use_taxonomy_mode:
                 anchor_statutes = self._filtered_anchor_statutes_for_types(
                     [routing_decision.causal_type_id]
@@ -1359,7 +1359,7 @@ class CounterReasoner(BaseAgent):
                 )
                 if anchor_statutes:
                     self._log(
-                        f"🧭 Anchor norms added to KB (counter): {len(anchor_statutes)}",
+                        f"Anchor norms added to KB (counter): {len(anchor_statutes)}",
                         "info",
                     )
                 boosted_counter_statutes = self._retrieve_targeted_counter_boost(
@@ -2530,8 +2530,6 @@ class CounterReasoner(BaseAgent):
             reasoner_block=reasoner_block,
             claim_facts=claim_facts,
             routing_domain=routing_decision.domain,
-            causal_type_id=routing_decision.causal_type_id,
-            theory_id=routing_decision.theory_id,
             selected_attack_ids=", ".join(selected_attack_ids),
             attack_catalog=attack_catalog,
             statutes_list=statutes_list,
@@ -3459,8 +3457,6 @@ class CounterReasoner(BaseAgent):
             reasoner_block=reasoner_block,
             claim_facts=claim_facts,
             routing_domain=routing_decision.domain,
-            causal_type_id=routing_decision.causal_type_id,
-            theory_id=routing_decision.theory_id,
             attack_id=primary_attack_id,
             attack_desc=primary_attack_desc,
             attack_pool_lines=attack_pool_lines,

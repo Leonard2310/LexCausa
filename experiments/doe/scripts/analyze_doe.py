@@ -111,16 +111,6 @@ def build_domain_breakdown(metrics: pd.DataFrame) -> list[dict[str, Any]]:
                         if "aqa_net_final" in cdf
                         else None
                     ),
-                    "reasoner_consistency_mean": (
-                        float(cdf["reasoner_consistency_score"].mean())
-                        if "reasoner_consistency_score" in cdf
-                        else None
-                    ),
-                    "counter_consistency_mean": (
-                        float(cdf["counter_consistency_score"].mean())
-                        if "counter_consistency_score" in cdf
-                        else None
-                    ),
                     "counter_gate_abstain_rate": (
                         float(
                             pd.to_numeric(cdf["counter_gate_abstain"], errors="coerce")
@@ -231,8 +221,6 @@ def main() -> None:
 
     metric_specs = [
         ("delta_aqa_net_final", True),
-        ("delta_reasoner_consistency", True),
-        ("delta_counter_consistency", True),
         ("delta_reasoner_repair_fail_rate", False),
         ("delta_counter_repair_fail_rate", False),
     ]

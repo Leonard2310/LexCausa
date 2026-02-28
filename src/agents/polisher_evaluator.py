@@ -129,6 +129,23 @@ class PolisherEvaluator(
         self._aqa_normsupport_retrieved_agg = settings.aqa_normsupport_retrieved_agg
         self._aqa_severity_map_penale = settings.aqa_severity_map_penale
         self._aqa_severity_map_civile = settings.aqa_severity_map_civile
+        self._aqa_structural_adjustments_enabled = (
+            settings.aqa_structural_adjustments_enabled
+        )
+        self._aqa_redundancy_similarity_threshold = (
+            settings.aqa_redundancy_similarity_threshold
+        )
+        self._aqa_redundancy_penalty_weight = settings.aqa_redundancy_penalty_weight
+        self._aqa_redundancy_max_penalty = settings.aqa_redundancy_max_penalty
+        self._aqa_diversity_bonus_weight = settings.aqa_diversity_bonus_weight
+        self._aqa_diversity_target_attack_types = (
+            settings.aqa_diversity_target_attack_types
+        )
+        self._aqa_diversity_min_active_attacks = (
+            settings.aqa_diversity_min_active_attacks
+        )
+        self._aqa_diversity_max_bonus = settings.aqa_diversity_max_bonus
+        self._aqa_verdict_use_adjusted_score = settings.aqa_verdict_use_adjusted_score
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -181,6 +198,23 @@ class PolisherEvaluator(
         )
         self._aqa_valid_attack_types = set(settings.aqa_valid_attack_types)
         self._aqa_default_attack_type = settings.aqa_default_attack_type
+        self._aqa_structural_adjustments_enabled = (
+            settings.aqa_structural_adjustments_enabled
+        )
+        self._aqa_redundancy_similarity_threshold = (
+            settings.aqa_redundancy_similarity_threshold
+        )
+        self._aqa_redundancy_penalty_weight = settings.aqa_redundancy_penalty_weight
+        self._aqa_redundancy_max_penalty = settings.aqa_redundancy_max_penalty
+        self._aqa_diversity_bonus_weight = settings.aqa_diversity_bonus_weight
+        self._aqa_diversity_target_attack_types = (
+            settings.aqa_diversity_target_attack_types
+        )
+        self._aqa_diversity_min_active_attacks = (
+            settings.aqa_diversity_min_active_attacks
+        )
+        self._aqa_diversity_max_bonus = settings.aqa_diversity_max_bonus
+        self._aqa_verdict_use_adjusted_score = settings.aqa_verdict_use_adjusted_score
 
         reasoner_output = reasoner_output or {}
         counter_reasoner_output = counter_reasoner_output or {}
@@ -244,14 +278,12 @@ class PolisherEvaluator(
         )
 
         self._log(
-            f"Reasoner consistency: {reasoner_report.consistency_score:.2f} "
-            f"({reasoner_report.valid_citations}/"
-            f"{reasoner_report.total_citations} valid)"
+            "Reasoner consistency checks: "
+            f"{reasoner_report.valid_citations}/{reasoner_report.total_citations} valid"
         )
         self._log(
-            f"Counter consistency: {counter_report.consistency_score:.2f} "
-            f"({counter_report.valid_citations}/"
-            f"{counter_report.total_citations} valid)"
+            "Counter consistency checks: "
+            f"{counter_report.valid_citations}/{counter_report.total_citations} valid"
         )
 
         # ----- Counter opposition gate (post-check with both chains) -----

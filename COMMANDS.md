@@ -178,7 +178,6 @@ curl -N -X POST http://127.0.0.1:8000/api/counter_reason/stream \
     "max_precedents": 5,
     "settings": {
       "counter_enable_causality": true,
-      "counter_pass_causal_identity": true,
       "counter_pass_taxonomy_attacks": true,
       "counter_pass_norms": true
     }
@@ -336,7 +335,6 @@ curl -X POST http://127.0.0.1:8000/api/pipeline \
       "chain_max_steps": 10,
       "reasoner_enable_causality": true,
       "counter_enable_causality": true,
-      "counter_pass_causal_identity": true,
       "counter_pass_taxonomy_attacks": true,
       "counter_pass_norms": true
     }

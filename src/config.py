@@ -477,6 +477,51 @@ class Settings(BaseSettings):
         "Specific attack types can use near-zero ratios, while general_opposition "
         "and factual_impediment stay more selective.",
     )
+    aqa_structural_adjustments_enabled: bool = Field(
+        default=True,
+        alias="AQA_STRUCTURAL_ADJUSTMENTS_ENABLED",
+        description="Enable structural chain adjustments (redundancy penalty + diversity bonus).",
+    )
+    aqa_redundancy_similarity_threshold: float = Field(
+        default=0.72,
+        alias="AQA_REDUNDANCY_SIMILARITY_THRESHOLD",
+        description="Pairwise similarity threshold above which intra-chain links are considered redundant.",
+    )
+    aqa_redundancy_penalty_weight: float = Field(
+        default=0.25,
+        alias="AQA_REDUNDANCY_PENALTY_WEIGHT",
+        description="Scaling factor applied to redundancy penalty at chain aggregation level.",
+    )
+    aqa_redundancy_max_penalty: float = Field(
+        default=0.18,
+        alias="AQA_REDUNDANCY_MAX_PENALTY",
+        description="Upper bound for redundancy penalty applied to a side net plausibility.",
+    )
+    aqa_diversity_bonus_weight: float = Field(
+        default=0.12,
+        alias="AQA_DIVERSITY_BONUS_WEIGHT",
+        description="Scaling factor applied to diversity bonus at chain aggregation level.",
+    )
+    aqa_diversity_target_attack_types: int = Field(
+        default=4,
+        alias="AQA_DIVERSITY_TARGET_ATTACK_TYPES",
+        description="Reference number of distinct attack types used to saturate diversity coverage.",
+    )
+    aqa_diversity_min_active_attacks: int = Field(
+        default=2,
+        alias="AQA_DIVERSITY_MIN_ACTIVE_ATTACKS",
+        description="Minimum active attacks required before diversity bonus reaches full volume.",
+    )
+    aqa_diversity_max_bonus: float = Field(
+        default=0.12,
+        alias="AQA_DIVERSITY_MAX_BONUS",
+        description="Upper bound for diversity bonus applied to a side net plausibility.",
+    )
+    aqa_verdict_use_adjusted_score: bool = Field(
+        default=True,
+        alias="AQA_VERDICT_USE_ADJUSTED_SCORE",
+        description="Use structurally adjusted net plausibility for final AQA verdict/score.",
+    )
 
     aqa_severity_book_map: dict = Field(
         default_factory=lambda: {
@@ -799,23 +844,21 @@ class Settings(BaseSettings):
         alias="CC_TEXT_MATCH_THRESHOLD",
         description="Minimum cosine similarity for a cited text to be considered matching the DB text.",
     )
-    cc_consistency_existence_weight: float = Field(
+    cc_repair_credit_weight: float = Field(
         default=0.7,
-        alias="CC_CONSISTENCY_EXISTENCE_WEIGHT",
-        description="Weight for citation existence in the consistency score.",
-    )
-    cc_consistency_text_weight: float = Field(
-        default=0.3,
-        alias="CC_CONSISTENCY_TEXT_WEIGHT",
-        description="Weight for text match in the consistency score.",
-    )
-    cc_relevance_drop_penalty_weight: float = Field(
-        default=0.25,
-        alias="CC_RELEVANCE_DROP_PENALTY_WEIGHT",
+        alias="CC_REPAIR_CREDIT_WEIGHT",
         description=(
-            "Penalty weight applied when citations are dropped by pre-repair "
-            "relevance gate. Final score is multiplied by "
-            "(1 - weight * relevance_drop_ratio)."
+            "Partial credit assigned to repaired citations when computing the "
+            "post-repair text score."
+        ),
+    )
+    cc_missing_text_penalty_weight: float = Field(
+        default=0.12,
+        alias="CC_MISSING_TEXT_PENALTY_WEIGHT",
+        description=(
+            "Penalty weight applied to citations with missing cited text. "
+            "Final score is multiplied by "
+            "(1 - weight * missing_text_ratio)."
         ),
     )
     cc_core_threshold: int = Field(
@@ -925,6 +968,42 @@ class Settings(BaseSettings):
         if default_attack not in valid_attack_types:
             default_attack = "general_opposition"
         object.__setattr__(self, "aqa_default_attack_type", default_attack)
+
+        object.__setattr__(
+            self,
+            "aqa_redundancy_similarity_threshold",
+            max(0.0, min(0.99, float(self.aqa_redundancy_similarity_threshold))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_redundancy_penalty_weight",
+            max(0.0, min(1.0, float(self.aqa_redundancy_penalty_weight))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_redundancy_max_penalty",
+            max(0.0, min(0.95, float(self.aqa_redundancy_max_penalty))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_diversity_bonus_weight",
+            max(0.0, min(1.0, float(self.aqa_diversity_bonus_weight))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_diversity_target_attack_types",
+            max(1, int(self.aqa_diversity_target_attack_types)),
+        )
+        object.__setattr__(
+            self,
+            "aqa_diversity_min_active_attacks",
+            max(1, int(self.aqa_diversity_min_active_attacks)),
+        )
+        object.__setattr__(
+            self,
+            "aqa_diversity_max_bonus",
+            max(0.0, min(0.95, float(self.aqa_diversity_max_bonus))),
+        )
 
         object.__setattr__(self, "_groq_api_keys", keys)
         return self

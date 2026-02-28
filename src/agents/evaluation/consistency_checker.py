@@ -1621,35 +1621,6 @@ class ConsistencyMixin:
             report.total_citations += 1
             _emit_citation_progress(check)
 
-        # Calculate consistency score
-        # Weighted: 70% existence + 30% text match (among verified texts)
-        if report.total_citations > 0:
-            existence_score = report.valid_citations / report.total_citations
-        else:
-            existence_score = 1.0
-
-        total_text_verified = report.text_matches + report.text_mismatches
-        if total_text_verified > 0:
-            text_score = report.text_matches / total_text_verified
-        else:
-            text_score = 1.0  # No text verified = no penalty
-
-        base_score = (
-            settings.cc_consistency_existence_weight * existence_score
-            + settings.cc_consistency_text_weight * text_score
-        )
-        if report.total_citations > 0:
-            relevance_drop_ratio = (
-                report.relevance_gate_dropped_citations / report.total_citations
-            )
-        else:
-            relevance_drop_ratio = 0.0
-
-        relevance_penalty_factor = max(
-            0.0,
-            1.0 - settings.cc_relevance_drop_penalty_weight * relevance_drop_ratio,
-        )
-        report.consistency_score = base_score * relevance_penalty_factor
         report.issues = self._deduplicate_issue_list(report.issues)
 
         return report
@@ -1744,7 +1715,6 @@ class ConsistencyMixin:
                 "- Scarti da relevance gate: "
                 f"{reasoner_report.relevance_gate_dropped_citations}"
             )
-        lines.append(f"- Score di consistenza: {reasoner_report.consistency_score:.2%}")
         if reasoner_report.issues:
             lines.append(f"- Problemi: {len(reasoner_report.issues)}")
 
@@ -1767,7 +1737,6 @@ class ConsistencyMixin:
                 "- Scarti da relevance gate: "
                 f"{counter_report.relevance_gate_dropped_citations}"
             )
-        lines.append(f"- Score di consistenza: {counter_report.consistency_score:.2%}")
         if counter_report.issues:
             lines.append(f"- Problemi: {len(counter_report.issues)}")
 

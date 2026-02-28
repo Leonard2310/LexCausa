@@ -33,7 +33,6 @@
     "enable_causality": true,
     "reasoner_enable_causality": true,
     "counter_enable_causality": false,
-    "counter_pass_causal_identity": false,
     "counter_pass_taxonomy_attacks": false,
     "counter_pass_norms": false
   }

@@ -124,10 +124,8 @@ def build_payload(
     )
     settings["counter_enable_causality"] = condition_enabled
     # Counter inputs are opt-in and default disabled (can be overridden in config).
-    pass_causal_cfg = as_bool(settings.get("counter_pass_causal_identity", False))
     pass_attacks_cfg = as_bool(settings.get("counter_pass_taxonomy_attacks", False))
     pass_norms_cfg = as_bool(settings.get("counter_pass_norms", False))
-    settings["counter_pass_causal_identity"] = condition_enabled and pass_causal_cfg
     settings["counter_pass_taxonomy_attacks"] = condition_enabled and pass_attacks_cfg
     settings["counter_pass_norms"] = condition_enabled and pass_norms_cfg
 

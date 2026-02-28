@@ -113,7 +113,6 @@ Output:
 ## Metriche principali estratte
 
 - `aqa_net_final`, `aqa_verdict`
-- `reasoner_consistency_score`, `counter_consistency_score`
 - `reasoner_repair_fail_rate`, `counter_repair_fail_rate`
 - `reasoner_dropped_citations`, `counter_dropped_citations`
 - `counter_gate_label`, `counter_gate_abstain`

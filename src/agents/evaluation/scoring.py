@@ -103,29 +103,61 @@ class ScoringMixin:
         max_citations: int | None = None,
     ) -> tuple[float, dict]:
         citations = self._extract_statute_citations(text)
-        max_citations = max_citations or self._aqa_normsupport_max_citations
+        max_citations = max(1, max_citations or self._aqa_normsupport_max_citations)
+
+        # Quantity: saturates at max_citations with diminishing marginal gains.
         citation_count = len(citations)
-        citation_score = min(citation_count, max_citations) / max_citations
+        capped_count = min(citation_count, max_citations)
+        citation_count_score = (capped_count / max_citations) ** 0.5
+
+        # Specificity: reward fully-specified citations (code/source explicit).
+        explicit_code_count = sum(
+            1
+            for c in citations
+            if any(token in c.lower() for token in ("c.c", "c.p", "241/1990", "l. 241"))
+        )
+        citation_specificity_score = (
+            explicit_code_count / citation_count if citation_count > 0 else 0.0
+        )
+
+        # Overall citation quality (count + precision of legal reference).
+        citation_score = self._clamp01(
+            0.75 * citation_count_score + 0.25 * citation_specificity_score
+        )
+
+        # Retrieved grounding score: how well cited norms are supported by context norms.
         retrieved_score = 0.0
+        retrieved_count = 0
         if retrieved_norms:
             scores = []
             for item in retrieved_norms:
-                val = item.get("similarity") or item.get("score") or 0.0
+                if not isinstance(item, dict):
+                    continue
+                val = item.get("similarity")
+                if val is None:
+                    val = item.get("score")
                 if isinstance(val, (int, float)):
                     scores.append(float(val))
             if scores:
+                retrieved_count = len(scores)
                 if self._aqa_normsupport_retrieved_agg == "max":
                     retrieved_score = max(scores)
                 else:
-                    retrieved_score = sum(scores) / len(scores)
+                    # Slightly robust average: mean of top-K (K<=3) if many entries.
+                    top = sorted(scores, reverse=True)[: min(3, len(scores))]
+                    retrieved_score = sum(top) / len(top)
+
         final_score = self._clamp01(
             self._aqa_normsupport_citation_weight * citation_score
             + self._aqa_normsupport_retrieved_weight * retrieved_score
         )
         details = {
             "citation_count": citation_count,
+            "citation_count_score": citation_count_score,
+            "citation_specificity_score": citation_specificity_score,
             "citation_score": citation_score,
             "retrieved_score": retrieved_score,
+            "retrieved_norms_count": retrieved_count,
             "final": final_score,
         }
         return final_score, details

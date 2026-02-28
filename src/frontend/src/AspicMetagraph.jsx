@@ -716,8 +716,10 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
   }, []);
 
   useEffect(() => {
-    // New result/layout -> re-enable auto-fit once.
-    setHasManualViewport(false);
+    const frameId = window.requestAnimationFrame(() => {
+      setHasManualViewport(false);
+    });
+    return () => window.cancelAnimationFrame(frameId);
   }, [viewSignature]);
 
   useEffect(() => {
@@ -736,8 +738,12 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
     const centeredPanX = scaledW < viewportW ? (viewportW - scaledW) / 2 : 0;
     const centeredPanY = scaledH < viewportH ? (viewportH - scaledH) / 2 : 0;
 
-    setZoom(nextZoom);
-    setPan({ x: centeredPanX, y: centeredPanY });
+    const frameId = window.requestAnimationFrame(() => {
+      setZoom(nextZoom);
+      setPan({ x: centeredPanX, y: centeredPanY });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
   }, [hasManualViewport, svgW, svgH]);
 
   useEffect(() => {

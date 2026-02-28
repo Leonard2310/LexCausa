@@ -1,6 +1,6 @@
 [project]
 name = "lex-causa"
-version = "0.1.0"
+version = "0.10.0"
 description = "Legal Reasoning System with Causal Chain Analysis for Italian Law"
 authors = [
     {name = "Leonardo Catello", email = "leonardo.catello@hotmail.com"},
@@ -37,7 +37,7 @@ dependencies = [
 
 [tool.poetry]
 name = "lex-causa"
-version = "0.1.0"
+version = "0.10.0"
 description = "Legal Reasoning System with Causal Chain Analysis for Italian Law"
 authors = [
     "Leonardo Catello <leonardo.catello@hotmail.com>",

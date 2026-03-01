@@ -1464,6 +1464,7 @@ class CounterReasoner(BaseAgent):
                         conclusion_points_map=conclusion_points_map,
                         attack_blacklist=attack_blacklist,
                         allow_open_attacks=allow_open_attacks,
+                        taxonomy_mode_active=use_taxonomy_mode,
                         stream_callback=stream_callback,
                     )
                 )
@@ -1953,6 +1954,7 @@ class CounterReasoner(BaseAgent):
         conclusion_points_map: Optional[Dict[str, object]] = None,
         attack_blacklist: Optional[set[str]] = None,
         allow_open_attacks: bool = True,
+        taxonomy_mode_active: bool = False,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str], List[List[str]]]:
         """Generate counter-reasoning chain with plan -> execute -> residual replan workflow."""
@@ -2067,12 +2069,15 @@ class CounterReasoner(BaseAgent):
         step_summaries: List[str] = []
         used_norms: List[str] = []
         step_attacks: List[List[str]] = []
+        planned_steps_count = 0
+        extra_steps_count = 0
+        max_extra_total = max(0, int(settings.counter_step_expansion_max_extra_total))
         allowed_statute_index = self._build_allowed_statute_index(available_statutes)
         plan_round = 0
         stalled_rounds = 0
         max_plan_rounds = max(1, self._max_plan_retries + 1)
 
-        while len(steps) < min_steps and len(steps) < max_steps:
+        while planned_steps_count < min_steps and planned_steps_count < max_steps:
             plan_round += 1
             if plan_round > max_plan_rounds:
                 break
@@ -2137,9 +2142,9 @@ class CounterReasoner(BaseAgent):
                         "warning",
                     )
 
-            remaining_min = max(1, min_steps - len(steps))
-            remaining_max = max(1, max_steps - len(steps))
-            planner_mode = "RESUME" if steps else "FULL"
+            remaining_min = max(1, min_steps - planned_steps_count)
+            remaining_max = max(1, max_steps - planned_steps_count)
+            planner_mode = "RESUME" if planned_steps_count else "FULL"
             plan = self._generate_counter_plan(
                 claim=claim,
                 routing_decision=routing_decision,
@@ -2154,7 +2159,7 @@ class CounterReasoner(BaseAgent):
                 min_steps=remaining_min,
                 max_steps=remaining_max,
                 planner_mode=planner_mode,
-                resume_from_step=len(steps) + 1,
+                resume_from_step=planned_steps_count + 1,
                 existing_summaries=step_summaries,
             )
             plan = self._coerce_counter_plan_to_allowed_norms(
@@ -2193,14 +2198,14 @@ class CounterReasoner(BaseAgent):
 
             self._log(
                 f"Counter plan generated: {len(plan)} step(s) "
-                f"[round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
+                f"[round={plan_round}, mode={planner_mode}, completed={planned_steps_count}]"
             )
 
-            steps_before_round = len(steps)
+            planned_before_round = planned_steps_count
             round_failed = False
 
             for local_idx, plan_step in enumerate(plan, start=1):
-                global_idx = len(steps) + 1
+                global_idx = planned_steps_count + 1
                 if selected_attack_ids:
                     blocked_ids = _cooldown_blocked_ids()
                     step_attack_pool = [
@@ -2358,6 +2363,7 @@ class CounterReasoner(BaseAgent):
                 steps.append(step_text)
                 step_attacks.append(applied_attack_ids)
                 step_summaries.append(self._compact_step_summary(step_text))
+                planned_steps_count += 1
                 new_norms = self._extract_cited_articles(step_text)
                 for norm in new_norms:
                     if norm not in used_norms:
@@ -2375,10 +2381,65 @@ class CounterReasoner(BaseAgent):
                     f"| norms: {', '.join(new_norms) if new_norms else 'none'}{prec_info}"
                 )
 
-                if len(steps) >= max_steps:
+                if (
+                    taxonomy_mode_active
+                    and applied_attack_ids
+                    and extra_steps_count < max_extra_total
+                ):
+                    expansion_budget = min(
+                        max(1, int(settings.counter_step_expansion_max_extra_per_step)),
+                        max_extra_total - extra_steps_count,
+                    )
+                    if expansion_budget > 0:
+                        extra_steps, extra_attack_ids = (
+                            self._expand_counter_step_satellites(
+                                claim=claim,
+                                reasoner_conclusion=reasoner_conclusion,
+                                knowledge_base=knowledge_base,
+                                statutes_list=statutes_list,
+                                precedents_list=precedents_list,
+                                parent_step=step_text,
+                                parent_attack_ids=applied_attack_ids,
+                                attack_desc_map=attack_desc_map,
+                                previous_steps=steps,
+                                previous_summaries=step_summaries,
+                                used_norms=used_norms,
+                                allowed_statute_index=allowed_statute_index,
+                                max_extra_steps=expansion_budget,
+                            )
+                        )
+                        if extra_steps:
+                            extra_steps_count += len(extra_steps)
+                            for extra_idx, extra_step in enumerate(extra_steps, start=1):
+                                extra_attacks = (
+                                    extra_attack_ids[extra_idx - 1]
+                                    if extra_idx - 1 < len(extra_attack_ids)
+                                    else []
+                                )
+                                steps.append(extra_step)
+                                step_attacks.append(extra_attacks)
+                                step_summaries.append(
+                                    self._compact_step_summary(extra_step)
+                                )
+                                extra_norms = self._extract_cited_articles(extra_step)
+                                for norm in extra_norms:
+                                    if norm not in used_norms:
+                                        used_norms.append(norm)
+                                self._log(
+                                    f"Counter-step {global_idx}.{extra_idx}: {extra_step[:80]}... "
+                                    f"| attacks: {', '.join(extra_attacks) if extra_attacks else 'none'} "
+                                    f"| norms: {', '.join(extra_norms) if extra_norms else 'none'}"
+                                )
+                            self._log(
+                                f"Counter-step {global_idx}: expansion added {len(extra_steps)} satellite step(s) "
+                                f"(extra_budget_used={extra_steps_count}/{max_extra_total})",
+                                "info",
+                            )
+
+                if planned_steps_count >= max_steps:
                     break
 
-            if len(steps) == steps_before_round:
+            if planned_steps_count == planned_before_round:
                 stalled_rounds += 1
             else:
                 stalled_rounds = 0
@@ -2391,18 +2452,18 @@ class CounterReasoner(BaseAgent):
                     if attack_local_cooldown[aid] <= 0:
                         attack_local_cooldown.pop(aid, None)
 
-            if stalled_rounds >= 2 and len(steps) < min_steps:
+            if stalled_rounds >= 2 and planned_steps_count < min_steps:
                 break
 
-            if not round_failed and len(steps) >= min_steps:
+            if not round_failed and planned_steps_count >= min_steps:
                 break
 
-        if len(steps) < min_steps:
+        if planned_steps_count < min_steps:
             adaptive_min = 2 if min_steps >= 3 else 1
-            if len(steps) >= adaptive_min:
+            if planned_steps_count >= adaptive_min:
                 self._log(
                     "Warning: counter chain below chain_min_steps but accepted due low feasibility "
-                    f"(generated={len(steps)}, configured_min={min_steps})",
+                    f"(generated={planned_steps_count}, configured_min={min_steps})",
                     "warning",
                 )
             else:
@@ -2412,7 +2473,7 @@ class CounterReasoner(BaseAgent):
                 )
 
         self._log(
-            f"Planned counter-chain complete: {len(steps)} steps, "
+            f"Planned counter-chain complete: planned={planned_steps_count}, total={len(steps)} steps, "
             f"{len(set(used_norms))} unique norms"
         )
         return (
@@ -2420,6 +2481,165 @@ class CounterReasoner(BaseAgent):
             steps,
             step_attacks,
         )
+
+    def _expand_counter_step_satellites(
+        self,
+        *,
+        claim: str,
+        reasoner_conclusion: str,
+        knowledge_base: str,
+        statutes_list: str,
+        precedents_list: str,
+        parent_step: str,
+        parent_attack_ids: List[str],
+        attack_desc_map: Dict[str, str],
+        previous_steps: List[str],
+        previous_summaries: List[str],
+        used_norms: List[str],
+        allowed_statute_index: Dict[str, set[str]],
+        max_extra_steps: int,
+    ) -> tuple[List[str], List[List[str]]]:
+        """
+        Optionally expand one compressed parent step into additional satellite steps.
+
+        Expansion is best-effort and never blocks the parent step: if parsing or
+        validation fails, the caller keeps only the original accepted step.
+        """
+        if not settings.counter_step_expansion_enabled:
+            return [], []
+        if max_extra_steps <= 0:
+            return [], []
+
+        min_attacks = max(2, int(settings.counter_step_expansion_min_attacks))
+        parent_ids = [
+            aid
+            for aid in dict.fromkeys(parent_attack_ids)
+            if aid and not str(aid).startswith("open_")
+        ]
+        if len(parent_ids) < min_attacks:
+            return [], []
+
+        parent_attack_catalog = "\n".join(
+            f"- {aid}: {attack_desc_map.get(aid, _DEFAULT_ATTACK_DESCRIPTION_EN)}"
+            for aid in parent_ids
+        )
+        summary_lines = (
+            "\n".join(
+                f"- Step {idx}: {summary}"
+                for idx, summary in enumerate(previous_summaries, start=1)
+            )
+            if previous_summaries
+            else "- none"
+        )
+        used_norms_text = ", ".join(used_norms) if used_norms else "none"
+        reasoner_block = f"\nCONCLUSION TO OPPOSE:\n{reasoner_conclusion}\n"
+        claim_facts = self._claim_fact_anchors_text(claim, max_items=10)
+
+        prompt = render_prompt(
+            "counter_reasoner.step_expansion",
+            claim=claim,
+            reasoner_block=reasoner_block,
+            claim_facts=claim_facts,
+            parent_step=parent_step,
+            parent_attack_ids=", ".join(parent_ids),
+            parent_attack_catalog=parent_attack_catalog,
+            summary_lines=summary_lines,
+            used_norms_text=used_norms_text,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            knowledge_base=knowledge_base,
+            max_extra=max_extra_steps,
+        )
+
+        try:
+            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            raw = (resp.content or "").strip()
+            if not raw.startswith("{"):
+                match = re.search(r"\{[\s\S]*\}", raw)
+                if match:
+                    raw = match.group(0)
+            data = json.loads(raw)
+        except Exception as exc:
+            self._log(
+                f"Counter-step expansion skipped (parser/invoke error): {exc}",
+                "warning",
+            )
+            return [], []
+
+        if not isinstance(data, dict):
+            return [], []
+        extra_steps_raw = data.get("extra_steps", [])
+        if not isinstance(extra_steps_raw, list) or not extra_steps_raw:
+            return [], []
+
+        accepted_steps: List[str] = []
+        accepted_attacks: List[List[str]] = []
+        history_steps = list(previous_steps)
+        history_summaries = list(previous_summaries)
+
+        for item in extra_steps_raw[:max_extra_steps]:
+            if not isinstance(item, dict):
+                continue
+            step_candidate_raw = str(item.get("step", "")).strip()
+            if not step_candidate_raw:
+                continue
+
+            attack_hint = str(item.get("attack_id", "")).strip().lower()
+            if attack_hint and attack_hint not in parent_ids:
+                attack_hint = ""
+
+            payload_for_parse = (
+                (
+                    f"ATTACKS_USED: {attack_hint}\nSTEP: {step_candidate_raw}"
+                    if attack_hint
+                    else f"STEP: {step_candidate_raw}"
+                )
+                .strip()
+            )
+            candidate_step, candidate_attacks = self._parse_counter_step_payload(
+                response=payload_for_parse,
+                allowed_attack_ids=parent_ids,
+                fallback_attack_ids=[attack_hint],
+            )
+            candidate_step = (candidate_step or "").strip()
+            if not candidate_step:
+                continue
+
+            if not candidate_attacks:
+                candidate_attacks = [parent_ids[0]]
+            primary_attack_id = candidate_attacks[0]
+
+            expected_norm = str(item.get("expected_norm", "N/A")).strip() or "N/A"
+            citation_requirement = self._normalize_plan_citation_requirement(
+                expected_norm=expected_norm,
+                raw_value=item.get("citation_requirement", "optional"),
+            )
+
+            ok, reason = self._validate_counter_step_candidate(
+                candidate_step=candidate_step,
+                previous_steps=history_steps,
+                claim=claim,
+                reasoner_conclusion=reasoner_conclusion,
+                expected_norm=expected_norm,
+                citation_requirement=citation_requirement,
+                allowed_statute_index=allowed_statute_index,
+                attack_id=primary_attack_id,
+                attack_desc=attack_desc_map.get(primary_attack_id, ""),
+                plan_focus="counter_step_expansion",
+            )
+            if not ok:
+                self._log(
+                    f"Counter-step expansion candidate rejected ({reason})",
+                    "warning",
+                )
+                continue
+
+            accepted_steps.append(candidate_step)
+            accepted_attacks.append(candidate_attacks)
+            history_steps.append(candidate_step)
+            history_summaries.append(self._compact_step_summary(candidate_step))
+
+        return accepted_steps, accepted_attacks
 
     def _generate_counter_plan(
         self,

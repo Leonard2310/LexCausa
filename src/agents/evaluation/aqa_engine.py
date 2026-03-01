@@ -10,7 +10,6 @@ Implements the full ASPIC+ evaluation pipeline:
 
 from __future__ import annotations
 
-import math
 import re
 import sys
 from datetime import datetime
@@ -870,92 +869,200 @@ class AQAEngineMixin:
             "penalty": penalty,
         }
 
-    def _collect_active_attacks_for_role(
-        self, target_links: list[dict], attacker_role: str
-    ) -> list[dict]:
-        role = str(attacker_role or "").strip().lower()
-        out: list[dict] = []
-        for link in target_links:
-            for attack in link.get("attacks_received", []):
-                if not isinstance(attack, dict):
-                    continue
-                if str(attack.get("attacker_role", "")).strip().lower() != role:
-                    continue
-                if attack.get("filtered", False):
-                    continue
-                if self._safe_float(attack.get("attack_value"), 0.0) <= 0.0:
-                    continue
-                out.append(attack)
-        return out
-
-    def _compute_diversity_bonus(
-        self, target_links: list[dict], attacker_role: str
-    ) -> dict:
-        """Reward diverse active attack patterns launched by one side."""
-        active_attacks = self._collect_active_attacks_for_role(
-            target_links, attacker_role
+    def _link_axis_signature(self, link: dict) -> str:
+        """Build a semantic signature for weak-point axis clustering."""
+        return self._normalize_text(
+            " ".join(
+                [
+                    str(link.get("premise_text", "") or ""),
+                    str(link.get("text", "") or ""),
+                    str(link.get("conclusion_text", "") or ""),
+                ]
+            )
         )
-        total_active = len(active_attacks)
-        if total_active == 0:
+
+    def _cluster_reasoner_axes(self, pro_links: list[dict]) -> list[dict]:
+        """
+        Cluster reasoner links into weak-point axes using semantic similarity.
+
+        Axis clustering is intentionally simple/greedy for runtime stability.
+        """
+        if not pro_links:
+            return []
+        threshold = self._clamp01(
+            self._safe_float(self._aqa_attack_coverage_similarity_threshold, 0.78)
+        )
+
+        ordered = sorted(
+            pro_links, key=lambda x: self._safe_float(x.get("base_score"), 0.0), reverse=True
+        )
+        axes: list[dict] = []
+        for link in ordered:
+            link_id = str(link.get("link_id") or "").strip()
+            if not link_id:
+                continue
+            signature = self._link_axis_signature(link)
+            base_score = self._clamp01(self._safe_float(link.get("base_score"), 0.0))
+            if not signature:
+                axes.append(
+                    {
+                        "axis_id": f"AX{len(axes) + 1}",
+                        "representative_text": f"link:{link_id}",
+                        "link_ids": [link_id],
+                        "link_objects": [link],
+                        "base_scores": [base_score],
+                    }
+                )
+                continue
+
+            best_idx = -1
+            best_sim = 0.0
+            for idx, axis in enumerate(axes):
+                rep = str(axis.get("representative_text", "") or "")
+                if not rep:
+                    continue
+                sim = self._clamp01(self._safe_float(self._similarity(signature, rep), 0.0))
+                if sim > best_sim:
+                    best_sim = sim
+                    best_idx = idx
+
+            if best_idx >= 0 and best_sim >= threshold:
+                axis = axes[best_idx]
+                axis["link_ids"].append(link_id)
+                axis["link_objects"].append(link)
+                axis["base_scores"].append(base_score)
+            else:
+                axes.append(
+                    {
+                        "axis_id": f"AX{len(axes) + 1}",
+                        "representative_text": signature,
+                        "link_ids": [link_id],
+                        "link_objects": [link],
+                        "base_scores": [base_score],
+                    }
+                )
+        return axes
+
+    def _compute_attack_coverage_bonus(self, pro_links: list[dict]) -> dict:
+        """
+        Compute Weak-Point Coverage Score (WPCS) for counter attacks on reasoner axes.
+
+        The score rewards distinct, credible coverage of pro-side weak points.
+        """
+        if not bool(getattr(self, "_aqa_attack_coverage_enabled", True)):
             return {
-                "active_attacks": 0,
-                "distinct_attack_types": 0,
-                "coverage": 0.0,
-                "entropy_norm": 0.0,
-                "diversity_index": 0.0,
-                "volume_factor": 0.0,
+                "enabled": False,
+                "axes_total": 0,
+                "axes_covered": 0,
+                "coverage_ratio": 0.0,
+                "quality_avg": 0.0,
+                "wpcs": 0.0,
                 "bonus": 0.0,
+                "axis_details": [],
             }
 
-        type_counts: dict[str, int] = {}
-        for attack in active_attacks:
-            attack_type = (
-                str(attack.get("attack_type") or self._aqa_default_attack_type)
-                .strip()
-                .lower()
+        axes = self._cluster_reasoner_axes(pro_links)
+        if not axes:
+            return {
+                "enabled": True,
+                "axes_total": 0,
+                "axes_covered": 0,
+                "coverage_ratio": 0.0,
+                "quality_avg": 0.0,
+                "wpcs": 0.0,
+                "bonus": 0.0,
+                "axis_details": [],
+            }
+
+        overlap_threshold = self._clamp01(
+            self._safe_float(self._aqa_attack_coverage_overlap_threshold, 0.45)
+        )
+        min_attack_value = self._clamp01(
+            self._safe_float(self._aqa_attack_coverage_min_attack_value, 0.08)
+        )
+        w2 = self._clamp01(
+            self._safe_float(self._aqa_attack_coverage_second_hit_weight, 0.30)
+        )
+        w3 = self._clamp01(
+            self._safe_float(self._aqa_attack_coverage_third_hit_weight, 0.10)
+        )
+
+        axes_total = len(axes)
+        axes_covered = 0
+        quality_values: list[float] = []
+        axis_details: list[dict] = []
+
+        for axis in axes:
+            active_vals: list[float] = []
+            active_count = 0
+            for link in axis.get("link_objects", []):
+                attacks = link.get("attacks_received", []) or []
+                for atk in attacks:
+                    if not isinstance(atk, dict):
+                        continue
+                    if str(atk.get("attacker_role", "")).strip().lower() != "contra":
+                        continue
+                    if atk.get("filtered", False):
+                        continue
+                    attack_value = self._safe_float(atk.get("attack_value"), 0.0)
+                    overlap = self._safe_float(atk.get("overlap"), 0.0)
+                    if attack_value < min_attack_value:
+                        continue
+                    if overlap < overlap_threshold:
+                        continue
+                    active_vals.append(self._clamp01(attack_value))
+                    active_count += 1
+
+            active_vals.sort(reverse=True)
+            axis_quality = 0.0
+            if active_vals:
+                axis_quality += active_vals[0]
+                if len(active_vals) > 1:
+                    axis_quality += w2 * active_vals[1]
+                if len(active_vals) > 2:
+                    axis_quality += w3 * active_vals[2]
+            axis_quality = self._clamp01(axis_quality)
+            if axis_quality > 0:
+                axes_covered += 1
+            quality_values.append(axis_quality)
+            axis_details.append(
+                {
+                    "axis_id": axis.get("axis_id"),
+                    "link_ids": list(axis.get("link_ids", [])),
+                    "active_attacks": active_count,
+                    "axis_quality": axis_quality,
+                    "axis_base_avg": (
+                        sum(axis.get("base_scores", [])) / len(axis.get("base_scores", []))
+                        if axis.get("base_scores")
+                        else 0.0
+                    ),
+                }
             )
-            if not attack_type:
-                attack_type = self._aqa_default_attack_type
-            type_counts[attack_type] = type_counts.get(attack_type, 0) + 1
 
-        distinct_types = len(type_counts)
-        target_types = max(
-            1,
-            int(self._safe_float(self._aqa_diversity_target_attack_types, 1)),
+        coverage_ratio = (
+            float(axes_covered) / float(axes_total) if axes_total > 0 else 0.0
         )
-        coverage = min(1.0, float(distinct_types) / float(target_types))
-
-        if distinct_types <= 1:
-            entropy_norm = 0.0
-        else:
-            probs = [count / total_active for count in type_counts.values()]
-            entropy = -sum(p * math.log(p) for p in probs if p > 0)
-            entropy_norm = entropy / math.log(distinct_types)
-
-        diversity_index = self._clamp01(0.5 * coverage + 0.5 * entropy_norm)
-        min_active = max(
-            1,
-            int(self._safe_float(self._aqa_diversity_min_active_attacks, 1)),
+        quality_avg = (
+            sum(quality_values) / len(quality_values) if quality_values else 0.0
         )
-        volume_factor = min(1.0, float(total_active) / float(min_active))
-        raw_bonus = (
-            self._safe_float(self._aqa_diversity_bonus_weight, 0.0)
-            * diversity_index
-            * volume_factor
-        )
+        wpcs = self._clamp01(0.4 * coverage_ratio + 0.6 * quality_avg)
+        raw_bonus = self._safe_float(self._aqa_attack_coverage_bonus_weight, 0.12) * wpcs
         bonus = min(
-            self._safe_float(self._aqa_diversity_max_bonus, 0.12),
+            self._safe_float(self._aqa_attack_coverage_max_bonus, 0.15),
             max(0.0, raw_bonus),
         )
-
+        axis_details.sort(
+            key=lambda x: self._safe_float(x.get("axis_quality"), 0.0), reverse=True
+        )
         return {
-            "active_attacks": total_active,
-            "distinct_attack_types": distinct_types,
-            "coverage": coverage,
-            "entropy_norm": entropy_norm,
-            "diversity_index": diversity_index,
-            "volume_factor": volume_factor,
+            "enabled": True,
+            "axes_total": axes_total,
+            "axes_covered": axes_covered,
+            "coverage_ratio": coverage_ratio,
+            "quality_avg": quality_avg,
+            "wpcs": wpcs,
             "bonus": bonus,
+            "axis_details": axis_details[:8],
         }
 
     def _extract_year(self, text: str) -> int | None:
@@ -1480,6 +1587,9 @@ class AQAEngineMixin:
             delta, influences = self._compute_precedent_delta(link)
             link["precedent_delta"] = delta
             link["precedent_influences"] = influences
+            # Intrinsic link strength (independent from incoming attacks).
+            intrinsic_nesso = self._clamp01(link.get("base_score", 0.0) + delta)
+            link["nesso_intrinsic"] = intrinsic_nesso
             nesso = self._clamp01(
                 link.get("base_score", 0.0) - link.get("attacks_sum", 0.0) + delta
             )
@@ -1515,32 +1625,37 @@ class AQAEngineMixin:
                 return 0.0
             return sum(i.get(field, 0.0) for i in items) / len(items)
 
-        pro_net_raw = avg_field(pro_links, "nesso_plausibility")
+        # Dialectical pro score includes incoming counter attacks; intrinsic does not.
+        pro_net_dialectical_raw = avg_field(pro_links, "nesso_plausibility")
+        pro_net_intrinsic_raw = avg_field(pro_links, "nesso_intrinsic")
+        lock_reasoner = bool(
+            getattr(self, "_aqa_lock_reasoner_plausibility", False)
+        )
+        pro_net_raw = pro_net_intrinsic_raw if lock_reasoner else pro_net_dialectical_raw
         contra_net_raw = avg_field(contra_links, "nesso_plausibility")
         final_plausibility_raw = pro_net_raw - contra_net_raw
 
         pro_redundancy = self._compute_redundancy_penalty(pro_links)
         contra_redundancy = self._compute_redundancy_penalty(contra_links)
-        pro_diversity = self._compute_diversity_bonus(
-            contra_links,
-            attacker_role="support",
-        )
-        contra_diversity = self._compute_diversity_bonus(
-            pro_links,
-            attacker_role="contra",
-        )
+        contra_attack_coverage = self._compute_attack_coverage_bonus(pro_links)
 
         structural_enabled = bool(self._aqa_structural_adjustments_enabled)
         if structural_enabled:
-            pro_net_adjusted = self._clamp01(
-                pro_net_raw
-                - pro_redundancy.get("penalty", 0.0)
-                + pro_diversity.get("bonus", 0.0)
+            # In counter-ablation mode keep Reasoner-side score locked.
+            if lock_reasoner:
+                pro_net_adjusted = pro_net_raw
+            else:
+                pro_net_adjusted = self._clamp01(
+                    pro_net_raw
+                    - pro_redundancy.get("penalty", 0.0)
+                )
+            contra_cov_bonus = self._safe_float(
+                contra_attack_coverage.get("bonus"), 0.0
             )
             contra_net_adjusted = self._clamp01(
                 contra_net_raw
                 - contra_redundancy.get("penalty", 0.0)
-                + contra_diversity.get("bonus", 0.0)
+                + contra_cov_bonus
             )
         else:
             pro_net_adjusted = pro_net_raw
@@ -1604,19 +1719,30 @@ class AQAEngineMixin:
             self._log(
                 "🧱 Structural adjust PRO: "
                 f"-red={pro_redundancy.get('penalty', 0.0):.3f} "
-                f"+div={pro_diversity.get('bonus', 0.0):.3f} "
                 f"(raw={pro_net_raw:.3f} -> adj={pro_net_adjusted:.3f})"
             )
             self._log(
                 "🧱 Structural adjust CONTRA: "
                 f"-red={contra_redundancy.get('penalty', 0.0):.3f} "
-                f"+div={contra_diversity.get('bonus', 0.0):.3f} "
+                f"+cov={contra_attack_coverage.get('bonus', 0.0):.3f} "
                 f"(raw={contra_net_raw:.3f} -> adj={contra_net_adjusted:.3f})"
+            )
+            self._log(
+                "🎯 Counter attack-coverage: "
+                f"axes={contra_attack_coverage.get('axes_covered', 0)}/"
+                f"{contra_attack_coverage.get('axes_total', 0)}, "
+                f"coverage={contra_attack_coverage.get('coverage_ratio', 0.0):.3f}, "
+                f"wpcs={contra_attack_coverage.get('wpcs', 0.0):.3f}"
             )
             self._log(
                 "🧱 Final raw/adj: "
                 f"{final_plausibility_raw:+.3f} -> {final_plausibility_adjusted:+.3f} "
                 f"(effective={'adjusted' if (structural_enabled and use_adjusted) else 'raw'})"
+            )
+        if lock_reasoner:
+            self._log(
+                "🧷 Reasoner net locked to intrinsic plausibility "
+                f"(dialectical={pro_net_dialectical_raw:.3f}, intrinsic={pro_net_intrinsic_raw:.3f})"
             )
 
         if final_plausibility >= self._aqa_verdict_pos:
@@ -1707,11 +1833,12 @@ class AQAEngineMixin:
                     "precedent_delta_avg": pro_precedent_delta,
                     "net_plausibility": pro_net,
                     "net_plausibility_raw": pro_net_raw,
+                    "net_plausibility_dialectical_raw": pro_net_dialectical_raw,
+                    "net_plausibility_intrinsic_raw": pro_net_intrinsic_raw,
                     "net_plausibility_adjusted": pro_net_adjusted,
                     "redundancy_penalty": pro_redundancy.get("penalty", 0.0),
                     "redundancy_index": pro_redundancy.get("redundancy_index", 0.0),
-                    "diversity_bonus": pro_diversity.get("bonus", 0.0),
-                    "diversity_index": pro_diversity.get("diversity_index", 0.0),
+                    "reasoner_plausibility_locked": lock_reasoner,
                 },
                 "contra": {
                     "cogency_avg": contra_cogency_avg,
@@ -1725,8 +1852,17 @@ class AQAEngineMixin:
                     "net_plausibility_adjusted": contra_net_adjusted,
                     "redundancy_penalty": contra_redundancy.get("penalty", 0.0),
                     "redundancy_index": contra_redundancy.get("redundancy_index", 0.0),
-                    "diversity_bonus": contra_diversity.get("bonus", 0.0),
-                    "diversity_index": contra_diversity.get("diversity_index", 0.0),
+                    "attack_coverage_bonus": contra_attack_coverage.get("bonus", 0.0),
+                    "attack_coverage_score": contra_attack_coverage.get("wpcs", 0.0),
+                    "attack_coverage_ratio": contra_attack_coverage.get(
+                        "coverage_ratio", 0.0
+                    ),
+                    "attack_coverage_axes_covered": contra_attack_coverage.get(
+                        "axes_covered", 0
+                    ),
+                    "attack_coverage_axes_total": contra_attack_coverage.get(
+                        "axes_total", 0
+                    ),
                 },
             },
             "net_plausibility": {
@@ -1734,6 +1870,8 @@ class AQAEngineMixin:
                 "contra": contra_net,
                 "final": final_plausibility,
                 "pro_raw": pro_net_raw,
+                "pro_raw_dialectical": pro_net_dialectical_raw,
+                "pro_raw_intrinsic": pro_net_intrinsic_raw,
                 "contra_raw": contra_net_raw,
                 "final_raw": final_plausibility_raw,
                 "pro_adjusted": pro_net_adjusted,
@@ -1753,13 +1891,13 @@ class AQAEngineMixin:
                     "verdict_uses_adjusted_score": bool(
                         structural_enabled and use_adjusted
                     ),
+                    "reasoner_plausibility_locked": lock_reasoner,
                     "pro": {
                         "redundancy": pro_redundancy,
-                        "diversity": pro_diversity,
                     },
                     "contra": {
                         "redundancy": contra_redundancy,
-                        "diversity": contra_diversity,
+                        "attack_coverage": contra_attack_coverage,
                     },
                 },
             },

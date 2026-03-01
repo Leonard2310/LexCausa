@@ -1148,6 +1148,7 @@ def get_settings():
                 "aqa_damage_factor": settings.aqa_damage_factor,
                 "aqa_allow_factual_attacks": settings.aqa_allow_factual_attacks,
                 "aqa_allow_cross_codice": settings.aqa_allow_cross_codice,
+                "aqa_lock_reasoner_plausibility": False,
                 "aqa_strength_ratio_by_type": settings.aqa_strength_ratio_by_type,
                 "enable_causality": True,
                 "reasoner_enable_causality": True,
@@ -1780,6 +1781,9 @@ def _run_full_pipeline(
     fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
     fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
     fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
+    fe_aqa_lock_reasoner_plausibility = fe_settings.get(
+        "aqa_lock_reasoner_plausibility"
+    )
     fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
     fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
     fe_search_use_top_n_libri = fe_settings.get("search_use_top_n_libri")
@@ -2145,6 +2149,10 @@ def _run_full_pipeline(
             settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
         if fe_aqa_allow_cross_codice is not None:
             settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
+        settings.aqa_lock_reasoner_plausibility = _coerce_bool(
+            fe_aqa_lock_reasoner_plausibility,
+            False,
+        )
         if fe_aqa_strength_ratio_by_type is not None:
             settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 
@@ -2479,6 +2487,9 @@ def _run_evaluate_only(
     fe_aqa_damage_factor = fe_settings.get("aqa_damage_factor")
     fe_aqa_allow_factual_attacks = fe_settings.get("aqa_allow_factual_attacks")
     fe_aqa_allow_cross_codice = fe_settings.get("aqa_allow_cross_codice")
+    fe_aqa_lock_reasoner_plausibility = fe_settings.get(
+        "aqa_lock_reasoner_plausibility"
+    )
     fe_aqa_strength_ratio_by_type = fe_settings.get("aqa_strength_ratio_by_type")
 
     if fe_aqa_alpha is not None:
@@ -2497,6 +2508,10 @@ def _run_evaluate_only(
         settings.aqa_allow_factual_attacks = bool(fe_aqa_allow_factual_attacks)
     if fe_aqa_allow_cross_codice is not None:
         settings.aqa_allow_cross_codice = bool(fe_aqa_allow_cross_codice)
+    settings.aqa_lock_reasoner_plausibility = _coerce_bool(
+        fe_aqa_lock_reasoner_plausibility,
+        False,
+    )
     if fe_aqa_strength_ratio_by_type is not None:
         settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 

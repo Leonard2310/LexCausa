@@ -131,15 +131,28 @@ class PolisherEvaluator(
         )
         self._aqa_redundancy_penalty_weight = settings.aqa_redundancy_penalty_weight
         self._aqa_redundancy_max_penalty = settings.aqa_redundancy_max_penalty
-        self._aqa_diversity_bonus_weight = settings.aqa_diversity_bonus_weight
-        self._aqa_diversity_target_attack_types = (
-            settings.aqa_diversity_target_attack_types
+        self._aqa_attack_coverage_enabled = settings.aqa_attack_coverage_enabled
+        self._aqa_attack_coverage_similarity_threshold = (
+            settings.aqa_attack_coverage_similarity_threshold
         )
-        self._aqa_diversity_min_active_attacks = (
-            settings.aqa_diversity_min_active_attacks
+        self._aqa_attack_coverage_overlap_threshold = (
+            settings.aqa_attack_coverage_overlap_threshold
         )
-        self._aqa_diversity_max_bonus = settings.aqa_diversity_max_bonus
+        self._aqa_attack_coverage_min_attack_value = (
+            settings.aqa_attack_coverage_min_attack_value
+        )
+        self._aqa_attack_coverage_bonus_weight = (
+            settings.aqa_attack_coverage_bonus_weight
+        )
+        self._aqa_attack_coverage_max_bonus = settings.aqa_attack_coverage_max_bonus
+        self._aqa_attack_coverage_second_hit_weight = (
+            settings.aqa_attack_coverage_second_hit_weight
+        )
+        self._aqa_attack_coverage_third_hit_weight = (
+            settings.aqa_attack_coverage_third_hit_weight
+        )
         self._aqa_verdict_use_adjusted_score = settings.aqa_verdict_use_adjusted_score
+        self._aqa_lock_reasoner_plausibility = settings.aqa_lock_reasoner_plausibility
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -200,15 +213,28 @@ class PolisherEvaluator(
         )
         self._aqa_redundancy_penalty_weight = settings.aqa_redundancy_penalty_weight
         self._aqa_redundancy_max_penalty = settings.aqa_redundancy_max_penalty
-        self._aqa_diversity_bonus_weight = settings.aqa_diversity_bonus_weight
-        self._aqa_diversity_target_attack_types = (
-            settings.aqa_diversity_target_attack_types
+        self._aqa_attack_coverage_enabled = settings.aqa_attack_coverage_enabled
+        self._aqa_attack_coverage_similarity_threshold = (
+            settings.aqa_attack_coverage_similarity_threshold
         )
-        self._aqa_diversity_min_active_attacks = (
-            settings.aqa_diversity_min_active_attacks
+        self._aqa_attack_coverage_overlap_threshold = (
+            settings.aqa_attack_coverage_overlap_threshold
         )
-        self._aqa_diversity_max_bonus = settings.aqa_diversity_max_bonus
+        self._aqa_attack_coverage_min_attack_value = (
+            settings.aqa_attack_coverage_min_attack_value
+        )
+        self._aqa_attack_coverage_bonus_weight = (
+            settings.aqa_attack_coverage_bonus_weight
+        )
+        self._aqa_attack_coverage_max_bonus = settings.aqa_attack_coverage_max_bonus
+        self._aqa_attack_coverage_second_hit_weight = (
+            settings.aqa_attack_coverage_second_hit_weight
+        )
+        self._aqa_attack_coverage_third_hit_weight = (
+            settings.aqa_attack_coverage_third_hit_weight
+        )
         self._aqa_verdict_use_adjusted_score = settings.aqa_verdict_use_adjusted_score
+        self._aqa_lock_reasoner_plausibility = settings.aqa_lock_reasoner_plausibility
 
         reasoner_output = reasoner_output or {}
         counter_reasoner_output = counter_reasoner_output or {}

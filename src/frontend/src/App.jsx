@@ -183,6 +183,7 @@ export default function App() {
     aqa_damage_factor: 0.5,
     aqa_allow_factual_attacks: true,
     aqa_allow_cross_codice: true,
+    aqa_lock_reasoner_plausibility: false,
     reasoner_enable_causality: true,
     counter_enable_causality: true,
     counter_pass_causal_identity: true,
@@ -272,6 +273,8 @@ export default function App() {
           aqa_damage_factor: d.aqa_damage_factor ?? prev.aqa_damage_factor,
           aqa_allow_factual_attacks: d.aqa_allow_factual_attacks ?? prev.aqa_allow_factual_attacks,
           aqa_allow_cross_codice: d.aqa_allow_cross_codice ?? prev.aqa_allow_cross_codice,
+          aqa_lock_reasoner_plausibility:
+            d.aqa_lock_reasoner_plausibility ?? prev.aqa_lock_reasoner_plausibility,
           // Pipeline defaults: full causality enabled
           reasoner_enable_causality: true,
           counter_enable_causality: true,
@@ -484,6 +487,7 @@ export default function App() {
       aqa_damage_factor: activeSettings.aqa_damage_factor,
       aqa_allow_factual_attacks: activeSettings.aqa_allow_factual_attacks,
       aqa_allow_cross_codice: activeSettings.aqa_allow_cross_codice,
+      aqa_lock_reasoner_plausibility: !!activeSettings.aqa_lock_reasoner_plausibility,
       reasoner_enable_causality: activeSettings.reasoner_enable_causality,
       counter_enable_causality: activeSettings.counter_enable_causality,
       counter_pass_causal_identity: activeSettings.counter_pass_causal_identity,
@@ -560,6 +564,7 @@ export default function App() {
         counter_pass_causal_identity: setupASettings.counter_pass_causal_identity,
         counter_pass_taxonomy_attacks: setupASettings.counter_pass_taxonomy_attacks,
         counter_pass_norms: setupASettings.counter_pass_norms,
+        aqa_lock_reasoner_plausibility: !!setupASettings.aqa_lock_reasoner_plausibility,
       },
       status: 'running',
       duration_ms: null,
@@ -575,6 +580,7 @@ export default function App() {
         counter_pass_causal_identity: setupBSettings.counter_pass_causal_identity,
         counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
         counter_pass_norms: setupBSettings.counter_pass_norms,
+        aqa_lock_reasoner_plausibility: !!setupBSettings.aqa_lock_reasoner_plausibility,
       },
       status: 'queued',
       duration_ms: null,
@@ -619,6 +625,7 @@ export default function App() {
     );
     const setupASettings = {
       ...mergedDoeSettings,
+      aqa_lock_reasoner_plausibility: true,
       counter_enable_causality: setupACounterEnabled,
       counter_pass_causal_identity: setupAPassCausalIdentity,
       counter_pass_taxonomy_attacks: setupAPassTaxonomyAttacks,
@@ -626,6 +633,7 @@ export default function App() {
     };
     const setupBSettings = {
       ...mergedDoeSettings,
+      aqa_lock_reasoner_plausibility: true,
       counter_enable_causality: true,
       counter_pass_causal_identity: true,
       counter_pass_taxonomy_attacks: true,
@@ -1537,6 +1545,7 @@ export default function App() {
           aqa_damage_factor: setupBSettings.aqa_damage_factor,
           aqa_allow_factual_attacks: setupBSettings.aqa_allow_factual_attacks,
           aqa_allow_cross_codice: setupBSettings.aqa_allow_cross_codice,
+          aqa_lock_reasoner_plausibility: !!setupBSettings.aqa_lock_reasoner_plausibility,
         },
       };
       const runBEvaluationResult = await runEvaluateStream(

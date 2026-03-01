@@ -48,6 +48,7 @@ class PromptKey(StrEnum):
         "counter_reasoner.attack_precondition_check"
     )
     COUNTER_REASONER_STEP_OPPOSITION_CHECK = "counter_reasoner.step_opposition_check"
+    COUNTER_REASONER_STEP_EXPANSION = "counter_reasoner.step_expansion"
     COUNTER_REASONER_STANCE_REWRITE = "counter_reasoner.stance_rewrite"
     COUNTER_REASONER_FACT_LOCK_CHECK = "counter_reasoner.fact_lock_check"
     COUNTER_REASONER_NO_NEW_FACTS = "counter_reasoner.no_new_facts"
@@ -867,6 +868,65 @@ Important:
 - Do not require the step to restate the final opposite outcome explicitly; attacking a key premise of the conclusion still counts as OPPOSING.
 
 Answer with EXACTLY one word: OPPOSING or AGREEING or UNCLEAR.
+""",
+    PromptKey.COUNTER_REASONER_STEP_EXPANSION: """You are expanding one compressed legal counter-step into optional satellite steps.
+
+CLAIM:
+"[[claim]]"
+[[reasoner_block]]
+CLAIM FACT ANCHORS (fixed facts):
+[[claim_facts]]
+
+PARENT COUNTER STEP (already accepted):
+"[[parent_step]]"
+
+PARENT ATTACK IDS:
+[[parent_attack_ids]]
+
+PARENT ATTACK CATALOG:
+[[parent_attack_catalog]]
+
+ALREADY GENERATED STEP SUMMARIES:
+[[summary_lines]]
+
+NORMS ALREADY USED:
+[[used_norms_text]]
+
+ALLOWED STATUTES:
+[[statutes_list]]
+ALLOWED PRECEDENTS:
+[[precedents_list]]
+KNOWLEDGE BASE:
+[[knowledge_base]]
+
+Task:
+- Evaluate whether the parent step can be safely elaborated into additional steps.
+- Return 0..[[max_extra]] satellite steps.
+- Each satellite must add NEW argumentative value, staying consistent with claim facts.
+- Prefer one primary attack per satellite step when possible.
+- If expansion is not useful or unsafe, return an empty array.
+
+Hard rules:
+- Do not change or replace the parent step.
+- Do not invent facts.
+- Do not contradict explicit claim facts.
+- Do not contradict already generated steps.
+- Keep each satellite concise (2-4 sentences, Italian).
+- Use attack_id only from PARENT ATTACK IDS.
+- If citation_requirement is "required", include at least one grounded statute citation.
+- If no strong legal citation is feasible, use expected_norm="N/A" and citation_requirement="optional".
+
+Return ONLY compact JSON:
+{
+  "extra_steps": [
+    {
+      "step": "Italian counter-step text",
+      "attack_id": "one parent attack id",
+      "expected_norm": "article or N/A",
+      "citation_requirement": "required | optional | none"
+    }
+  ]
+}
 """,
     PromptKey.COUNTER_REASONER_STANCE_REWRITE: """[[original_prompt]]
 

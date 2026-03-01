@@ -474,7 +474,7 @@ class Settings(BaseSettings):
     aqa_structural_adjustments_enabled: bool = Field(
         default=True,
         alias="AQA_STRUCTURAL_ADJUSTMENTS_ENABLED",
-        description="Enable structural chain adjustments (redundancy penalty + diversity bonus).",
+        description="Enable structural chain adjustments (redundancy penalty).",
     )
     aqa_redundancy_similarity_threshold: float = Field(
         default=0.72,
@@ -491,30 +491,59 @@ class Settings(BaseSettings):
         alias="AQA_REDUNDANCY_MAX_PENALTY",
         description="Upper bound for redundancy penalty applied to a side net plausibility.",
     )
-    aqa_diversity_bonus_weight: float = Field(
+    aqa_attack_coverage_enabled: bool = Field(
+        default=True,
+        alias="AQA_ATTACK_COVERAGE_ENABLED",
+        description="Enable counter attack-coverage bonus based on distinct reasoner weak-point axes hit.",
+    )
+    aqa_attack_coverage_similarity_threshold: float = Field(
+        default=0.78,
+        alias="AQA_ATTACK_COVERAGE_SIMILARITY_THRESHOLD",
+        description="Similarity threshold used to cluster reasoner links into weak-point axes.",
+    )
+    aqa_attack_coverage_overlap_threshold: float = Field(
+        default=0.45,
+        alias="AQA_ATTACK_COVERAGE_OVERLAP_THRESHOLD",
+        description="Minimum overlap required for an active counter attack to count toward axis coverage.",
+    )
+    aqa_attack_coverage_min_attack_value: float = Field(
+        default=0.08,
+        alias="AQA_ATTACK_COVERAGE_MIN_ATTACK_VALUE",
+        description="Minimum attack_value required for an active counter attack to count toward axis coverage.",
+    )
+    aqa_attack_coverage_bonus_weight: float = Field(
         default=0.12,
-        alias="AQA_DIVERSITY_BONUS_WEIGHT",
-        description="Scaling factor applied to diversity bonus at chain aggregation level.",
+        alias="AQA_ATTACK_COVERAGE_BONUS_WEIGHT",
+        description="Scaling factor applied to Weak-Point Coverage Score bonus.",
     )
-    aqa_diversity_target_attack_types: int = Field(
-        default=4,
-        alias="AQA_DIVERSITY_TARGET_ATTACK_TYPES",
-        description="Reference number of distinct attack types used to saturate diversity coverage.",
+    aqa_attack_coverage_max_bonus: float = Field(
+        default=0.15,
+        alias="AQA_ATTACK_COVERAGE_MAX_BONUS",
+        description="Upper bound for attack-coverage bonus applied to contra net plausibility.",
     )
-    aqa_diversity_min_active_attacks: int = Field(
-        default=2,
-        alias="AQA_DIVERSITY_MIN_ACTIVE_ATTACKS",
-        description="Minimum active attacks required before diversity bonus reaches full volume.",
+    aqa_attack_coverage_second_hit_weight: float = Field(
+        default=0.30,
+        alias="AQA_ATTACK_COVERAGE_SECOND_HIT_WEIGHT",
+        description="Diminishing-return weight for second strongest attack on same axis.",
     )
-    aqa_diversity_max_bonus: float = Field(
-        default=0.12,
-        alias="AQA_DIVERSITY_MAX_BONUS",
-        description="Upper bound for diversity bonus applied to a side net plausibility.",
+    aqa_attack_coverage_third_hit_weight: float = Field(
+        default=0.10,
+        alias="AQA_ATTACK_COVERAGE_THIRD_HIT_WEIGHT",
+        description="Diminishing-return weight for third strongest attack on same axis.",
     )
     aqa_verdict_use_adjusted_score: bool = Field(
         default=True,
         alias="AQA_VERDICT_USE_ADJUSTED_SCORE",
         description="Use structurally adjusted net plausibility for final AQA verdict/score.",
+    )
+    aqa_lock_reasoner_plausibility: bool = Field(
+        default=False,
+        alias="AQA_LOCK_REASONER_PLAUSIBILITY",
+        description=(
+            "When enabled, the Reasoner-side net plausibility is computed from "
+            "intrinsic link strength (base_score + precedent delta), making it "
+            "stable across A/B Counter comparisons with shared Reasoner."
+        ),
     )
 
     aqa_severity_book_map: dict = Field(
@@ -705,6 +734,26 @@ class Settings(BaseSettings):
         default=25,
         alias="COUNTER_SECOND_PASS_MAX_ADDITIONAL",
         description="Maximum additional statutes retained from the targeted second-pass retrieval.",
+    )
+    counter_step_expansion_enabled: bool = Field(
+        default=True,
+        alias="COUNTER_STEP_EXPANSION_ENABLED",
+        description="Enable optional post-generation expansion of compressed multi-attack counter steps.",
+    )
+    counter_step_expansion_min_attacks: int = Field(
+        default=2,
+        alias="COUNTER_STEP_EXPANSION_MIN_ATTACKS",
+        description="Minimum number of attacks used in a step before expansion is attempted.",
+    )
+    counter_step_expansion_max_extra_per_step: int = Field(
+        default=2,
+        alias="COUNTER_STEP_EXPANSION_MAX_EXTRA_PER_STEP",
+        description="Maximum number of extra satellite steps generated from one compressed parent step.",
+    )
+    counter_step_expansion_max_extra_total: int = Field(
+        default=6,
+        alias="COUNTER_STEP_EXPANSION_MAX_EXTRA_TOTAL",
+        description="Global cap of extra satellite steps added by expansion during one counter run.",
     )
 
     # =========================================================================
@@ -943,23 +992,53 @@ class Settings(BaseSettings):
         )
         object.__setattr__(
             self,
-            "aqa_diversity_bonus_weight",
-            max(0.0, min(1.0, float(self.aqa_diversity_bonus_weight))),
+            "aqa_attack_coverage_similarity_threshold",
+            max(0.0, min(0.99, float(self.aqa_attack_coverage_similarity_threshold))),
         )
         object.__setattr__(
             self,
-            "aqa_diversity_target_attack_types",
-            max(1, int(self.aqa_diversity_target_attack_types)),
+            "aqa_attack_coverage_overlap_threshold",
+            max(0.0, min(1.0, float(self.aqa_attack_coverage_overlap_threshold))),
         )
         object.__setattr__(
             self,
-            "aqa_diversity_min_active_attacks",
-            max(1, int(self.aqa_diversity_min_active_attacks)),
+            "aqa_attack_coverage_min_attack_value",
+            max(0.0, min(1.0, float(self.aqa_attack_coverage_min_attack_value))),
         )
         object.__setattr__(
             self,
-            "aqa_diversity_max_bonus",
-            max(0.0, min(0.95, float(self.aqa_diversity_max_bonus))),
+            "aqa_attack_coverage_bonus_weight",
+            max(0.0, min(1.0, float(self.aqa_attack_coverage_bonus_weight))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_attack_coverage_max_bonus",
+            max(0.0, min(0.95, float(self.aqa_attack_coverage_max_bonus))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_attack_coverage_second_hit_weight",
+            max(0.0, min(1.0, float(self.aqa_attack_coverage_second_hit_weight))),
+        )
+        object.__setattr__(
+            self,
+            "aqa_attack_coverage_third_hit_weight",
+            max(0.0, min(1.0, float(self.aqa_attack_coverage_third_hit_weight))),
+        )
+        object.__setattr__(
+            self,
+            "counter_step_expansion_min_attacks",
+            max(2, int(self.counter_step_expansion_min_attacks)),
+        )
+        object.__setattr__(
+            self,
+            "counter_step_expansion_max_extra_per_step",
+            max(1, int(self.counter_step_expansion_max_extra_per_step)),
+        )
+        object.__setattr__(
+            self,
+            "counter_step_expansion_max_extra_total",
+            max(0, int(self.counter_step_expansion_max_extra_total)),
         )
 
         object.__setattr__(self, "_groq_api_keys", keys)

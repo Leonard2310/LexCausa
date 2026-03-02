@@ -69,4 +69,4 @@ old_claims.md
 claims_gold_labels.json
 
 # DoE artifacts
-experiments
+experiments/doe/batch_runs

@@ -894,7 +894,9 @@ class AQAEngineMixin:
         )
 
         ordered = sorted(
-            pro_links, key=lambda x: self._safe_float(x.get("base_score"), 0.0), reverse=True
+            pro_links,
+            key=lambda x: self._safe_float(x.get("base_score"), 0.0),
+            reverse=True,
         )
         axes: list[dict] = []
         for link in ordered:
@@ -921,7 +923,9 @@ class AQAEngineMixin:
                 rep = str(axis.get("representative_text", "") or "")
                 if not rep:
                     continue
-                sim = self._clamp01(self._safe_float(self._similarity(signature, rep), 0.0))
+                sim = self._clamp01(
+                    self._safe_float(self._similarity(signature, rep), 0.0)
+                )
                 if sim > best_sim:
                     best_sim = sim
                     best_idx = idx
@@ -1032,7 +1036,8 @@ class AQAEngineMixin:
                     "active_attacks": active_count,
                     "axis_quality": axis_quality,
                     "axis_base_avg": (
-                        sum(axis.get("base_scores", [])) / len(axis.get("base_scores", []))
+                        sum(axis.get("base_scores", []))
+                        / len(axis.get("base_scores", []))
                         if axis.get("base_scores")
                         else 0.0
                     ),
@@ -1046,7 +1051,9 @@ class AQAEngineMixin:
             sum(quality_values) / len(quality_values) if quality_values else 0.0
         )
         wpcs = self._clamp01(0.4 * coverage_ratio + 0.6 * quality_avg)
-        raw_bonus = self._safe_float(self._aqa_attack_coverage_bonus_weight, 0.12) * wpcs
+        raw_bonus = (
+            self._safe_float(self._aqa_attack_coverage_bonus_weight, 0.12) * wpcs
+        )
         bonus = min(
             self._safe_float(self._aqa_attack_coverage_max_bonus, 0.15),
             max(0.0, raw_bonus),
@@ -1628,10 +1635,10 @@ class AQAEngineMixin:
         # Dialectical pro score includes incoming counter attacks; intrinsic does not.
         pro_net_dialectical_raw = avg_field(pro_links, "nesso_plausibility")
         pro_net_intrinsic_raw = avg_field(pro_links, "nesso_intrinsic")
-        lock_reasoner = bool(
-            getattr(self, "_aqa_lock_reasoner_plausibility", False)
+        lock_reasoner = bool(getattr(self, "_aqa_lock_reasoner_plausibility", False))
+        pro_net_raw = (
+            pro_net_intrinsic_raw if lock_reasoner else pro_net_dialectical_raw
         )
-        pro_net_raw = pro_net_intrinsic_raw if lock_reasoner else pro_net_dialectical_raw
         contra_net_raw = avg_field(contra_links, "nesso_plausibility")
         final_plausibility_raw = pro_net_raw - contra_net_raw
 
@@ -1646,8 +1653,7 @@ class AQAEngineMixin:
                 pro_net_adjusted = pro_net_raw
             else:
                 pro_net_adjusted = self._clamp01(
-                    pro_net_raw
-                    - pro_redundancy.get("penalty", 0.0)
+                    pro_net_raw - pro_redundancy.get("penalty", 0.0)
                 )
             contra_cov_bonus = self._safe_float(
                 contra_attack_coverage.get("bonus"), 0.0

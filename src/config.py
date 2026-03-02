@@ -774,11 +774,6 @@ class Settings(BaseSettings):
         alias="TRUNCATION_CONTEXT",
         description="Max chars of contextual snippets in prompts.",
     )
-    truncation_tool_testo: int = Field(
-        default=1200,
-        alias="TRUNCATION_TOOL_TESTO",
-        description="Max chars of statute text returned by search tools (neo4j_tools).",
-    )
     truncation_tool_summary: int = Field(
         default=700,
         alias="TRUNCATION_TOOL_SUMMARY",
@@ -790,9 +785,69 @@ class Settings(BaseSettings):
         description="Max chars of statute text in base agent prompt formatting.",
     )
     truncation_prompt_summary: int = Field(
-        default=450,
+        default=600,
         alias="TRUNCATION_PROMPT_SUMMARY",
         description="Max chars of precedent summary in base agent prompt formatting.",
+    )
+    truncation_counter_claim: int = Field(
+        default=1500,
+        alias="TRUNCATION_COUNTER_CLAIM",
+        description="Max chars of claim text used in Counter-Reasoner meta prompts.",
+    )
+    truncation_counter_reasoner_conclusion: int = Field(
+        default=1400,
+        alias="TRUNCATION_COUNTER_REASONER_CONCLUSION",
+        description="Max chars of reasoner conclusion passed into Counter-Reasoner meta prompts.",
+    )
+    truncation_counter_precondition: int = Field(
+        default=320,
+        alias="TRUNCATION_COUNTER_PRECONDITION",
+        description="Max chars of one attack precondition string in Counter-Reasoner checks.",
+    )
+    truncation_counter_conclusion: int = Field(
+        default=1400,
+        alias="TRUNCATION_COUNTER_CONCLUSION",
+        description="Max chars of reasoner conclusion used for counter decomposition prompts.",
+    )
+    truncation_counter_attack_statement: int = Field(
+        default=300,
+        alias="TRUNCATION_COUNTER_ATTACK_STATEMENT",
+        description="Max chars for one decomposed counter attack statement.",
+    )
+    truncation_counter_attack_vector: int = Field(
+        default=180,
+        alias="TRUNCATION_COUNTER_ATTACK_VECTOR",
+        description="Max chars for one decomposed counter attack vector/focus string.",
+    )
+    truncation_counter_novelty_key: int = Field(
+        default=48,
+        alias="TRUNCATION_COUNTER_NOVELTY_KEY",
+        description="Max chars for normalized novelty-key identifiers in Counter planning.",
+    )
+    truncation_consistency_db_title: int = Field(
+        default=200,
+        alias="TRUNCATION_CONSISTENCY_DB_TITLE",
+        description="Max chars of DB title passed to consistency pertinence checks.",
+    )
+    truncation_consistency_db_text: int = Field(
+        default=1200,
+        alias="TRUNCATION_CONSISTENCY_DB_TEXT",
+        description="Max chars of DB article text passed to consistency pertinence checks.",
+    )
+    truncation_consistency_db_summary_mismatch: int = Field(
+        default=1500,
+        alias="TRUNCATION_CONSISTENCY_DB_SUMMARY_MISMATCH",
+        description="Max chars of DB precedent summary used in mismatch validation prompts.",
+    )
+    truncation_consistency_db_summary_repair: int = Field(
+        default=2000,
+        alias="TRUNCATION_CONSISTENCY_DB_SUMMARY_REPAIR",
+        description="Max chars of DB precedent summary used in repair prompts.",
+    )
+    truncation_consistency_signature: int = Field(
+        default=300,
+        alias="TRUNCATION_CONSISTENCY_SIGNATURE",
+        description="Max chars for normalized signatures used in consistency matching heuristics.",
     )
     claim_classifier_max_tokens: int = Field(
         default=64,

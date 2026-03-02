@@ -529,8 +529,8 @@ class ConsistencyMixin:
                 full_text=full_text[: settings.truncation_chain_text],
                 article_num=article_num,
                 cited_text=cited_text,
-                db_title=(db_title or "")[:200],
-                db_text=(db_text or "")[:1200],
+                db_title=(db_title or "")[: settings.truncation_consistency_db_title],
+                db_text=(db_text or "")[: settings.truncation_consistency_db_text],
             )
 
             messages = [
@@ -581,8 +581,12 @@ class ConsistencyMixin:
         if not hasattr(self, "_statute_relevance_gate_cache"):
             self._statute_relevance_gate_cache = cache
 
-        claim_sig = self._normalize_text_for_match(claim or "")[:220]
-        db_sig = self._normalize_text_for_match(db_text or "")[:220]
+        claim_sig = self._normalize_text_for_match(claim or "")[
+            : settings.truncation_consistency_signature
+        ]
+        db_sig = self._normalize_text_for_match(db_text or "")[
+            : settings.truncation_consistency_signature
+        ]
         key = (str(article_num).strip(), claim_sig, db_sig)
         if key in cache:
             return cache[key]
@@ -601,7 +605,7 @@ class ConsistencyMixin:
 
         evidence = (cited_text or citation or "").strip()
         if not evidence and db_text:
-            evidence = db_text[:220]
+            evidence = db_text[: settings.truncation_consistency_signature]
         cited_for_gate = evidence or f"Art. {article_num}"
         try:
             pertinent = self._check_pertinence_with_llm(
@@ -1081,7 +1085,9 @@ class ConsistencyMixin:
             user_prompt = render_prompt(
                 "consistency.precedent_mismatch_user",
                 cited_text=cited_text,
-                db_summary=db_summary[:1500],
+                db_summary=db_summary[
+                    : settings.truncation_consistency_db_summary_mismatch
+                ],
             )
             response = resilient_chat_call(
                 llm,
@@ -1123,7 +1129,9 @@ class ConsistencyMixin:
             user_prompt = render_prompt(
                 "consistency.precedent_repair_user",
                 precedent_title=precedent_title,
-                db_summary=db_summary[:2000],
+                db_summary=db_summary[
+                    : settings.truncation_consistency_db_summary_repair
+                ],
                 cited_text=cited_text[: settings.truncation_context],
             )
             response = resilient_chat_call(

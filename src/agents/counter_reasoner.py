@@ -220,9 +220,15 @@ class CounterReasoner(BaseAgent):
         precondition: str,
     ) -> str:
         """Evaluate one attack precondition with conservative fail-open behavior."""
-        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[:1500]
-        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[:1000]
-        condition = re.sub(r"\s+", " ", (precondition or "").strip())[:320]
+        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[
+            : settings.truncation_counter_claim
+        ]
+        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[
+            : settings.truncation_counter_reasoner_conclusion
+        ]
+        condition = re.sub(r"\s+", " ", (precondition or "").strip())[
+            : settings.truncation_counter_precondition
+        ]
         if not condition:
             return "UNCLEAR"
 
@@ -310,8 +316,12 @@ class CounterReasoner(BaseAgent):
         attack = str(attack_id or "").strip()
         if not attack:
             return False
-        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[:1500]
-        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[:1000]
+        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[
+            : settings.truncation_counter_claim
+        ]
+        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[
+            : settings.truncation_counter_reasoner_conclusion
+        ]
         if not claim_text:
             return True
 
@@ -435,8 +445,12 @@ class CounterReasoner(BaseAgent):
         if not ordered_ids:
             return [], {}
 
-        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[:1500]
-        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[:1000]
+        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[
+            : settings.truncation_counter_claim
+        ]
+        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[
+            : settings.truncation_counter_reasoner_conclusion
+        ]
         cache_key = (claim_text, reasoner_text, tuple(ordered_ids))
         cached = self._attack_safety_cache.get(cache_key)
         if cached is not None:
@@ -557,8 +571,12 @@ class CounterReasoner(BaseAgent):
         reasoner_conclusion: str,
     ) -> Dict[str, List[str]]:
         """Extract target map for planner scope control."""
-        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[:1500]
-        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[:1000]
+        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[
+            : settings.truncation_counter_claim
+        ]
+        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[
+            : settings.truncation_counter_reasoner_conclusion
+        ]
         if not claim_text:
             return {
                 "allowed_targets": [],
@@ -634,9 +652,11 @@ class CounterReasoner(BaseAgent):
         Works only on reasoner conclusion (not on reasoner chain) to keep
         counter-argument generation independent from the original path.
         """
-        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[:1500]
+        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[
+            : settings.truncation_counter_claim
+        ]
         conclusion_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[
-            :1400
+            : settings.truncation_counter_conclusion
         ]
         fallback: Dict[str, object] = {
             "attack_points": [],
@@ -683,15 +703,21 @@ class CounterReasoner(BaseAgent):
                     points.append(
                         {
                             "id": pid[:8],
-                            "statement": statement[:220],
-                            "point_type": point_type[:48],
-                            "attack_vector": attack_vector[:180],
+                            "statement": statement[
+                                : settings.truncation_counter_attack_statement
+                            ],
+                            "point_type": point_type[
+                                : settings.truncation_counter_novelty_key
+                            ],
+                            "attack_vector": attack_vector[
+                                : settings.truncation_counter_attack_vector
+                            ],
                         }
                     )
             fixed: List[str] = []
             if isinstance(fixed_raw, list):
                 fixed = [
-                    str(v).strip()[:180]
+                    str(v).strip()[: settings.truncation_counter_attack_vector]
                     for v in fixed_raw
                     if isinstance(v, str) and str(v).strip()
                 ][:8]
@@ -2410,7 +2436,9 @@ class CounterReasoner(BaseAgent):
                         )
                         if extra_steps:
                             extra_steps_count += len(extra_steps)
-                            for extra_idx, extra_step in enumerate(extra_steps, start=1):
+                            for extra_idx, extra_step in enumerate(
+                                extra_steps, start=1
+                            ):
                                 extra_attacks = (
                                     extra_attack_ids[extra_idx - 1]
                                     if extra_idx - 1 < len(extra_attack_ids)
@@ -2589,13 +2617,10 @@ class CounterReasoner(BaseAgent):
                 attack_hint = ""
 
             payload_for_parse = (
-                (
-                    f"ATTACKS_USED: {attack_hint}\nSTEP: {step_candidate_raw}"
-                    if attack_hint
-                    else f"STEP: {step_candidate_raw}"
-                )
-                .strip()
-            )
+                f"ATTACKS_USED: {attack_hint}\nSTEP: {step_candidate_raw}"
+                if attack_hint
+                else f"STEP: {step_candidate_raw}"
+            ).strip()
             candidate_step, candidate_attacks = self._parse_counter_step_payload(
                 response=payload_for_parse,
                 allowed_attack_ids=parent_ids,
@@ -2743,7 +2768,9 @@ class CounterReasoner(BaseAgent):
                     "_",
                     str(item.get("novelty_key", "")).strip().lower(),
                 ).strip("_")
-                or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[:48]
+                or re.sub(r"[^a-z0-9_]+", "_", focus.lower()).strip("_")[
+                    : settings.truncation_counter_novelty_key
+                ]
                 or f"counter_step_{idx}"
             )
             citation_requirement = self._normalize_plan_citation_requirement(
@@ -2908,8 +2935,12 @@ class CounterReasoner(BaseAgent):
         plan_focus: str,
     ) -> tuple[bool, str]:
         """Check whether planned goal/focus stays within extracted target map."""
-        goal = re.sub(r"\s+", " ", (plan_goal or "").strip())[:220]
-        focus = re.sub(r"\s+", " ", (plan_focus or "").strip())[:220]
+        goal = re.sub(r"\s+", " ", (plan_goal or "").strip())[
+            : settings.truncation_counter_attack_statement
+        ]
+        focus = re.sub(r"\s+", " ", (plan_focus or "").strip())[
+            : settings.truncation_counter_attack_statement
+        ]
         if not goal or not focus:
             return False, "incomplete plan step"
         if not target_map:
@@ -2922,8 +2953,12 @@ class CounterReasoner(BaseAgent):
         if not has_constraints:
             return True, ""
 
-        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[:1500]
-        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[:1000]
+        claim_text = re.sub(r"\s+", " ", (claim or "").strip())[
+            : settings.truncation_counter_claim
+        ]
+        reasoner_text = re.sub(r"\s+", " ", (reasoner_conclusion or "").strip())[
+            : settings.truncation_counter_reasoner_conclusion
+        ]
         target_map_text = self._target_map_text(target_map)
         cache_key = (
             goal.lower(),
@@ -3863,7 +3898,7 @@ class CounterReasoner(BaseAgent):
         """Compact summary used as execution memory for following steps."""
         first_sentence = CounterReasoner._first_sentence_legal_safe(step_text)
         first_sentence = re.sub(r"\s+", " ", first_sentence).strip()
-        return first_sentence[:220]
+        return first_sentence[: settings.truncation_counter_attack_statement]
 
     @staticmethod
     def _emit_stream_token(

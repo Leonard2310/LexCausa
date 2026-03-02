@@ -701,7 +701,7 @@ class BaseAgent(ABC):
                     legal_context=legal_context,
                     article_number=article_number,
                     article_title=article_title,
-                    article_text=article_text[:500],
+                    article_text=article_text[: settings.truncation_prompt_testo],
                     taxonomy_role_block=taxonomy_role_block,
                 )
 
@@ -901,7 +901,7 @@ class BaseAgent(ABC):
                 claim=claim,
                 title=title,
                 materia_line=materia_line,
-                summary=summary[:600],
+                summary=summary[: settings.truncation_prompt_summary],
             )
 
             try:

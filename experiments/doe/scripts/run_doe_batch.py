@@ -250,6 +250,26 @@ def _count_repair_failed(report: dict) -> int:
     )
 
 
+def _classify_abstention(gate: dict, counter: dict) -> str:
+    """Classify abstention into reasoned / gate / empty."""
+    label = str(gate.get("label", "")).upper()
+    reason = str(gate.get("reason", "")).lower()
+    counter_reason = str(counter.get("abstention_reason", "")).lower()
+
+    # Counter explicitly decided there are no valid attacks
+    if label == "ALREADY_ABSTAINED" or "no_attacks" in counter_reason or "safety" in counter_reason:
+        return "reasoned"
+    # Polisher gate blocked (insufficient material or non-opposing)
+    if label in ("INSUFFICIENT_MATERIAL", "NON_OPPOSING"):
+        return "gate"
+    # Empty chain or generic failure
+    chain = counter.get("reasoning_chain") or []
+    if not chain and not counter.get("raw_response"):
+        return "empty"
+    # Fallback: if gate says abstain but we can't classify further
+    return "gate"
+
+
 def extract_setup_metrics(response: dict) -> dict[str, Any]:
     """Extract AQA and consistency metrics from a single pipeline response."""
     evaluation = dig(response, "evaluation", default={}) or {}
@@ -336,6 +356,27 @@ def extract_setup_metrics(response: dict) -> dict[str, Any]:
         # Winning side
         "winning_side": evaluation.get("winning_side"),
         "confidence": _f(evaluation.get("confidence")),
+        # ── Abstention Quality ──────────────────────────────────────
+        # Classify *why* the counter abstained:
+        #   "reasoned"       – counter explicitly decided no valid attacks exist
+        #   "gate"           – polisher gate blocked (insufficient material / non-opposing)
+        #   "empty"          – output empty / generation failure
+        #   None             – counter did not abstain
+        "abstention_type": (
+            _classify_abstention(gate, counter)
+            if gate.get("abstain")
+            else None
+        ),
+        # ── Counter Density (structural richness) ─────────────────
+        # ratio = contra_links / max(pro_links, 1)
+        # Higher → counter built a denser attack graph relative to pro
+        "counter_density": (
+            round(
+                (len(aqa_links.get("contra") or []) if isinstance(aqa_links.get("contra"), list) else 0)
+                / max((len(aqa_links.get("pro") or []) if isinstance(aqa_links.get("pro"), list) else 0), 1),
+                4,
+            )
+        ),
     }
 
 
@@ -356,6 +397,7 @@ def compute_doe_delta(metrics_a: dict, metrics_b: dict) -> dict[str, Any]:
         "reasoner_repair_fail_rate",
         "counter_repair_fail_rate",
         "confidence",
+        "counter_density",
     ]
     delta: dict[str, Any] = {}
     for k in delta_keys:
@@ -379,6 +421,9 @@ def compute_doe_delta(metrics_a: dict, metrics_b: dict) -> dict[str, Any]:
     )
     delta["abstain_A"] = bool(metrics_a.get("counter_gate_abstain"))
     delta["abstain_B"] = bool(metrics_b.get("counter_gate_abstain"))
+    # Abstention quality
+    delta["abstention_type_A"] = metrics_a.get("abstention_type")
+    delta["abstention_type_B"] = metrics_b.get("abstention_type")
     return delta
 
 
@@ -576,6 +621,44 @@ def build_run_summary(
         var = sum((x - mean) ** 2 for x in clean) / (len(clean) - 1)
         return round(var**0.5, 4)
 
+    def _abstention_breakdown(types: list[str | None]) -> dict[str, int]:
+        """Count abstention types: reasoned / gate / empty / none."""
+        counts: dict[str, int] = {"reasoned": 0, "gate": 0, "empty": 0, "none": 0}
+        for t in types:
+            counts[t if t in ("reasoned", "gate", "empty") else "none"] += 1
+        return counts
+
+    def _compute_stability(
+        results: list[dict], setup_key: str, metric_key: str = "aqa_net_final"
+    ) -> dict[str, Any]:
+        """Compute inter-replica stability: group by claim_id, compute
+        per-claim stdev across replicates, then average those stdevs.
+
+        Lower mean_std → more stable (deterministic) system.
+        """
+        from collections import defaultdict
+        by_claim: dict[str, list[float]] = defaultdict(list)
+        for r in results:
+            v = _f((r.get(f"metrics_{setup_key}") or {}).get(metric_key))
+            if v is not None:
+                by_claim[r["claim_id"]].append(v)
+
+        claim_stds: list[float] = []
+        for cid, vals in by_claim.items():
+            if len(vals) >= 2:
+                mean = sum(vals) / len(vals)
+                var = sum((x - mean) ** 2 for x in vals) / (len(vals) - 1)
+                claim_stds.append(var**0.5)
+
+        if not claim_stds:
+            return {"claims_with_2plus_reps": 0, "mean_std": None, "max_std": None}
+
+        return {
+            "claims_with_2plus_reps": len(claim_stds),
+            "mean_std": round(sum(claim_stds) / len(claim_stds), 6),
+            "max_std": round(max(claim_stds), 6),
+        }
+
     if n > 0:
         net_finals_a = [_f((r.get("metrics_A") or {}).get("aqa_net_final")) for r in ok_pairs]
         net_finals_b = [_f((r.get("metrics_B") or {}).get("aqa_net_final")) for r in ok_pairs]
@@ -663,6 +746,28 @@ def build_run_summary(
             "mean_contra_links_count_B": _safe_avg(
                 [_f((r.get("metrics_B") or {}).get("contra_links_count")) for r in ok_pairs]
             ),
+            # ── Counter Density ────────────────────────────────────
+            "mean_counter_density_A": _safe_avg(
+                [_f((r.get("metrics_A") or {}).get("counter_density")) for r in ok_pairs]
+            ),
+            "mean_counter_density_B": _safe_avg(
+                [_f((r.get("metrics_B") or {}).get("counter_density")) for r in ok_pairs]
+            ),
+            # ── Abstention Quality ─────────────────────────────────
+            "abstention_breakdown_A": _abstention_breakdown(
+                [(r.get("metrics_A") or {}).get("abstention_type") for r in ok_pairs]
+            ),
+            "abstention_breakdown_B": _abstention_breakdown(
+                [(r.get("metrics_B") or {}).get("abstention_type") for r in ok_pairs]
+            ),
+        }
+
+        # ── Stability inter-replica ───────────────────────────────────
+        # Per-claim stdev of aqa_net_final across replicates.
+        # Lower mean_std → higher determinism.
+        summary["stability"] = {
+            "setup_A": _compute_stability(ok_pairs, "A"),
+            "setup_B": _compute_stability(ok_pairs, "B"),
         }
 
         # Per-domain breakdown
@@ -723,6 +828,16 @@ def next_run_name(batch_dir: Path) -> str:
     ) if batch_dir.exists() else []
     n = (existing[-1] + 1) if existing else 1
     return f"run_{n:03d}"
+
+
+def latest_run_name(batch_dir: Path) -> str | None:
+    """Return the name of the most recent run_XXX folder, or None."""
+    existing = sorted(
+        (int(m.group(1)), d.name)
+        for d in batch_dir.iterdir()
+        if d.is_dir() and (m := re.match(r"^run_(\d+)$", d.name))
+    ) if batch_dir.exists() else []
+    return existing[-1][1] if existing else None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1168,7 +1283,9 @@ def _save_doe_log(
         f"  Pro cogency:    {metrics_a.get('pro_cogency_avg', 'N/A')}",
         f"  Pro semantics:  {metrics_a.get('pro_semantics_avg', 'N/A')}",
         f"  Pro norm supp:  {metrics_a.get('pro_norm_support_avg', 'N/A')}",
-        f"  Counter gate:   {metrics_a.get('counter_gate_label', 'N/A')} (abstain={metrics_a.get('counter_gate_abstain', 'N/A')})",
+        f"  Counter gate:   {metrics_a.get('counter_gate_label') or 'N/A'} (abstain={metrics_a.get('counter_gate_abstain', 'N/A')})",
+        f"  Abstention type:{str(metrics_a.get('abstention_type') or 'N/A'):>10}",
+        f"  Counter density:{str(metrics_a['counter_density'] if metrics_a.get('counter_density') is not None else 'N/A'):>10}",
         "",
         "[SETUP B - Treatment (counter_causality=ON)]",
         f"  Verdict:        {metrics_b.get('aqa_verdict', 'N/A')}",
@@ -1180,7 +1297,9 @@ def _save_doe_log(
         f"  Pro cogency:    {metrics_b.get('pro_cogency_avg', 'N/A')}",
         f"  Pro semantics:  {metrics_b.get('pro_semantics_avg', 'N/A')}",
         f"  Pro norm supp:  {metrics_b.get('pro_norm_support_avg', 'N/A')}",
-        f"  Counter gate:   {metrics_b.get('counter_gate_label', 'N/A')} (abstain={metrics_b.get('counter_gate_abstain', 'N/A')})",
+        f"  Counter gate:   {metrics_b.get('counter_gate_label') or 'N/A'} (abstain={metrics_b.get('counter_gate_abstain', 'N/A')})",
+        f"  Abstention type:{str(metrics_b.get('abstention_type') or 'N/A'):>10}",
+        f"  Counter density:{str(metrics_b['counter_density'] if metrics_b.get('counter_density') is not None else 'N/A'):>10}",
         "",
         "[DELTA (B - A)]",
         f"  Delta net final:              {delta.get('delta_aqa_net_final', 'N/A')}",
@@ -1198,6 +1317,9 @@ def _save_doe_log(
         f"  Verdict A:                    {delta.get('verdict_A', 'N/A')}",
         f"  Verdict B:                    {delta.get('verdict_B', 'N/A')}",
         f"  Verdict changed:              {delta.get('verdict_changed', 'N/A')}",
+        f"  Delta counter density:        {delta.get('delta_counter_density', 'N/A')}",
+        f"  Abstention type A:            {delta.get('abstention_type_A', 'N/A')}",
+        f"  Abstention type B:            {delta.get('abstention_type_B', 'N/A')}",
     ]
     try:
         path.write_text("\n".join(lines), encoding="utf-8")
@@ -1273,7 +1395,17 @@ def main() -> None:
     cfg["_config_path"] = str(args.config)
 
     # Determine run folder
-    run_name = args.run_name.strip() or next_run_name(BATCH_RUNS_DIR)
+    if args.run_name.strip():
+        run_name = args.run_name.strip()
+    elif args.resume:
+        # --resume without --run-name: reuse the latest existing run
+        run_name = latest_run_name(BATCH_RUNS_DIR)
+        if not run_name:
+            print("ERROR: --resume specified but no existing run found in batch_runs/")
+            sys.exit(1)
+        print(f"[INFO] --resume: riprendo dalla run esistente '{run_name}'")
+    else:
+        run_name = next_run_name(BATCH_RUNS_DIR)
     run_dir = BATCH_RUNS_DIR / run_name
 
     # Only filter

@@ -784,6 +784,11 @@ class Settings(BaseSettings):
         alias="TRUNCATION_PROMPT_TESTO",
         description="Max chars of statute text in base agent prompt formatting.",
     )
+    truncation_prompt_testo_amministrativo: int = Field(
+        default=500,
+        alias="TRUNCATION_PROMPT_TESTO_AMMINISTRATIVO",
+        description="Max chars of administrative statute text in base agent prompt formatting.",
+    )
     truncation_prompt_summary: int = Field(
         default=600,
         alias="TRUNCATION_PROMPT_SUMMARY",

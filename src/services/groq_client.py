@@ -38,6 +38,18 @@ class AllKeysRateLimitedError(Exception):
         )
 
 
+class RequestTooLargeError(Exception):
+    """Raised when the provider rejects a request for exceeding token budget."""
+
+    def __init__(self, model: str, detail: str):
+        self.model = model
+        self.detail = detail
+        super().__init__(
+            f"Request too large for model '{model}'. Reduce prompt size or max_tokens. "
+            f"Provider detail: {detail}"
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level state (shared across all callers in the same process)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +141,22 @@ def _is_rate_limit(exc: Exception) -> bool:
     return any(
         marker in exc_str
         for marker in ("rate limit", "rate_limit", "too many requests")
+    )
+
+
+def _is_request_too_large(exc: Exception) -> bool:
+    """True when provider rejects the request because it exceeds token budget."""
+    exc_str = str(exc).lower()
+    status = getattr(exc, "status_code", None)
+    if status == 413:
+        return True
+    return any(
+        marker in exc_str
+        for marker in (
+            "request too large",
+            "tokens per minute",
+            "please reduce your message size",
+        )
     )
 
 
@@ -270,6 +298,15 @@ def _resilient_loop(
                     last_exc = exc
                     if isinstance(exc, PipelineCancelled):
                         raise
+
+                    if _is_request_too_large(exc):
+                        logger.error(
+                            "❌ [%s] Request too large for model %s: %s",
+                            label,
+                            model,
+                            exc,
+                        )
+                        raise RequestTooLargeError(model, str(exc)) from exc
 
                     if not _is_retryable(exc):
                         raise  # Non-retryable (e.g. 400 Bad Request) → fail fast

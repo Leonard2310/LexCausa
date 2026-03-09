@@ -949,7 +949,11 @@ class BaseAgent(ABC):
                 parts.append(f"- Art. {s.get('articolo')} {source}: {s.get('titolo')}")
                 testo = s.get("testo")
                 if testo:
-                    parts.append(f"  {testo[:settings.truncation_prompt_testo]}...")
+                    source_code = (s.get("source") or "").strip().lower()
+                    testo_limit = settings.truncation_prompt_testo
+                    if source_code == "codice_amministrativo":
+                        testo_limit = settings.truncation_prompt_testo_amministrativo
+                    parts.append(f"  {testo[:testo_limit]}...")
             parts.append("")
 
         if precedents:

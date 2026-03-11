@@ -334,7 +334,7 @@ These can be overridden in `.env` or via the frontend Settings panel:
 - LLM generation knobs (temperature, max tokens)
 - API runtime settings (host/port/debug)
 
-Model catalog and aliases (`groq_llama_scout_17b`, `groq_llama_maverick_17b`, `gpt_oss_120b`, `gpt_oss_20b`, `qwen_qwen3_32b`, `groq_llama_3_3_70b_versatile`) are code-defined in `src/config.py`.
+Model catalog and aliases (`gpt_oss_120b`, `gpt_oss_20b`, `qwen_qwen3_32b`, `groq_llama_3_3_70b_versatile`) are code-defined in `src/config.py`.
 
 ### Optional — Embedding & Search
 

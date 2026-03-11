@@ -7,8 +7,8 @@
   "max_statutes": 100,
   "max_precedents": 5,
   "settings": {
-    "reasoner_model": "groq_llama_scout_17b",
-    "counter_model": "groq_llama_scout_17b",
+    "reasoner_model": "gpt_oss_120b",
+    "counter_model": "gpt_oss_120b",
     "llm_temperature": 0.3,
     "llm_max_tokens": 3500,
     "chain_min_steps": 3,

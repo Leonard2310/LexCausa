@@ -59,8 +59,6 @@ class Settings(BaseSettings):
     _groq_api_keys: list[str] = []  # populated dynamically by validator
     # Model catalog is code-owned (not env-driven).
     MODEL_ALIAS_MAP: ClassVar[dict[str, str]] = {
-        "groq_llama_scout_17b": "meta-llama/llama-4-scout-17b-16e-instruct",
-        "groq_llama_maverick_17b": "meta-llama/llama-4-maverick-17b-128e-instruct",
         "gpt_oss_120b": "openai/gpt-oss-120b",
         "gpt_oss_20b": "openai/gpt-oss-20b",
         "groq_llama_3_3_70b_versatile": "llama-3.3-70b-versatile",
@@ -69,14 +67,14 @@ class Settings(BaseSettings):
     # Used by retrieval-side components (claim classifier, keyword extraction,
     # legal-context extraction, relevance/applicability filters, precedents keywording).
     RETRIEVAL_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
-        "groq_llama_maverick_17b",
-        "groq_llama_scout_17b",
+        "qwen_qwen3_32b",
+        "groq_llama_3_3_70b_versatile",
         "gpt_oss_20b",
     ]
     # Used by the rest of the pipeline helpers (router, evaluator/polisher).
     PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
-        "groq_llama_maverick_17b",
-        "groq_llama_scout_17b",
+        "qwen_qwen3_32b",
+        "groq_llama_3_3_70b_versatile",
         "gpt_oss_20b",
     ]
     REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
@@ -84,8 +82,8 @@ class Settings(BaseSettings):
     reasoner_model_fallback_aliases: list[str] = Field(
         default_factory=lambda: [
             "gpt_oss_120b",
-            "groq_llama_maverick_17b",
-            "groq_llama_scout_17b",
+            "qwen_qwen3_32b",
+            "groq_llama_3_3_70b_versatile",
         ],
         alias="REASONER_MODEL_FALLBACK_ALIASES",
         description="Ordered model aliases used as resilient fallback chain for Reasoner.",
@@ -93,8 +91,8 @@ class Settings(BaseSettings):
     counter_model_fallback_aliases: list[str] = Field(
         default_factory=lambda: [
             "gpt_oss_120b",
-            "groq_llama_maverick_17b",
-            "groq_llama_scout_17b",
+            "qwen_qwen3_32b",
+            "groq_llama_3_3_70b_versatile",
         ],
         alias="COUNTER_MODEL_FALLBACK_ALIASES",
         description="Ordered model aliases used as resilient fallback chain for Counter-Reasoner.",

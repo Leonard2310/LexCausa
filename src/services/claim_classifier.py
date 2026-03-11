@@ -46,7 +46,7 @@ class ClaimClassifier:
     """
     Classifies legal claims using Groq Cloud LLM.
 
-    Uses the Llama 4 Scout model to route claims to the appropriate
+    Uses LLM to route claims to the appropriate
     book of the Italian Civil or Penal Code.
     """
 

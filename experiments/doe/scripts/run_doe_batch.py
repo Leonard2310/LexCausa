@@ -199,10 +199,7 @@ def post_json_with_retries(
         err = str(data.get("error", text))[:500]
         label = "TIMEOUT" if is_timeout else f"http={http_code}"
         limit_str = str(max_retries) if max_retries > 0 else "∞"
-        print(
-            f"      [WARN] attempt {attempt}/{limit_str} "
-            f"{label} err={err[:120]}"
-        )
+        print(f"      [WARN] attempt {attempt}/{limit_str} " f"{label} err={err[:120]}")
 
         # If we have a finite cap and exceeded it, give up
         if max_retries > 0 and attempt >= max_retries:
@@ -246,18 +243,22 @@ def _count_repair_failed(report: dict) -> int:
     return sum(
         1
         for c in checks
-        if isinstance(c, dict) and str(c.get("mismatch_action", "")).lower() == "repair_failed"
+        if isinstance(c, dict)
+        and str(c.get("mismatch_action", "")).lower() == "repair_failed"
     )
 
 
 def _classify_abstention(gate: dict, counter: dict) -> str:
     """Classify abstention into reasoned / gate / empty."""
     label = str(gate.get("label", "")).upper()
-    reason = str(gate.get("reason", "")).lower()
     counter_reason = str(counter.get("abstention_reason", "")).lower()
 
     # Counter explicitly decided there are no valid attacks
-    if label == "ALREADY_ABSTAINED" or "no_attacks" in counter_reason or "safety" in counter_reason:
+    if (
+        label == "ALREADY_ABSTAINED"
+        or "no_attacks" in counter_reason
+        or "safety" in counter_reason
+    ):
         return "reasoned"
     # Polisher gate blocked (insufficient material or non-opposing)
     if label in ("INSUFFICIENT_MATERIAL", "NON_OPPOSING"):
@@ -306,8 +307,16 @@ def extract_setup_metrics(response: dict) -> dict[str, Any]:
         "aqa_net_pro": _f(net.get("pro")),
         "aqa_net_contra": _f(net.get("contra")),
         # Link counts (mirrors frontend extractDoeMetrics)
-        "pro_links_count": len(aqa_links.get("pro") or []) if isinstance(aqa_links.get("pro"), list) else 0,
-        "contra_links_count": len(aqa_links.get("contra") or []) if isinstance(aqa_links.get("contra"), list) else 0,
+        "pro_links_count": (
+            len(aqa_links.get("pro") or [])
+            if isinstance(aqa_links.get("pro"), list)
+            else 0
+        ),
+        "contra_links_count": (
+            len(aqa_links.get("contra") or [])
+            if isinstance(aqa_links.get("contra"), list)
+            else 0
+        ),
         # Chain-level scores
         "pro_cogency_avg": _f(chain_pro.get("cogency_avg")),
         "pro_semantics_avg": _f(chain_pro.get("semantics_avg")),
@@ -363,17 +372,26 @@ def extract_setup_metrics(response: dict) -> dict[str, Any]:
         #   "empty"          – output empty / generation failure
         #   None             – counter did not abstain
         "abstention_type": (
-            _classify_abstention(gate, counter)
-            if gate.get("abstain")
-            else None
+            _classify_abstention(gate, counter) if gate.get("abstain") else None
         ),
         # ── Counter Density (structural richness) ─────────────────
         # ratio = contra_links / max(pro_links, 1)
         # Higher → counter built a denser attack graph relative to pro
         "counter_density": (
             round(
-                (len(aqa_links.get("contra") or []) if isinstance(aqa_links.get("contra"), list) else 0)
-                / max((len(aqa_links.get("pro") or []) if isinstance(aqa_links.get("pro"), list) else 0), 1),
+                (
+                    len(aqa_links.get("contra") or [])
+                    if isinstance(aqa_links.get("contra"), list)
+                    else 0
+                )
+                / max(
+                    (
+                        len(aqa_links.get("pro") or [])
+                        if isinstance(aqa_links.get("pro"), list)
+                        else 0
+                    ),
+                    1,
+                ),
                 4,
             )
         ),
@@ -410,8 +428,8 @@ def compute_doe_delta(metrics_a: dict, metrics_b: dict) -> dict[str, Any]:
     # Verdict flip
     delta["verdict_A"] = metrics_a.get("aqa_verdict")
     delta["verdict_B"] = metrics_b.get("aqa_verdict")
-    delta["verdict_changed"] = (
-        metrics_a.get("aqa_verdict") != metrics_b.get("aqa_verdict")
+    delta["verdict_changed"] = metrics_a.get("aqa_verdict") != metrics_b.get(
+        "aqa_verdict"
     )
     delta["plausible_A"] = int(
         str(metrics_a.get("aqa_verdict", "")).lower() == "plausible"
@@ -470,11 +488,7 @@ def build_setup_b_counter_payload(
     - Calls /api/counter_reason (NOT /api/pipeline)
     """
     s = dict(cfg.get("settings", {}))
-    routing = (
-        run_a_response.get("final_routing")
-        or run_a_response.get("routing")
-        or {}
-    )
+    routing = run_a_response.get("final_routing") or run_a_response.get("routing") or {}
     retrieval = run_a_response.get("retrieval_context", {}) or {}
     reasoner_conclusion = (
         (run_a_response.get("reasoner") or {}).get("conclusion", "") or ""
@@ -605,7 +619,9 @@ def build_run_summary(
 
     # ── Aggregated statistics ──────────────────────────────────────────
     ok_pairs = [
-        r for r in all_results if r.get("status_A") == "ok" and r.get("status_B") == "ok"
+        r
+        for r in all_results
+        if r.get("status_A") == "ok" and r.get("status_B") == "ok"
     ]
     n = len(ok_pairs)
 
@@ -637,6 +653,7 @@ def build_run_summary(
         Lower mean_std → more stable (deterministic) system.
         """
         from collections import defaultdict
+
         by_claim: dict[str, list[float]] = defaultdict(list)
         for r in results:
             v = _f((r.get(f"metrics_{setup_key}") or {}).get(metric_key))
@@ -660,19 +677,27 @@ def build_run_summary(
         }
 
     if n > 0:
-        net_finals_a = [_f((r.get("metrics_A") or {}).get("aqa_net_final")) for r in ok_pairs]
-        net_finals_b = [_f((r.get("metrics_B") or {}).get("aqa_net_final")) for r in ok_pairs]
-        deltas_net = [_f((r.get("delta") or {}).get("delta_aqa_net_final")) for r in ok_pairs]
+        net_finals_a = [
+            _f((r.get("metrics_A") or {}).get("aqa_net_final")) for r in ok_pairs
+        ]
+        net_finals_b = [
+            _f((r.get("metrics_B") or {}).get("aqa_net_final")) for r in ok_pairs
+        ]
+        deltas_net = [
+            _f((r.get("delta") or {}).get("delta_aqa_net_final")) for r in ok_pairs
+        ]
 
         plausible_a = sum(
             1
             for r in ok_pairs
-            if str((r.get("metrics_A") or {}).get("aqa_verdict", "")).lower() == "plausible"
+            if str((r.get("metrics_A") or {}).get("aqa_verdict", "")).lower()
+            == "plausible"
         )
         plausible_b = sum(
             1
             for r in ok_pairs
-            if str((r.get("metrics_B") or {}).get("aqa_verdict", "")).lower() == "plausible"
+            if str((r.get("metrics_B") or {}).get("aqa_verdict", "")).lower()
+            == "plausible"
         )
         abstain_a = sum(
             1
@@ -685,9 +710,7 @@ def build_run_summary(
             if bool((r.get("metrics_B") or {}).get("counter_gate_abstain"))
         )
         verdict_changed = sum(
-            1
-            for r in ok_pairs
-            if bool((r.get("delta") or {}).get("verdict_changed"))
+            1 for r in ok_pairs if bool((r.get("delta") or {}).get("verdict_changed"))
         )
 
         summary["aggregated"] = {
@@ -710,48 +733,90 @@ def build_run_summary(
             "abstain_rate_B": round(abstain_b / n, 4),
             # Per-metric averages
             "mean_pro_cogency_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("pro_cogency_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("pro_cogency_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_pro_cogency_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("pro_cogency_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("pro_cogency_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_contra_cogency_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("contra_cogency_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("contra_cogency_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_contra_cogency_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("contra_cogency_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("contra_cogency_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_pro_norm_support_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("pro_norm_support_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("pro_norm_support_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_pro_norm_support_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("pro_norm_support_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("pro_norm_support_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_pro_semantics_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("pro_semantics_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("pro_semantics_avg"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_pro_semantics_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("pro_semantics_avg")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("pro_semantics_avg"))
+                    for r in ok_pairs
+                ]
             ),
             # Link counts
             "mean_pro_links_count_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("pro_links_count")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("pro_links_count"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_pro_links_count_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("pro_links_count")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("pro_links_count"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_contra_links_count_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("contra_links_count")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("contra_links_count"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_contra_links_count_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("contra_links_count")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("contra_links_count"))
+                    for r in ok_pairs
+                ]
             ),
             # ── Counter Density ────────────────────────────────────
             "mean_counter_density_A": _safe_avg(
-                [_f((r.get("metrics_A") or {}).get("counter_density")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_A") or {}).get("counter_density"))
+                    for r in ok_pairs
+                ]
             ),
             "mean_counter_density_B": _safe_avg(
-                [_f((r.get("metrics_B") or {}).get("counter_density")) for r in ok_pairs]
+                [
+                    _f((r.get("metrics_B") or {}).get("counter_density"))
+                    for r in ok_pairs
+                ]
             ),
             # ── Abstention Quality ─────────────────────────────────
             "abstention_breakdown_A": _abstention_breakdown(
@@ -821,22 +886,30 @@ def write_summary_csv(summary: dict, csv_path: Path) -> None:
 # ──────────────────────────────────────────────────────────────────────
 def next_run_name(batch_dir: Path) -> str:
     """Auto-increment run_XXX based on existing folders."""
-    existing = sorted(
-        int(m.group(1))
-        for d in batch_dir.iterdir()
-        if d.is_dir() and (m := re.match(r"^run_(\d+)$", d.name))
-    ) if batch_dir.exists() else []
+    existing = (
+        sorted(
+            int(m.group(1))
+            for d in batch_dir.iterdir()
+            if d.is_dir() and (m := re.match(r"^run_(\d+)$", d.name))
+        )
+        if batch_dir.exists()
+        else []
+    )
     n = (existing[-1] + 1) if existing else 1
     return f"run_{n:03d}"
 
 
 def latest_run_name(batch_dir: Path) -> str | None:
     """Return the name of the most recent run_XXX folder, or None."""
-    existing = sorted(
-        (int(m.group(1)), d.name)
-        for d in batch_dir.iterdir()
-        if d.is_dir() and (m := re.match(r"^run_(\d+)$", d.name))
-    ) if batch_dir.exists() else []
+    existing = (
+        sorted(
+            (int(m.group(1)), d.name)
+            for d in batch_dir.iterdir()
+            if d.is_dir() and (m := re.match(r"^run_(\d+)$", d.name))
+        )
+        if batch_dir.exists()
+        else []
+    )
     return existing[-1][1] if existing else None
 
 
@@ -884,13 +957,13 @@ def run_batch(
 
     total = len(plan)
     print(f"\n{'='*70}")
-    print(f"  LexCausa DoE Batch Runner")
+    print("  LexCausa DoE Batch Runner")
     print(f"{'='*70}")
     print(f"  Run dir:     {run_dir}")
     print(f"  Pipeline:    {endpoint}")
     print(f"  Counter:     {endpoint_counter}")
     print(f"  Evaluate:    {endpoint_evaluate}")
-    print(f"  Protocol:    A=full pipeline, B=counter+evaluate (shared Reasoner)")
+    print("  Protocol:    A=full pipeline, B=counter+evaluate (shared Reasoner)")
     print(f"  Claims:      {len({c.claim_id for c, _ in plan})}")
     print(f"  Replicates:  {replicates}")
     print(f"  Total pairs: {total}")
@@ -911,9 +984,7 @@ def run_batch(
     manifest = {
         "run_name": run_dir.name,
         "started_at": datetime.now().isoformat(),
-        "config_file": str(
-            Path(cfg.get("_config_path", "doe_settings.json"))
-        ),
+        "config_file": str(Path(cfg.get("_config_path", "doe_settings.json"))),
         "config_hash_sha256": hashlib.sha256(
             json.dumps(cfg, sort_keys=True).encode()
         ).hexdigest(),
@@ -939,25 +1010,35 @@ def run_batch(
         dir_doe = rep_dir / "doe"
 
         # Resume check
-        if resume and (dir_a / "pipeline_response.json").exists() and (dir_b / "pipeline_response.json").exists():
+        if (
+            resume
+            and (dir_a / "pipeline_response.json").exists()
+            and (dir_b / "pipeline_response.json").exists()
+        ):
             print(f"[SKIP] {claim.claim_id} R{rep} (artifacts exist)")
             # Still load existing results for summary
             try:
-                resp_a = json.loads((dir_a / "pipeline_response.json").read_text("utf-8"))
-                resp_b = json.loads((dir_b / "pipeline_response.json").read_text("utf-8"))
+                resp_a = json.loads(
+                    (dir_a / "pipeline_response.json").read_text("utf-8")
+                )
+                resp_b = json.loads(
+                    (dir_b / "pipeline_response.json").read_text("utf-8")
+                )
                 m_a = extract_setup_metrics(resp_a)
                 m_b = extract_setup_metrics(resp_b)
-                all_results.append({
-                    "claim_id": claim.claim_id,
-                    "claim_title": claim.title,
-                    "domain": claim.domain,
-                    "replicate": rep,
-                    "status_A": "ok",
-                    "status_B": "ok",
-                    "metrics_A": m_a,
-                    "metrics_B": m_b,
-                    "delta": compute_doe_delta(m_a, m_b),
-                })
+                all_results.append(
+                    {
+                        "claim_id": claim.claim_id,
+                        "claim_title": claim.title,
+                        "domain": claim.domain,
+                        "replicate": rep,
+                        "status_A": "ok",
+                        "status_B": "ok",
+                        "metrics_A": m_a,
+                        "metrics_B": m_b,
+                        "delta": compute_doe_delta(m_a, m_b),
+                    }
+                )
                 status_count["ok"] += 1
             except Exception:
                 pass
@@ -990,7 +1071,8 @@ def run_batch(
 
         t0 = time.time()
         status_a, resp_a = post_json_with_retries(
-            endpoint, payload_a,
+            endpoint,
+            payload_a,
             timeout_sec=timeout_sec,
             max_retries=max_retries,
             backoff_sec=backoff_sec,
@@ -1011,7 +1093,9 @@ def run_batch(
             )
 
         # Save pipeline log
-        _save_pipeline_log(dir_a / "pipeline.log", claim.text, payload_a, resp_a, status_a, dur_a, "A")
+        _save_pipeline_log(
+            dir_a / "pipeline.log", claim.text, payload_a, resp_a, status_a, dur_a, "A"
+        )
         print(f"      [{status_a.upper()}] Setup A done in {dur_a}s")
 
         # ── Setup B (treatment: counter-only + evaluate-only) ─────────
@@ -1044,11 +1128,13 @@ def run_batch(
         # Step B.1: Counter-Reasoner only (/api/counter_reason)
         payload_b_counter = build_setup_b_counter_payload(claim.text, cfg, resp_a)
         (dir_b / "counter_request.json").write_text(
-            json.dumps(payload_b_counter, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(payload_b_counter, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
         print("      B.1 Counter-Reasoner (shared context from A)...")
         status_b_counter, resp_b_counter = post_json_with_retries(
-            endpoint_counter, payload_b_counter,
+            endpoint_counter,
+            payload_b_counter,
             timeout_sec=timeout_sec,
             max_retries=max_retries,
             backoff_sec=backoff_sec,
@@ -1062,7 +1148,15 @@ def run_batch(
             result_entry["status_B"] = "failed"
             result_entry["duration_B_sec"] = dur_b
             status_count["failed"] += 1
-            _save_pipeline_log(dir_b / "pipeline.log", claim.text, payload_b_counter, resp_b_counter, status_b_counter, dur_b, "B")
+            _save_pipeline_log(
+                dir_b / "pipeline.log",
+                claim.text,
+                payload_b_counter,
+                resp_b_counter,
+                status_b_counter,
+                dur_b,
+                "B",
+            )
             all_results.append(result_entry)
             continue
 
@@ -1075,7 +1169,8 @@ def run_batch(
         )
         print("      B.2 Evaluator (Reasoner A + Counter B)...")
         status_b_eval, resp_b_eval = post_json_with_retries(
-            endpoint_evaluate, payload_b_eval,
+            endpoint_evaluate,
+            payload_b_eval,
             timeout_sec=timeout_sec,
             max_retries=max_retries,
             backoff_sec=backoff_sec,
@@ -1090,7 +1185,15 @@ def run_batch(
             result_entry["status_B"] = "failed"
             result_entry["duration_B_sec"] = dur_b
             status_count["failed"] += 1
-            _save_pipeline_log(dir_b / "pipeline.log", claim.text, payload_b_eval, resp_b_eval, status_b_eval, dur_b, "B")
+            _save_pipeline_log(
+                dir_b / "pipeline.log",
+                claim.text,
+                payload_b_eval,
+                resp_b_eval,
+                status_b_eval,
+                dur_b,
+                "B",
+            )
             all_results.append(result_entry)
             continue
 
@@ -1110,7 +1213,15 @@ def run_batch(
                 json.dumps(aqa_b, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-        _save_pipeline_log(dir_b / "pipeline.log", claim.text, payload_b_counter, resp_b, status_b, dur_b, "B")
+        _save_pipeline_log(
+            dir_b / "pipeline.log",
+            claim.text,
+            payload_b_counter,
+            resp_b,
+            status_b,
+            dur_b,
+            "B",
+        )
         print(f"      [OK] Setup B done in {dur_b}s")
 
         # ── Extract metrics & delta ───────────────────────────────────
@@ -1154,10 +1265,7 @@ def run_batch(
             d_net = delta.get("delta_aqa_net_final")
             v_a = delta.get("verdict_A", "?")
             v_b = delta.get("verdict_B", "?")
-            print(
-                f"   📊 DoE delta: net_final={d_net}, "
-                f"verdict {v_a} -> {v_b}"
-            )
+            print(f"   📊 DoE delta: net_final={d_net}, " f"verdict {v_a} -> {v_b}")
         else:
             result_entry["delta"] = {}
             status_count["failed"] += 1
@@ -1182,15 +1290,17 @@ def run_batch(
     write_summary_csv(summary, summary_csv)
 
     print(f"\n{'='*70}")
-    print(f"  BATCH COMPLETED")
+    print("  BATCH COMPLETED")
     print(f"{'='*70}")
     print(f"  Manifest:  {manifest_path}")
     print(f"  Summary:   {summary_json}")
     print(f"  CSV:       {summary_csv}")
-    print(f"  OK: {status_count['ok']}  WARN: {status_count['warning']}  FAIL: {status_count['failed']}")
+    print(
+        f"  OK: {status_count['ok']}  WARN: {status_count['warning']}  FAIL: {status_count['failed']}"
+    )
     agg = summary.get("aggregated", {})
     if agg.get("completed_pairs", 0) > 0:
-        print(f"\n  === Risultati aggregati ===")
+        print("\n  === Risultati aggregati ===")
         print(f"  Media AQA net final A: {agg.get('mean_aqa_net_final_A')}")
         print(f"  Media AQA net final B: {agg.get('mean_aqa_net_final_B')}")
         print(f"  Media delta (B-A):     {agg.get('mean_delta_aqa_net_final')}")
@@ -1230,21 +1340,21 @@ def _save_pipeline_log(
         f"Status: {status}",
         f"Duration: {duration}s",
         "",
-        f"[SETTINGS]",
+        "[SETTINGS]",
         json.dumps(payload.get("settings", {}), ensure_ascii=False, indent=2),
         "",
-        f"[REASONER]",
+        "[REASONER]",
         f"  Chain steps: {len(reasoner.get('reasoning_chain', []))}",
         f"  Arguments: {len(reasoner.get('arguments', []))}",
         f"  Causal type: {reasoner.get('causal_type_id', 'N/A')}",
         "",
-        f"[COUNTER]",
+        "[COUNTER]",
         f"  Chain steps: {len(counter.get('reasoning_chain', []))}",
         f"  Arguments: {len(counter.get('counter_arguments', []))}",
         f"  Abstained: {counter.get('abstained', False)}",
         f"  Planning mode: {counter.get('planning_mode', 'N/A')}",
         "",
-        f"[EVALUATION]",
+        "[EVALUATION]",
         f"  Verdict: {aqa.get('verdict', 'N/A')}",
         f"  Net pro: {net.get('pro', 'N/A')}",
         f"  Net contra: {net.get('contra', 'N/A')}",
@@ -1350,13 +1460,21 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated domains to include",
     )
     p.add_argument(
-        "--run-name", type=str, default="", help="Explicit run folder name (e.g. run_005)"
+        "--run-name",
+        type=str,
+        default="",
+        help="Explicit run folder name (e.g. run_005)",
     )
     p.add_argument(
-        "--resume", action="store_true", help="Skip claim/replicates with existing artifacts"
+        "--resume",
+        action="store_true",
+        help="Skip claim/replicates with existing artifacts",
     )
     p.add_argument(
-        "--start-from", type=str, default=None, help="Start from this claim ID (e.g. C3)"
+        "--start-from",
+        type=str,
+        default=None,
+        help="Start from this claim ID (e.g. C3)",
     )
     p.add_argument(
         "--only",
@@ -1376,17 +1494,15 @@ def main() -> None:
     # Parse claims
     all_claims = parse_claims_md(args.claims_file)
     allowed_domains = {d.strip().upper() for d in args.domains.split(",") if d.strip()}
-    eligible = [
-        c
-        for c in all_claims
-        if c.covered and c.domain in allowed_domains
-    ]
+    eligible = [c for c in all_claims if c.covered and c.domain in allowed_domains]
 
     if not eligible:
         print("ERROR: No eligible covered claims found.")
         sys.exit(1)
 
-    print(f"[INFO] Parsed {len(all_claims)} claims, {len(eligible)} eligible covered claims")
+    print(
+        f"[INFO] Parsed {len(all_claims)} claims, {len(eligible)} eligible covered claims"
+    )
     for c in eligible:
         print(f"  {c.claim_id:4s} [{c.domain:15s}] {c.title[:60]}")
 

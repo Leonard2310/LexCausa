@@ -29,22 +29,33 @@
 - **Shared Retrieved Context**: Both Reasoner and CounterReasoner receive the same retrieved statutes/precedents and build opposing arguments from the same evidence base
 - **Planned Iterative Chain Generation**: Reasoner and Counter-Reasoner first create an execution plan (3-10 steps), then generate one LLM step per planned objective with anti-repetition and consistency checks
 - **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations, and a provisional causality bootstrap (plan → taxonomy anchors → enriched KB) before expensive step generation
-- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, applies attack blacklisting/feasibility filtering to stabilize generation, and enforces claim-fact lock (no inversion of explicit facts) while opposing the primary thesis/reasoner conclusion
+- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, applies attack blacklisting/feasibility filtering to stabilize generation, enforces claim-fact lock (no inversion of explicit facts), supports abstention flow when opposition is insufficient, and includes second-pass targeted retrieval and step expansion for multi-attack coverage
 - **Repetition Detection**: Jaccard similarity-based detection (threshold 0.70) prevents duplicate reasoning steps across the chain
-- **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, and verdict generation
+- **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, counter-gate abstention classification, reasoner plausibility locking, and verdict generation
 - **Consistency Checker**: Verifies statute and precedent citations against Neo4j KB, classifies articles as core/peripheral, repairs mismatches via LLM-constrained rewriting (with verbatim quote validation), and drops unreliable citations
 - **AQA (Argument Quality Assessment)**: Three-dimensional scoring — Cogency (α), NormSupport (β), Semantics (γ) — with configurable weights, active cross-attacks with domain-aware rules, attack-type classification (6 types with per-type damage multipliers), and precedent influence scoring
 - **Cross-Attack Computation**: Active domain-aware cross-attack engine with severity categorization, NLI contradiction detection via LLM, attack-type classification (contradiction, exception, derogation, extinction, factual_impediment, general_opposition), and configurable damage multipliers
 - **Precedent Influence Scoring**: ASPIC+ links receive precedent delta based on recency, bindingness (cassazione/appello/tribunale), stance confidence, and semantic similarity
 - **ASPIC+ Metagraph Visualization**: Interactive SVG frontend component displaying the dialectical meta-graph with PRO/CONTRA columns, curved attack arrows with damage values, chain flow arrows, and detail panel for selected links
 - **Attack Text Details**: Expandable frontend panel showing full attacker/target text for each active cross-attack with type, multiplier, NLI label, overlap, and damage
-- **Resilient Groq Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient)
-- **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction and statute applicability decisions, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
+- **Centralized Prompt Registry**: All 100+ LLM prompts managed in a single `prompt_registry.py` with typed `PromptKey` enum — covering classification, routing, filtering, reasoning, counter-reasoning, AQA, NLI, consistency repair, and abstention gate
+- **Attack Coverage Scoring**: AQA bonus for counter-argumentation breadth — clusters weak reasoner links into axes, measures how many distinct axes are attacked, and applies diminishing-return weights (1st hit 100%, 2nd 30%, 3rd 10%)
+- **Counter-Reasoner Abstention Gate**: Polisher-Evaluator gate (`POLISHER_COUNTER_GATE`) that classifies counter-arguments as `OPPOSING_STRONG`, `OPPOSING_LIMITATIVE`, `AGREEING`, or `UNCLEAR`; weak/agreeing counters trigger abstention, skipping AQA evaluation
+- **Reasoner Plausibility Locking**: Optional lock (`aqa_lock_reasoner_plausibility`) that freezes reasoner-side plausibility in A/B DoE tests to isolate counter-reasoner effects
+- **Per-Role Model Fallback**: Separate fallback chains for Reasoner and Counter-Reasoner (`reasoner_model_fallback_aliases` / `counter_model_fallback_aliases`) with independent default temperatures
+- **Attack Precondition Evaluation**: LLM-based verification of taxonomy preconditions for each attack, with SATISFIED/UNSATISFIED/UNCLEAR status and intra-run caching
+- **Counter-Reasoner Second-Pass Retrieval**: Targeted additional retrieval triggered when statutes opposing the claim are insufficient, with configurable thresholds and limits
+- **Counter Step Expansion**: Optional multi-attack step expansion that spawns satellite steps when a single counter-step targets multiple attacks
+- **Retrieval Fail-Fast Scope**: Thread-local context manager (`retrieval_llm_fail_fast_scope`) for fast fallback in retrieval filters without full retry
+- **Resilient Groq Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient vs. request-too-large)
+- **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction, statute applicability decisions, attack preconditions, fact-lock checks, and plan target alignment, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
 - **Cancellation & Interruptibility**: Pipeline stop endpoint and cooperative cancellation propagation across API, agents, and long-running generation/retrieval loops
 - **DoE A/B Workflow**: Dedicated DoE tab with one shared Reasoner run and two Counter/Evaluator setups (baseline vs. treatment), live A/B switching in the UI, consolidated DoE log/report persistence, and automatic delta analysis
+- **DoE Batch Runner**: Automated multi-claim batch execution (`run_doe_batch.py`) with resume capability (`--resume`), checkpoint recovery (`--start-from`), selective runs (`--only`), dry-run mode, abstention classification, and stability metrics
+- **DoE Statistical Analysis**: Post-hoc analysis script (`scripts/analyze_doe_results.py`) computing paired t-tests, sign tests, Cohen's d, domain breakdowns, verdict flips, error analysis, and intra-claim consistency from batch CSV results
 - **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
 - **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
-- **Centralized Configuration**: All parameters (90+ settings: models, retries, AQA weights, search, truncation, attack params, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
+- **Centralized Configuration**: All parameters (150+ settings: models, retries, AQA weights, search, truncation, attack params, coverage, abstention, per-role fallback, domain-specific weights, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
 - **Frontend Settings Panel**: Collapsible panel to configure per-step LLM model, temperature, max tokens, search parameters, AQA weights, chain min/max steps, and attack parameters — without touching code
 - **Per-Claim Pipeline Logging**: Every pipeline run is logged to `logs/<timestamp>_<slug>.log` for full auditability
 - **DoE and PDF Artifacts**: DoE runs can persist a consolidated A/B log + JSON report, and exported PDFs are saved automatically under `logs/pdf_exports/<pipeline|doe>/` in addition to browser download
@@ -55,6 +66,10 @@
 
 
 ## 🏗️ Agent and Pipeline Architecture
+
+<p align="center">
+   <img src="assets/LexCausa_architecture.svg" alt="LexCausa Architecture" width="100%">
+</p>
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -67,7 +82,7 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     Flask API Server (:8000)                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  GET  /health              → Health check with API version               │
+│  GET  /health              → Health check with API version              │
 │  GET  /api/settings        → Defaults & available models                │
 │  POST /api/chat            → LegalSearchPipeline (unified retrieval)    │
 │  POST /api/reason          → Reasoner (iterative chain generation)      │
@@ -100,8 +115,8 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │              Reasoner / Counter-Reasoner / Polisher-Evaluator           │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  Reasoner: iterative primary chain on shared retrieved context (ASPIC+)  │
-│  Counter-Reasoner: iterative attack chain on shared retrieved context    │
+│  Reasoner: iterative primary chain on shared retrieved context (ASPIC+) │
+│  Counter-Reasoner: iterative attack chain on shared retrieved context   │
 │  Polisher-Evaluator (4 Mixins):                                         │
 │    ├─ ConsistencyChecker: KB verification → citation repair/drop        │
 │    ├─ ScoringMixin: readability, coherence, argument quality            │
@@ -235,7 +250,7 @@ The frontend will be available at `http://localhost:5173` and the API at `http:/
 ```
 LexCausa/
 ├── src/
-│   ├── config.py                  # Centralized configuration (90+ Pydantic Settings)
+│   ├── config.py                  # Centralized configuration (150+ Pydantic Settings)
 │   ├── api_server.py              # Flask API server (DoE, SSE, PDF export endpoints)
 │   ├── agents/                    # LLM agents with explicit orchestration
 │   │   ├── base.py               # Base agent class + progressive search + filters
@@ -252,6 +267,7 @@ LexCausa/
 │   │   │   └── nlp_utils.py      # Flesch/FOG/SMOG, NLI via LLM, text utilities
 │   │   └── tools/                # Agent tools
 │   │       ├── neo4j_tools.py    # Neo4j hybrid search pipeline
+│   │       ├── prompt_registry.py # Centralized prompt registry (100+ PromptKey enum)
 │   │       ├── taxonomy_tools.py # Causality taxonomy
 │   │       ├── config_loader.py  # Taxonomy config loader
 │   │       └── config_taxonomy.json
@@ -273,6 +289,18 @@ LexCausa/
 │           ├── App.jsx            # Main app with Search/Reasoning/Pipeline/DoE tabs
 │           ├── AspicMetagraph.jsx # ASPIC+ meta-graph SVG visualization
 │           └── AttackTextDetails.jsx # Cross-attack detail panel
+├── scripts/                       # Utility scripts
+│   ├── analyze_doe_results.py    # Statistical analysis of DoE A/B batch results
+│   ├── capture_api_chat_retrieval_memory.py  # Claim context memory warmup
+│   ├── start_public_demo.sh      # Cloudflare tunnel public demo launcher
+│   ├── tune_aqa_real_plus_synth.py  # AQA tuning (real + synthetic)
+│   ├── tune_aqa_with_gold_dataset.py  # AQA tuning (gold dataset)
+│   └── tune_retrieval_claims.py  # Supervised retrieval tuning
+├── experiments/                   # DoE experiments
+│   └── doe/
+│       ├── doe_settings.json     # DoE configuration
+│       └── scripts/
+│           └── run_doe_batch.py   # Automated DoE batch runner (resume, checkpoint, dry-run)
 ├── notebooks/                     # Normattiva extractors + embeddings notebooks
 ├── logs/                          # Pipeline/DoE logs, reports, AQA artifacts, exported PDFs
 ├── compose.yml                    # Docker Compose for Neo4j
@@ -282,7 +310,7 @@ LexCausa/
 
 ## 🔧 Configuration
 
-All configuration is managed through environment variables and the `src/config.py` Settings class (90+ parameters total).
+All configuration is managed through environment variables and the `src/config.py` Settings class (150+ parameters total).
 Runtime-tunable settings (model, temperature, max tokens, search parameters, AQA weights, chain steps, attack parameters) can also be adjusted from the **frontend Settings panel** without restarting the server.
 To keep this README stable across tuning changes, defaults are intentionally **not duplicated** here.
 
@@ -306,7 +334,7 @@ These can be overridden in `.env` or via the frontend Settings panel:
 - LLM generation knobs (temperature, max tokens)
 - API runtime settings (host/port/debug)
 
-Model catalog and aliases (`groq_llama_scout_17b`, `groq_llama_maverick_17b`, `gpt_oss_120b`) are code-defined in `src/config.py`.
+Model catalog and aliases (`groq_llama_scout_17b`, `groq_llama_maverick_17b`, `gpt_oss_120b`, `gpt_oss_20b`, `qwen_qwen3_32b`, `groq_llama_3_3_70b_versatile`) are code-defined in `src/config.py`.
 
 ### Optional — Embedding & Search
 
@@ -315,6 +343,7 @@ Configurable areas:
 - Embedding model and tokenization limits
 - Search breadth (`top_k`, top classified libri, precedent limits)
 - Hybrid retrieval tuning (vector/fulltext weights, candidate pool sizes, priority decay, keyword bonus)
+- Domain-specific hybrid search weights (`search_vector_weight_civile`, `search_fulltext_weight_penale`, etc.) and keyword bonus thresholds per domain
 - Citation expansion tuning (`SEARCH_CITES_ENABLED`, per-seed limit, max added, score decay, multi-seed bonus)
 - Progressive search thresholds/steps for expansion rounds
 
@@ -370,6 +399,8 @@ Configurable areas:
 - Verdict thresholds and top-K attack retention
 - Norm support scoring strategy
 - Attack gating/tuning (semantic overlap, strength ratio, damage factor, cross-codice flags)
+- Attack coverage scoring (enabled flag, similarity/overlap thresholds, min attack value, bonus weight/max/diminishing weights)
+- Reasoner plausibility locking for DoE A/B isolation (`aqa_lock_reasoner_plausibility`)
 - Precedent recency window and dominant-attack reporting limits
 
 ### Optional — Chain Generation
@@ -378,6 +409,8 @@ Configurable areas:
 
 - Retry and robustness controls for chain generation
 - Planned step bounds (min/max)
+- Counter-Reasoner second-pass retrieval (enabled flag, thresholds, limits)
+- Counter step expansion (enabled flag, min attacks, satellite limits)
 - Model-down cache behavior used by the resilient Groq client
 
 For the authoritative, always-updated list of settings, env aliases, and descriptions, see `src/config.py`.
@@ -484,7 +517,7 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] NLI contradiction detection via LLM (replaces local DeBERTa model)
 - [x] ASPIC+ IR formatting for Reasoner and Counter-Reasoner
 - [x] Prescriptive prompts and structured output for all agents
-- [x] Centralized configuration via Pydantic Settings (90+ parameters including truncation, attack, chain settings)
+- [x] Centralized configuration via Pydantic Settings (150+ parameters including truncation, attack, chain, coverage, abstention, per-role fallback, domain-specific weights)
 - [x] Frontend Settings Panel: per-step model selection, temperature, max tokens, search params, AQA weights, chain min/max steps, attack parameters
 - [x] Per-claim pipeline logging (`logs/` directory)
 - [x] Optional pre-retrieval claim context memory (SQLite) with frontend toggles and script-based warmup
@@ -499,6 +532,19 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 - [x] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)
 - [x] Supervised Tuning Domain-specific retrieval parameters (metodology weights, overlap multipliers and counts)
 - [x] Supervised Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
+- [x] Centralized Prompt Registry (`prompt_registry.py`) with 100+ typed `PromptKey` enum entries covering all agent prompts
+- [x] Attack coverage scoring (AQA bonus for counter-argumentation breadth across weak-point axes)
+- [x] Counter-Reasoner abstention gate with label classification (OPPOSING_STRONG, OPPOSING_LIMITATIVE, AGREEING, UNCLEAR)
+- [x] Reasoner plausibility locking for DoE A/B isolation
+- [x] Per-role model fallback chains (separate Reasoner / Counter-Reasoner fallback aliases and temperatures)
+- [x] Attack precondition evaluation with taxonomy-aware LLM verification and caching
+- [x] Counter-Reasoner second-pass targeted retrieval for insufficient opposing statutes
+- [x] Counter step expansion for multi-attack steps
+- [x] Retrieval fail-fast scope (thread-local context manager for fast filter fallback)
+- [x] DoE batch runner with resume, checkpoint recovery, selective runs, dry-run, abstention tracking, and stability metrics
+- [x] DoE statistical analysis script (paired t-test, sign test, Cohen's d, domain breakdowns, verdict flips, error analysis)
+- [x] Domain-specific hybrid search weights (per-domain vector/fulltext weight pairs and keyword bonus thresholds)
+- [x] ASPIC+ repair and AQA report artifact persistence under `logs/aspic_repairs/` and `logs/aqa_reports/`
 
 
 ### 🚧 In Progress

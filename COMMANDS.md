@@ -42,6 +42,16 @@ poetry run python src/db/db_orchestrator.py --check
 
 ## 2. App Runtime (Backend + Frontend)
 
+### One-command local startup (recommended)
+```bash
+make dev
+```
+
+### Stop local dev stack started by Makefile
+```bash
+make dev-stop
+```
+
 ### Start Flask API backend
 ```bash
 poetry run python src/api_server.py
@@ -328,7 +338,7 @@ curl -X POST http://127.0.0.1:8000/api/pipeline \
       "counter_model": "gpt_oss_120b",
       "reasoner_temperature": 0.0,
       "counter_temperature": 0.3,
-      "llm_max_tokens": 8192,
+      "llm_max_tokens": 7168,
       "search_min_kept_statutes": 8,
       "search_use_top_n_libri": 3,
       "chain_min_steps": 3,

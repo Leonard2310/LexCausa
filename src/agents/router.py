@@ -50,6 +50,7 @@ class Router(BaseAgent):
 
     def __init__(self, config: Optional[AgentConfig] = None):
         super().__init__(config)
+        self._route_max_tokens_cap = 192
 
     def route(self, claim: str) -> RoutingDecision:
         """Route a claim to a domain classification."""
@@ -80,7 +81,10 @@ class Router(BaseAgent):
         """Use LLM to classify domain, with resilient retry/key-rotation/fallback."""
         prompt = self._build_prompt(claim)
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._router_max_tokens(),
+            )
             content = (resp.content or "").strip()
             parsed = self._parse_json_like(content)
             if parsed:
@@ -97,6 +101,13 @@ class Router(BaseAgent):
             router_system=get_prompt("router.system"),
             claim=claim,
         )
+
+    def _router_max_tokens(self) -> int:
+        """Bound router output length to keep request envelopes lightweight."""
+        base_max_tokens = int(getattr(self.config, "max_tokens", 512) or 512)
+        if base_max_tokens <= 0:
+            base_max_tokens = 512
+        return max(1, min(base_max_tokens, int(self._route_max_tokens_cap)))
 
     def _parse_json_like(self, text: str) -> Dict[str, str]:
         """Parse JSON, tolerating fenced code."""

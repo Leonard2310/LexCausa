@@ -339,19 +339,21 @@ REASONING CHAIN (for context):
 """,
     PromptKey.REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian law.
 
-Create a step-by-step plan to analyze the claim and build a primary legal thesis.
-The plan must be executable in sequence and each step must be materially different.
-Return ONLY valid JSON (no markdown, no prose) with this schema:
+Create a sequential plan to analyze the claim and build a primary legal thesis.
+Each step must add a materially new objective.
+
+Return only ONE valid JSON object (no markdown, no prose, no text outside JSON)
+using this schema:
 {
   "steps": [
     {
       "id": "P1",
-      "goal": "specific legal objective for this step",
-      "focus": "single legal/factual focus",
-      "expected_norm": "article expected to be cited or 'N/A'",
+      "goal": "<specific legal objective>",
+      "focus": "<single legal/factual focus>",
+      "expected_norm": "N/A or article expected to be cited",
       "citation_requirement": "required | optional | none",
       "step_type": "FACTS | QUALIFICATION | CAUSAL_LINK | ELEMENTS | BALANCING | CONSEQUENCE | SYNTHESIS | OTHER",
-      "novelty_key": "short unique key for this step objective (snake_case)"
+      "novelty_key": "<unique snake_case key>"
     }
   ]
 }
@@ -396,6 +398,8 @@ RULES:
 - "novelty_key" must be unique across steps and must summarize what is NEW in that step.
 - If ALREADY ACCEPTED STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
+
+Return only the JSON object.
 """,
     PromptKey.REASONER_SUPPORT_STEP: """You are an expert Italian jurist.
 You must execute ONLY one planned reasoning step.
@@ -588,19 +592,22 @@ Rules:
 """,
     PromptKey.COUNTER_REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian counter-argumentation.
 
-Create a step-by-step plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
-Return ONLY valid JSON (no markdown, no prose) with this schema:
+Create a sequential plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
+Each step must add a materially new counter-objective.
+
+Return only ONE valid JSON object (no markdown, no prose, no text outside JSON)
+using this schema:
 {
   "steps": [
     {
       "id": "C1",
-      "goal": "specific objective to weaken the primary thesis",
-      "focus": "single weak point for this step",
-      "expected_norm": "article expected to be cited or 'N/A'",
+      "goal": "<specific objective to weaken the primary thesis>",
+      "focus": "<single weak point for this step>",
+      "expected_norm": "N/A or article expected to be cited",
       "citation_requirement": "required | optional | none",
       "attack_id": "one of the selected attack ids",
       "step_type": "TARGET_FACTS | TARGET_CAUSAL_LINK | TARGET_LEGAL_QUALIFICATION | TARGET_ELEMENT | TARGET_BALANCING | TARGET_OUTCOME | OTHER",
-      "novelty_key": "short unique key for this counter objective (snake_case)"
+      "novelty_key": "<unique snake_case key>"
     }
   ]
 }
@@ -657,6 +664,8 @@ RULES:
 - "novelty_key" must be unique across steps and must summarize what is NEW in the counter-attack.
 - If ALREADY ACCEPTED COUNTER STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
+
+Return only the JSON object.
 """,
     PromptKey.COUNTER_REASONER_PLAN_TARGET_ALIGNMENT: """You are checking whether a planned counter step is in-scope.
 

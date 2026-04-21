@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     _groq_api_keys: list[str] = []  # populated dynamically by validator
     # Model catalog is code-owned (not env-driven).
     MODEL_ALIAS_MAP: ClassVar[dict[str, str]] = {
+        "groq_llama_scout_17b": "meta-llama/llama-4-scout-17b-16e-instruct",
         "gpt_oss_120b": "openai/gpt-oss-120b",
         "gpt_oss_20b": "openai/gpt-oss-20b",
         "groq_llama_3_3_70b_versatile": "llama-3.3-70b-versatile",
@@ -67,12 +68,14 @@ class Settings(BaseSettings):
     # Used by retrieval-side components (claim classifier, keyword extraction,
     # legal-context extraction, relevance/applicability filters, precedents keywording).
     RETRIEVAL_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
+        "groq_llama_scout_17b",
         "qwen_qwen3_32b",
         "groq_llama_3_3_70b_versatile",
         "gpt_oss_20b",
     ]
     # Used by the rest of the pipeline helpers (router, evaluator/polisher).
     PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
+        "groq_llama_scout_17b",
         "qwen_qwen3_32b",
         "groq_llama_3_3_70b_versatile",
         "gpt_oss_20b",
@@ -126,7 +129,7 @@ class Settings(BaseSettings):
         alias="COUNTER_DEFAULT_TEMPERATURE",
         description="Default UI temperature for the Counter-Reasoner agent.",
     )
-    llm_max_tokens: int = Field(default=8192, alias="LLM_MAX_TOKENS")
+    llm_max_tokens: int = Field(default=7168, alias="LLM_MAX_TOKENS")
 
     # =========================================================================
     # Embedding Model Configuration
@@ -708,6 +711,61 @@ class Settings(BaseSettings):
         alias="CHAIN_MIN_STEPS",
         description="Minimum reasoning steps before the LLM is allowed to conclude.",
     )
+    ancillary_max_tokens_cap: int = Field(
+        default=320,
+        alias="ANCILLARY_MAX_TOKENS_CAP",
+        description="Max tokens for short ancillary validation checks (fact-lock, NLI, alignment, no-new-facts).",
+    )
+    reasoner_planner_max_tokens_cap: int = Field(
+        default=1200,
+        alias="REASONER_PLANNER_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Reasoner planner generation.",
+    )
+    reasoner_planner_min_tokens: int = Field(
+        default=192,
+        alias="REASONER_PLANNER_MIN_TOKENS",
+        description="Minimum floor for Reasoner planner max_tokens shrink policy.",
+    )
+    reasoner_support_step_max_tokens_cap: int = Field(
+        default=1400,
+        alias="REASONER_SUPPORT_STEP_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Reasoner support-step generation.",
+    )
+    reasoner_support_step_min_tokens: int = Field(
+        default=256,
+        alias="REASONER_SUPPORT_STEP_MIN_TOKENS",
+        description="Minimum floor for Reasoner support-step max_tokens shrink policy.",
+    )
+    reasoner_causality_classifier_max_tokens_cap: int = Field(
+        default=256,
+        alias="REASONER_CAUSALITY_CLASSIFIER_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for post-hoc causality classification.",
+    )
+    reasoner_conclusion_max_tokens_cap: int = Field(
+        default=512,
+        alias="REASONER_CONCLUSION_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Reasoner conclusion generation.",
+    )
+    counter_planner_max_tokens_cap: int = Field(
+        default=1200,
+        alias="COUNTER_PLANNER_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Counter planner generation.",
+    )
+    counter_planner_min_tokens: int = Field(
+        default=192,
+        alias="COUNTER_PLANNER_MIN_TOKENS",
+        description="Minimum floor for Counter planner max_tokens shrink policy.",
+    )
+    counter_support_step_max_tokens_cap: int = Field(
+        default=1400,
+        alias="COUNTER_SUPPORT_STEP_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Counter step generation.",
+    )
+    counter_support_step_min_tokens: int = Field(
+        default=256,
+        alias="COUNTER_SUPPORT_STEP_MIN_TOKENS",
+        description="Minimum floor for Counter support-step max_tokens shrink policy.",
+    )
     counter_second_pass_enabled: bool = Field(
         default=True,
         alias="COUNTER_SECOND_PASS_ENABLED",
@@ -1032,6 +1090,37 @@ class Settings(BaseSettings):
         if default_attack not in valid_attack_types:
             default_attack = "general_opposition"
         object.__setattr__(self, "aqa_default_attack_type", default_attack)
+
+        ancillary_cap = max(1, int(self.ancillary_max_tokens_cap))
+        object.__setattr__(self, "ancillary_max_tokens_cap", ancillary_cap)
+
+        r_plan_min = max(1, int(self.reasoner_planner_min_tokens))
+        r_plan_cap = max(r_plan_min, int(self.reasoner_planner_max_tokens_cap))
+        r_step_min = max(1, int(self.reasoner_support_step_min_tokens))
+        r_step_cap = max(r_step_min, int(self.reasoner_support_step_max_tokens_cap))
+        object.__setattr__(self, "reasoner_planner_min_tokens", r_plan_min)
+        object.__setattr__(self, "reasoner_planner_max_tokens_cap", r_plan_cap)
+        object.__setattr__(self, "reasoner_support_step_min_tokens", r_step_min)
+        object.__setattr__(self, "reasoner_support_step_max_tokens_cap", r_step_cap)
+        object.__setattr__(
+            self,
+            "reasoner_causality_classifier_max_tokens_cap",
+            max(1, int(self.reasoner_causality_classifier_max_tokens_cap)),
+        )
+        object.__setattr__(
+            self,
+            "reasoner_conclusion_max_tokens_cap",
+            max(1, int(self.reasoner_conclusion_max_tokens_cap)),
+        )
+
+        c_plan_min = max(1, int(self.counter_planner_min_tokens))
+        c_plan_cap = max(c_plan_min, int(self.counter_planner_max_tokens_cap))
+        c_step_min = max(1, int(self.counter_support_step_min_tokens))
+        c_step_cap = max(c_step_min, int(self.counter_support_step_max_tokens_cap))
+        object.__setattr__(self, "counter_planner_min_tokens", c_plan_min)
+        object.__setattr__(self, "counter_planner_max_tokens_cap", c_plan_cap)
+        object.__setattr__(self, "counter_support_step_min_tokens", c_step_min)
+        object.__setattr__(self, "counter_support_step_max_tokens_cap", c_step_cap)
 
         object.__setattr__(
             self,

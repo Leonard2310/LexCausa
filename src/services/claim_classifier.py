@@ -194,7 +194,7 @@ class ClaimClassifier:
         """Synchronous classification with resilient retry/key-rotation/fallback."""
 
         def _call(client: Groq, model: str):
-            completion = client.chat.completions.create(
+            return client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=temperature,
@@ -202,12 +202,12 @@ class ClaimClassifier:
                 top_p=1,
                 stream=False,
             )
-            return completion.choices[0].message.content.strip()
 
-        response_text = resilient_groq_call(
+        completion = resilient_groq_call(
             _call,
             model_order=settings.retrieval_model_fallback_order,
         )
+        response_text = (completion.choices[0].message.content or "").strip()
         return self._parse_response(claim, response_text)
 
     def _classify_stream(

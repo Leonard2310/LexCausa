@@ -778,7 +778,7 @@ class LegalSearchPipeline:
         ]
 
         def _call(client, model):
-            completion = client.chat.completions.create(
+            return client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=0.0,
@@ -786,13 +786,13 @@ class LegalSearchPipeline:
                 top_p=1,
                 stream=False,
             )
-            return (completion.choices[0].message.content or "").strip()
 
         try:
-            llm_text = resilient_groq_call(
+            completion = resilient_groq_call(
                 _call,
                 model_order=settings.retrieval_model_fallback_order,
             )
+            llm_text = (completion.choices[0].message.content or "").strip()
         except Exception as exc:
             print(f"⚠️ [Retrieval] LLM keyword extraction failed: {exc}")
             return set()

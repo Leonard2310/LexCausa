@@ -33,6 +33,10 @@ from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
+from services.groq_client import (  # noqa: E402
+    RequestTooLargeError,
+    shrink_max_tokens_progressive,
+)
 from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 
@@ -95,6 +99,39 @@ class Reasoner(BaseAgent):
         super().__init__(config)
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
+        # Keep planner/executor control calls compact to avoid oversized requests.
+        self._planner_max_tokens_cap = int(settings.reasoner_planner_max_tokens_cap)
+        self._planner_min_tokens = int(settings.reasoner_planner_min_tokens)
+        self._support_step_max_tokens_cap = int(
+            settings.reasoner_support_step_max_tokens_cap
+        )
+        self._support_step_min_tokens = int(settings.reasoner_support_step_min_tokens)
+        self._causality_classifier_max_tokens_cap = int(
+            settings.reasoner_causality_classifier_max_tokens_cap
+        )
+        self._conclusion_max_tokens_cap = int(
+            settings.reasoner_conclusion_max_tokens_cap
+        )
+
+    def _bounded_max_tokens(self, cap: int) -> int:
+        """Cap per-call max tokens against the active agent configuration."""
+        base_max_tokens = int(
+            getattr(self.config, "max_tokens", settings.llm_max_tokens)
+            or settings.llm_max_tokens
+        )
+        if base_max_tokens <= 0:
+            base_max_tokens = settings.llm_max_tokens
+        return max(1, min(base_max_tokens, int(cap)))
+
+    @staticmethod
+    def _is_request_too_large_error(exc: Exception) -> bool:
+        """Detect provider-side oversized-request failures."""
+        if isinstance(exc, RequestTooLargeError):
+            return True
+        message = str(exc or "").lower()
+        if "error code: 429" in message or "rate limit reached" in message:
+            return False
+        return "request too large" in message
 
     def _resilient_model_order(self) -> list[str] | None:
         """Reasoner fallback chain from settings (selected model first)."""
@@ -986,7 +1023,12 @@ class Reasoner(BaseAgent):
             chain_text=chain_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._bounded_max_tokens(
+                    self._causality_classifier_max_tokens_cap
+                ),
+            )
             content = (resp.content or "").strip()
 
             # Parse causal_type_id from LLM response
@@ -1554,25 +1596,35 @@ class Reasoner(BaseAgent):
             if existing_summaries
             else "- none"
         )
-        prompt = render_prompt(
-            "reasoner.generate_plan",
-            claim=claim,
-            routing_domain=routing_decision.domain,
-            anchor_text=anchor_text,
-            principle_text=principle_text,
-            statutes_list=statutes_list,
-            precedents_list=precedents_list,
-            knowledge_base=knowledge_base,
-            min_steps=min_steps,
-            max_steps=max_steps,
-            planner_mode=planner_mode,
-            resume_from_step=resume_from_step,
-            existing_steps=existing_steps_text,
-        )
         last_error = "planner failed"
+        planner_max_tokens = self._bounded_max_tokens(self._planner_max_tokens_cap)
+        planner_use_json_mode = True
         for attempt in range(1, self._max_plan_retries + 1):
+            attempt_prompt = render_prompt(
+                "reasoner.generate_plan",
+                claim=claim,
+                routing_domain=routing_decision.domain,
+                anchor_text=anchor_text,
+                principle_text=principle_text,
+                statutes_list=statutes_list,
+                precedents_list=precedents_list,
+                knowledge_base=knowledge_base,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                planner_mode=planner_mode,
+                resume_from_step=resume_from_step,
+                existing_steps=existing_steps_text,
+            )
+            invoke_kwargs: dict[str, object] = {
+                "max_tokens": planner_max_tokens,
+            }
+            if planner_use_json_mode:
+                invoke_kwargs["response_format"] = {"type": "json_object"}
             try:
-                resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=attempt_prompt)],
+                    **invoke_kwargs,
+                )
                 raw = (resp.content or "").strip()
                 plan = self._parse_reasoning_plan(
                     raw=raw,
@@ -1584,11 +1636,45 @@ class Reasoner(BaseAgent):
                 last_error = "parsed empty plan"
             except Exception as e:
                 last_error = str(e)
+                if self._is_response_format_error(last_error) and planner_use_json_mode:
+                    planner_use_json_mode = False
+                    self._log(
+                        "⚠️ Planner JSON mode not accepted by provider/model; retrying without response_format",
+                        "warning",
+                    )
+                if (
+                    self._is_request_too_large_error(e)
+                    and planner_max_tokens > self._planner_min_tokens
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        planner_max_tokens,
+                        self._planner_min_tokens,
+                    )
+                    if reduced < planner_max_tokens:
+                        self._log(
+                            "⚠️ Planner request too large; reducing "
+                            f"max_tokens {planner_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        planner_max_tokens = reduced
             self._log(
                 f"⚠️ Planner attempt {attempt}/{self._max_plan_retries} failed: {last_error}",
                 "warning",
             )
         raise RuntimeError(f"Support planner failed: {last_error}")
+
+    @staticmethod
+    def _is_response_format_error(error_text: str) -> bool:
+        """Detect provider/model rejections related to JSON response_format usage."""
+        text = str(error_text or "").lower()
+        markers = (
+            "response_format",
+            "json schema",
+            "json_object",
+            "unsupported",
+            "invalid request",
+        )
+        return any(marker in text for marker in markers)
 
     def _parse_reasoning_plan(
         self,
@@ -1597,12 +1683,13 @@ class Reasoner(BaseAgent):
         max_steps: int,
     ) -> list[dict[str, str]]:
         """Parse planner JSON and enforce plan quality constraints."""
-        payload_text = raw.strip()
-        if not payload_text.startswith("{"):
-            match = re.search(r"\{[\s\S]*\}", payload_text)
-            if match:
-                payload_text = match.group(0)
-        data = json.loads(payload_text)
+        payload_text = str(raw or "").strip()
+        try:
+            data = json.loads(payload_text)
+        except Exception as exc:
+            raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("planner output is not a JSON object")
         steps_raw = data.get("steps")
         if not isinstance(steps_raw, list):
             raise ValueError("planner output missing 'steps' array")
@@ -1858,6 +1945,7 @@ class Reasoner(BaseAgent):
         """Execute one planned support step with validation + retries."""
         last_candidate = ""
         last_reason = "invalid output"
+        step_max_tokens = self._bounded_max_tokens(self._support_step_max_tokens_cap)
         for attempt in range(1, self._max_step_rewrites + 2):
             prompt = (
                 self._build_support_step_prompt_from_plan(
@@ -1909,12 +1997,28 @@ class Reasoner(BaseAgent):
                         if stream_callback
                         else None
                     ),
+                    max_tokens=step_max_tokens,
                 )
                 candidate = self._parse_step_text((resp.content or "").strip())
             except PipelineCancelled:
                 raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
+                if (
+                    self._is_request_too_large_error(exc)
+                    and step_max_tokens > self._support_step_min_tokens
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        step_max_tokens,
+                        self._support_step_min_tokens,
+                    )
+                    if reduced < step_max_tokens:
+                        self._log(
+                            "⚠️ Step request too large; reducing "
+                            f"max_tokens {step_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        step_max_tokens = reduced
                 self._log(
                     f"⚠️ Step {plan_index} generation failed (attempt {attempt}): {exc}",
                     "warning",
@@ -2249,6 +2353,7 @@ class Reasoner(BaseAgent):
                     if stream_callback
                     else None
                 ),
+                max_tokens=self._bounded_max_tokens(self._conclusion_max_tokens_cap),
             )
             conclusion = (resp.content or "").strip()
             # Clean up any echoed prefix

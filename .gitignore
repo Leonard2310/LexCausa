@@ -9,6 +9,10 @@ dist/
 *.egg
 MANIFEST
 
+# Frontend artifacts
+node_modules/
+src/frontend/.vite/
+
 # Logs / reports
 logs/
 logs/pdf_exports/
@@ -19,8 +23,10 @@ htmlcov/
 .cache/
 coverage.xml
 
-# Virtual environments
+# Local environment files / virtual environments
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 env/
@@ -47,6 +53,8 @@ ENV/
 # Databases
 db.sqlite3
 db.sqlite3-journal
+cache/*.sqlite
+cache/*.sqlite-*
 cache/claim_context_cache.sqlite
 cache/claim_context_cache.sqlite-wal
 cache/claim_context_cache.sqlite-shm
@@ -70,4 +78,13 @@ claims_gold_labels.json
 
 # DoE artifacts
 experiments/doe/batch_runs
+
+# Notebook benchmark artifacts (SCOPE feasibility)
+notebooks/.scope_hpc_outputs/
+notebooks/.scope_hpc_tmp/
+notebooks/notebooks/.scope_hpc_outputs/
+notebooks/notebooks/.scope_hpc_tmp/
+
+# Taxonomy visualization render artifacts (generated from Mermaid sources)
+assets/taxonomy_graphs/*.svg
 

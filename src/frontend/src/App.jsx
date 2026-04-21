@@ -167,7 +167,7 @@ export default function App() {
     counter_model: 'gpt_oss_120b',
     reasoner_temperature: 0,
     counter_temperature: 0.3,
-    llm_max_tokens: 8192,
+    llm_max_tokens: 7168,
     search_top_k_default: 100,
     search_min_kept_statutes: 8,
     search_use_top_n_libri: 3,
@@ -205,6 +205,8 @@ export default function App() {
   const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef(null);
   const pipelineAbortControllerRef = useRef(null);
+  const searchReasonAbortControllerRef = useRef(null);
+  const manualSearchReasonStopRef = useRef(false);
   const activePipelineRunIdRef = useRef(null);
   const manualPipelineStopRef = useRef(false);
   const currentPipelinePdfRef = useRef(null);
@@ -307,52 +309,186 @@ export default function App() {
     setDoeDisplaySetup(normalized);
   };
 
+  const consumeSseResponse = async (response, onEvent) => {
+    if (!response.body) {
+      throw new Error('Streaming non disponibile: risposta senza body.');
+    }
+
+    const decoder = new TextDecoder('utf-8');
+    const reader = response.body.getReader();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const rawEvent of events) {
+        if (!rawEvent.trim()) continue;
+        const lines = rawEvent.split('\n');
+        let eventName = 'message';
+        let dataText = '';
+
+        lines.forEach((line) => {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataText += line.slice(5).trim();
+          }
+        });
+
+        if (!dataText) continue;
+
+        let payload;
+        try {
+          payload = JSON.parse(dataText);
+        } catch (_) {
+          continue;
+        }
+
+        onEvent(eventName, payload);
+      }
+    }
+  };
+
   const handleSearchSubmit = async () => {
     if (!input.trim() || isLoading) return;
 
     const userMessage = input.trim();
+    const streamMessageId = `search-stream-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setInput('');
     shouldAutoScrollRef.current = true;
+    manualSearchReasonStopRef.current = false;
+    activePipelineRunIdRef.current = null;
 
-    setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+    const updateAssistantMessage = (updater) => {
+      setMessages((prev) => prev.map((msg) => (
+        msg.id === streamMessageId
+          ? (typeof updater === 'function' ? updater(msg) : { ...msg, ...updater })
+          : msg
+      )));
+    };
+
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: userMessage },
+      { id: streamMessageId, role: 'assistant', content: '' },
+    ]);
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/chat`, {
+      const controller = new AbortController();
+      searchReasonAbortControllerRef.current = controller;
+
+      const response = await fetch(`${API_BASE}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           message: userMessage,
           top_k: pipelineSettings.search_top_k_default,
+          include_precedents: pipelineSettings.include_precedents,
+          max_precedents: pipelineSettings.precedents_limit_default,
+          claim_context_memory_enabled: !!pipelineSettings.claim_context_memory_enabled,
+          claim_context_memory_overwrite:
+            !!pipelineSettings.claim_context_memory_enabled
+            && !!pipelineSettings.claim_context_memory_overwrite,
+          settings: {
+            search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
+            search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
+          },
         }),
       });
 
-      if (!response.ok) throw new Error('Errore nella risposta del server');
+      if (!response.ok) {
+        let errText = 'Errore nella risposta del server';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore json parse failures
+        }
+        throw new Error(errText);
+      }
 
-      const data = await response.json();
+      let finalPayload = null;
+      await consumeSseResponse(response, (eventName, payload) => {
+        if (eventName === 'heartbeat' || eventName === 'status' || eventName === 'phase') {
+          return;
+        }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: data.response,
-          metadata: {
-            classification: data.classification,
-            articles: data.articles,
-            precedents: data.precedents,
-          },
-        },
-      ]);
+        if (eventName === 'run_started') {
+          activePipelineRunIdRef.current = payload?.run_id || null;
+          return;
+        }
+
+        if (eventName === 'retrieval_context') {
+          return;
+        }
+
+        if (eventName === 'token') {
+          const tokenText = payload?.token || '';
+          if (!tokenText) return;
+          updateAssistantMessage((msg) => ({
+            ...msg,
+            content: `${msg.content || ''}${tokenText}`,
+          }));
+          return;
+        }
+
+        if (eventName === 'error') {
+          throw new Error(payload?.message || 'Errore nella ricerca');
+        }
+
+        if (eventName === 'cancelled') {
+          throw new Error(payload?.message || 'Ricerca interrotta manualmente.');
+        }
+
+        if (eventName === 'final') {
+          finalPayload = payload || {};
+          updateAssistantMessage((msg) => ({
+            ...msg,
+            content:
+              payload?.response
+              || msg.content
+              || 'Ricerca completata. Controlla i risultati disponibili.',
+            metadata: {
+              classification: payload?.classification,
+              articles: payload?.articles,
+              precedents: payload?.precedents,
+            },
+          }));
+        }
+      });
+
+      if (!finalPayload) {
+        throw new Error('Streaming ricerca interrotto prima del risultato finale.');
+      }
     } catch (error) {
-      console.error('Errore:', error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Mi dispiace, si è verificato un errore. Riprova più tardi.',
-        },
-      ]);
+      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      const isManualStop = (
+        manualSearchReasonStopRef.current
+        || error?.name === 'AbortError'
+        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+      );
+      if (!isManualStop) {
+        console.error('Errore ricerca:', error);
+      }
+      updateAssistantMessage((msg) => ({
+        ...msg,
+        content: (msg.content || '').trim()
+          ? `${msg.content}\n\n${isManualStop ? '[Esecuzione interrotta manualmente]' : `[Errore] ${errorMessage}`}`
+          : (isManualStop
+            ? 'Ricerca interrotta manualmente.'
+            : `Mi dispiace, si è verificato un errore. ${errorMessage}`),
+      }));
     } finally {
+      searchReasonAbortControllerRef.current = null;
+      activePipelineRunIdRef.current = null;
+      manualSearchReasonStopRef.current = false;
       setIsLoading(false);
       inputRef.current?.focus();
     }
@@ -362,19 +498,46 @@ export default function App() {
     if (!input.trim() || isLoading) return;
 
     const claim = input.trim();
+    const streamMessageId = `reason-stream-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setInput('');
     shouldAutoScrollRef.current = true;
+    manualSearchReasonStopRef.current = false;
+    activePipelineRunIdRef.current = null;
     setIsLoading(true);
-    setReasonMessages((prev) => [...prev, { role: 'user', content: claim }]);
+    setReasoningResult(null);
+
+    const updateAssistantMessage = (updater) => {
+      setReasonMessages((prev) => prev.map((msg) => (
+        msg.id === streamMessageId
+          ? (typeof updater === 'function' ? updater(msg) : { ...msg, ...updater })
+          : msg
+      )));
+    };
+
+    setReasonMessages((prev) => [
+      ...prev,
+      { role: 'user', content: claim },
+      { id: streamMessageId, role: 'assistant', content: '' },
+    ]);
 
     try {
-      const response = await fetch(`${API_BASE}/reason`, {
+      const controller = new AbortController();
+      searchReasonAbortControllerRef.current = controller;
+
+      const response = await fetch(`${API_BASE}/reason/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           claim,
           include_precedents: true,
           use_context: false,
+          max_statutes: pipelineSettings.search_top_k_default,
+          max_precedents: pipelineSettings.precedents_limit_default,
+          claim_context_memory_enabled: !!pipelineSettings.claim_context_memory_enabled,
+          claim_context_memory_overwrite:
+            !!pipelineSettings.claim_context_memory_enabled
+            && !!pipelineSettings.claim_context_memory_overwrite,
           settings: {
             reasoner_model: pipelineSettings.reasoner_model,
             reasoner_temperature: pipelineSettings.reasoner_temperature,
@@ -384,52 +547,122 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) throw new Error('Errore nella risposta del server');
+      if (!response.ok) {
+        let errText = 'Errore nella risposta del server';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore json parse failures
+        }
+        throw new Error(errText);
+      }
 
-      const data = await response.json();
-      setReasoningResult(data);
-      setReasonMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content:
-            data.raw_response ||
-            'Ho completato l’analisi del ragionamento. Qui sotto trovi la risposta con i dettagli.',
-        },
-      ]);
+      let finalPayload = null;
+      await consumeSseResponse(response, (eventName, payload) => {
+        if (eventName === 'heartbeat' || eventName === 'status' || eventName === 'phase') {
+          return;
+        }
+
+        if (eventName === 'run_started') {
+          activePipelineRunIdRef.current = payload?.run_id || null;
+          return;
+        }
+
+        if (eventName === 'retrieval_context') {
+          return;
+        }
+
+        if (eventName === 'token') {
+          const tokenText = payload?.token || '';
+          if (!tokenText) return;
+          updateAssistantMessage((msg) => ({
+            ...msg,
+            content: `${msg.content || ''}${tokenText}`,
+          }));
+          setReasoningResult((prev) => ({
+            ...(prev || { claim, raw_response: '' }),
+            claim: (prev?.claim || claim),
+            raw_response: `${prev?.raw_response || ''}${tokenText}`,
+          }));
+          return;
+        }
+
+        if (eventName === 'error') {
+          throw new Error(payload?.message || 'Errore nel ragionamento');
+        }
+
+        if (eventName === 'cancelled') {
+          throw new Error(payload?.message || 'Ragionamento interrotto manualmente.');
+        }
+
+        if (eventName === 'final') {
+          finalPayload = payload || {};
+          setReasoningResult(finalPayload);
+          updateAssistantMessage((msg) => ({
+            ...msg,
+            content:
+              payload?.raw_response
+              || msg.content
+              || 'Ho completato l’analisi del ragionamento. Qui sotto trovi la risposta con i dettagli.',
+          }));
+        }
+      });
+
+      if (!finalPayload) {
+        throw new Error('Streaming ragionamento interrotto prima del risultato finale.');
+      }
     } catch (error) {
-      console.error('Errore:', error);
-      setReasoningResult({ error: error.message });
-      setReasonMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Mi dispiace, si è verificato un errore durante il ragionamento: ${error.message}`,
-        },
-      ]);
+      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      const isManualStop = (
+        manualSearchReasonStopRef.current
+        || error?.name === 'AbortError'
+        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+      );
+      if (!isManualStop) {
+        console.error('Errore ragionamento:', error);
+      }
+      setReasoningResult(isManualStop ? null : { error: errorMessage });
+      updateAssistantMessage((msg) => ({
+        ...msg,
+        content: (msg.content || '').trim()
+          ? `${msg.content}\n\n${isManualStop ? '[Esecuzione interrotta manualmente]' : `[Errore] ${errorMessage}`}`
+          : (isManualStop
+            ? 'Ragionamento interrotto manualmente.'
+            : `Mi dispiace, si è verificato un errore durante il ragionamento: ${errorMessage}`),
+      }));
     } finally {
+      searchReasonAbortControllerRef.current = null;
+      activePipelineRunIdRef.current = null;
+      manualSearchReasonStopRef.current = false;
       setIsLoading(false);
+      inputRef.current?.focus();
     }
   };
 
   const handleStopPipeline = async () => {
-    if (!isLoading || (activeTab !== TABS.PIPELINE && activeTab !== TABS.DOE)) return;
+    if (!isLoading) return;
 
-    manualPipelineStopRef.current = true;
-    setIsStoppingPipeline(true);
-    setPipelineResult((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        _stream: {
-          ...(prev._stream || {}),
-          phase_details: {
-            ...(prev._stream?.phase_details || {}),
-            final_evaluation: 'Interruzione richiesta...',
+    const isPipelineLikeRun = activeTab === TABS.PIPELINE || activeTab === TABS.DOE;
+    if (isPipelineLikeRun) {
+      manualPipelineStopRef.current = true;
+      setIsStoppingPipeline(true);
+      setPipelineResult((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          _stream: {
+            ...(prev._stream || {}),
+            phase_details: {
+              ...(prev._stream?.phase_details || {}),
+              final_evaluation: 'Interruzione richiesta...',
+            },
           },
-        },
-      };
-    });
+        };
+      });
+    } else {
+      manualSearchReasonStopRef.current = true;
+    }
 
     const runId = activePipelineRunIdRef.current;
     try {
@@ -443,7 +676,11 @@ export default function App() {
     }
 
     try {
-      pipelineAbortControllerRef.current?.abort();
+      if (isPipelineLikeRun) {
+        pipelineAbortControllerRef.current?.abort();
+      } else {
+        searchReasonAbortControllerRef.current?.abort();
+      }
     } catch (err) {
       console.warn('Abort stream failed:', err);
     }
@@ -4647,6 +4884,9 @@ export default function App() {
   const isPipelineLikeTab = activeTab === TABS.PIPELINE || activeTab === TABS.DOE;
   const isSearchTab = activeTab === TABS.SEARCH;
   const isReasonTab = activeTab === TABS.REASON;
+  const isSearchReasonTab = isSearchTab || isReasonTab;
+  const showInlineInputTools = isPipelineLikeTab || isSearchReasonTab;
+  const showStopButton = isLoading && (isPipelineLikeTab || isSearchReasonTab);
   const isPipelineTab = activeTab === TABS.PIPELINE;
   const searchMessagesVisible = messages.filter(
     (msg, idx) => !(
@@ -6296,10 +6536,10 @@ export default function App() {
               }}
               placeholder={getPlaceholder()}
               rows={1}
-              className={`input-textarea ${isPipelineLikeTab ? 'has-inline-tool' : ''}`}
+              className={`input-textarea ${showInlineInputTools ? 'has-inline-tool' : ''}`}
               disabled={isLoading}
             />
-            {isPipelineLikeTab && (
+            {showInlineInputTools && (
               <div className="input-tools">
                 <button
                   type="button"
@@ -6481,10 +6721,10 @@ export default function App() {
           >
             <Send size={20} />
           </button>
-          {isPipelineLikeTab && isLoading && (
+          {showStopButton && (
             <button
               onClick={handleStopPipeline}
-              disabled={isStoppingPipeline}
+              disabled={isPipelineLikeTab ? isStoppingPipeline : false}
               className="stop-button"
               title="Interrompi esecuzione"
             >

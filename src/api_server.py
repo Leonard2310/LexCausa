@@ -8,6 +8,7 @@ Il backend gestisce l'intero flusso: Reasoner  CounterReasoner.
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ from io import StringIO
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
@@ -54,6 +55,7 @@ from agents.tools.neo4j_tools import (  # noqa: E402
 from config import settings  # noqa: E402
 from services.claim_context_memory import get_claim_context_memory  # noqa: E402
 from services.pipeline_control import PipelineCancelled  # noqa: E402
+from services.usage_stats import get_usage_stats  # noqa: E402
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -64,6 +66,72 @@ _pipeline_lock = threading.Lock()
 _active_stream_run_lock = threading.Lock()
 _active_stream_run: dict | None = None
 _retrieval_model_override_lock = threading.Lock()
+_usage_stats = get_usage_stats()
+
+
+def _format_component_counts(counts: dict[str, int], max_items: int = 4) -> str:
+    """Format top component counters as a compact comma-separated string."""
+    if not counts:
+        return "none"
+    ordered = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    head = ordered[: max(1, int(max_items))]
+    return ", ".join(f"{name}={value}" for name, value in head)
+
+
+def _extract_log_component(line: str) -> str:
+    """Extract component name from lines like ``ℹ️ [Reasoner] ...``."""
+    m = re.search(r"\[([A-Za-z0-9_]+)\]", str(line or ""))
+    return m.group(1) if m else "Pipeline"
+
+
+def _summarize_resilience_from_log_text(text: str) -> dict[str, object]:
+    """Build resilience counters by scanning the already produced pipeline log text."""
+    counts_413: dict[str, int] = {}
+    counts_fallback: dict[str, int] = {}
+    counts_mitigation: dict[str, int] = {}
+    total_413 = 0
+    total_fallback = 0
+    total_mitigation = 0
+
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        component = _extract_log_component(line)
+        lower = line.lower()
+        is_429 = "error code: 429" in lower or "rate limit reached" in lower
+
+        is_413 = (
+            "request too large" in lower or "error code: 413" in lower
+        ) and not is_429
+        is_fallback = (
+            "fallback" in lower or "cached as down" in lower or "counter gate" in lower
+        )
+        is_mitigation = (
+            "reducing max_tokens" in lower
+            or "retrying without response_format" in lower
+            or "cache hit" in lower
+        )
+
+        if is_413:
+            total_413 += 1
+            counts_413[component] = counts_413.get(component, 0) + 1
+        if is_fallback:
+            total_fallback += 1
+            counts_fallback[component] = counts_fallback.get(component, 0) + 1
+        if is_mitigation:
+            total_mitigation += 1
+            counts_mitigation[component] = counts_mitigation.get(component, 0) + 1
+
+    return {
+        "request_too_large_total": total_413,
+        "fallback_total": total_fallback,
+        "mitigation_total": total_mitigation,
+        "request_too_large_by_component": counts_413,
+        "fallback_by_component": counts_fallback,
+        "mitigation_by_component": counts_mitigation,
+    }
+
 
 # ─── Pipeline file logging ──────────────────────────────────────────
 LOG_DIR = Path(project_root) / "logs"
@@ -112,6 +180,30 @@ def _pipeline_logger(claim: str):
     finally:
         sys.stdout = old_stdout
         try:
+            diag = _summarize_resilience_from_log_text(buf.getvalue())
+            by_413 = cast(
+                dict[str, int], diag.get("request_too_large_by_component", {})
+            )
+            by_fallback = cast(dict[str, int], diag.get("fallback_by_component", {}))
+            by_mitigation = cast(
+                dict[str, int], diag.get("mitigation_by_component", {})
+            )
+            buf.write("\n🧪 Runtime resilience summary\n")
+            buf.write(
+                "   - 413/request-too-large total: "
+                f"{diag.get('request_too_large_total', 0)} "
+                f"(top components: {_format_component_counts(by_413)})\n"
+            )
+            buf.write(
+                "   - fallback/degradation events: "
+                f"{diag.get('fallback_total', 0)} "
+                f"(top components: {_format_component_counts(by_fallback)})\n"
+            )
+            buf.write(
+                "   - mitigation events (shrink/retry/cache-hit): "
+                f"{diag.get('mitigation_total', 0)} "
+                f"(top components: {_format_component_counts(by_mitigation)})\n"
+            )
             log_path.write_text(buf.getvalue(), encoding="utf-8")
             print(f"\n📝 Pipeline log salvato in: {log_path}")
         except Exception as exc:
@@ -1101,6 +1193,18 @@ def _temporary_retrieval_model_order_override(aliases: list[str] | None):
             cfg_cls.RETRIEVAL_MODEL_ORDER_ALIASES = previous
 
 
+@app.before_request
+def _track_api_call_stats():
+    """Track API call counts for runtime stats (excluding stats endpoints)."""
+    try:
+        path = str(request.path or "")
+        if path.startswith("/api/") and not path.startswith("/api/stats"):
+            _usage_stats.record_api_call(path, method=request.method)
+    except Exception:
+        # Stats collection must never break request handling.
+        return None
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint."""
@@ -1161,6 +1265,19 @@ def get_settings():
     )
 
 
+@app.route("/api/stats", methods=["GET"])
+def get_runtime_stats():
+    """Return aggregated runtime API/LLM usage statistics."""
+    return jsonify(_usage_stats.get_snapshot())
+
+
+@app.route("/api/stats/reset", methods=["POST"])
+def reset_runtime_stats():
+    """Reset runtime API/LLM usage statistics."""
+    snapshot = _usage_stats.reset()
+    return jsonify({"ok": True, "stats": snapshot})
+
+
 def _build_agent_config(
     model_override: str | None = None,
     temperature: float | None = None,
@@ -1176,102 +1293,370 @@ def _build_agent_config(
     )
 
 
+def _iter_stream_text_chunks(text: str, chunk_size: int = 96):
+    """Yield deterministic chunks to support pseudo-token live streaming."""
+    if not text:
+        return
+    cursor = 0
+    safe_chunk_size = max(1, int(chunk_size))
+    while cursor < len(text):
+        yield text[cursor : cursor + safe_chunk_size]
+        cursor += safe_chunk_size
+
+
+def _build_retrieval_context_payload(
+    statutes: list[dict], precedents: list[dict], metadata: dict | None
+) -> dict:
+    """Normalize retrieval context payload for SSE/UI consumers."""
+    meta = metadata if isinstance(metadata, dict) else {}
+    return {
+        "statutes": statutes if isinstance(statutes, list) else [],
+        "precedents": precedents if isinstance(precedents, list) else [],
+        "memory": {
+            "enabled": bool(meta.get("memory_enabled", False)),
+            "overwrite": bool(meta.get("memory_overwrite", False)),
+            "hit": bool(meta.get("memory_hit", False)),
+        },
+    }
+
+
+def _run_search_only(
+    data: dict,
+    *,
+    status_callback=None,
+    token_callback=None,
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Execute Search only (JSON + SSE shared implementation)."""
+    if not isinstance(data, dict):
+        data = {}
+
+    status_callback = status_callback or (lambda _msg: None)
+    token_callback = token_callback or (lambda _payload: None)
+    progress_callback = progress_callback or (lambda _event, _payload: None)
+
+    def _is_cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    def _check_cancel() -> None:
+        if _is_cancel_requested():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
+    def _emit_progress(event_name: str, payload: dict) -> None:
+        _check_cancel()
+        try:
+            progress_callback(event_name, payload)
+        except PipelineCancelled:
+            raise
+        except Exception:
+            pass
+
+    def _emit_phase(
+        phase: str, status: str, progress: int, detail: str | None = None
+    ) -> None:
+        _emit_progress(
+            "phase",
+            {
+                "phase": phase,
+                "status": status,
+                "progress": max(0, min(100, int(progress))),
+                "detail": detail or "",
+            },
+        )
+
+    pipe = get_pipeline()
+
+    claim = (data.get("message", "") or "").strip()
+    top_k = data.get("top_k", settings.search_top_k_default)
+    include_precedents = data.get("include_precedents", True)
+    max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+    claim_memory_enabled, claim_memory_overwrite = _parse_claim_context_memory_flags(
+        data
+    )
+    fe_settings = data.get("settings", {}) or {}
+    fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
+    fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
+    fe_search_use_top_n_libri = fe_settings.get("search_use_top_n_libri")
+    fe_retrieval_model_order_aliases = fe_settings.get("retrieval_model_order_aliases")
+    fe_retrieval_strict_llm_errors = fe_settings.get("retrieval_strict_llm_errors")
+
+    if not claim:
+        raise ValueError('Campo "message" obbligatorio')
+
+    if fe_search_query_terms_mode is not None:
+        mode = str(fe_search_query_terms_mode).strip().lower()
+        if mode == "llm":
+            settings.search_query_terms_mode = mode
+    if fe_search_min_kept_statutes is not None:
+        settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
+    if fe_search_use_top_n_libri is not None:
+        settings.search_use_top_n_libri = int(fe_search_use_top_n_libri)
+
+    retrieval_model_order_override = _parse_retrieval_model_order_override(
+        fe_retrieval_model_order_aliases
+    )
+    retrieval_strict_llm_errors = bool(fe_retrieval_strict_llm_errors)
+
+    with (
+        _temporary_retrieval_model_order_override(retrieval_model_order_override),
+        retrieval_llm_fail_fast_scope(retrieval_strict_llm_errors),
+    ):
+        status_callback("Preparazione contesto di ricerca...")
+        _emit_phase("retrieval", "active", 8, "Avvio retrieval contestuale")
+
+        retrieval_metadata: dict[str, bool] = {}
+        statutes, precedents = prepare_claim_context(
+            claim=claim,
+            include_precedents=bool(include_precedents),
+            max_statutes=int(top_k),
+            max_precedents=int(max_precedents),
+            claim_context_memory_enabled=claim_memory_enabled,
+            claim_context_memory_overwrite=claim_memory_overwrite,
+            progress_callback=lambda detail, progress: _emit_phase(
+                "retrieval", "active", progress, detail
+            ),
+            cancel_checker=_is_cancel_requested,
+            result_metadata=retrieval_metadata,
+        )
+        _check_cancel()
+
+        _emit_progress(
+            "retrieval_context",
+            _build_retrieval_context_payload(statutes, precedents, retrieval_metadata),
+        )
+        _emit_phase("retrieval", "done", 100, "Contesto recuperato")
+
+        status_callback("Classificazione del claim in corso...")
+        _emit_phase("classification", "active", 25, "Classificazione dominio")
+        classification = pipe.classifier.classify(claim)
+        _check_cancel()
+        _emit_phase("classification", "done", 100, "Classificazione completata")
+
+        status_callback("Composizione risposta finale...")
+        _emit_phase("answer", "active", 22, "Sintesi norme e precedenti")
+        chat_result = SimpleNamespace(
+            claim=claim,
+            classification=classification,
+            articles=[
+                SimpleNamespace(
+                    source=art.get("source"),
+                    articolo=art.get("articolo"),
+                    titolo=art.get("titolo"),
+                    testo=art.get("testo"),
+                    libro=art.get("libro"),
+                    score=float(art.get("score", 0.0)),
+                )
+                for art in statutes
+            ],
+        )
+        response_text = format_search_result(chat_result)
+
+        for chunk in _iter_stream_text_chunks(response_text):
+            _check_cancel()
+            token_callback({"phase": "search", "token": chunk})
+
+        _emit_phase("answer", "done", 100, "Risposta pronta")
+
+    return {
+        "response": response_text,
+        "classification": {
+            "categories": classification.categories,
+            "descriptions": classification.descriptions,
+            "libro_mappings": classification.libro_mappings,
+        },
+        "articles": [
+            {
+                "source": art.get("source"),
+                "articolo": art.get("articolo"),
+                "titolo": art.get("titolo"),
+                "testo": art.get("testo"),
+                "libro": art.get("libro"),
+                "score": float(art.get("score", 0.0)),
+            }
+            for art in statutes
+        ],
+        "precedents": precedents,
+    }
+
+
+def _run_reason_only(
+    data: dict,
+    *,
+    status_callback=None,
+    token_callback=None,
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Execute Reasoner only (JSON + SSE shared implementation)."""
+    if not isinstance(data, dict):
+        data = {}
+
+    status_callback = status_callback or (lambda _msg: None)
+    token_callback = token_callback or (lambda _payload: None)
+    progress_callback = progress_callback or (lambda _event, _payload: None)
+
+    def _is_cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    def _check_cancel() -> None:
+        if _is_cancel_requested():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+
+    def _emit_progress(event_name: str, payload: dict) -> None:
+        _check_cancel()
+        try:
+            progress_callback(event_name, payload)
+        except PipelineCancelled:
+            raise
+        except Exception:
+            pass
+
+    def _emit_phase(
+        phase: str, status: str, progress: int, detail: str | None = None
+    ) -> None:
+        _emit_progress(
+            "phase",
+            {
+                "phase": phase,
+                "status": status,
+                "progress": max(0, min(100, int(progress))),
+                "detail": detail or "",
+            },
+        )
+
+    claim = (data.get("claim", data.get("message", "")) or "").strip()
+    fe_settings = data.get("settings", {}) or {}
+    fe_reasoner_temperature = fe_settings.get(
+        "reasoner_temperature",
+        fe_settings.get("llm_temperature", settings.reasoner_default_temperature),
+    )
+    fe_legacy_enable_causality = fe_settings.get("enable_causality")
+    fe_reasoner_enable_causality = _coerce_bool(
+        fe_settings.get(
+            "reasoner_enable_causality",
+            (
+                True
+                if fe_legacy_enable_causality is None
+                else _coerce_bool(fe_legacy_enable_causality, True)
+            ),
+        ),
+        True,
+    )
+    fe_max_tokens = fe_settings.get("llm_max_tokens")
+    fe_reasoner_model = fe_settings.get("reasoner_model")
+    include_precedents = data.get("include_precedents", True)
+    max_statutes = data.get("max_statutes", settings.search_top_k_default)
+    max_precedents = data.get("max_precedents", settings.precedents_limit_default)
+    claim_memory_enabled, claim_memory_overwrite = _parse_claim_context_memory_flags(
+        data
+    )
+
+    if not claim:
+        raise ValueError('Campo "claim" obbligatorio')
+
+    status_callback("Routing e preparazione contesto...")
+    _emit_phase("retrieval", "active", 8, "Risoluzione routing")
+    routing_decision = resolve_routing_decision(claim, data)
+
+    retrieval_metadata: dict[str, bool] = {}
+    statutes, precedents = prepare_claim_context(
+        claim=claim,
+        include_precedents=bool(include_precedents),
+        max_statutes=int(max_statutes),
+        max_precedents=int(max_precedents),
+        claim_context_memory_enabled=claim_memory_enabled,
+        claim_context_memory_overwrite=claim_memory_overwrite,
+        progress_callback=lambda detail, progress: _emit_phase(
+            "retrieval", "active", progress, detail
+        ),
+        cancel_checker=_is_cancel_requested,
+        result_metadata=retrieval_metadata,
+    )
+    _check_cancel()
+    _emit_progress(
+        "retrieval_context",
+        _build_retrieval_context_payload(statutes, precedents, retrieval_metadata),
+    )
+    _emit_phase("retrieval", "done", 100, "Contesto pronto")
+
+    status_callback("Generazione ragionamento in corso...")
+    _emit_phase("reasoning", "active", 12, "Esecuzione Reasoner")
+    reasoner_config = _build_agent_config(
+        model_override=fe_reasoner_model or settings.reasoner_default_model,
+        temperature=fe_reasoner_temperature,
+        max_tokens=fe_max_tokens,
+    )
+    reas = Reasoner(config=reasoner_config)
+    reas.set_cancel_checker(_is_cancel_requested)
+
+    stream_tracker = {"token_emitted": False}
+
+    def _reasoner_stream_callback(payload: dict) -> None:
+        _check_cancel()
+        if isinstance(payload, dict):
+            control_event = str(payload.get("_control_event", "") or "").strip()
+            if control_event in {
+                "reasoner_refinement_started",
+                "reasoner_refinement_completed",
+            }:
+                _emit_progress(control_event, payload.get("payload") or {})
+                return
+            token_payload = dict(payload)
+            if not token_payload.get("phase"):
+                token_payload["phase"] = "reason"
+            if token_payload.get("token"):
+                stream_tracker["token_emitted"] = True
+            token_callback(token_payload)
+            return
+
+        text_payload = str(payload or "")
+        if text_payload:
+            stream_tracker["token_emitted"] = True
+            token_callback({"phase": "reason", "token": text_payload})
+
+    result = reas.run(
+        claim=claim,
+        routing_decision=routing_decision,
+        pre_retrieved_statutes=statutes,
+        pre_retrieved_precedents=precedents,
+        enable_causality=fe_reasoner_enable_causality,
+        stream_callback=_reasoner_stream_callback,
+    )
+    _check_cancel()
+
+    if not stream_tracker["token_emitted"] and result.raw_response:
+        for chunk in _iter_stream_text_chunks(result.raw_response):
+            _check_cancel()
+            token_callback({"phase": "reason", "token": chunk})
+
+    _emit_phase("reasoning", "done", 100, "Ragionamento completato")
+    status_callback("Reasoner completato.")
+
+    return {
+        "claim": result.claim,
+        "causality": result.causality_classification,
+        "routing": routing_decision.to_dict(),
+        "arguments": result.arguments,
+        "reasoning_chain": result.reasoning_chain,
+        "statutes": result.relevant_statutes,
+        "precedents": result.relevant_precedents,
+        "raw_response": result.raw_response,
+    }
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """
     Endpoint principale per il chatbot (Tab Ricerca).
     """
     try:
-        pipe = get_pipeline()
+        data = request.get_json(silent=True) or {}
+        result = _run_search_only(data)
+        return jsonify(result)
 
-        data = request.get_json()
-        claim = data.get("message", "").strip()
-        top_k = data.get("top_k", settings.search_top_k_default)
-        include_precedents = data.get("include_precedents", True)
-        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
-        claim_memory_enabled, claim_memory_overwrite = (
-            _parse_claim_context_memory_flags(data)
-        )
-        fe_settings = data.get("settings", {}) or {}
-        fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
-        fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
-        fe_search_use_top_n_libri = fe_settings.get("search_use_top_n_libri")
-        fe_retrieval_model_order_aliases = fe_settings.get(
-            "retrieval_model_order_aliases"
-        )
-        fe_retrieval_strict_llm_errors = fe_settings.get("retrieval_strict_llm_errors")
-
-        if not claim:
-            return jsonify({"error": 'Campo "message" obbligatorio'}), 400
-
-        if fe_search_query_terms_mode is not None:
-            mode = str(fe_search_query_terms_mode).strip().lower()
-            if mode == "llm":
-                settings.search_query_terms_mode = mode
-        if fe_search_min_kept_statutes is not None:
-            settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
-        if fe_search_use_top_n_libri is not None:
-            settings.search_use_top_n_libri = int(fe_search_use_top_n_libri)
-
-        retrieval_model_order_override = _parse_retrieval_model_order_override(
-            fe_retrieval_model_order_aliases
-        )
-        retrieval_strict_llm_errors = bool(fe_retrieval_strict_llm_errors)
-
-        with (
-            _temporary_retrieval_model_order_override(retrieval_model_order_override),
-            retrieval_llm_fail_fast_scope(retrieval_strict_llm_errors),
-        ):
-            # Align /api/chat retrieval with the full pipeline retrieval stack:
-            # hybrid retrieval + CITES expansion + relevance filter + applicability filter
-            statutes, precedents = prepare_claim_context(
-                claim=claim,
-                include_precedents=bool(include_precedents),
-                max_statutes=int(top_k),
-                max_precedents=int(max_precedents),
-                claim_context_memory_enabled=claim_memory_enabled,
-                claim_context_memory_overwrite=claim_memory_overwrite,
-            )
-            classification = pipe.classifier.classify(claim)
-            chat_result = SimpleNamespace(
-                claim=claim,
-                classification=classification,
-                articles=[
-                    SimpleNamespace(
-                        source=art.get("source"),
-                        articolo=art.get("articolo"),
-                        titolo=art.get("titolo"),
-                        testo=art.get("testo"),
-                        libro=art.get("libro"),
-                        score=float(art.get("score", 0.0)),
-                    )
-                    for art in statutes
-                ],
-            )
-            response_text = format_search_result(chat_result)
-
-        return jsonify(
-            {
-                "response": response_text,
-                "classification": {
-                    "categories": classification.categories,
-                    "descriptions": classification.descriptions,
-                    "libro_mappings": classification.libro_mappings,
-                },
-                "articles": [
-                    {
-                        "source": art.get("source"),
-                        "articolo": art.get("articolo"),
-                        "titolo": art.get("titolo"),
-                        "testo": art.get("testo"),
-                        "libro": art.get("libro"),
-                        "score": float(art.get("score", 0.0)),
-                    }
-                    for art in statutes
-                ],
-                "precedents": precedents,
-            }
-        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     except Exception as e:
         print(f"❌ Errore: {e}")
@@ -1287,72 +1672,12 @@ def reason():
     Endpoint per il ragionamento causale (Tab Ragionamento).
     """
     try:
-        data = request.get_json()
-        claim = data.get("claim", data.get("message", "")).strip()
-        fe_settings = data.get("settings", {}) or {}
-        fe_reasoner_temperature = fe_settings.get(
-            "reasoner_temperature",
-            fe_settings.get("llm_temperature", settings.reasoner_default_temperature),
-        )
-        fe_legacy_enable_causality = fe_settings.get("enable_causality")
-        fe_reasoner_enable_causality = _coerce_bool(
-            fe_settings.get(
-                "reasoner_enable_causality",
-                (
-                    True
-                    if fe_legacy_enable_causality is None
-                    else _coerce_bool(fe_legacy_enable_causality, True)
-                ),
-            ),
-            True,
-        )
-        fe_max_tokens = fe_settings.get("llm_max_tokens")
-        fe_reasoner_model = fe_settings.get("reasoner_model")
-        include_precedents = data.get("include_precedents", True)
-        max_statutes = data.get("max_statutes", settings.search_top_k_default)
-        max_precedents = data.get("max_precedents", settings.precedents_limit_default)
-        claim_memory_enabled, claim_memory_overwrite = (
-            _parse_claim_context_memory_flags(data)
-        )
-        if not claim:
-            return jsonify({"error": 'Campo "claim" obbligatorio'}), 400
+        data = request.get_json(silent=True) or {}
+        result = _run_reason_only(data)
+        return jsonify(result)
 
-        routing_decision = resolve_routing_decision(claim, data)
-        statutes, precedents = prepare_claim_context(
-            claim=claim,
-            include_precedents=include_precedents,
-            max_statutes=max_statutes,
-            max_precedents=max_precedents,
-            claim_context_memory_enabled=claim_memory_enabled,
-            claim_context_memory_overwrite=claim_memory_overwrite,
-        )
-        reasoner_config = _build_agent_config(
-            model_override=fe_reasoner_model or settings.reasoner_default_model,
-            temperature=fe_reasoner_temperature,
-            max_tokens=fe_max_tokens,
-        )
-        reas = Reasoner(config=reasoner_config)
-
-        result = reas.run(
-            claim=claim,
-            routing_decision=routing_decision,
-            pre_retrieved_statutes=statutes,
-            pre_retrieved_precedents=precedents,
-            enable_causality=fe_reasoner_enable_causality,
-        )
-
-        return jsonify(
-            {
-                "claim": result.claim,
-                "causality": result.causality_classification,
-                "routing": routing_decision.to_dict(),
-                "arguments": result.arguments,
-                "reasoning_chain": result.reasoning_chain,
-                "statutes": result.relevant_statutes,
-                "precedents": result.relevant_precedents,
-                "raw_response": result.raw_response,
-            }
-        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     except Exception as e:
         print(f"❌ Errore reasoning: {e}")
@@ -1360,6 +1685,212 @@ def reason():
 
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+def chat_stream():
+    """Endpoint SSE con streaming live della sola Ricerca."""
+    if not _pipeline_lock.acquire(blocking=False):
+        return jsonify({"error": "A pipeline is already running. Please wait."}), 429
+
+    data = request.get_json(silent=True) or {}
+    event_queue: Queue = Queue()
+    sentinel = object()
+    run_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        _active_stream_run = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "started_at": time.time(),
+            "kind": "chat_stream",
+        }
+
+    def push_status(message: str) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put(("status", {"message": message}))
+
+    def push_token(payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put(("token", payload))
+
+    def push_progress(event_name: str, payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put((event_name, payload))
+
+    def push_error(message: str, code: int) -> None:
+        event_queue.put(("error", {"message": message, "code": code}))
+
+    def _worker() -> None:
+        global _active_stream_run
+        try:
+            result = _run_search_only(
+                data,
+                status_callback=push_status,
+                token_callback=push_token,
+                progress_callback=push_progress,
+                cancel_event=cancel_event,
+            )
+            event_queue.put(("final", result))
+        except PipelineCancelled as e:
+            event_queue.put(
+                ("cancelled", {"message": str(e), "run_id": run_id, "ok": True})
+            )
+        except ValueError as e:
+            push_error(str(e), 400)
+        except Exception as e:
+            print(f"\n{'='*70}")
+            print("❌ CHAT STREAM ERROR")
+            print(f"{'='*70}")
+            print(f"Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            push_error(str(e), 500)
+        finally:
+            event_queue.put(("done", {"ok": True}))
+            event_queue.put(sentinel)
+            with _active_stream_run_lock:
+                if (
+                    isinstance(_active_stream_run, dict)
+                    and _active_stream_run.get("run_id") == run_id
+                ):
+                    _active_stream_run = None
+            _pipeline_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    event_queue.put(("run_started", {"run_id": run_id}))
+
+    @stream_with_context
+    def generate():
+        while True:
+            try:
+                item = event_queue.get(timeout=12)
+            except Empty:
+                yield _sse_event("heartbeat", {"ts": int(time.time())})
+                continue
+            if item is sentinel:
+                break
+            event, payload = item
+            yield _sse_event(event, payload)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/reason/stream", methods=["POST"])
+def reason_stream():
+    """Endpoint SSE con streaming live del solo Reasoner."""
+    if not _pipeline_lock.acquire(blocking=False):
+        return jsonify({"error": "A pipeline is already running. Please wait."}), 429
+
+    data = request.get_json(silent=True) or {}
+    event_queue: Queue = Queue()
+    sentinel = object()
+    run_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+
+    global _active_stream_run
+    with _active_stream_run_lock:
+        _active_stream_run = {
+            "run_id": run_id,
+            "cancel_event": cancel_event,
+            "started_at": time.time(),
+            "kind": "reason_stream",
+        }
+
+    def push_status(message: str) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put(("status", {"message": message}))
+
+    def push_token(payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put(("token", payload))
+
+    def push_progress(event_name: str, payload: dict) -> None:
+        if cancel_event.is_set():
+            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        event_queue.put((event_name, payload))
+
+    def push_error(message: str, code: int) -> None:
+        event_queue.put(("error", {"message": message, "code": code}))
+
+    def _worker() -> None:
+        global _active_stream_run
+        try:
+            result = _run_reason_only(
+                data,
+                status_callback=push_status,
+                token_callback=push_token,
+                progress_callback=push_progress,
+                cancel_event=cancel_event,
+            )
+            event_queue.put(("final", result))
+        except PipelineCancelled as e:
+            event_queue.put(
+                ("cancelled", {"message": str(e), "run_id": run_id, "ok": True})
+            )
+        except ValueError as e:
+            push_error(str(e), 400)
+        except Exception as e:
+            print(f"\n{'='*70}")
+            print("❌ REASON STREAM ERROR")
+            print(f"{'='*70}")
+            print(f"Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            push_error(str(e), 500)
+        finally:
+            event_queue.put(("done", {"ok": True}))
+            event_queue.put(sentinel)
+            with _active_stream_run_lock:
+                if (
+                    isinstance(_active_stream_run, dict)
+                    and _active_stream_run.get("run_id") == run_id
+                ):
+                    _active_stream_run = None
+            _pipeline_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    event_queue.put(("run_started", {"run_id": run_id}))
+
+    @stream_with_context
+    def generate():
+        while True:
+            try:
+                item = event_queue.get(timeout=12)
+            except Empty:
+                yield _sse_event("heartbeat", {"ts": int(time.time())})
+                continue
+            if item is sentinel:
+                break
+            event, payload = item
+            yield _sse_event(event, payload)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _run_counter_reason_only(

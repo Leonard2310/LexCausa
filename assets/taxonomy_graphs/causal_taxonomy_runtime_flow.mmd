@@ -1,0 +1,47 @@
+flowchart LR
+  subgraph IN["1) Ingresso e routing iniziale"]
+    API["/api/chat\nRequest utente + claim"] --> RR["resolve_routing_decision()\nDecide causal_type iniziale"]
+    RR --> VID["validate_ids(...)\nControlla che causal_type_id esista"]
+    RR --> AR["anchor_norms_for() + principle_tests_for()\nCarica ancore normative e test di principio"]
+    RR --> ROUTER["Router.route(claim)\nFallback se hint assente o incompleto"]
+    ROUTER --> RC["RoutingDecision\ncausal_type_id"]
+    VID --> RC
+    AR --> RC
+  end
+
+  subgraph RE["2) Reasoning (tesi principale)"]
+    RC --> REAS["Reasoner\nCostruisce risposta e struttura argomentativa"]
+    REAS --> GCT["tool retrieval tassonomia\nRecupera mappature tassonomiche"]
+    GCT --> FILT["norme_core_rilevanti / norme_accessorie_rilevanti\nFiltra norme principali vs accessorie"]
+    REAS --> PV["posthoc validate_ids(...)\nValida causal_type_id/theory_id estratti dal Reasoner"]
+  end
+
+  subgraph CR["3) Counter-Reasoning (obiezioni)"]
+    PV --> COUNTER["CounterReasoner\nGenera obiezioni e contro-tesi"]
+    COUNTER --> POOL["counter_attack_pool_for(causal_type_id)\nPool base di attacchi per causal type"]
+    PV --> TPOOL["theory_counter_attacks(theory_id)\nLayer opzionale da teoria"]
+    POOL --> MERGE["merge_attack_sources\nBase causal type + teoria"]
+    TPOOL --> MERGE
+    MERGE --> SEL["_select_attacks()\nCompatibilita + deduplica + selezione LLM"]
+  end
+
+  subgraph CFGS["4) Config condivisa"]
+    CFG["config_taxonomy.json\nFonte unica di tassonomia, mapping e attacchi"]
+  end
+
+  CFG --> RR
+  CFG --> GCT
+  CFG --> POOL
+  CFG --> TPOOL
+
+  classDef phase fill:#eef2ff,stroke:#3730a3,color:#111827;
+  classDef entry fill:#ecfeff,stroke:#0e7490,color:#111827;
+  classDef reason fill:#ecfdf5,stroke:#166534,color:#111827;
+  classDef counter fill:#fff7ed,stroke:#9a3412,color:#111827;
+  classDef config fill:#f5f3ff,stroke:#6d28d9,color:#111827;
+
+  class IN,RE,CR,CFGS phase;
+  class API,RR,VID,AR,ROUTER,RC entry;
+  class REAS,GCT,FILT,PV reason;
+  class COUNTER,POOL,SEL counter;
+  class CFG config;

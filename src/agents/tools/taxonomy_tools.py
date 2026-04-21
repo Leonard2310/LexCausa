@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from groq import Groq
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -20,9 +19,9 @@ from .prompt_registry import render_prompt
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import settings  # noqa: E402
+from services.groq_client import resilient_groq_call  # noqa: E402
 
 _taxonomy_cache: Optional[dict] = None
-_groq_client: Optional[Groq] = None
 _theory_cache: dict = {}
 
 
@@ -34,14 +33,6 @@ def get_taxonomy() -> dict:
         with open(taxonomy_path, "r", encoding="utf-8") as f:
             _taxonomy_cache = json.load(f)
     return _taxonomy_cache
-
-
-def get_groq_client() -> Groq:
-    """Get or create Groq client."""
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = Groq(api_key=settings.groq_api_key)
-    return _groq_client
 
 
 def _causal_type_index(cfg: dict) -> dict:
@@ -98,15 +89,19 @@ def classify_causality_tool(claim: str, context: Optional[str] = None) -> dict:
 
     Returns the causality type, associated warrant, and relevant norms from taxonomy.
     """
-    # Use LLM to classify
-    client = get_groq_client()
     messages = _build_classification_messages(claim, context)
 
-    response = client.chat.completions.create(
-        model=settings.groq_models[0],
-        messages=messages,  # type: ignore[arg-type]
-        temperature=settings.classifier_temperature,
-        max_tokens=settings.taxonomy_max_tokens,
+    def _call(client, model):
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,  # type: ignore[arg-type]
+            temperature=settings.classifier_temperature,
+            max_tokens=settings.taxonomy_max_tokens,
+        )
+
+    response = resilient_groq_call(
+        _call,
+        model_order=settings.retrieval_model_fallback_order,
     )
 
     # Parse response
@@ -225,7 +220,6 @@ def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:
     if not norms:
         return norms
 
-    client = get_groq_client()
     relevant: list[dict] = []
 
     for norm in norms:
@@ -241,12 +235,20 @@ def _filter_norms_for_claim(norms: list[dict], claim: str) -> list[dict]:
         )
 
         try:
-            resp = client.chat.completions.create(
-                model=settings.groq_models[0],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=settings.classifier_temperature,
-                max_tokens=settings.taxonomy_filter_max_tokens,
+
+            def _call(client, model):
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=settings.classifier_temperature,
+                    max_tokens=settings.taxonomy_filter_max_tokens,
+                )
+
+            resp = resilient_groq_call(
+                _call,
+                model_order=settings.retrieval_model_fallback_order,
             )
+
             answer = (resp.choices[0].message.content or "").strip().upper()
         except Exception:
             answer = "YES"

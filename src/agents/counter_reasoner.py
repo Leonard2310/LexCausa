@@ -1351,6 +1351,7 @@ class CounterReasoner(BaseAgent):
         pre_retrieved_precedents: List[dict],
         reasoner_conclusion: str,
         enable_causality: bool = True,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> CounterReasonerOutput:
         """
@@ -1578,6 +1579,7 @@ class CounterReasoner(BaseAgent):
                         attack_blacklist=attack_blacklist,
                         allow_open_attacks=allow_open_attacks,
                         taxonomy_mode_active=use_taxonomy_mode,
+                        enable_planning=enable_planning,
                         stream_callback=stream_callback,
                     )
                 )
@@ -2069,9 +2071,15 @@ class CounterReasoner(BaseAgent):
         attack_blacklist: Optional[set[str]] = None,
         allow_open_attacks: bool = True,
         taxonomy_mode_active: bool = False,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str], List[List[str]]]:
-        """Generate counter-reasoning chain with plan -> execute -> residual replan workflow."""
+        """Generate counter-reasoning chain with plan -> execute -> residual replan workflow.
+
+        When enable_planning=False (DoE ablation), the planner LLM call is skipped and
+        generic synthetic plan steps are used so the executor still runs step-by-step
+        but without structured plan guidance.
+        """
         max_steps = settings.chain_max_steps
         min_steps = settings.chain_min_steps
         statutes_list = (
@@ -2259,38 +2267,53 @@ class CounterReasoner(BaseAgent):
             remaining_min = max(1, min_steps - planned_steps_count)
             remaining_max = max(1, max_steps - planned_steps_count)
             planner_mode = "RESUME" if planned_steps_count else "FULL"
-            plan = self._generate_counter_plan(
-                claim=claim,
-                routing_decision=routing_decision,
-                selected_attack_ids=selected_attack_ids,
-                attack_catalog=attack_catalog,
-                reasoner_conclusion=reasoner_conclusion,
-                knowledge_base=knowledge_base,
-                statutes_list=statutes_list,
-                precedents_list=precedents_list,
-                target_map_text=target_map_text,
-                conclusion_points_text=conclusion_points_text,
-                min_steps=remaining_min,
-                max_steps=remaining_max,
-                planner_mode=planner_mode,
-                resume_from_step=planned_steps_count + 1,
-                existing_summaries=step_summaries,
-            )
-            plan = self._coerce_counter_plan_to_allowed_norms(
-                plan=plan,
-                allowed_statutes=available_statutes,
-            )
-            plan = self._prune_counter_plan_against_existing_history(
-                plan=plan,
-                previous_summaries=step_summaries,
-            )
-            plan = self._filter_counter_plan_by_feasibility(
-                claim=claim,
-                reasoner_conclusion=reasoner_conclusion,
-                target_map=target_map,
-                plan=plan,
-                previous_summaries=step_summaries,
-            )
+            if enable_planning:
+                plan = self._generate_counter_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    selected_attack_ids=selected_attack_ids,
+                    attack_catalog=attack_catalog,
+                    reasoner_conclusion=reasoner_conclusion,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    precedents_list=precedents_list,
+                    target_map_text=target_map_text,
+                    conclusion_points_text=conclusion_points_text,
+                    min_steps=remaining_min,
+                    max_steps=remaining_max,
+                    planner_mode=planner_mode,
+                    resume_from_step=planned_steps_count + 1,
+                    existing_summaries=step_summaries,
+                )
+                plan = self._coerce_counter_plan_to_allowed_norms(
+                    plan=plan,
+                    allowed_statutes=available_statutes,
+                )
+                plan = self._prune_counter_plan_against_existing_history(
+                    plan=plan,
+                    previous_summaries=step_summaries,
+                )
+                plan = self._filter_counter_plan_by_feasibility(
+                    claim=claim,
+                    reasoner_conclusion=reasoner_conclusion,
+                    target_map=target_map,
+                    plan=plan,
+                    previous_summaries=step_summaries,
+                )
+            else:
+                # Planning ablation: skip planner LLM call, use trivial synthetic steps.
+                plan = [
+                    {
+                        "goal": "",
+                        "focus": "",
+                        "expected_norm": "",
+                        "step_type": "ATTACK",
+                        "citation_requirement": "optional",
+                        "summary": f"Counter-step {planned_steps_count + i + 1}",
+                    }
+                    for i in range(remaining_max)
+                ]
+
             if not plan:
                 stalled_rounds += 1
                 self._log(
@@ -2300,7 +2323,7 @@ class CounterReasoner(BaseAgent):
                 if stalled_rounds >= 2:
                     break
                 continue
-            if len(plan) < remaining_min:
+            if enable_planning and len(plan) < remaining_min:
                 stalled_rounds += 1
                 self._log(
                     "Warning: counter planner returned too few feasible steps after pruning; replanning",
@@ -2311,8 +2334,8 @@ class CounterReasoner(BaseAgent):
                 continue
 
             self._log(
-                f"Counter plan generated: {len(plan)} step(s) "
-                f"[round={plan_round}, mode={planner_mode}, completed={planned_steps_count}]"
+                f"Counter plan {'(synthetic, no-planning ablation)' if not enable_planning else 'generated'}: "
+                f"{len(plan)} step(s) [round={plan_round}, mode={planner_mode}, completed={planned_steps_count}]"
             )
 
             planned_before_round = planned_steps_count
@@ -4318,7 +4341,7 @@ class CounterReasoner(BaseAgent):
 
             if "premessa" in lower_section:
                 if current_arg:
-                    # Crea CounterArgument con valori di default per campi mancanti
+                    # Create CounterArgument with defaults for missing fields
                     arguments.append(
                         CounterArgument(
                             premise=current_arg.get("premise", ""),

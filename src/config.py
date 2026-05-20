@@ -447,12 +447,12 @@ class Settings(BaseSettings):
 
     aqa_attack_type_multipliers: dict = Field(
         default_factory=lambda: {
-            "contradiction": 2.0,  # Contraddizione logica totale
-            "exception": 1.7,  # Limita fortemente applicabilità
-            "derogation": 2.0,  # Invalida direttamente la norma citata
-            "extinction": 2.3,  # Estingue completamente l'argomento
-            "factual_impediment": 1.2,  # Impedimento fattuale serio
-            "general_opposition": 1.05,  # Opposizione generica ma rilevante
+            "contradiction": 2.0,  # Total logical contradiction
+            "exception": 1.7,  # Strongly limits applicability
+            "derogation": 2.0,  # Directly invalidates the cited norm
+            "extinction": 2.3,  # Completely extinguishes the argument
+            "factual_impediment": 1.2,  # Serious factual impediment
+            "general_opposition": 1.05,  # Generic but relevant opposition
         },
         alias="AQA_ATTACK_TYPE_MULTIPLIERS",
         description="Damage multipliers by attack type.",
@@ -711,6 +711,21 @@ class Settings(BaseSettings):
         alias="CHAIN_MIN_STEPS",
         description="Minimum reasoning steps before the LLM is allowed to conclude.",
     )
+
+    # =========================================================================
+    # Planning Ablation Flags (DoE Control)
+    # =========================================================================
+    enable_planning_reasoner: bool = Field(
+        default=True,
+        alias="ENABLE_PLANNING_REASONER",
+        description="Enable planning phase in Reasoner agent (for ablation studies).",
+    )
+    enable_planning_counter: bool = Field(
+        default=True,
+        alias="ENABLE_PLANNING_COUNTER",
+        description="Enable planning phase in Counter-Reasoner agent (for ablation studies).",
+    )
+
     ancillary_max_tokens_cap: int = Field(
         default=320,
         alias="ANCILLARY_MAX_TOKENS_CAP",

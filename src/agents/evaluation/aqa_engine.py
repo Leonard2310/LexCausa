@@ -1399,7 +1399,7 @@ class AQAEngineMixin:
         )
         _emit(
             "links_collected",
-            f"Link ASPIC+ raccolti: pro={len(pro_links)}, contro={len(contra_links)}",
+            f"ASPIC+ links collected: pro={len(pro_links)}, counter={len(contra_links)}",
             0.12,
             pro_links=len(pro_links),
             contra_links=len(contra_links),
@@ -1407,7 +1407,7 @@ class AQAEngineMixin:
         )
         self._populate_precedent_influences(reasoner_ir, pro_links)
         self._populate_precedent_influences(counter_ir, contra_links)
-        _emit("precedents_linked", "Allineamento precedenti completato", 0.2)
+        _emit("precedents_linked", "Precedent alignment completed", 0.2)
 
         for idx, link in enumerate(pro_links + contra_links, start=1):
             link_id = link.get("link_id") or f"L{idx}"
@@ -1500,13 +1500,13 @@ class AQAEngineMixin:
         # Cross-attacks (ASPIC+ bidirectional)
         # ==============================================================
         self._log("⚔️ Computing bidirectional cross-attacks (ASPIC+)...")
-        _emit("attacks_start", "Calcolo attacchi bidirezionali in corso", 0.64)
+        _emit("attacks_start", "Bidirectional attack computation in progress", 0.64)
         self._compute_cross_attacks(
             pro_links,
             contra_links,
             progress_callback=lambda payload: _emit(
                 payload.get("stage", "attacks_progress"),
-                payload.get("message", "Calcolo attacchi"),
+                payload.get("message", "Attack computation"),
                 0.64
                 + (
                     (
@@ -1521,7 +1521,7 @@ class AQAEngineMixin:
                 target_link_id=payload.get("target_link_id"),
             ),
         )
-        _emit("attacks_done", "Calcolo attacchi completato", 0.84)
+        _emit("attacks_done", "Attack computation completed", 0.84)
 
         # Log attack summaries (active + filtered breakdown)
         for link in pro_links + contra_links:
@@ -1763,7 +1763,7 @@ class AQAEngineMixin:
             f"{verdict} (pos≥{self._aqa_verdict_pos:.2f}, "
             f"neg≤{self._aqa_verdict_neg:.2f})"
         )
-        _emit("done", f"AQA completata: verdetto {verdict}", 1.0, verdict=verdict)
+        _emit("done", f"AQA completed: verdict {verdict}", 1.0, verdict=verdict)
 
         weakest = sorted(
             pro_links + contra_links,

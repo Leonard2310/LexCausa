@@ -147,6 +147,7 @@ class Reasoner(BaseAgent):
         pre_retrieved_statutes: list[dict],
         pre_retrieved_precedents: list[dict],
         enable_causality: bool = True,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> ReasonerOutput:
         """
@@ -225,7 +226,8 @@ class Reasoner(BaseAgent):
 
         # Provisional plan-based causality bootstrap (before expensive step generation):
         # plan draft -> provisional causality bundle -> taxonomy anchors -> final planner/executor.
-        if enable_causality:
+        # When enable_planning=False (ablation), skip the bootstrap — no planner LLM call is made.
+        if enable_causality and enable_planning:
             try:
                 bootstrap_allowed_statutes = [
                     f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
@@ -410,6 +412,7 @@ class Reasoner(BaseAgent):
                     knowledge_base=knowledge_base,
                     allowed_statutes=allowed_statutes,
                     allowed_precedents=allowed_precedents,
+                    enable_planning=enable_planning,
                     stream_callback=stream_callback,
                 )
             except Exception as gen_exc:
@@ -517,6 +520,7 @@ class Reasoner(BaseAgent):
                                     principle_tests=principle_tests,
                                     reasoning_chain=reasoning_chain,
                                     raw_output=raw_output,
+                                    enable_planning=enable_planning,
                                     stream_callback=stream_callback,
                                 )
                             )
@@ -975,13 +979,13 @@ class Reasoner(BaseAgent):
         chain_text = "\n".join(reasoning_chain) or raw_response or ""
         mentions = extract_article_mentions(chain_text, require_code=True)
 
-        # Estrai gli articoli citati dalla catena di ragionamento
+        # Extract articles cited in the reasoning chain
         cited_articles = self._extract_cited_articles(chain_text)
         articles_text = (
-            ", ".join(cited_articles) if cited_articles else "Nessun articolo citato"
+            ", ".join(cited_articles) if cited_articles else "No statutes cited"
         )
 
-        self._log(f"🔬 Articoli citati nella catena di ragionamento: {articles_text}")
+        self._log(f"🔬 Statutes cited in reasoning chain: {articles_text}")
 
         heuristic_id = self._heuristic_causal_type_from_mentions(
             mentions=mentions,
@@ -1226,6 +1230,7 @@ class Reasoner(BaseAgent):
         principle_tests: list[dict],
         reasoning_chain: list[str],
         raw_output: str,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> dict | None:
         """One-shot refinement when post-hoc core anchors are missing from the Reasoner KB."""
@@ -1364,6 +1369,7 @@ class Reasoner(BaseAgent):
                 knowledge_base=knowledge_base,
                 allowed_statutes=allowed_statutes,
                 allowed_precedents=allowed_precedents,
+                enable_planning=enable_planning,
                 stream_callback=stream_callback,
             )
         except Exception as exc:
@@ -1428,9 +1434,15 @@ class Reasoner(BaseAgent):
         knowledge_base: str,
         allowed_statutes: list[str],
         allowed_precedents: list[str],
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, list[str]]:
-        """Generate the reasoning chain with plan -> execute -> residual replan workflow."""
+        """Generate the reasoning chain with plan -> execute -> residual replan workflow.
+
+        When enable_planning=False (DoE ablation), the planner LLM call is skipped and
+        generic synthetic plan steps are used so the executor still runs step-by-step
+        but without structured plan guidance.
+        """
         max_steps = settings.chain_max_steps
         min_steps = settings.chain_min_steps
         statutes_list = (
@@ -1456,28 +1468,43 @@ class Reasoner(BaseAgent):
             remaining_max = max(1, max_steps - len(steps))
             planner_mode = "RESUME" if steps else "FULL"
 
-            plan = self._generate_reasoning_plan(
-                claim=claim,
-                routing_decision=routing_decision,
-                anchor_text=anchor_text,
-                principle_text=principle_text,
-                knowledge_base=knowledge_base,
-                statutes_list=statutes_list,
-                precedents_list=precedents_list,
-                min_steps=remaining_min,
-                max_steps=remaining_max,
-                planner_mode=planner_mode,
-                resume_from_step=len(steps) + 1,
-                existing_summaries=step_summaries,
-            )
-            plan = self._coerce_plan_to_allowed_norms(
-                plan=plan,
-                allowed_statutes=allowed_statutes,
-            )
-            plan = self._prune_plan_against_existing_history(
-                plan=plan,
-                previous_summaries=step_summaries,
-            )
+            if enable_planning:
+                plan = self._generate_reasoning_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    anchor_text=anchor_text,
+                    principle_text=principle_text,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    precedents_list=precedents_list,
+                    min_steps=remaining_min,
+                    max_steps=remaining_max,
+                    planner_mode=planner_mode,
+                    resume_from_step=len(steps) + 1,
+                    existing_summaries=step_summaries,
+                )
+                plan = self._coerce_plan_to_allowed_norms(
+                    plan=plan,
+                    allowed_statutes=allowed_statutes,
+                )
+                plan = self._prune_plan_against_existing_history(
+                    plan=plan,
+                    previous_summaries=step_summaries,
+                )
+            else:
+                # Planning ablation: skip planner LLM call, use trivial synthetic steps.
+                # The executor still runs step-by-step but without structured plan guidance.
+                plan = [
+                    {
+                        "goal": "",
+                        "focus": "",
+                        "expected_norm": "",
+                        "step_type": "ARGUMENT",
+                        "citation_requirement": "optional",
+                        "summary": f"Step {len(steps) + i + 1}",
+                    }
+                    for i in range(remaining_max)
+                ]
 
             if not plan:
                 stalled_rounds += 1
@@ -1490,8 +1517,8 @@ class Reasoner(BaseAgent):
                 continue
 
             self._log(
-                f"🧭 Reasoning plan generated: {len(plan)} step(s) "
-                f"[round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
+                f"🧭 Reasoning plan {'(synthetic, no-planning ablation)' if not enable_planning else 'generated'}: "
+                f"{len(plan)} step(s) [round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
             )
 
             steps_before_round = len(steps)

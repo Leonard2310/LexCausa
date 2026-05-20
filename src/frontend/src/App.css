@@ -1159,6 +1159,127 @@
   cursor: not-allowed;
 }
 
+/* Multi-DoE */
+.multi-doe-card {
+  margin-bottom: 1rem;
+}
+
+.multi-doe-note {
+  margin: 0.5rem 0 0.75rem 0;
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.multi-doe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.multi-doe-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #374151;
+}
+
+.multi-doe-grid input,
+.multi-doe-grid select {
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.85rem;
+  background: #ffffff;
+  color: #111827;
+}
+
+.multi-doe-span-full {
+  grid-column: 1 / -1;
+}
+
+.multi-doe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.85rem;
+}
+
+.multi-doe-run-btn {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.multi-doe-run-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.multi-doe-refresh-btn {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  padding: 0.5rem 0.85rem;
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.multi-doe-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.multi-doe-output {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.multi-doe-status {
+  margin-top: 0.85rem;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+}
+
+.multi-doe-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #374151;
+}
+
+.multi-doe-runid {
+  color: #6b7280;
+}
+
+.multi-doe-error {
+  margin-top: 0.5rem;
+  color: #b91c1c;
+  font-size: 0.85rem;
+}
+
+.multi-doe-log {
+  margin-top: 0.6rem;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .input-hint {
   font-size: 0.75rem;
   color: #6b7280;

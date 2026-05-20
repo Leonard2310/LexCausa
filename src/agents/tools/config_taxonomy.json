@@ -1,6 +1,6 @@
 {
   "version": "2.0.0",
-  "language": "it",
+  "language": "en",
   "independence_mode": true,
   "handoff_policy": {
     "to_counter_reasoner_only": [
@@ -31,81 +31,81 @@
       "core_norms",
       "accessory_norms"
     ],
-    "notes": "Il router assegna causal_type_id/theory_id prima del ragionamento. Il reasoner riceve anche le anchor norms dal tipo di causalità e poi usa retrieval per norme di merito (supportive/neutral)."
+    "notes": "The router assigns causal_type_id/theory_id before reasoning. The reasoner also receives anchor norms from the causality type and then uses retrieval for substantive norms (supportive/neutral)."
   },
   "claim_classifier": {
     "max_categories": 3,
     "categories": [
       {
         "id": "CC_PRE",
-        "description": "Codice Civile, Disposizioni sulla legge in generale",
+        "description": "Civil Code, Provisions on the law in general",
         "codice": "codice_civile",
-        "libro": "CC Disposizioni Preliminari"
+        "libro": "CC Preliminary Provisions"
       },
       {
         "id": "CC_L1",
-        "description": "Codice Civile, Libro I: Persone e famiglia",
+        "description": "Civil Code, Book I: Persons and family",
         "codice": "codice_civile",
-        "libro": "CC Libro I"
+        "libro": "CC Book I"
       },
       {
         "id": "CC_L2",
-        "description": "Codice Civile, Libro II: Successioni",
+        "description": "Civil Code, Book II: Successions",
         "codice": "codice_civile",
-        "libro": "CC Libro II"
+        "libro": "CC Book II"
       },
       {
         "id": "CC_L3",
-        "description": "Codice Civile, Libro III: Proprietà e diritti reali",
+        "description": "Civil Code, Book III: Property and real rights",
         "codice": "codice_civile",
-        "libro": "CC Libro III"
+        "libro": "CC Book III"
       },
       {
         "id": "CC_L4",
-        "description": "Codice Civile, Libro IV: Obbligazioni e contratti",
+        "description": "Civil Code, Book IV: Obligations and contracts",
         "codice": "codice_civile",
-        "libro": "CC Libro IV"
+        "libro": "CC Book IV"
       },
       {
         "id": "CC_L5",
-        "description": "Codice Civile, Libro V: Lavoro, impresa e società",
+        "description": "Civil Code, Book V: Labor, business and companies",
         "codice": "codice_civile",
-        "libro": "CC Libro V"
+        "libro": "CC Book V"
       },
       {
         "id": "CC_L6",
-        "description": "Codice Civile, Libro VI: Tutela dei diritti",
+        "description": "Civil Code, Book VI: Protection of rights",
         "codice": "codice_civile",
-        "libro": "CC Libro VI"
+        "libro": "CC Book VI"
       },
       {
         "id": "CP_L1",
-        "description": "Codice Penale, Libro I: Reati in generale",
+        "description": "Penal Code, Book I: Crimes in general",
         "codice": "codice_penale",
-        "libro": "CP Libro I"
+        "libro": "CP Book I"
       },
       {
         "id": "CP_L2",
-        "description": "Codice Penale, Libro II: Delitti in particolare",
+        "description": "Penal Code, Book II: Felonies in particular",
         "codice": "codice_penale",
-        "libro": "CP Libro II"
+        "libro": "CP Book II"
       },
       {
         "id": "CP_L3",
-        "description": "Codice Penale, Libro III: Contravvenzioni",
+        "description": "Penal Code, Book III: Misdemeanors",
         "codice": "codice_penale",
-        "libro": "CP Libro III"
+        "libro": "CP Book III"
       },
       {
         "id": "AMM_L241",
-        "description": "Legge 241/1990: Procedimento amministrativo e accesso",
+        "description": "Law 241/1990: Administrative procedure and access",
         "codice": "codice_amministrativo",
         "libro": ""
       }
     ],
     "few_shot_examples": [
       {
-        "claim": "Il venditore non ha consegnato l'immobile nei tempi previsti dal contratto e chiede comunque il saldo.",
+        "claim": "The seller did not deliver the property within the time specified in the contract and is still asking for the balance.",
         "response": [
           "CC_L4",
           "CC_L3",
@@ -113,7 +113,7 @@
         ]
       },
       {
-        "claim": "Il creditore agisce dopo molti anni e temo che il diritto sia prescritto.",
+        "claim": "The creditor is taking action after many years and I fear the right is time-barred.",
         "response": [
           "CC_PRE",
           "CC_L6",
@@ -121,7 +121,7 @@
         ]
       },
       {
-        "claim": "Ho subito un furto in casa e voglio sporgere denuncia.",
+        "claim": "I was robbed at home and I want to file a complaint.",
         "response": [
           "CP_L2",
           "CP_L1",
@@ -129,7 +129,7 @@
         ]
       },
       {
-        "claim": "Il Comune non risponde alla mia istanza di accesso agli atti entro i termini del procedimento.",
+        "claim": "The Municipality does not respond to my request for access to documents within the procedural deadlines.",
         "response": [
           "AMM_L241"
         ]
@@ -139,36 +139,36 @@
   "causal_types": [
     {
       "id": "PEN_FACTUAL",
-      "name": "Causalità fattuale penale",
+      "name": "Penal factual causality",
       "domain": "penale",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 40 c.p.",
-            "role": "Fondamento del nesso condotta (azione/omissione) -> evento"
+            "role": "Basis of the link between conduct (action/omission) -> event"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 41 c.p.",
-            "role": "Concorso di cause e cause sopravvenute, da leggere sistematicamente con Art. 40 c.p."
+            "role": "Concurrence of causes and supervening causes, to be read systematically with Art. 40 c.p."
           },
           {
             "ref": "Art. 43 c.p.",
-            "role": "Elemento soggettivo (colpa/dolo). Rilevante per causalità colposa, non definisce il nesso in sé"
+            "role": "Subjective element (fault/intent). Relevant for negligent causality, does not define the link itself"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "BUT_FOR",
-          "name": "Conditio sine qua non (controfattuale)",
-          "description": "Se eliminando mentalmente la condotta l’evento non si verifica, la condotta è condizione dell’evento"
+          "name": "Conditio sine qua non (counterfactual)",
+          "description": "If by mentally eliminating the conduct the event does not occur, the conduct is a condition of the event"
         },
         {
           "id": "COVERING_LAW",
-          "name": "Legge di copertura (scientifico-probabilistica quando necessario)",
-          "description": "Quando il nesso non è deterministico, si usa una regola scientifica/empirica per supportare il controfattuale"
+          "name": "Covering law (scientific-probabilistic when necessary)",
+          "description": "When the link is not deterministic, a scientific/empirical rule is used to support the counterfactual"
         }
       ],
       "counter_attack_catalog": [
@@ -181,44 +181,44 @@
     },
     {
       "id": "PEN_INTERVENING",
-      "name": "Concause e cause sopravvenute (penale)",
+      "name": "Concurrent and supervening causes (penal)",
       "domain": "penale",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 41 c.p.",
-            "role": "Concorso di cause e interruzione del nesso per causa sopravvenuta da sola sufficiente"
+            "role": "Concurrence of causes and interruption of the link by a sole sufficient supervening cause"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 40 c.p.",
-            "role": "Base del nesso, letto sistematicamente con Art. 41 c.p."
+            "role": "Basis of the link, read systematically with Art. 41 c.p."
           },
           {
             "ref": "Art. 43 c.p.",
-            "role": "Prevedibilità/colpa: utile per valutare la rilevanza della causa sopravvenuta nel fatto colposo"
+            "role": "Foreseeability/fault: useful for assessing the relevance of the supervening cause in a negligent act"
           },
           {
             "ref": "Art. 45 c.p.",
-            "role": "Caso fortuito/forza maggiore: filtro su imputazione/punibilità"
+            "role": "Fortuitous event/force majeure: filter on imputation/punishability"
           },
           {
             "ref": "Art. 90 c.p.",
-            "role": "Irrilevanza degli stati emotivi/passionali sull'imputabilità"
+            "role": "Irrelevance of emotional/passionate states on imputability"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "EQUIVALENCE",
-          "name": "Equivalenza delle condizioni (41.1)",
-          "description": "Le concause non escludono il nesso se la condotta resta condizione dell’evento"
+          "name": "Equivalence of conditions (41.1)",
+          "description": "Concurrent causes do not exclude the link if the conduct remains a condition of the event"
         },
         {
           "id": "SOLE_SUFFICIENT_CAUSE",
-          "name": "Causa sopravvenuta da sola sufficiente (41.2)",
-          "description": "Una causa sopravvenuta rompe il nesso se è autonomamente sufficiente a produrre l’evento"
+          "name": "Sole sufficient supervening cause (41.2)",
+          "description": "A supervening cause breaks the link if it is independently sufficient to produce the event"
         }
       ],
       "counter_attack_catalog": [
@@ -230,49 +230,49 @@
     },
     {
       "id": "CIV_REMOTENESS",
-      "name": "Causalità giuridica risarcitoria (selezione del danno)",
+      "name": "Legal remoteness for damages (damage selection)",
       "domain": "civile",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 1223 c.c.",
-            "role": "Conseguenza immediata e diretta (contrattuale)"
+            "role": "Immediate and direct consequence (contractual)"
           },
           {
             "ref": "Art. 2056 c.c.",
-            "role": "Extracontrattuale: rinvio a 1223/1226/1227"
+            "role": "Non-contractual: reference to 1223/1226/1227"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1225 c.c.",
-            "role": "Prevedibilità del danno (se non c’è dolo)"
+            "role": "Foreseeability of damage (if there is no intent)"
           },
           {
             "ref": "Art. 1226 c.c.",
-            "role": "Liquidazione equitativa"
+            "role": "Equitable liquidation"
           },
           {
             "ref": "Art. 1227 c.c.",
-            "role": "Concorso del creditore + mitigazione"
+            "role": "Creditor's contribution + mitigation"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "DIRECT_IMMEDIATE",
-          "name": "Conseguenza immediata e diretta",
-          "description": "Seleziona solo danni non mediati/atipici rispetto all’inadempimento/illecito"
+          "name": "Immediate and direct consequence",
+          "description": "Selects only non-mediated/atypical damages with respect to the breach/tort"
         },
         {
           "id": "FORESEEABILITY",
-          "name": "Prevedibilità ex ante",
-          "description": "Esclude danni non prevedibili al momento dell’obbligazione (salvo dolo)"
+          "name": "Ex ante foreseeability",
+          "description": "Excludes damages not foreseeable at the time of the obligation (except for intent)"
         },
         {
           "id": "MITIGATION",
-          "name": "Mitigazione/concorso del creditore",
-          "description": "Riduce o esclude danni evitabili o concorrenti per condotta del creditore"
+          "name": "Mitigation/creditor's contribution",
+          "description": "Reduces or excludes avoidable or concurrent damages due to the creditor's conduct"
         }
       ],
       "counter_attack_catalog": [
@@ -285,62 +285,62 @@
     },
     {
       "id": "AMM_PROCEDURAL_LEGITIMACY",
-      "name": "Legittimità procedimentale amministrativa (L. 241/1990)",
+      "name": "Administrative procedural legitimacy (L. 241/1990)",
       "domain": "amministrativo",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 1 L. 241/1990",
-            "role": "Principi generali dell'azione amministrativa (economicità, imparzialità, trasparenza)"
+            "role": "General principles of administrative action (economy, impartiality, transparency)"
           },
           {
             "ref": "Art. 2 L. 241/1990",
-            "role": "Obbligo di conclusione del procedimento e disciplina del termine/silenzio"
+            "role": "Obligation to conclude the procedure and regulation of deadline/silence"
           },
           {
             "ref": "Art. 3 L. 241/1990",
-            "role": "Obbligo di motivazione del provvedimento amministrativo"
+            "role": "Obligation to state reasons for the administrative act"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 7 L. 241/1990",
-            "role": "Comunicazione di avvio del procedimento e garanzie partecipative"
+            "role": "Communication of the start of the procedure and participatory guarantees"
           },
           {
             "ref": "Art. 10-bis L. 241/1990",
-            "role": "Preavviso di rigetto e contraddittorio procedimentale"
+            "role": "Notice of rejection and procedural cross-examination"
           },
           {
             "ref": "Art. 21-octies L. 241/1990",
-            "role": "Annullabilità del provvedimento e rilevanza invalidante dei vizi procedimentali"
+            "role": "Annullability of the act and invalidating relevance of procedural defects"
           },
           {
             "ref": "Art. 22 L. 241/1990",
-            "role": "Diritto di accesso ai documenti amministrativi"
+            "role": "Right of access to administrative documents"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "AMM_TERMINI_SILENZIO",
-          "name": "Termini procedimentali e silenzio",
-          "description": "Verifica rispetto dei termini di conclusione, inerzia e corretta disciplina del silenzio amministrativo"
+          "name": "Procedural deadlines and silence",
+          "description": "Verifies compliance with conclusion deadlines, inertia, and correct regulation of administrative silence"
         },
         {
           "id": "AMM_MOTIVAZIONE",
-          "name": "Adeguatezza della motivazione",
-          "description": "Controlla esistenza, completezza e coerenza della motivazione rispetto ai fatti e alle norme applicate"
+          "name": "Adequacy of the motivation",
+          "description": "Checks the existence, completeness, and coherence of the motivation with respect to the facts and the applied norms"
         },
         {
           "id": "AMM_PARTECIPAZIONE",
-          "name": "Garanzie partecipative e contraddittorio",
-          "description": "Verifica effettività della partecipazione procedimentale (avvio, preavviso di rigetto, accesso)"
+          "name": "Participatory guarantees and cross-examination",
+          "description": "Verifies the effectiveness of procedural participation (initiation, notice of rejection, access)"
         },
         {
           "id": "AMM_INVALIDATING_EFFECT",
-          "name": "Effetto invalidante del vizio",
-          "description": "Valuta se il vizio procedimentale è concretamente idoneo a incidere sul contenuto del provvedimento (art. 21-octies)"
+          "name": "Invalidating effect of the defect",
+          "description": "Assesses whether the procedural defect is concretely capable of affecting the content of the act (art. 21-octies)"
         }
       ],
       "counter_attack_catalog": [
@@ -353,35 +353,35 @@
     },
     {
       "id": "IMPUTATION_FILTER",
-      "name": "Filtro di imputazione: fortuito/forza maggiore",
+      "name": "Imputation filter: fortuitous event/force majeure",
       "domain": "penale",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 45 c.p.",
-            "role": "Caso fortuito/forza maggiore: esclude punibilità"
+            "role": "Fortuitous event/force majeure: excludes punishability"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 41 c.p.",
-            "role": "Causa sopravvenuta da sola sufficiente: snodo sistematico vicino al fortuito"
+            "role": "Sole sufficient supervening cause: systematic junction close to fortuitous event"
           },
           {
             "ref": "Art. 54 c.p.",
-            "role": "Stato di necessità come possibile filtro alternativo di non punibilità"
+            "role": "State of necessity as a possible alternative filter for non-punishability"
           },
           {
             "ref": "Art. 90 c.p.",
-            "role": "Esclude che il solo stato emotivo integri fortuito/forza maggiore"
+            "role": "Excludes that the mere emotional state constitutes a fortuitous event/force majeure"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "UNAVOIDABLE_UNFORESEEABLE",
-          "name": "Imprevedibile e inevitabile",
-          "description": "Evento esterno non dominabile che impedisce l’imputazione"
+          "name": "Unforeseeable and unavoidable",
+          "description": "Uncontrollable external event that prevents imputation"
         }
       ],
       "counter_attack_catalog": [
@@ -392,56 +392,56 @@
     },
     {
       "id": "CIV_CONTRACT_REMEDIES",
-      "name": "Rimedi contrattuali e inadempimento (civile)",
+      "name": "Contractual remedies and breach (civil)",
       "domain": "civile",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 1218 c.c.",
-            "role": "Responsabilità del debitore per inadempimento"
+            "role": "Debtor's liability for breach"
           },
           {
             "ref": "Art. 1453 c.c.",
-            "role": "Risoluzione per inadempimento e cumulo con risarcimento"
+            "role": "Termination for breach and cumulation with damages"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1455 c.c.",
-            "role": "Non scarsa importanza dell'inadempimento"
+            "role": "Non-trivial importance of the breach"
           },
           {
             "ref": "Art. 1457 c.c.",
-            "role": "Termine essenziale"
+            "role": "Essential deadline"
           },
           {
             "ref": "Art. 1460 c.c.",
-            "role": "Eccezione di inadempimento"
+            "role": "Exception of non-performance"
           },
           {
             "ref": "Art. 1385 c.c.",
-            "role": "Caparra confirmatoria"
+            "role": "Confirmatory deposit"
           },
           {
             "ref": "Art. 1382 c.c.",
-            "role": "Clausola penale"
+            "role": "Penalty clause"
           },
           {
             "ref": "Art. 1384 c.c.",
-            "role": "Riduzione equitativa della penale"
+            "role": "Equitable reduction of the penalty"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "BREACH_SERIOUSNESS",
-          "name": "Gravità dell'inadempimento",
-          "description": "Verifica se l'inadempimento supera la soglia di non scarsa importanza"
+          "name": "Seriousness of the breach",
+          "description": "Verifies if the breach exceeds the threshold of non-trivial importance"
         },
         {
           "id": "REMEDY_COMPATIBILITY",
-          "name": "Compatibilità tra rimedi",
-          "description": "Controlla compatibilità e limiti tra risoluzione, caparra, penale e risarcimento"
+          "name": "Compatibility between remedies",
+          "description": "Checks compatibility and limits between termination, deposit, penalty, and damages"
         }
       ],
       "counter_attack_catalog": [
@@ -454,40 +454,40 @@
     },
     {
       "id": "CIV_SALE_DEFECTS",
-      "name": "Garanzia per vizi e rimedi nella vendita (civile)",
+      "name": "Warranty for defects and remedies in sales (civil)",
       "domain": "civile",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 1490 c.c.",
-            "role": "Garanzia per vizi della cosa venduta"
+            "role": "Warranty for defects of the sold item"
           },
           {
             "ref": "Art. 1492 c.c.",
-            "role": "Risoluzione o riduzione del prezzo"
+            "role": "Termination or price reduction"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1494 c.c.",
-            "role": "Risarcimento del danno da vizi"
+            "role": "Compensation for damage from defects"
           },
           {
             "ref": "Art. 1495 c.c.",
-            "role": "Termini di decadenza e prescrizione"
+            "role": "Forfeiture and prescription terms"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "DEFECT_PROOF",
-          "name": "Prova del vizio rilevante",
-          "description": "Accerta esistenza, gravità e incidenza funzionale del vizio denunciato"
+          "name": "Proof of the relevant defect",
+          "description": "Ascertains the existence, seriousness, and functional impact of the reported defect"
         },
         {
           "id": "TIMELINESS",
-          "name": "Tempestività della denuncia",
-          "description": "Verifica decadenza e prescrizione per l'azione di garanzia"
+          "name": "Timeliness of the report",
+          "description": "Verifies forfeiture and prescription for the warranty action"
         }
       ],
       "counter_attack_catalog": [
@@ -500,40 +500,40 @@
     },
     {
       "id": "CIV_CUSTODY_DAMAGE",
-      "name": "Responsabilità da custodia e danno da cose/animali (civile)",
+      "name": "Liability for custody and damage from things/animals (civil)",
       "domain": "civile",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 2051 c.c.",
-            "role": "Danno cagionato da cosa in custodia"
+            "role": "Damage caused by a thing in custody"
           },
           {
             "ref": "Art. 2052 c.c.",
-            "role": "Danno cagionato da animali"
+            "role": "Damage caused by animals"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1227 c.c.",
-            "role": "Concorso del danneggiato e mitigazione"
+            "role": "Contribution of the injured party and mitigation"
           },
           {
             "ref": "Art. 2056 c.c.",
-            "role": "Criteri di liquidazione del danno"
+            "role": "Criteria for damage liquidation"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "CUSTODY_NEXUS",
-          "name": "Nesso cosa/animale-danno",
-          "description": "Verifica nesso causale tra fonte in custodia e evento dannoso"
+          "name": "Thing/animal-damage link",
+          "description": "Verifies the causal link between the source in custody and the harmful event"
         },
         {
           "id": "FORTUITOUS_EVENT_CIV",
-          "name": "Caso fortuito e concorso",
-          "description": "Valuta fortuito esterno e incidenza del comportamento del danneggiato"
+          "name": "Fortuitous event and contribution",
+          "description": "Assesses external fortuitous event and the impact of the injured party's behavior"
         }
       ],
       "counter_attack_catalog": [
@@ -546,48 +546,48 @@
     },
     {
       "id": "PEN_PROPERTY_QUALIFICATION",
-      "name": "Qualificazione dei reati patrimoniali (penale)",
+      "name": "Qualification of property crimes (penal)",
       "domain": "penale",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 646 c.p.",
-            "role": "Appropriazione indebita"
+            "role": "Embezzlement"
           },
           {
             "ref": "Art. 640 c.p.",
-            "role": "Truffa"
+            "role": "Fraud"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 624 c.p.",
-            "role": "Furto"
+            "role": "Theft"
           },
           {
             "ref": "Art. 624-bis c.p.",
-            "role": "Furto in abitazione"
+            "role": "Burglary"
           },
           {
             "ref": "Art. 625 c.p.",
-            "role": "Circostanze aggravanti del furto"
+            "role": "Aggravating circumstances for theft"
           },
           {
             "ref": "Art. 133 c.p.",
-            "role": "Criteri di commisurazione della pena"
+            "role": "Criteria for sentencing"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "OFFENCE_BOUNDARY",
-          "name": "Confini di fattispecie",
-          "description": "Controlla confini tra fattispecie patrimoniali contigue"
+          "name": "Offence boundaries",
+          "description": "Checks boundaries between contiguous property offences"
         },
         {
           "id": "SUBJECTIVE_PROOF",
-          "name": "Prova dell'elemento soggettivo",
-          "description": "Verifica prova di dolo specifico o profitto ingiusto richiesti"
+          "name": "Proof of the subjective element",
+          "description": "Verifies proof of specific intent or unjust profit required"
         }
       ],
       "counter_attack_catalog": [
@@ -600,44 +600,44 @@
     },
     {
       "id": "PEN_RIGHTS_BALANCING",
-      "name": "Bilanciamento diritti e scriminanti (penale)",
+      "name": "Balancing rights and justifications (penal)",
       "domain": "penale",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 51 c.p.",
-            "role": "Esercizio di un diritto / adempimento dovere"
+            "role": "Exercise of a right / fulfillment of a duty"
           },
           {
             "ref": "Art. 595 c.p.",
-            "role": "Diffamazione"
+            "role": "Defamation"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 610 c.p.",
-            "role": "Violenza privata"
+            "role": "Private violence"
           },
           {
             "ref": "Art. 392 c.p.",
-            "role": "Esercizio arbitrario delle proprie ragioni"
+            "role": "Arbitrary exercise of one's own rights"
           },
           {
             "ref": "Art. 393 c.p.",
-            "role": "Violenza sulle cose o persone in autotutela"
+            "role": "Violence against things or persons in self-help"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "RIGHTS_BALANCE",
-          "name": "Bilanciamento diritti contrapposti",
-          "description": "Bilancia reputazione/libertà espressiva o credito/autotutela e limiti penali"
+          "name": "Balancing of opposing rights",
+          "description": "Balances reputation/freedom of expression or credit/self-help and penal limits"
         },
         {
           "id": "JUSTIFICATION_SCOPE",
-          "name": "Portata della scriminante",
-          "description": "Valuta se la scriminante copre integralmente la condotta contestata"
+          "name": "Scope of the justification",
+          "description": "Assesses whether the justification fully covers the contested conduct"
         }
       ],
       "counter_attack_catalog": [
@@ -650,56 +650,56 @@
     },
     {
       "id": "PEN_COLPA_GRADATION",
-      "name": "Graduazione della colpa e trattamento sanzionatorio (penale)",
+      "name": "Gradation of fault and sentencing (penal)",
       "domain": "penale",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 42 c.p.",
-            "role": "Responsabilità per dolo/colpa"
+            "role": "Liability for intent/fault"
           },
           {
             "ref": "Art. 43 c.p.",
-            "role": "Elemento soggettivo della colpa"
+            "role": "Subjective element of fault"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 61 c.p.",
-            "role": "Circostanze aggravanti comuni"
+            "role": "Common aggravating circumstances"
           },
           {
             "ref": "Art. 62-bis c.p.",
-            "role": "Circostanze attenuanti generiche"
+            "role": "Generic mitigating circumstances"
           },
           {
             "ref": "Art. 133 c.p.",
-            "role": "Gravità del reato e commisurazione pena"
+            "role": "Severity of the crime and sentencing"
           },
           {
             "ref": "Art. 90 c.p.",
-            "role": "Irrilevanza degli stati emotivi/passionali sull'imputabilità"
+            "role": "Irrelevance of emotional/passionate states on imputability"
           },
           {
             "ref": "Art. 54 c.p.",
-            "role": "Stato di necessità come possibile scriminante/attenuazione da valutare nel contesto di urgenza"
+            "role": "State of necessity as a possible justification/mitigation to be assessed in the context of urgency"
           },
           {
             "ref": "Art. 113 c.p.",
-            "role": "Cooperazione nel delitto colposo"
+            "role": "Cooperation in a negligent offense"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "BLAMEWORTHINESS_SCALE",
-          "name": "Scala della rimproverabilità",
-          "description": "Valuta grado della colpa, prevedibilità ed evitabilità in concreto"
+          "name": "Blameworthiness scale",
+          "description": "Assesses the degree of fault, foreseeability, and avoidability in practice"
         },
         {
           "id": "INDIVIDUALIZATION",
-          "name": "Individualizzazione della responsabilità",
-          "description": "Distingue apporti individuali nei fatti colposi plurisoggettivi"
+          "name": "Individualization of liability",
+          "description": "Distinguishes individual contributions in multi-subject negligent acts"
         }
       ],
       "counter_attack_catalog": [
@@ -712,44 +712,44 @@
     },
     {
       "id": "AMM_AUTOTUTELA_BALANCE",
-      "name": "Autotutela, affidamento e indennizzo (amministrativo)",
+      "name": "Self-protection, reliance, and indemnity (administrative)",
       "domain": "amministrativo",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 21-novies L. 241/1990",
-            "role": "Annullamento d'ufficio e limiti temporali/affidamento"
+            "role": "Ex officio annulment and time limits/reliance"
           },
           {
             "ref": "Art. 21-quinquies L. 241/1990",
-            "role": "Revoca per sopravvenienze e indennizzo"
+            "role": "Revocation for supervening events and indemnity"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1 L. 241/1990",
-            "role": "Principi di imparzialità, trasparenza, proporzionalità"
+            "role": "Principles of impartiality, transparency, proportionality"
           },
           {
             "ref": "Art. 3 L. 241/1990",
-            "role": "Obbligo di motivazione"
+            "role": "Obligation to state reasons"
           },
           {
             "ref": "Art. 7 L. 241/1990",
-            "role": "Comunicazione di avvio e partecipazione"
+            "role": "Initiation notice and participation"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "CURRENT_PUBLIC_INTEREST",
-          "name": "Interesse pubblico attuale",
-          "description": "Verifica concretezza e attualità dell'interesse pubblico in autotutela"
+          "name": "Current public interest",
+          "description": "Verifies the concreteness and timeliness of the public interest in self-protection"
         },
         {
           "id": "RELIANCE_BALANCE",
-          "name": "Bilanciamento affidamento",
-          "description": "Valuta sacrificio imposto al privato e tutela dell'affidamento consolidato"
+          "name": "Reliance balancing",
+          "description": "Assesses the sacrifice imposed on the private party and the protection of consolidated reliance"
         }
       ],
       "counter_attack_catalog": [
@@ -762,40 +762,40 @@
     },
     {
       "id": "AMM_DELAY_REMEDIES",
-      "name": "Ritardo procedimentale e conseguenze risarcitorie (amministrativo)",
+      "name": "Procedural delay and damage consequences (administrative)",
       "domain": "amministrativo",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 2 L. 241/1990",
-            "role": "Obbligo di conclusione del procedimento nei termini"
+            "role": "Obligation to conclude the procedure within the deadlines"
           },
           {
             "ref": "Art. 2-bis L. 241/1990",
-            "role": "Danno da ritardo"
+            "role": "Damage from delay"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1 L. 241/1990",
-            "role": "Buon andamento ed efficienza amministrativa"
+            "role": "Good performance and administrative efficiency"
           },
           {
             "ref": "Art. 3 L. 241/1990",
-            "role": "Motivazione del provvedimento"
+            "role": "Motivation of the act"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "DEADLINE_BREACH",
-          "name": "Violazione dei termini",
-          "description": "Accerta superamento del termine procedimentale e imputabilità del ritardo"
+          "name": "Breach of deadlines",
+          "description": "Ascertains exceeding the procedural deadline and the imputability of the delay"
         },
         {
           "id": "DELAY_DAMAGE_PROOF",
-          "name": "Prova del danno da ritardo",
-          "description": "Verifica prova del danno-conseguenza e del nesso causale con il ritardo"
+          "name": "Proof of damage from delay",
+          "description": "Verifies proof of consequential damage and the causal link with the delay"
         }
       ],
       "counter_attack_catalog": [
@@ -808,44 +808,44 @@
     },
     {
       "id": "MIXED_PEN_CIV_CONCURRENCE",
-      "name": "Concorso tra tutela penale e civile (misto)",
+      "name": "Concurrence between penal and civil protection (mixed)",
       "domain": "entrambi",
       "anchor_norms": {
         "core_norms": [
           {
             "ref": "Art. 185 c.p.",
-            "role": "Restituzioni e risarcimento del danno da reato"
+            "role": "Restitution and compensation for damage from crime"
           },
           {
             "ref": "Art. 1218 c.c.",
-            "role": "Responsabilità contrattuale"
+            "role": "Contractual liability"
           },
           {
             "ref": "Art. 2043 c.c.",
-            "role": "Responsabilità extracontrattuale"
+            "role": "Non-contractual liability"
           }
         ],
         "accessory_norms": [
           {
             "ref": "Art. 1223 c.c.",
-            "role": "Danni risarcibili per conseguenze immediate e dirette"
+            "role": "Compensable damages for immediate and direct consequences"
           },
           {
             "ref": "Art. 1453 c.c.",
-            "role": "Risoluzione contrattuale con risarcimento"
+            "role": "Contractual termination with compensation"
           }
         ]
       },
       "principle_tests": [
         {
           "id": "TRACK_SEPARATION",
-          "name": "Autonomia dei binari",
-          "description": "Distingue accertamento penale da presupposti e rimedi civili"
+          "name": "Autonomy of tracks",
+          "description": "Distinguishes penal assessment from civil prerequisites and remedies"
         },
         {
           "id": "CUMULABILITY_LIMITS",
-          "name": "Limiti di cumulabilità",
-          "description": "Verifica limiti e condizioni del cumulo tra pretese civili e profili penali"
+          "name": "Cumulability limits",
+          "description": "Verifies limits and conditions of the cumulation of civil claims and penal profiles"
         }
       ],
       "counter_attack_catalog": [
@@ -860,7 +860,7 @@
   "theories": [
     {
       "id": "T_CONDIZIONALISTICA",
-      "name": "Teoria condizionalistica (but-for)",
+      "name": "Conditional theory (but-for)",
       "applicable_causal_types": [
         "PEN_FACTUAL",
         "PEN_INTERVENING"
@@ -875,7 +875,7 @@
     },
     {
       "id": "T_SCI_PROB",
-      "name": "Modello scientifico-probabilistico",
+      "name": "Scientific-probabilistic model",
       "applicable_causal_types": [
         "PEN_FACTUAL"
       ],
@@ -887,7 +887,7 @@
     },
     {
       "id": "T_REGOLARITA",
-      "name": "Regolarità causale / adeguatezza (criterio selettivo)",
+      "name": "Causal regularity / adequacy (selective criterion)",
       "applicable_causal_types": [
         "PEN_FACTUAL",
         "PEN_INTERVENING",
@@ -900,7 +900,7 @@
     },
     {
       "id": "T_INTERRUPTION_41_2",
-      "name": "Interruzione per causa sopravvenuta da sola sufficiente",
+      "name": "Interruption by a sole sufficient supervening cause",
       "applicable_causal_types": [
         "PEN_INTERVENING"
       ],
@@ -911,7 +911,7 @@
     },
     {
       "id": "T_CIV_FILTERS",
-      "name": "Filtri civilistici del danno",
+      "name": "Civil law damage filters",
       "applicable_causal_types": [
         "CIV_REMOTENESS"
       ],
@@ -925,7 +925,7 @@
     },
     {
       "id": "T_AMM_GARANZIE",
-      "name": "Garanzie procedimentali e validità dell'atto amministrativo",
+      "name": "Procedural guarantees and validity of the administrative act",
       "applicable_causal_types": [
         "AMM_PROCEDURAL_LEGITIMACY"
       ],
@@ -939,7 +939,7 @@
     },
     {
       "id": "T_FORTUITO",
-      "name": "Fortuito/forza maggiore (filtro di imputazione)",
+      "name": "Fortuitous event/force majeure (imputation filter)",
       "applicable_causal_types": [
         "IMPUTATION_FILTER"
       ],
@@ -951,7 +951,7 @@
     },
     {
       "id": "T_CIV_REMEDIES",
-      "name": "Rimedi contrattuali e riequilibrio del sinallagma",
+      "name": "Contractual remedies and rebalancing of the synallagma",
       "applicable_causal_types": [
         "CIV_CONTRACT_REMEDIES"
       ],
@@ -963,7 +963,7 @@
     },
     {
       "id": "T_CIV_GARANZIA_VIZI",
-      "name": "Garanzia per vizi e limiti dei rimedi edilizi/commerciali",
+      "name": "Warranty for defects and limits of construction/commercial remedies",
       "applicable_causal_types": [
         "CIV_SALE_DEFECTS"
       ],
@@ -975,7 +975,7 @@
     },
     {
       "id": "T_CIV_CUSTODIA",
-      "name": "Responsabilità da custodia e concorso causale",
+      "name": "Liability for custody and causal contribution",
       "applicable_causal_types": [
         "CIV_CUSTODY_DAMAGE"
       ],
@@ -987,7 +987,7 @@
     },
     {
       "id": "T_PEN_PATRIMONIALI",
-      "name": "Fattispecie patrimoniali e soglia probatoria dell'elemento soggettivo",
+      "name": "Property offences and evidentiary threshold of the subjective element",
       "applicable_causal_types": [
         "PEN_PROPERTY_QUALIFICATION"
       ],
@@ -999,7 +999,7 @@
     },
     {
       "id": "T_PEN_DIRITTI_BILANCIAMENTO",
-      "name": "Bilanciamento tra diritti fondamentali e tipicità penale",
+      "name": "Balancing between fundamental rights and penal typicality",
       "applicable_causal_types": [
         "PEN_RIGHTS_BALANCING"
       ],
@@ -1011,7 +1011,7 @@
     },
     {
       "id": "T_PEN_COLPA_GRADAZIONE",
-      "name": "Graduazione della colpa e individualizzazione del rimprovero",
+      "name": "Gradation of fault and individualization of blame",
       "applicable_causal_types": [
         "PEN_COLPA_GRADATION"
       ],
@@ -1023,7 +1023,7 @@
     },
     {
       "id": "T_AMM_AUTOTUTELA",
-      "name": "Autotutela amministrativa, affidamento e indennizzo",
+      "name": "Administrative self-protection, reliance, and indemnity",
       "applicable_causal_types": [
         "AMM_AUTOTUTELA_BALANCE"
       ],
@@ -1035,7 +1035,7 @@
     },
     {
       "id": "T_AMM_RITARDO",
-      "name": "Ritardo procedimentale e prova del danno-conseguenza",
+      "name": "Procedural delay and proof of consequential damage",
       "applicable_causal_types": [
         "AMM_DELAY_REMEDIES"
       ],
@@ -1047,7 +1047,7 @@
     },
     {
       "id": "T_MIXED_CONCORSO_TUTELE",
-      "name": "Concorso tra pretese penali e rimedi civili",
+      "name": "Concurrence between penal claims and civil remedies",
       "applicable_causal_types": [
         "MIXED_PEN_CIV_CONCURRENCE"
       ],
@@ -1218,100 +1218,76 @@
   ],
   "counter_attack_definitions": {
     "but_for_fails": {
-      "description": "Counterfactual fails: the event would have occurred anyway.",
-      "description_it": "Il test controfattuale fallisce: l'evento si sarebbe verificato comunque."
+      "description": "Counterfactual fails: the event would have occurred anyway."
     },
     "no_covering_law_or_low_support": {
-      "description": "Missing covering law or insufficient support for probabilistic counterfactual.",
-      "description_it": "Manca una legge di copertura o il supporto probabilistico del nesso è insufficiente."
+      "description": "Missing covering law or insufficient support for probabilistic counterfactual."
     },
     "alternative_causal_path": {
-      "description": "A plausible alternative causal path exists.",
-      "description_it": "Esiste un percorso causale alternativo plausibile."
+      "description": "A plausible alternative causal path exists."
     },
     "duty_to_act_missing_for_omission": {
-      "description": "For omission, the legal duty to act is missing.",
-      "description_it": "Per l'omissione manca l'obbligo giuridico di impedire l'evento."
+      "description": "For omission, the legal duty to act is missing."
     },
     "abnormal_or_atypical_chain": {
-      "description": "The causal chain is abnormal/atypical and breaks imputability.",
-      "description_it": "La catena causale è atipica/anomala e interrompe l'imputabilità."
+      "description": "The causal chain is abnormal/atypical and breaks imputability."
     },
     "sole_sufficient_cause": {
-      "description": "A supervening cause alone was sufficient and breaks the link.",
-      "description_it": "Una causa sopravvenuta da sola sufficiente interrompe il nesso."
+      "description": "A supervening cause alone was sufficient and breaks the link."
     },
     "intervening_cause_breaks_chain": {
-      "description": "An intervening autonomous factor breaks the chain.",
-      "description_it": "Un fattore sopravvenuto autonomo spezza la catena causale."
+      "description": "An intervening autonomous factor breaks the chain."
     },
     "force_majeure_filter": {
-      "description": "Fortuitous event/force majeure excludes imputability.",
-      "description_it": "Caso fortuito o forza maggiore escludono l'imputabilità."
+      "description": "Fortuitous event/force majeure excludes imputability."
     },
     "damage_is_indirect": {
-      "description": "The damage is indirect or mediated relative to the base fact.",
-      "description_it": "Il danno è indiretto o mediato rispetto al fatto base."
+      "description": "The damage is indirect or mediated relative to the base fact."
     },
     "damage_not_foreseeable": {
-      "description": "The damage was not foreseeable ex ante (e.g., art. 1225 c.c.).",
-      "description_it": "Il danno non era prevedibile ex ante (es. art. 1225 c.c.)."
+      "description": "The damage was not foreseeable ex ante (e.g., art. 1225 c.c.)."
     },
     "creditor_contributed": {
-      "description": "The creditor contributed to causing the event/damage.",
-      "description_it": "Il creditore ha concorso a causare evento o danno."
+      "description": "The creditor contributed to causing the event/damage."
     },
     "creditor_failed_to_mitigate": {
-      "description": "The creditor failed to mitigate avoidable damage (art. 1227 c.c.).",
-      "description_it": "Il creditore non ha mitigato il danno evitabile (art. 1227 c.c.)."
+      "description": "The creditor failed to mitigate avoidable damage (art. 1227 c.c.)."
     },
     "quantification_uncertain": {
-      "description": "Damage quantification is uncertain or speculative.",
-      "description_it": "La quantificazione del danno è incerta o speculativa."
+      "description": "Damage quantification is uncertain or speculative."
     },
     "competence_or_procedure_regular": {
-      "description": "The authority was competent and the procedure was regular.",
-      "description_it": "L'amministrazione era competente e il procedimento è regolare."
+      "description": "The authority was competent and the procedure was regular."
     },
     "motivation_is_sufficient": {
-      "description": "The administrative act has sufficient and coherent motivation.",
-      "description_it": "La motivazione del provvedimento è sufficiente e coerente."
+      "description": "The administrative act has sufficient and coherent motivation."
     },
     "participation_not_essential_or_not_denied": {
-      "description": "Participatory guarantees were respected, or their omission was not decisive.",
-      "description_it": "Le garanzie partecipative sono rispettate, oppure la loro omissione non è decisiva."
+      "description": "Participatory guarantees were respected, or their omission was not decisive."
     },
     "silence_rule_not_applicable": {
-      "description": "The legal regime on procedural deadlines/silence is not applicable in this case.",
-      "description_it": "La disciplina su termini/silenzio non è applicabile al caso concreto."
+      "description": "The legal regime on procedural deadlines/silence is not applicable in this case."
     },
     "vizio_non_invalidante_21_octies": {
-      "description": "Any procedural defect is non-invalidating under art. 21-octies L. 241/1990.",
-      "description_it": "L'eventuale vizio procedimentale non è invalidante ex art. 21-octies L. 241/1990."
+      "description": "Any procedural defect is non-invalidating under art. 21-octies L. 241/1990."
     },
     "event_was_avoidable": {
-      "description": "The event was avoidable with ordinary diligence.",
-      "description_it": "L'evento era evitabile con l'ordinaria diligenza."
+      "description": "The event was avoidable with ordinary diligence."
     },
     "event_was_foreseeable": {
-      "description": "The event was foreseeable; it is not fortuitous.",
-      "description_it": "L'evento era prevedibile; non è fortuito."
+      "description": "The event was foreseeable; it is not fortuitous."
     },
     "risk_was_assumed_or_controllable": {
-      "description": "The risk was assumed or controllable, so not fortuitous.",
-      "description_it": "Il rischio era assunto o controllabile, quindi non fortuito."
+      "description": "The risk was assumed or controllable, so not fortuitous."
     },
     "breach_not_grave_or_not_essential": {
-      "description": "Breach seriousness may be contested, or essential-term effects may be limited by subsequent conduct, without denying fixed facts.",
-      "description_it": "La gravit? dell'inadempimento pu? essere contestata, oppure gli effetti del termine essenziale possono essere limitati dalla condotta successiva, senza negare i fatti pacifici."
+      "description": "Breach seriousness may be contested, or essential-term effects may be limited by subsequent conduct, without denying fixed facts."
     },
     "exceptio_non_rite_adimpleti": {
-      "description": "Counterparty suspension may be disproportionate under reciprocal-performance rules.",
-      "description_it": "La sospensione della controparte può essere sproporzionata ex eccezione di inadempimento."
+      "description": "Counterparty suspension may be disproportionate under reciprocal-performance rules."
     },
     "caparra_limits_remedies": {
       "description": "Caparra remedy may absorb or limit overlap with further damages.",
-      "description_it": "La caparra può assorbire o limitare la cumulabilità con danni ulteriori.",
       "preconditions": {
         "requires_any": [
           "The claim explicitly involves caparra confirmatoria or caparra penitenziale as a remedy or contractual clause."
@@ -1319,172 +1295,130 @@
       }
     },
     "penalty_excessive_or_exclusive": {
-      "description": "Penalty may be equitably reduced and can limit additional compensation.",
-      "description_it": "La clausola penale può essere ridotta equitativamente e limitare ulteriori pretese."
+      "description": "Penalty may be equitably reduced and can limit additional compensation."
     },
     "further_damage_not_proven_or_not_direct": {
-      "description": "Further damages are not adequately proven as direct/immediate consequences.",
-      "description_it": "I danni ulteriori non sono provati come conseguenze immediate e dirette."
+      "description": "Further damages are not adequately proven as direct/immediate consequences."
     },
     "defects_not_proven_or_not_hidden": {
-      "description": "Defects are not sufficiently proven or were not hidden/relevant defects.",
-      "description_it": "I vizi non sono sufficientemente provati o non hanno natura rilevante/occulta."
+      "description": "Defects are not sufficiently proven or were not hidden/relevant defects."
     },
     "notice_or_limitation_bar_for_vices": {
-      "description": "Notice timing or limitation terms may bar vices remedies.",
-      "description_it": "Decadenza o prescrizione possono precludere i rimedi per vizi."
+      "description": "Notice timing or limitation terms may bar vices remedies."
     },
     "misuse_or_external_cause_of_defect": {
-      "description": "Performance drop may derive from use/maintenance context, not intrinsic defect only.",
-      "description_it": "Il malfunzionamento può dipendere da uso/manutenzione e non solo da vizio intrinseco."
+      "description": "Performance drop may derive from use/maintenance context, not intrinsic defect only."
     },
     "remedy_reduction_preferred_over_resolution": {
-      "description": "Price reduction may be more proportionate than contract termination.",
-      "description_it": "La riduzione del prezzo può essere rimedio proporzionato rispetto alla risoluzione."
+      "description": "Price reduction may be more proportionate than contract termination."
     },
     "consequential_damage_not_proven": {
-      "description": "Consequential losses are uncertain, indirect, or insufficiently documented.",
-      "description_it": "Le perdite consequenziali sono incerte, indirette o non adeguatamente documentate."
+      "description": "Consequential losses are uncertain, indirect, or insufficiently documented."
     },
     "custodianship_or_control_not_proven": {
-      "description": "Custody/control over the damage source is not clearly established.",
-      "description_it": "La custodia o il controllo della fonte di danno non risultano chiaramente provati."
+      "description": "Custody/control over the damage source is not clearly established."
     },
     "fortuitous_external_factor": {
-      "description": "An external fortuitous factor may reduce or exclude objective liability.",
-      "description_it": "Un fattore esterno fortuito può ridurre o escludere la responsabilità oggettiva."
+      "description": "An external fortuitous factor may reduce or exclude objective liability."
     },
     "contributory_fault_of_victim": {
-      "description": "Victim contribution may reduce recoverable damages.",
-      "description_it": "Il concorso del danneggiato può ridurre il risarcimento dovuto."
+      "description": "Victim contribution may reduce recoverable damages."
     },
     "causal_link_between_thing_and_damage_uncertain": {
-      "description": "Causal nexus between thing/animal and damage is not sufficiently proven.",
-      "description_it": "Il nesso causale tra cosa/animale e danno non è sufficientemente dimostrato."
+      "description": "Causal nexus between thing/animal and damage is not sufficiently proven."
     },
     "internal_recourse_separate_from_external_liability": {
-      "description": "Internal recourse allocation differs from external liability toward the victim.",
-      "description_it": "Il riparto interno tra obbligati è distinto dalla responsabilità verso il danneggiato."
+      "description": "Internal recourse allocation differs from external liability toward the victim."
     },
     "legal_qualification_more_specific_or_alternative": {
-      "description": "A different or more specific offence qualification may be more coherent.",
-      "description_it": "Può risultare più coerente una diversa o più specifica qualificazione del fatto-reato."
+      "description": "A different or more specific offence qualification may be more coherent."
     },
     "subjective_element_not_fully_proven": {
-      "description": "Intent/culpability threshold is not fully supported by available elements.",
-      "description_it": "L'elemento soggettivo non risulta pienamente supportato dagli elementi disponibili."
+      "description": "Intent/culpability threshold is not fully supported by available elements."
     },
     "restitution_or_reparation_reduces_penalty_impact": {
-      "description": "Post-fact restitution/reparation can impact treatment of punishment.",
-      "description_it": "Restituzione o riparazione successiva incidono sul trattamento sanzionatorio."
+      "description": "Post-fact restitution/reparation can impact treatment of punishment."
     },
     "aggravating_elements_not_fully_proven": {
-      "description": "Aggravating circumstances are not integrally proven.",
-      "description_it": "Le circostanze aggravanti non risultano integralmente provate."
+      "description": "Aggravating circumstances are not integrally proven."
     },
     "intent_to_profit_or_unjust_gain_not_proven": {
-      "description": "Intent to profit/unjust gain is not sufficiently demonstrated.",
-      "description_it": "L'intento di profitto/ingiusto vantaggio non è sufficientemente dimostrato."
+      "description": "Intent to profit/unjust gain is not sufficiently demonstrated."
     },
     "exercise_of_right_or_justification_possible": {
-      "description": "Possible exercise-of-right/justification profile requires careful balancing.",
-      "description_it": "È configurabile un profilo di esercizio del diritto/scriminante da bilanciare."
+      "description": "Possible exercise-of-right/justification profile requires careful balancing."
     },
     "factual_matrix_supports_lesser_offence": {
-      "description": "Fact pattern may support a less severe offence qualification.",
-      "description_it": "La matrice fattuale può sostenere una qualificazione meno grave del fatto."
+      "description": "Fact pattern may support a less severe offence qualification."
     },
     "publicity_or_diffusion_element_not_proven": {
-      "description": "Public diffusion/publicity element may be weaker than alleged.",
-      "description_it": "L'elemento della diffusione pubblica può essere meno intenso di quanto dedotto."
+      "description": "Public diffusion/publicity element may be weaker than alleged."
     },
     "truth_interest_continence_balance": {
-      "description": "Truth, public interest, and continence criteria may justify expression.",
-      "description_it": "Verità, interesse pubblico e continenza possono giustificare la manifestazione."
+      "description": "Truth, public interest, and continence criteria may justify expression."
     },
     "private_self_help_limits_need_precise_assessment": {
-      "description": "Limits of private self-help require strict offence-boundary assessment.",
-      "description_it": "I limiti dell'autotutela privata impongono una verifica rigorosa dei confini di reato."
+      "description": "Limits of private self-help require strict offence-boundary assessment."
     },
     "emergency_context_reduces_blameworthiness": {
-      "description": "Emergency context may reduce reproachability and degree of fault.",
-      "description_it": "Il contesto di urgenza può ridurre rimproverabilità e grado della colpa."
+      "description": "Emergency context may reduce reproachability and degree of fault."
     },
     "foreseeability_threshold_not_met_with_certainty": {
-      "description": "Foreseeability threshold may not be reached with sufficient certainty.",
-      "description_it": "La soglia di prevedibilità può non risultare raggiunta con sufficiente certezza."
+      "description": "Foreseeability threshold may not be reached with sufficient certainty."
     },
     "cooperative_fault_not_individualized": {
-      "description": "Individual contribution in cooperative negligence is not sufficiently individualized.",
-      "description_it": "La cooperazione colposa non risulta adeguatamente individualizzata per ciascun agente."
+      "description": "Individual contribution in cooperative negligence is not sufficiently individualized."
     },
     "aggravating_circumstances_not_integrated": {
-      "description": "Aggravating circumstances may not be concretely integrated.",
-      "description_it": "Le circostanze aggravanti possono non risultare concretamente integrate."
+      "description": "Aggravating circumstances may not be concretely integrated."
     },
     "sanction_must_consider_article_133_balance": {
-      "description": "Sanction must be balanced under proportional criteria of article 133 c.p.",
-      "description_it": "Il trattamento sanzionatorio va bilanciato secondo i criteri di cui all'art. 133 c.p."
+      "description": "Sanction must be balanced under proportional criteria of article 133 c.p."
     },
     "current_public_interest_not_specific": {
-      "description": "Current public interest for autotutela is generic or not specifically motivated.",
-      "description_it": "L'interesse pubblico attuale in autotutela è generico o non specificamente motivato."
+      "description": "Current public interest for autotutela is generic or not specifically motivated."
     },
     "legitimate_reliance_not_balanced": {
-      "description": "Legitimate private reliance has not been adequately balanced.",
-      "description_it": "L'affidamento legittimo del privato non risulta adeguatamente bilanciato."
+      "description": "Legitimate private reliance has not been adequately balanced."
     },
     "participation_in_autotutela_inadequate": {
-      "description": "Participation guarantees in autotutela phase were insufficient.",
-      "description_it": "Le garanzie partecipative nella fase di autotutela sono risultate insufficienti."
+      "description": "Participation guarantees in autotutela phase were insufficient."
     },
     "revocation_requires_indemnity_assessment": {
-      "description": "Revocation requires proper assessment of possible indemnity.",
-      "description_it": "La revoca richiede adeguata valutazione dell'eventuale indennizzo."
+      "description": "Revocation requires proper assessment of possible indemnity."
     },
     "annulment_timing_unreasonable": {
-      "description": "Timing of annulment appears unreasonable relative to certainty/reliance.",
-      "description_it": "La tempistica dell'annullamento appare irragionevole rispetto a certezza e affidamento."
+      "description": "Timing of annulment appears unreasonable relative to certainty/reliance."
     },
     "delay_not_attributable_to_authority": {
-      "description": "Procedural delay may not be fully attributable to administrative fault.",
-      "description_it": "Il ritardo procedimentale può non essere integralmente imputabile all'amministrazione."
+      "description": "Procedural delay may not be fully attributable to administrative fault."
     },
     "causal_damage_from_delay_not_proven": {
-      "description": "Causal damage from delay is not sufficiently proven/documented.",
-      "description_it": "Il danno causalmente derivante dal ritardo non risulta sufficientemente provato."
+      "description": "Causal damage from delay is not sufficiently proven/documented."
     },
     "substitute_power_not_activated": {
-      "description": "Substitute power route was not activated before claiming full liability.",
-      "description_it": "Il potere sostitutivo non è stato attivato prima di imputare piena responsabilità."
+      "description": "Substitute power route was not activated before claiming full liability."
     },
     "silent_regime_specific_not_triggered": {
-      "description": "Specific silence regime may not be triggered in the concrete procedure.",
-      "description_it": "La specifica disciplina del silenzio può non risultare attivata nel caso concreto."
+      "description": "Specific silence regime may not be triggered in the concrete procedure."
     },
     "compensation_requires_strict_proof": {
-      "description": "Compensation for delay requires strict proof of fault, damage, and causal nexus.",
-      "description_it": "Il risarcimento da ritardo richiede prova rigorosa di colpa, danno e nesso causale."
+      "description": "Compensation for delay requires strict proof of fault, damage, and causal nexus."
     },
     "criminal_and_civil_tracks_are_distinct": {
-      "description": "Criminal and civil tracks remain distinct in standards and effects.",
-      "description_it": "Il binario penale e quello civile restano distinti per presupposti ed effetti."
+      "description": "Criminal and civil tracks remain distinct in standards and effects."
     },
     "criminal_threshold_not_equal_civil_threshold": {
-      "description": "Criminal proof threshold does not coincide with civil liability threshold.",
-      "description_it": "La soglia probatoria penale non coincide con quella della responsabilità civile."
+      "description": "Criminal proof threshold does not coincide with civil liability threshold."
     },
     "civil_remedy_requires_autonomous_proof": {
-      "description": "Civil remedies require autonomous proof beyond criminal allegation alone.",
-      "description_it": "I rimedi civili richiedono prova autonoma, oltre la mera allegazione penale."
+      "description": "Civil remedies require autonomous proof beyond criminal allegation alone."
     },
     "damages_scope_limited_to_proven_items": {
-      "description": "Damages must be limited to concretely proven and causally linked items.",
-      "description_it": "Il danno va limitato alle voci concretamente provate e causalmente collegate."
+      "description": "Damages must be limited to concretely proven and causally linked items."
     },
     "no_automatic_prejudice_from_criminal_allegation": {
-      "description": "No automatic civil prejudice arises from criminal allegations per se.",
-      "description_it": "La mera allegazione penale non determina automaticamente pregiudizio civile risarcibile."
+      "description": "No automatic civil prejudice arises from criminal allegations per se."
     }
   },
   "selection_rules": {
@@ -1507,7 +1441,7 @@
         "supportive_precedents",
         "neutral_precedents"
       ],
-      "note": "Le anchor_norms (core/accessory) arrivano dalla config; il retrieval aggiunge norme di merito (sostanza) pertinenti al claim."
+      "note": "Anchor norms (core/accessory) come from the config; retrieval adds substantive norms relevant to the claim."
     },
     "counter_retrieval": {
       "inputs": [
@@ -1520,7 +1454,7 @@
         "contrary_precedents",
         "neutral_precedents"
       ],
-      "note": "Il counter vede solo claim + etichette e riceve retrieval contrario/neutrale; non riceve mai l'argomentazione del reasoner."
+      "note": "The counter only sees the claim + labels and receives contrary/neutral retrieval; it never receives the reasoner's argumentation."
     }
   },
   "output_contracts": {

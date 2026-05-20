@@ -1,0 +1,72 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+.env
+.env.local
+.env.*.local
+*.egg-info
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Node / Frontend
+node_modules
+dist
+.next
+npm-debug.log
+yarn-error.log
+.pnpm-debug.log
+
+# Docs & Build
+README.md
+CHANGELOG.md
+*.md
+docs/
+build/
+*.log
+# Re-include claims file needed by DoE runner
+!claims.md
+!experiments/doe_advanced/README.md
+
+# Project-specific
+cache/
+logs/
+old_claims.md
+.instructions.md
+.prompt.md
+.agent.md
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+compose*.yml
+.dockerignore

@@ -2,13 +2,14 @@
 """
 LexCausa - Flask API Server
 
-REST API server con logica corretta per la pipeline completa.
-Il backend gestisce l'intero flusso: Reasoner  CounterReasoner.
+REST API server with correct full-pipeline orchestration.
+The backend handles the full flow: Reasoner -> CounterReasoner.
 """
 
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -67,6 +68,8 @@ _active_stream_run_lock = threading.Lock()
 _active_stream_run: dict | None = None
 _retrieval_model_override_lock = threading.Lock()
 _usage_stats = get_usage_stats()
+_multi_doe_lock = threading.Lock()
+_multi_doe_runs: dict[str, dict[str, Any]] = {}
 
 
 def _format_component_counts(counts: dict[str, int], max_items: int = 4) -> str:
@@ -131,6 +134,41 @@ def _summarize_resilience_from_log_text(text: str) -> dict[str, object]:
         "fallback_by_component": counts_fallback,
         "mitigation_by_component": counts_mitigation,
     }
+
+
+def _normalize_csv_field(value: Any, fallback: list[str]) -> list[str]:
+    """Normalize comma-separated or list-like input into a clean list of strings."""
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or fallback
+    if isinstance(value, str):
+        items = [part.strip() for part in value.split(",") if part.strip()]
+        return items or fallback
+    return fallback
+
+
+def _tail_text_file(path: Path, max_lines: int = 200) -> str:
+    """Read the last N lines from a text file without loading the entire file."""
+    if not path.exists():
+        return ""
+    max_lines = max(1, min(int(max_lines), 1000))
+    chunk_size = 4096
+    buffer = b""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            offset = 0
+            while file_size > 0 and buffer.count(b"\n") <= max_lines:
+                offset = min(file_size, offset + chunk_size)
+                handle.seek(-offset, os.SEEK_END)
+                buffer = handle.read(offset) + buffer
+                file_size -= chunk_size
+    except OSError:
+        return ""
+    text = buffer.decode("utf-8", errors="ignore")
+    lines = text.splitlines()
+    return "\n".join(lines[-max_lines:])
 
 
 # ─── Pipeline file logging ──────────────────────────────────────────
@@ -205,9 +243,9 @@ def _pipeline_logger(claim: str):
                 f"(top components: {_format_component_counts(by_mitigation)})\n"
             )
             log_path.write_text(buf.getvalue(), encoding="utf-8")
-            print(f"\n📝 Pipeline log salvato in: {log_path}")
+            print(f"\n📝 Pipeline log saved to: {log_path}")
         except Exception as exc:
-            print(f"⚠️ Errore salvataggio log: {exc}")
+            print(f"⚠️ Error saving log: {exc}")
 
 
 def _slugify_filename(text: str, max_len: int = 60) -> str:
@@ -258,11 +296,11 @@ def _persist_repaired_aspic_files(claim: str, evaluation_payload: dict) -> dict:
         if repaired_counter:
             _write_json("counter_reasoner", repaired_counter)
     except Exception as exc:
-        print(f"⚠️ Errore salvataggio ASPIC+ riparato: {exc}")
+        print(f"⚠️ Error saving repaired ASPIC+: {exc}")
         return {}
 
     if files:
-        print(f"🧩 ASPIC+ riparati salvati: {files}")
+        print(f"🧩 Repaired ASPIC+ files saved: {files}")
     return files
 
 
@@ -289,14 +327,14 @@ def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
             encoding="utf-8",
         )
     except Exception as exc:
-        print(f"⚠️ Errore salvataggio report AQA: {exc}")
+        print(f"⚠️ Error saving AQA report: {exc}")
         return {}
 
     payload = {
         "absolute_path": str(path),
         "relative_path": str(path.relative_to(project_root)),
     }
-    print(f"📊 Report AQA salvato: {payload}")
+    print(f"📊 AQA report saved: {payload}")
     return payload
 
 
@@ -458,10 +496,10 @@ def _persist_doe_experiment_files(claim: str, doe_payload: dict) -> dict:
             encoding="utf-8",
         )
     except Exception as exc:
-        print(f"⚠️ Errore salvataggio report/log DoE: {exc}")
+        print(f"⚠️ Error saving DoE report/log: {exc}")
         return {}
 
-    print(f"🧪 DoE consolidato salvato: {artifacts}")
+    print(f"🧪 Consolidated DoE saved: {artifacts}")
     return artifacts
 
 
@@ -475,7 +513,7 @@ def _persist_pdf_export_file(
 ) -> dict:
     """Persist one exported PDF under logs/pdf_exports/<context>/."""
     if not pdf_bytes:
-        raise ValueError("Contenuto PDF mancante")
+        raise ValueError("Missing PDF content")
 
     normalized_context = (export_context or "pipeline").strip().lower()
     if normalized_context not in {"pipeline", "doe"}:
@@ -493,11 +531,11 @@ def _persist_pdf_export_file(
     try:
         path.write_bytes(pdf_bytes)
     except Exception as exc:
-        print(f"⚠️ Errore salvataggio PDF export: {exc}")
+        print(f"⚠️ Error saving PDF export: {exc}")
         return {}
 
     payload = _artifact_file_payload(path)
-    print(f"📄 PDF export salvato: {payload}")
+    print(f"📄 PDF export saved: {payload}")
     return payload
 
 
@@ -521,7 +559,7 @@ def get_retrieval_filter_agent():
     """Lazy load helper agent for retrieval filtering (not Reasoner)."""
     global retrieval_filter_agent
     if retrieval_filter_agent is None:
-        print("🔧 Inizializzazione Motore Retrieval...")
+        print("🔧 Initializing Retrieval Engine...")
         retrieval_filter_agent = RetrievalFilterAgent(
             config=AgentConfig(
                 model_name=settings.retrieval_default_model,
@@ -529,7 +567,7 @@ def get_retrieval_filter_agent():
                 max_tokens=settings.llm_max_tokens,
             )
         )
-        print("✅ Motore Retrieval pronto!")
+        print("✅ Retrieval Engine ready!")
     return retrieval_filter_agent
 
 
@@ -619,14 +657,16 @@ def _log_retrieval_debug(
     print(f"{'─'*70}")
     print(f"Claim: {claim[:180]}{'...' if len(claim) > 180 else ''}")
     print(
-        "Filtri: "
+        "Filters: "
         + ", ".join(f"{source}/{libro or 'N/A'}" for source, libro in filters if source)
     )
     if not articles:
-        print("⚠️ Nessun articolo recuperato.")
+        print("⚠️ No statute retrieved.")
         return
     shown = articles[:top_n]
-    print(f"Top articoli (con breakdown score) — showing {len(shown)}/{len(articles)}:")
+    print(
+        f"Top statutes (with score breakdown) — showing {len(shown)}/{len(articles)}:"
+    )
     for i, art in enumerate(shown, start=1):
         payload = _article_with_retrieval_debug(art)
         print(
@@ -640,7 +680,7 @@ def _log_retrieval_debug(
         )
     if len(articles) > top_n:
         print(
-            f"... {len(articles) - top_n} articoli ulteriori omessi (config: SEARCH_RETRIEVAL_DEBUG_TOP_N={top_n})"
+            f"... {len(articles) - top_n} additional statutes omitted (config: SEARCH_RETRIEVAL_DEBUG_TOP_N={top_n})"
         )
 
 
@@ -709,7 +749,7 @@ def prepare_claim_context(
 
     def _check_cancel() -> None:
         if cancel_checker():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     min_kept = settings.search_min_kept_statutes
     expansion_step = settings.search_expansion_step
@@ -739,7 +779,7 @@ def prepare_claim_context(
     cache_client = get_claim_context_memory() if memory_enabled else None
     if memory_enabled and not memory_overwrite and cache_client is not None:
         _check_cancel()
-        progress_callback("Controllo memoria contesto claim", 12)
+        progress_callback("Checking claim context memory", 12)
         cached = cache_client.get(
             claim=claim,
             include_precedents=bool(include_precedents),
@@ -771,7 +811,7 @@ def prepare_claim_context(
             if isinstance(result_metadata, dict):
                 result_metadata["memory_enabled"] = True
                 result_metadata["memory_hit"] = True
-            progress_callback("Memoria contesto claim: cache hit", 66)
+            progress_callback("Claim context memory: cache hit", 66)
             return cached_statutes, cached_precedents
 
     pipe = get_pipeline()
@@ -780,7 +820,7 @@ def prepare_claim_context(
 
     # ── Step 1: classify + embed once ──────────────────────────────────
     _check_cancel()
-    progress_callback("Classificazione claim e embedding query", 18)
+    progress_callback("Claim classification and query embedding", 18)
     classification = pipe.classifier.classify(claim)
     embedding = pipe.embed_text(claim)
     libri_filters = pipe.build_search_filters(
@@ -789,7 +829,7 @@ def prepare_claim_context(
 
     # ── Step 2: initial hybrid retrieval ───────────────────────────────
     _check_cancel()
-    progress_callback("Recupero norme candidate (vettoriale + fulltext)", 28)
+    progress_callback("Retrieving candidate statutes (vector + fulltext)", 28)
     current_top_k = max_statutes
     articles = pipe.vector_search(
         embedding,
@@ -807,9 +847,9 @@ def prepare_claim_context(
     statutes = _articles_to_dicts(articles)
     _check_cancel()
     legal_context = retrieval_agent._extract_legal_context(claim)
-    progress_callback("Filtro rilevanza norme", 38)
+    progress_callback("Statute relevance filtering", 38)
     kept_statutes = retrieval_agent.filter_irrelevant_statutes(claim, statutes)
-    progress_callback("Verifica applicabilità norme", 48)
+    progress_callback("Statute applicability verification", 48)
     kept_statutes = retrieval_agent.filter_applicable_statutes(
         claim, kept_statutes, legal_context
     )
@@ -847,11 +887,11 @@ def prepare_claim_context(
             if expanded_statutes:
                 _check_cancel()
                 seen_ids.update(s["statute_id"] for s in expanded_statutes)
-                progress_callback("Filtro rilevanza norme (CITES)", 49)
+                progress_callback("Statute relevance filtering (CITES)", 49)
                 kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
                     claim, expanded_statutes
                 )
-                progress_callback("Verifica applicabilità norme (CITES)", 50)
+                progress_callback("Statute applicability verification (CITES)", 50)
                 kept_from_cites = retrieval_agent.filter_applicable_statutes(
                     claim, kept_from_cites, legal_context
                 )
@@ -874,7 +914,7 @@ def prepare_claim_context(
         expansion += 1
         current_top_k += expansion_step
         progress_callback(
-            f"Espansione recupero norme ({expansion}/{max_expansions})",
+            f"Statute retrieval expansion ({expansion}/{max_expansions})",
             min(58, 50 + expansion * 2),
         )
         print(
@@ -905,9 +945,9 @@ def prepare_claim_context(
             break
 
         seen_ids.update(s["statute_id"] for s in new_statutes)
-        progress_callback("Filtro rilevanza norme (espansione)", 60)
+        progress_callback("Statute relevance filtering (expansion)", 60)
         new_kept = retrieval_agent.filter_irrelevant_statutes(claim, new_statutes)
-        progress_callback("Verifica applicabilità norme (espansione)", 62)
+        progress_callback("Statute applicability verification (expansion)", 62)
         new_kept = retrieval_agent.filter_applicable_statutes(
             claim, new_kept, legal_context
         )
@@ -947,11 +987,15 @@ def prepare_claim_context(
                 if expanded_statutes:
                     _check_cancel()
                     seen_ids.update(s["statute_id"] for s in expanded_statutes)
-                    progress_callback("Filtro rilevanza norme (CITES esp.)", 63)
+                    progress_callback(
+                        "Statute relevance filtering (CITES expansion)", 63
+                    )
                     kept_from_cites = retrieval_agent.filter_irrelevant_statutes(
                         claim, expanded_statutes
                     )
-                    progress_callback("Verifica applicabilità norme (CITES esp.)", 64)
+                    progress_callback(
+                        "Statute applicability verification (CITES expansion)", 64
+                    )
                     kept_from_cites = retrieval_agent.filter_applicable_statutes(
                         claim, kept_from_cites, legal_context
                     )
@@ -981,8 +1025,8 @@ def prepare_claim_context(
             and len(kept_statutes) < min_kept
         ):
             print(
-                "   ⚠️ Expansion early-stop: nessun guadagno utile in "
-                f"{zero_gain_rounds} round consecutivi"
+                "   ⚠️ Expansion early-stop: no useful gain in "
+                f"{zero_gain_rounds} consecutive rounds"
             )
             break
 
@@ -998,7 +1042,7 @@ def prepare_claim_context(
     precedents: list[dict] = []
     if include_precedents:
         _check_cancel()
-        progress_callback("Recupero precedenti", 64)
+        progress_callback("Precedent retrieval", 64)
         try:
             result = search_precedents_tool.invoke(
                 {"query": claim, "limit": max_precedents}
@@ -1006,10 +1050,10 @@ def prepare_claim_context(
             if isinstance(result, list):
                 precedents = result
         except Exception as e:
-            print(f"⚠️ Errore recupero precedenti: {e}")
+            print(f"⚠️ Error retrieving precedents: {e}")
 
     _check_cancel()
-    progress_callback("Filtro precedenti", 66)
+    progress_callback("Precedent filtering", 66)
     precedents = retrieval_agent.filter_irrelevant_precedents(claim, precedents)
 
     if memory_enabled and cache_client is not None:
@@ -1039,32 +1083,32 @@ def prepare_claim_context(
 
 
 def get_router():
-    """Lazy load del Router preliminare."""
+    """Lazy load of the preliminary Router."""
     global router_agent
     if router_agent is None:
-        print("🔧 Inizializzazione Router...")
+        print("🔧 Initializing Router...")
         router_agent = Router(
             config=AgentConfig(
                 temperature=PIPELINE_AUX_LLM_TEMPERATURE,
                 max_tokens=settings.llm_max_tokens,
             )
         )
-        print("✅ Router pronto!")
+        print("✅ Router ready!")
     return router_agent
 
 
 def get_polisher_evaluator():
-    """Lazy load del Polisher-Evaluator agent."""
+    """Lazy load of the Polisher-Evaluator agent."""
     global polisher_evaluator
     if polisher_evaluator is None:
-        print("🔧 Inizializzazione Polisher-Evaluator...")
+        print("🔧 Initializing Polisher-Evaluator...")
         polisher_evaluator = PolisherEvaluator(
             config=AgentConfig(
                 temperature=PIPELINE_AUX_LLM_TEMPERATURE,
                 max_tokens=settings.llm_max_tokens,
             )
         )
-        print("✅ Polisher-Evaluator pronto!")
+        print("✅ Polisher-Evaluator ready!")
     return polisher_evaluator
 
 
@@ -1072,8 +1116,8 @@ def resolve_routing_decision(
     claim: str, payload: dict | None = None, cancel_checker=None
 ) -> RoutingDecision:
     """
-    Determina il routing (causal_type_id/theory_id) usando eventuali hint del payload,
-    altrimenti invoca il Router.
+    Determines the routing (causal_type_id/theory_id) using any hints from the payload,
+    otherwise invokes the Router.
     """
     router = get_router()
     cancel_checker = cancel_checker or (lambda: False)
@@ -1093,7 +1137,7 @@ def resolve_routing_decision(
         domain = str(routing_hint.get("domain", "")).strip().upper()
         if domain not in ("CIVILE", "PENALE", "AMMINISTRATIVO", "ENTRAMBI"):
             if cancel_checker():
-                raise PipelineCancelled("Esecuzione interrotta manualmente.")
+                raise PipelineCancelled("Execution manually stopped.")
             try:
                 domain = router.route(claim).domain
             except Exception:
@@ -1109,7 +1153,7 @@ def resolve_routing_decision(
         )
 
     if cancel_checker():
-        raise PipelineCancelled("Esecuzione interrotta manualmente.")
+        raise PipelineCancelled("Execution manually stopped.")
     return router.route(claim)
 
 
@@ -1341,7 +1385,7 @@ def _run_search_only(
 
     def _check_cancel() -> None:
         if _is_cancel_requested():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _emit_progress(event_name: str, payload: dict) -> None:
         _check_cancel()
@@ -1382,7 +1426,7 @@ def _run_search_only(
     fe_retrieval_strict_llm_errors = fe_settings.get("retrieval_strict_llm_errors")
 
     if not claim:
-        raise ValueError('Campo "message" obbligatorio')
+        raise ValueError('Required field "message"')
 
     if fe_search_query_terms_mode is not None:
         mode = str(fe_search_query_terms_mode).strip().lower()
@@ -1402,8 +1446,8 @@ def _run_search_only(
         _temporary_retrieval_model_order_override(retrieval_model_order_override),
         retrieval_llm_fail_fast_scope(retrieval_strict_llm_errors),
     ):
-        status_callback("Preparazione contesto di ricerca...")
-        _emit_phase("retrieval", "active", 8, "Avvio retrieval contestuale")
+        status_callback("Preparing retrieval context...")
+        _emit_phase("retrieval", "active", 8, "Starting contextual retrieval")
 
         retrieval_metadata: dict[str, bool] = {}
         statutes, precedents = prepare_claim_context(
@@ -1425,16 +1469,16 @@ def _run_search_only(
             "retrieval_context",
             _build_retrieval_context_payload(statutes, precedents, retrieval_metadata),
         )
-        _emit_phase("retrieval", "done", 100, "Contesto recuperato")
+        _emit_phase("retrieval", "done", 100, "Context retrieved")
 
-        status_callback("Classificazione del claim in corso...")
-        _emit_phase("classification", "active", 25, "Classificazione dominio")
+        status_callback("Claim classification in progress...")
+        _emit_phase("classification", "active", 25, "Domain classification")
         classification = pipe.classifier.classify(claim)
         _check_cancel()
-        _emit_phase("classification", "done", 100, "Classificazione completata")
+        _emit_phase("classification", "done", 100, "Classification completed")
 
-        status_callback("Composizione risposta finale...")
-        _emit_phase("answer", "active", 22, "Sintesi norme e precedenti")
+        status_callback("Composing final response...")
+        _emit_phase("answer", "active", 22, "Statute and precedent synthesis")
         chat_result = SimpleNamespace(
             claim=claim,
             classification=classification,
@@ -1456,7 +1500,7 @@ def _run_search_only(
             _check_cancel()
             token_callback({"phase": "search", "token": chunk})
 
-        _emit_phase("answer", "done", 100, "Risposta pronta")
+        _emit_phase("answer", "done", 100, "Answer ready")
 
     return {
         "response": response_text,
@@ -1501,7 +1545,7 @@ def _run_reason_only(
 
     def _check_cancel() -> None:
         if _is_cancel_requested():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _emit_progress(event_name: str, payload: dict) -> None:
         _check_cancel()
@@ -1543,6 +1587,10 @@ def _run_reason_only(
         ),
         True,
     )
+    fe_enable_planning_reasoner = _coerce_bool(
+        fe_settings.get("enable_planning_reasoner", settings.enable_planning_reasoner),
+        settings.enable_planning_reasoner,
+    )
     fe_max_tokens = fe_settings.get("llm_max_tokens")
     fe_reasoner_model = fe_settings.get("reasoner_model")
     include_precedents = data.get("include_precedents", True)
@@ -1553,10 +1601,10 @@ def _run_reason_only(
     )
 
     if not claim:
-        raise ValueError('Campo "claim" obbligatorio')
+        raise ValueError('Required field "claim"')
 
-    status_callback("Routing e preparazione contesto...")
-    _emit_phase("retrieval", "active", 8, "Risoluzione routing")
+    status_callback("Routing and context preparation...")
+    _emit_phase("retrieval", "active", 8, "Routing resolution")
     routing_decision = resolve_routing_decision(claim, data)
 
     retrieval_metadata: dict[str, bool] = {}
@@ -1578,10 +1626,10 @@ def _run_reason_only(
         "retrieval_context",
         _build_retrieval_context_payload(statutes, precedents, retrieval_metadata),
     )
-    _emit_phase("retrieval", "done", 100, "Contesto pronto")
+    _emit_phase("retrieval", "done", 100, "Context ready")
 
-    status_callback("Generazione ragionamento in corso...")
-    _emit_phase("reasoning", "active", 12, "Esecuzione Reasoner")
+    status_callback("Generating reasoning...")
+    _emit_phase("reasoning", "active", 12, "Running Reasoner")
     reasoner_config = _build_agent_config(
         model_override=fe_reasoner_model or settings.reasoner_default_model,
         temperature=fe_reasoner_temperature,
@@ -1621,6 +1669,7 @@ def _run_reason_only(
         pre_retrieved_statutes=statutes,
         pre_retrieved_precedents=precedents,
         enable_causality=fe_reasoner_enable_causality,
+        enable_planning=fe_enable_planning_reasoner,
         stream_callback=_reasoner_stream_callback,
     )
     _check_cancel()
@@ -1630,8 +1679,8 @@ def _run_reason_only(
             _check_cancel()
             token_callback({"phase": "reason", "token": chunk})
 
-    _emit_phase("reasoning", "done", 100, "Ragionamento completato")
-    status_callback("Reasoner completato.")
+    _emit_phase("reasoning", "done", 100, "Reasoning completed")
+    status_callback("Reasoner completed.")
 
     return {
         "claim": result.claim,
@@ -1648,7 +1697,7 @@ def _run_reason_only(
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """
-    Endpoint principale per il chatbot (Tab Ricerca).
+    Main endpoint for chatbot (Search tab).
     """
     try:
         data = request.get_json(silent=True) or {}
@@ -1659,7 +1708,7 @@ def chat():
         return jsonify({"error": str(e)}), 400
 
     except Exception as e:
-        print(f"❌ Errore: {e}")
+        print(f"❌ Error: {e}")
         import traceback
 
         traceback.print_exc()
@@ -1669,7 +1718,7 @@ def chat():
 @app.route("/api/reason", methods=["POST"])
 def reason():
     """
-    Endpoint per il ragionamento causale (Tab Ragionamento).
+    Endpoint for causal reasoning (Reasoning tab).
     """
     try:
         data = request.get_json(silent=True) or {}
@@ -1680,7 +1729,7 @@ def reason():
         return jsonify({"error": str(e)}), 400
 
     except Exception as e:
-        print(f"❌ Errore reasoning: {e}")
+        print(f"❌ Reasoning error: {e}")
         import traceback
 
         traceback.print_exc()
@@ -1689,7 +1738,7 @@ def reason():
 
 @app.route("/api/chat/stream", methods=["POST"])
 def chat_stream():
-    """Endpoint SSE con streaming live della sola Ricerca."""
+    """SSE endpoint with live streaming for Search only."""
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
 
@@ -1710,17 +1759,17 @@ def chat_stream():
 
     def push_status(message: str) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("status", {"message": message}))
 
     def push_token(payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("token", payload))
 
     def push_progress(event_name: str, payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
@@ -1792,7 +1841,7 @@ def chat_stream():
 
 @app.route("/api/reason/stream", methods=["POST"])
 def reason_stream():
-    """Endpoint SSE con streaming live del solo Reasoner."""
+    """SSE endpoint with live streaming for the Reasoner only."""
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
 
@@ -1813,17 +1862,17 @@ def reason_stream():
 
     def push_status(message: str) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("status", {"message": message}))
 
     def push_token(payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("token", payload))
 
     def push_progress(event_name: str, payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
@@ -1911,7 +1960,7 @@ def _run_counter_reason_only(
 
     def _check_cancel() -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _emit_progress(event_name: str, payload: dict) -> None:
         _check_cancel()
@@ -1987,18 +2036,16 @@ def _run_counter_reason_only(
     )
 
     if not claim:
-        raise ValueError('Campo "claim" obbligatorio')
+        raise ValueError('Required field "claim"')
     if not reasoner_conclusion:
-        raise ValueError(
-            'Campo "reasoner_conclusion" obbligatorio per il Counter-Reasoner'
-        )
+        raise ValueError('Required field "reasoner_conclusion" for Counter-Reasoner')
 
     _check_cancel()
-    status_callback("Preparazione contesto counter...")
-    _emit_phase("context_setup", "active", 12, "Routing e setup Counter-Reasoner")
+    status_callback("Preparing counter context...")
+    _emit_phase("context_setup", "active", 12, "Counter-Reasoner routing and setup")
 
     routing_decision = resolve_routing_decision(claim, data)
-    _emit_phase("context_setup", "active", 28, "Recupero contesto condiviso")
+    _emit_phase("context_setup", "active", 28, "Retrieving shared context")
 
     retrieval_context_meta: dict = {}
     pre_retrieved_statutes = data.get("pre_retrieved_statutes")
@@ -2041,9 +2088,9 @@ def _run_counter_reason_only(
             },
         },
     )
-    _emit_phase("context_setup", "done", 100, "Contesto counter pronto")
-    _emit_phase("counter", "active", 8, "Generazione contro-argomentazione")
-    status_callback("Generazione contro-argomentazione in corso...")
+    _emit_phase("context_setup", "done", 100, "Counter context ready")
+    _emit_phase("counter", "active", 8, "Generating counter argument")
+    status_callback("Counter argument generation in progress...")
 
     counter_routing_decision = RoutingDecision(
         claim=claim,
@@ -2098,18 +2145,18 @@ def _run_counter_reason_only(
         stream_callback=_counter_stream_callback,
     )
 
-    _emit_phase("counter", "active", 97, "Costruzione ASPIC+ e output finale")
+    _emit_phase("counter", "active", 97, "Building ASPIC+ and final output")
     payload = result.to_dict()
     _emit_progress("counter_result", payload)
-    _emit_phase("counter", "done", 100, "Contro-argomentazione completata")
-    status_callback("Counter-Reasoner completato.")
+    _emit_phase("counter", "done", 100, "Counter-argument completed")
+    status_callback("Counter-Reasoner completed.")
     return payload
 
 
 @app.route("/api/counter_reason", methods=["POST"])
 def counter_reason():
     """
-    Endpoint per il contro-ragionamento.
+    Endpoint for counter reasoning.
     """
     try:
         data = request.get_json(silent=True) or {}
@@ -2118,7 +2165,7 @@ def counter_reason():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        print(f"❌ Errore counter-reasoning: {e}")
+        print(f"❌ Counter-reasoning error: {e}")
         import traceback
 
         traceback.print_exc()
@@ -2127,7 +2174,7 @@ def counter_reason():
 
 @app.route("/api/counter_reason/stream", methods=["POST"])
 def counter_reason_stream():
-    """Endpoint SSE con streaming token-by-token del solo Counter-Reasoner."""
+    """SSE endpoint with token-by-token streaming for Counter-Reasoner only."""
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
 
@@ -2148,17 +2195,17 @@ def counter_reason_stream():
 
     def push_status(message: str) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("status", {"message": message}))
 
     def push_token(payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("token", payload))
 
     def push_progress(event_name: str, payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
@@ -2249,9 +2296,13 @@ def _run_full_pipeline(
     token_callback = token_callback or (lambda _payload: None)
     progress_callback = progress_callback or (lambda _event, _payload: None)
 
+    # Streaming state snapshot — populated by _emit_phase / token callbacks
+    # so callers that skip SSE can still read final phase state from the response.
+    _stream_state: dict = {}
+
     def _check_cancel() -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _is_cancel_requested() -> bool:
         return cancel_event is not None and cancel_event.is_set()
@@ -2375,11 +2426,11 @@ def _run_full_pipeline(
     )
 
     if not claim:
-        raise ValueError('Campo "claim" obbligatorio')
+        raise ValueError('Required field "claim"')
 
     _check_cancel()
-    status_callback("Avvio pipeline completa...")
-    _emit_phase("context_setup", "active", 5, "Routing iniziale")
+    status_callback("Starting full pipeline...")
+    _emit_phase("context_setup", "active", 5, "Initial routing")
 
     with _pipeline_logger(claim):
         print(f"\n{'='*70}")
@@ -2407,6 +2458,13 @@ def _run_full_pipeline(
                 + (" (overwrite requested)" if claim_memory_overwrite else "")
             )
 
+        # Token tracking for DoE
+        token_stats = {
+            "reasoning_completion_tokens": 0,
+            "counter_completion_tokens": 0,
+            "evaluation_completion_tokens": 0,
+        }
+
         _check_cancel()
         # Apply chain step overrides to global settings
         if fe_chain_min_steps is not None:
@@ -2417,6 +2475,24 @@ def _run_full_pipeline(
             settings.search_min_kept_statutes = int(fe_search_min_kept_statutes)
         if fe_search_use_top_n_libri is not None:
             settings.search_use_top_n_libri = int(fe_search_use_top_n_libri)
+
+        # Planning ablation flags
+        fe_enable_planning_reasoner = _coerce_bool(
+            fe_settings.get(
+                "enable_planning_reasoner", settings.enable_planning_reasoner
+            ),
+            settings.enable_planning_reasoner,
+        )
+        fe_enable_planning_counter = _coerce_bool(
+            fe_settings.get(
+                "enable_planning_counter", settings.enable_planning_counter
+            ),
+            settings.enable_planning_counter,
+        )
+        if not fe_enable_planning_reasoner:
+            print("🔄 Reasoner planning DISABLED (DoE ablation)")
+        if not fe_enable_planning_counter:
+            print("🔄 Counter-Reasoner planning DISABLED (DoE ablation)")
         if fe_search_query_terms_mode is not None:
             mode = str(fe_search_query_terms_mode).strip().lower()
             if mode == "llm":
@@ -2431,14 +2507,14 @@ def _run_full_pipeline(
             )
 
         _check_cancel()
-        status_callback("Preparazione contesto giuridico...")
-        _emit_phase("context_setup", "active", 15, "Routing dominio e causalità")
+        status_callback("Preparing legal context...")
+        _emit_phase("context_setup", "active", 15, "Domain and causality routing")
         routing_decision = resolve_routing_decision(
             claim,
             data,
             cancel_checker=_is_cancel_requested,
         )
-        _emit_phase("context_setup", "active", 20, "Avvio recupero contesto")
+        _emit_phase("context_setup", "active", 20, "Starting context retrieval")
 
         # Preload context once for both reasoners
         def _emit_context_detail(detail: str, progress: int) -> None:
@@ -2469,7 +2545,7 @@ def _run_full_pipeline(
                 },
             },
         )
-        _emit_phase("context_setup", "active", 68, "Preparazione contesto agenti")
+        _emit_phase("context_setup", "active", 68, "Preparing agent context")
         reasoner_statutes = _clone_context_items(statutes)
         reasoner_precedents = _clone_context_items(precedents)
         # Counter always receives pre-retrieval KB (statutes + precedents).
@@ -2484,9 +2560,9 @@ def _run_full_pipeline(
         print(
             f"   📚 Knowledge base: {len(reasoner_statutes)} statutes, {len(reasoner_precedents)} precedents"
         )
-        _emit_phase("context_setup", "done", 100, "Contesto pronto")
-        _emit_phase("support", "active", 8, "Generazione ragionamento")
-        status_callback("Generazione argomentazione principale in corso...")
+        _emit_phase("context_setup", "done", 100, "Context ready")
+        _emit_phase("support", "active", 8, "Generating reasoning")
+        status_callback("Main argument generation in progress...")
 
         _check_cancel()
         reasoner_config = _build_agent_config(
@@ -2509,16 +2585,25 @@ def _run_full_pipeline(
                     return
             token_callback(payload)
 
+        _snap_before_reasoner = _usage_stats.get_snapshot()
         reasoner_result = reas.run(
             claim=claim,
             routing_decision=routing_decision,
             pre_retrieved_statutes=reasoner_statutes,
             pre_retrieved_precedents=reasoner_precedents,
             enable_causality=fe_reasoner_enable_causality,
+            enable_planning=fe_enable_planning_reasoner,
             stream_callback=_reasoner_stream_callback,
         )
+        _snap_after_reasoner = _usage_stats.get_snapshot()
+        token_stats["reasoning_completion_tokens"] = int(
+            _snap_after_reasoner.get("llm", {}).get("tokens", {}).get("completion", 0)
+            - _snap_before_reasoner.get("llm", {})
+            .get("tokens", {})
+            .get("completion", 0)
+        )
         _check_cancel()
-        _emit_phase("support", "active", 97, "Costruzione ASPIC+ e output finale")
+        _emit_phase("support", "active", 97, "Building ASPIC+ and final output")
         _emit_progress("reasoner_result", reasoner_result.to_dict())
         final_routing_decision = RoutingDecision(
             claim=claim,
@@ -2582,8 +2667,8 @@ def _run_full_pipeline(
         print(f"   - Statutes for reasoning: {len(reasoner_result.relevant_statutes)}")
         print(f"   - Arguments: {len(reasoner_result.arguments)}")
         print(f"   - Reasoning chain: {len(reasoner_result.reasoning_chain)} steps")
-        _emit_phase("support", "done", 100, "Argomentazione completata")
-        _emit_phase("counter", "active", 8, "Generazione contro-argomentazione")
+        _emit_phase("support", "done", 100, "Argument completed")
+        _emit_phase("counter", "active", 8, "Generating counter argument")
 
         # STEP 2: counter reasoning
         print(f"\n{'─'*70}")
@@ -2592,7 +2677,7 @@ def _run_full_pipeline(
         print(
             f"   📚 Knowledge base: {len(counter_statutes)} statutes, {len(counter_precedents)} precedents"
         )
-        status_callback("Generazione argomentazione contraria in corso...")
+        status_callback("Counter argument generation in progress...")
 
         _check_cancel()
         counter_config = _build_agent_config(
@@ -2614,17 +2699,24 @@ def _run_full_pipeline(
             f"{reasoner_conclusion[:120]}..."
         )
 
+        _snap_before_counter = _usage_stats.get_snapshot()
         counter_result = cr.run(
             claim=claim,
             routing_decision=counter_routing_decision,
             pre_retrieved_statutes=counter_statutes,
             pre_retrieved_precedents=counter_precedents,
             enable_causality=counter_enable_causality_effective,
+            enable_planning=fe_enable_planning_counter,
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,
         )
+        _snap_after_counter = _usage_stats.get_snapshot()
+        token_stats["counter_completion_tokens"] = int(
+            _snap_after_counter.get("llm", {}).get("tokens", {}).get("completion", 0)
+            - _snap_before_counter.get("llm", {}).get("tokens", {}).get("completion", 0)
+        )
         _check_cancel()
-        _emit_phase("counter", "active", 97, "Costruzione ASPIC+ e output finale")
+        _emit_phase("counter", "active", 97, "Building ASPIC+ and final output")
         counter_result.reasoner_conclusion_context = reasoner_conclusion
 
         print("✅ Counter-Reasoner completed")
@@ -2649,14 +2741,14 @@ def _run_full_pipeline(
         # Emit the complete counter output immediately so the frontend can render
         # the same structured view as the reasoner before evaluation starts.
         _emit_progress("counter_result", counter_result.to_dict())
-        _emit_phase("counter", "done", 100, "Contro-argomentazione completata")
-        _emit_phase("final_evaluation", "active", 10, "Avvio verifica consistenza")
+        _emit_phase("counter", "done", 100, "Counter-argument completed")
+        _emit_phase("final_evaluation", "active", 10, "Starting consistency check")
 
         # STEP 3: final consistency/evaluation
         print(f"\n{'─'*70}")
         print("📊 STEP 3: Polisher-Evaluator (consistency check)...")
         print(f"{'─'*70}")
-        status_callback("Verifica finale e valutazione in corso...")
+        status_callback("Final verification and evaluation in progress...")
 
         _check_cancel()
         pe = get_polisher_evaluator()
@@ -2688,12 +2780,18 @@ def _run_full_pipeline(
             settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 
         _check_cancel()
+        _snap_before_eval = _usage_stats.get_snapshot()
         evaluation_result = pe.run(
             claim=claim,
             domain=final_routing_decision.domain,
             reasoner_output=reasoner_result.to_dict(),
             counter_reasoner_output=counter_result.to_dict(),
             progress_callback=_emit_progress,
+        )
+        _snap_after_eval = _usage_stats.get_snapshot()
+        token_stats["evaluation_completion_tokens"] = int(
+            _snap_after_eval.get("llm", {}).get("tokens", {}).get("completion", 0)
+            - _snap_before_eval.get("llm", {}).get("tokens", {}).get("completion", 0)
         )
 
         _check_cancel()
@@ -2709,9 +2807,9 @@ def _run_full_pipeline(
             if not counter_result.abstention_reason:
                 counter_result.abstention_reason = counter_gate.get(
                     "reason",
-                    "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
+                    "The Counter-Reasoner does not have enough material to argue against.",
                 )
-            print("⚠️ Counter-Reasoner aggiornato dal Polisher gate")
+            print("⚠️ Counter-Reasoner updated by the Polisher gate")
             print(f"   - Gate label: {counter_gate.get('label')}")
             print(
                 f"   - Gate reason: {counter_gate.get('reason', counter_result.abstention_reason)}"
@@ -2773,8 +2871,21 @@ def _run_full_pipeline(
         print(f"{'='*70}\n")
 
     _check_cancel()
-    status_callback("Pipeline completata.")
-    _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
+    status_callback("Pipeline completed.")
+    _emit_phase("final_evaluation", "done", 100, "Evaluation completed")
+
+    # Compile token stats for DoE analysis
+    token_stats_payload = {
+        "reasoning_completion_tokens": token_stats.get(
+            "reasoning_completion_tokens", 0
+        ),
+        "counter_completion_tokens": token_stats.get("counter_completion_tokens", 0),
+        "evaluation_completion_tokens": token_stats.get(
+            "evaluation_completion_tokens", 0
+        ),
+    }
+    token_stats_payload["total_completion_tokens"] = sum(token_stats_payload.values())
+
     return {
         "claim": claim,
         "retrieval_context": {
@@ -2791,13 +2902,27 @@ def _run_full_pipeline(
         "reasoner": reasoner_result.to_dict(),
         "counter_reasoner": counter_result.to_dict(),
         "evaluation": evaluation_payload,
+        "_token_stats": token_stats_payload,
+        "_stream": {
+            "phases": _stream_state.get("phases", {}),
+            "phase_progress": _stream_state.get("phase_progress", {}),
+            "phase_details": _stream_state.get("phase_details", {}),
+            "support_steps": _stream_state.get("support_steps", {}),
+            "counter_steps": _stream_state.get("counter_steps", {}),
+            "support_conclusion_live": _stream_state.get("support_conclusion_live", ""),
+            "support_max_step": _stream_state.get("support_max_step", 0),
+            "counter_max_step": _stream_state.get("counter_max_step", 0),
+            "evaluation_checks_processed": _stream_state.get(
+                "evaluation_checks_processed", 0
+            ),
+        },
     }
 
 
 @app.route("/api/pipeline", methods=["POST"])
 def pipeline():
     """
-    Endpoint JSON classico per la pipeline completa.
+    Classic JSON endpoint for the full pipeline.
     """
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
@@ -2824,7 +2949,7 @@ def pipeline():
 @app.route("/api/pipeline/stream", methods=["POST"])
 def pipeline_stream():
     """
-    Endpoint SSE con streaming token-by-token della pipeline completa.
+    SSE endpoint with token-by-token streaming for the full pipeline.
     """
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
@@ -2845,17 +2970,17 @@ def pipeline_stream():
 
     def push_status(message: str) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("status", {"message": message}))
 
     def push_token(payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put(("token", payload))
 
     def push_progress(event_name: str, payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
@@ -2928,9 +3053,7 @@ def pipeline_stream():
 
 @app.route("/api/pipeline/stop", methods=["POST"])
 def pipeline_stop():
-    """
-    Richiede l'interruzione della pipeline SSE in esecuzione.
-    """
+    """Requests to stop the running SSE pipeline."""
     data = request.get_json(silent=True) or {}
     requested_run_id = str(data.get("run_id", "") or "").strip()
 
@@ -2974,7 +3097,7 @@ def _run_evaluate_only(
 
     def _check_cancel() -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _emit_progress(event_name: str, payload: dict) -> None:
         _check_cancel()
@@ -3005,10 +3128,10 @@ def _run_evaluate_only(
     fe_settings = data.get("settings", {}) or {}
 
     if not claim:
-        raise ValueError('Campo "claim" obbligatorio')
+        raise ValueError('Required field "claim"')
 
     _check_cancel()
-    _emit_phase("final_evaluation", "active", 10, "Avvio verifica consistenza")
+    _emit_phase("final_evaluation", "active", 10, "Starting consistency check")
 
     fe_aqa_alpha = fe_settings.get("aqa_alpha")
     fe_aqa_beta = fe_settings.get("aqa_beta")
@@ -3088,15 +3211,15 @@ def _run_evaluate_only(
         payload["aqa_report_file"] = aqa_report_file
         _emit_progress("evaluation_partial", {"aqa_report_file": aqa_report_file})
     _emit_progress("evaluation_result", payload)
-    _emit_phase("final_evaluation", "done", 100, "Valutazione completata")
+    _emit_phase("final_evaluation", "done", 100, "Evaluation completed")
     return payload
 
 
 @app.route("/api/evaluate", methods=["POST"])
 def evaluate():
     """
-    Endpoint per la valutazione finale.
-    Verifica la consistenza delle argomentazioni con la knowledge base via Neo4j.
+    Endpoint for final evaluation.
+    Checks argument consistency against the knowledge base via Neo4j.
     """
     try:
         data = request.get_json(silent=True) or {}
@@ -3105,7 +3228,7 @@ def evaluate():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        print(f"❌ Errore evaluation: {e}")
+        print(f"❌ Evaluation error: {e}")
         import traceback
 
         traceback.print_exc()
@@ -3114,7 +3237,7 @@ def evaluate():
 
 @app.route("/api/evaluate/stream", methods=["POST"])
 def evaluate_stream():
-    """Endpoint SSE con streaming live del solo Polisher-Evaluator."""
+    """SSE endpoint with live streaming for Polisher-Evaluator only."""
     if not _pipeline_lock.acquire(blocking=False):
         return jsonify({"error": "A pipeline is already running. Please wait."}), 429
 
@@ -3135,7 +3258,7 @@ def evaluate_stream():
 
     def push_progress(event_name: str, payload: dict) -> None:
         if cancel_event.is_set():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
         event_queue.put((event_name, payload))
 
     def push_error(message: str, code: int) -> None:
@@ -3210,17 +3333,171 @@ def persist_doe_log():
         data = request.get_json(silent=True) or {}
         claim = (data.get("claim", "") or "").strip()
         if not claim:
-            raise ValueError('Campo "claim" obbligatorio')
+            raise ValueError('Required field "claim"')
         artifacts = _persist_doe_experiment_files(claim, data)
         return jsonify(artifacts)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        print(f"❌ Errore persistenza log DoE: {e}")
+        print(f"❌ DoE log persistence error: {e}")
         import traceback
 
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+def _start_multi_doe_run(payload: dict[str, Any]) -> dict[str, Any]:
+    """Launch Multi-DoE via subprocess and track status in memory."""
+    default_models = [settings.REASONER_DEFAULT_MODEL_ALIAS, "groq_llama_scout_17b"]
+    default_domains = ["CIVILE", "PENALE", "AMMINISTRATIVO", "MISTO"]
+    claims_file = str(payload.get("claims_file") or "claims.md").strip()
+    models = _normalize_csv_field(payload.get("models"), default_models)
+    domains = _normalize_csv_field(payload.get("domains"), default_domains)
+    planning = str(payload.get("planning_ablations") or "on,off").strip()
+    causality = str(payload.get("causality_ablations") or "on").strip()
+    causality_models_raw = _normalize_csv_field(
+        payload.get("causality_models"), ["gpt_oss_120b"]
+    )
+    replicates = int(payload.get("replicates") or 10)
+    seed = payload.get("seed")
+
+    if replicates < 1:
+        raise ValueError('"replicates" must be >= 1')
+    if planning not in {"on,off", "on", "off"}:
+        raise ValueError('"planning_ablations" must be one of: on, off, on,off')
+    if causality not in {"on,off", "on", "off"}:
+        raise ValueError('"causality_ablations" must be one of: on, off, on,off')
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = str(
+        payload.get("output_dir") or f"experiments/multi_doe/runs/{ts}"
+    ).strip()
+    output_path = Path(output_dir)
+    if not output_path.is_absolute():
+        output_path = Path(project_root) / output_path
+    output_path.mkdir(parents=True, exist_ok=True)
+    log_dir = output_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    run_id = uuid.uuid4().hex[:12]
+    log_path = log_dir / f"multi_doe_{run_id}.log"
+
+    cmd = [
+        sys.executable,
+        "scripts/run_multi_doe.py",
+        "--claims-file",
+        claims_file,
+        "--models",
+        ",".join(models),
+        "--domains",
+        ",".join(domains),
+        "--planning-ablations",
+        planning,
+        "--causality-ablations",
+        causality,
+        "--causality-models",
+        ",".join(causality_models_raw),
+        "--replicates",
+        str(replicates),
+        "--out",
+        str(output_path),
+    ]
+    if seed not in (None, ""):
+        cmd.extend(["--seed", str(seed)])
+
+    run_entry = {
+        "run_id": run_id,
+        "status": "queued",
+        "claims_file": claims_file,
+        "models": models,
+        "domains": domains,
+        "planning_ablations": planning,
+        "causality_ablations": causality,
+        "causality_models": causality_models_raw,
+        "replicates": replicates,
+        "output_dir": str(output_path),
+        "log_file": str(log_path),
+        "started_at": None,
+        "completed_at": None,
+        "exit_code": None,
+        "error": None,
+    }
+
+    def _worker() -> None:
+        start_ts = datetime.now().isoformat()
+        with _multi_doe_lock:
+            _multi_doe_runs[run_id]["status"] = "running"
+            _multi_doe_runs[run_id]["started_at"] = start_ts
+        exit_code = None
+        error_msg = None
+        try:
+            with log_path.open("w", encoding="utf-8") as log_handle:
+                log_handle.write("Command: " + " ".join(cmd) + "\n\n")
+                log_handle.flush()
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    cwd=project_root,
+                )
+                exit_code = proc.wait()
+        except Exception as exc:
+            error_msg = str(exc)
+        completed_ts = datetime.now().isoformat()
+        with _multi_doe_lock:
+            entry = _multi_doe_runs.get(run_id, {})
+            entry["completed_at"] = completed_ts
+            entry["exit_code"] = exit_code
+            if error_msg:
+                entry["status"] = "failed"
+                entry["error"] = error_msg
+            elif exit_code == 0:
+                entry["status"] = "completed"
+            else:
+                entry["status"] = "failed"
+                entry["error"] = f"Exited with code {exit_code}"
+            _multi_doe_runs[run_id] = entry
+
+    with _multi_doe_lock:
+        _multi_doe_runs[run_id] = run_entry
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return run_entry
+
+
+@app.route("/api/doe/multi/run", methods=["POST"])
+def start_multi_doe():
+    """Start an Multi-DoE run (async)."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        run_entry = _start_multi_doe_run(payload)
+        return jsonify(run_entry)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        print(f"❌ DoE advanced start error: {exc}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/doe/multi/status/<run_id>", methods=["GET"])
+def get_multi_doe_status(run_id: str):
+    """Fetch status and log tail for an Multi-DoE run."""
+    with _multi_doe_lock:
+        entry = dict(_multi_doe_runs.get(run_id, {}))
+    if not entry:
+        return jsonify({"error": "Run not found"}), 404
+
+    tail = request.args.get("tail", "200")
+    try:
+        tail_lines = int(tail)
+    except ValueError:
+        tail_lines = 200
+    log_path = Path(entry.get("log_file") or "")
+    entry["log_tail"] = _tail_text_file(log_path, max_lines=tail_lines)
+    return jsonify(entry)
 
 
 @app.route("/api/pdf/export", methods=["POST"])
@@ -3229,11 +3506,11 @@ def persist_pdf_export():
     try:
         pdf_file = request.files.get("pdf")
         if pdf_file is None:
-            raise ValueError('Campo file "pdf" obbligatorio')
+            raise ValueError('Required file field "pdf"')
 
         pdf_bytes = pdf_file.read()
         if not pdf_bytes:
-            raise ValueError("PDF vuoto")
+            raise ValueError("Empty PDF")
 
         claim = (request.form.get("claim", "") or "").strip()
         prefix = (request.form.get("prefix", "") or "pipeline").strip()
@@ -3248,13 +3525,13 @@ def persist_pdf_export():
             client_filename=client_filename,
         )
         if not artifact:
-            raise RuntimeError("Salvataggio PDF non riuscito")
+            raise RuntimeError("PDF save failed")
 
         return jsonify({"pdf_file": artifact})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        print(f"❌ Errore persistenza PDF export: {e}")
+        print(f"❌ PDF export persistence error: {e}")
         import traceback
 
         traceback.print_exc()
@@ -3262,25 +3539,25 @@ def persist_pdf_export():
 
 
 def format_search_result(result) -> str:
-    """Formatta il risultato in markdown."""
+    """Formats the result in markdown."""
     lines = []
 
-    lines.append("## 📋 Classificazione\n")
+    lines.append("## 📋 Classification\n")
     for i, (cat, desc) in enumerate(
         zip(result.classification.categories, result.classification.descriptions), 1
     ):
         source, libro = result.classification.libro_mappings[i - 1]
         if source == "codice_civile":
-            source_label = "Codice Civile"
+            source_label = "Civil Code"
             src = "CC"
         elif source == "codice_penale":
-            source_label = "Codice Penale"
+            source_label = "Penal Code"
             src = "CP"
         elif source == "codice_amministrativo":
-            source_label = "Codice Amministrativo (L. 241/1990)"
+            source_label = "Administrative Code (L. 241/1990)"
             src = "AMM"
         else:
-            source_label = source or "Codice"
+            source_label = source or "Code"
             src = "COD"
 
         lines.append(f"**{i}. {cat}**")
@@ -3288,11 +3565,11 @@ def format_search_result(result) -> str:
         if libro:
             lines.append(f"- 📚 [{source_label}] {libro}\n")
         else:
-            lines.append(f"- 📚 [{source_label}] (intero codice, senza libri)\n")
+            lines.append(f"- 📚 [{source_label}] (full code, no books)\n")
 
     if result.articles:
         lines.append("\n---\n")
-        lines.append("## 📖 Articoli Rilevanti\n")
+        lines.append("## 📖 Relevant Articles\n")
         for i, art in enumerate(result.articles, 1):
             if art.source == "codice_civile":
                 src = "CC"
@@ -3303,11 +3580,11 @@ def format_search_result(result) -> str:
             else:
                 src = "COD"
             lines.append(f"### {i}. [{src}] Art. {art.articolo} - {art.titolo}")
-            lines.append(f"**Rilevanza:** {art.score:.1%}")
+            lines.append(f"**Relevance:** {art.score:.1%}")
             if art.libro:
-                lines.append(f"**Libro:** {art.libro}\n")
+                lines.append(f"**Book:** {art.libro}\n")
             else:
-                lines.append("**Libro:** N/A (codice senza libri)\n")
+                lines.append("**Book:** N/A (code without books)\n")
             preview = art.testo[:300] + "..." if len(art.testo) > 300 else art.testo
             lines.append(f"{preview}\n")
 
@@ -3320,22 +3597,22 @@ if __name__ == "__main__":
     print("  🚀 LexCausa API Server")
     print("=" * 70)
     print()
-    print(f"  Server in ascolto su: http://{settings.api_host}:{settings.api_port}")
+    print(f"  Server listening on: http://{settings.api_host}:{settings.api_port}")
     print()
     print("  Endpoints:")
     print("  • GET  /health              - Health check")
-    print("  • GET  /api/settings        - Impostazioni configurabili")
-    print("  • POST /api/chat            - Ricerca legale (Tab Ricerca)")
-    print("  • POST /api/reason          - Ragionamento causale (Tab Ragionamento)")
-    print("  • POST /api/counter_reason  - Contro-ragionamento")
-    print("  • POST /api/counter_reason/stream - Contro-ragionamento (SSE)")
-    print("  • POST /api/pipeline        - Pipeline completa")
-    print("  • POST /api/pipeline/stream - Pipeline completa (SSE token streaming)")
-    print("  • POST /api/pipeline/stop   - Interrompe pipeline SSE attiva")
-    print("  • POST /api/evaluate        - Valutazione finale (stub)")
-    print("  • POST /api/evaluate/stream - Valutazione finale (SSE)")
-    print("  • POST /api/doe/log         - Persistenza log/report DoE")
-    print("  • POST /api/pdf/export      - Persistenza PDF esportato")
+    print("  • GET  /api/settings        - Configurable settings")
+    print("  • POST /api/chat            - Legal search (Search tab)")
+    print("  • POST /api/reason          - Causal reasoning (Reasoning tab)")
+    print("  • POST /api/counter_reason  - Counter reasoning (standalone)")
+    print("  • POST /api/counter_reason/stream - Counter reasoning (SSE)")
+    print("  • POST /api/pipeline        - Full pipeline (Full Pipeline tab)")
+    print("  • POST /api/pipeline/stream - Full pipeline (SSE token streaming)")
+    print("  • POST /api/pipeline/stop   - Stop active SSE pipeline")
+    print("  • POST /api/evaluate        - Final evaluation (standalone)")
+    print("  • POST /api/evaluate/stream - Final evaluation (SSE)")
+    print("  • POST /api/doe/log         - DoE log/report persistence")
+    print("  • POST /api/pdf/export      - Exported PDF persistence")
     print()
     print("=" * 70)
     print()

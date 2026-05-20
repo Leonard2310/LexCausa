@@ -11,6 +11,7 @@ const TABS = {
   REASON: 'reason',
   PIPELINE: 'pipeline',
   DOE: 'doe',
+  DOE_ADV: 'multi_doe',
 };
 
 // API base URL - uses proxy in development
@@ -18,51 +19,53 @@ const API_BASE = '/api';
 
 const TAB_WELCOME_MESSAGES = {
   [TABS.SEARCH]:
-    'Ciao! Sono LexCausa. Ti aiuto a cercare norme e precedenti rilevanti per il tuo claim.',
+    "Hi! I'm LexCausa. I help you find relevant statutes and precedents for your claim.",
   [TABS.REASON]:
-    'Ciao! Sono LexCausa. Ti aiuto a costruire la tesi principale con ragionamento giuridico strutturato.',
+    "Hi! I'm LexCausa. I help you build the main thesis with structured legal reasoning.",
   [TABS.PIPELINE]:
-    'Ciao! Sono LexCausa. Ti aiuto con la pipeline completa: retrieval, Reasoner, Counter-Reasoner e Polisher-Evaluator.',
+    "Hi! I'm LexCausa. I help you with the full pipeline: retrieval, Reasoner, Counter-Reasoner, and Polisher-Evaluator.",
   [TABS.DOE]:
-    'Ciao! Sono LexCausa. Ti aiuto a eseguire il DoE con confronto A/B automatico del Counter-Reasoner.',
+    "Hi! I'm LexCausa. I help you run DoE with automatic A/B comparison of the Counter-Reasoner.",
+  [TABS.DOE_ADV]:
+    "Hi! I'm LexCausa. I help you run Multi-DoE batches with multiple replicates.",
 };
 
 const PIPELINE_PHASES = [
-  { key: 'context_setup', label: 'Preparazione contesto' },
-  { key: 'support', label: 'Argomentazione principale' },
-  { key: 'counter', label: 'Argomentazione contraria' },
-  { key: 'final_evaluation', label: 'Verifica finale' },
+  { key: 'context_setup', label: 'Context setup' },
+  { key: 'support', label: 'Main argument' },
+  { key: 'counter', label: 'Counter argument' },
+  { key: 'final_evaluation', label: 'Final check' },
 ];
 
-const ATTACK_LABELS_IT = {
-  but_for_fails: 'Controfattuale fallisce',
-  no_covering_law_or_low_support: 'Legge di copertura assente/debole',
-  alternative_causal_path: 'Percorso causale alternativo',
-  duty_to_act_missing_for_omission: "Manca l'obbligo giuridico di agire",
-  abnormal_or_atypical_chain: 'Catena causale atipica/anomala',
-  sole_sufficient_cause: 'Causa sopravvenuta da sola sufficiente',
-  intervening_cause_breaks_chain: 'Fattore sopravvenuto interrompe il nesso',
-  force_majeure_filter: 'Filtro caso fortuito/forza maggiore',
-  damage_is_indirect: 'Danno indiretto/non immediato',
-  damage_not_foreseeable: 'Danno non prevedibile ex ante',
-  creditor_contributed: 'Concorso del creditore',
-  creditor_failed_to_mitigate: 'Mancata mitigazione del danno',
-  quantification_uncertain: 'Quantificazione danno incerta/speculativa',
-  competence_or_procedure_regular: 'Competenza e procedura regolari',
-  motivation_is_sufficient: 'Motivazione sufficiente',
-  participation_not_essential_or_not_denied: 'Partecipazione non decisiva/garanzie rispettate',
-  silence_rule_not_applicable: 'Regola su silenzio/termini non applicabile',
-  vizio_non_invalidante_21_octies: 'Vizio non invalidante (art. 21-octies)',
-  event_was_avoidable: 'Evento evitabile con diligenza',
-  event_was_foreseeable: 'Evento prevedibile',
-  risk_was_assumed_or_controllable: 'Rischio assunto o controllabile',
+const ATTACK_LABELS = {
+  but_for_fails: 'But-for test fails',
+  no_covering_law_or_low_support: 'Missing/weak covering law',
+  alternative_causal_path: 'Alternative causal path',
+  duty_to_act_missing_for_omission: 'Missing legal duty to act',
+  abnormal_or_atypical_chain: 'Atypical/abnormal causal chain',
+  sole_sufficient_cause: 'Intervening sole sufficient cause',
+  intervening_cause_breaks_chain: 'Intervening factor breaks the causal link',
+  force_majeure_filter: 'Force majeure filter',
+  damage_is_indirect: 'Indirect/non-immediate damage',
+  damage_not_foreseeable: 'Damage not foreseeable ex ante',
+  creditor_contributed: 'Creditor contribution',
+  creditor_failed_to_mitigate: 'Failure to mitigate damage',
+  quantification_uncertain: 'Uncertain/speculative damage quantification',
+  competence_or_procedure_regular: 'Jurisdiction and procedure regular',
+  motivation_is_sufficient: 'Sufficient motivation',
+  participation_not_essential_or_not_denied: 'Participation not decisive/safeguards respected',
+  silence_rule_not_applicable: 'Silence/deadline rule not applicable',
+  vizio_non_invalidante_21_octies: 'Non-invalidating defect (art. 21-octies)',
+  event_was_avoidable: 'Event avoidable with due diligence',
+  event_was_foreseeable: 'Foreseeable event',
+  risk_was_assumed_or_controllable: 'Assumed or controllable risk',
 };
 
 const sourceShortLabel = (source) => {
   if (source === 'codice_civile') return 'c.c.';
   if (source === 'codice_penale') return 'c.p.';
   if (source === 'codice_amministrativo') return 'L. 241/1990';
-  return source || 'codice';
+  return source || 'code';
 };
 
 const createLivePipelineResult = (claim) => ({
@@ -120,7 +123,7 @@ const createLivePipelineResult = (claim) => ({
   },
 });
 
-/** Collapsible list: shows first `limit` items, then a "Mostra tutti" button */
+/** Collapsible list: shows first `limit` items, then a "Show all" button */
 function CollapsibleList({ items, limit = 5, renderItem }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? items : items.slice(0, limit);
@@ -130,14 +133,14 @@ function CollapsibleList({ items, limit = 5, renderItem }) {
       {items.length > limit && !expanded && (
         <li className="show-more-btn">
           <button onClick={() => setExpanded(true)}>
-            Mostra tutti ({items.length - limit} rimanenti)
+            Show all ({items.length - limit} more)
           </button>
         </li>
       )}
       {items.length > limit && expanded && (
         <li className="show-more-btn">
           <button onClick={() => setExpanded(false)}>
-            Mostra meno
+            Show less
           </button>
         </li>
       )}
@@ -200,6 +203,17 @@ export default function App() {
     claim_context_memory_enabled: true,
     claim_context_memory_overwrite: false,
   });
+  const [multiDoeSettings, setDoeAdvancedSettings] = useState({
+    claims_file: 'claims.md',
+    models: 'gpt_oss_120b,groq_llama_scout_17b',
+    domains: 'CIVILE,PENALE,AMMINISTRATIVO,MISTO',
+    planning_ablations: 'on,off',
+    replicates: 10,
+    output_dir: '',
+    seed: 42,
+  });
+  const [multiDoeRun, setDoeAdvancedRun] = useState(null);
+  const [multiDoeBusy, setDoeAdvancedBusy] = useState(false);
   const messagesEndRef = useRef(null);
   const messagesAreaRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -296,12 +310,84 @@ export default function App() {
       .catch((err) => console.warn('Could not load settings:', err));
   }, []);
 
+  useEffect(() => {
+    const runId = multiDoeRun?.run_id;
+    const status = multiDoeRun?.status || '';
+    if (!runId) return undefined;
+    if (!['queued', 'running'].includes(status)) return undefined;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/doe/multi/status/${runId}?tail=200`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled) {
+          setDoeAdvancedRun(data);
+        }
+      } catch (_) {
+        // ignore polling errors
+      }
+    };
+
+    const interval = setInterval(poll, 4000);
+    poll();
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [multiDoeRun?.run_id, multiDoeRun?.status]);
+
   const updateSetting = (key, value) => {
     setPipelineSettings((prev) => ({ ...prev, [key]: value }));
   };
 
   const updateDoeSetting = (key, value) => {
     setDoeSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const updateMultiDoeSetting = (key, value) => {
+    setDoeAdvancedSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleMultiDoeSubmit = async () => {
+    if (multiDoeBusy) return;
+    setDoeAdvancedBusy(true);
+    try {
+      const payload = {
+        ...multiDoeSettings,
+        replicates: Number(multiDoeSettings.replicates) || 10,
+        seed:
+          multiDoeSettings.seed === '' || multiDoeSettings.seed === null
+            ? null
+            : Number(multiDoeSettings.seed),
+      };
+      const response = await fetch(`${API_BASE}/doe/multi/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        let errText = 'Multi-DoE run failed';
+        try {
+          const err = await response.json();
+          errText = err?.error || errText;
+        } catch (_) {
+          // ignore
+        }
+        throw new Error(errText);
+      }
+      const data = await response.json();
+      setDoeAdvancedRun(data);
+    } catch (error) {
+      setDoeAdvancedRun({
+        run_id: null,
+        status: 'failed',
+        error: error?.message || 'Multi-DoE run failed',
+      });
+    } finally {
+      setDoeAdvancedBusy(false);
+    }
   };
 
   const applyDoeViewSelection = (viewKey) => {
@@ -311,7 +397,7 @@ export default function App() {
 
   const consumeSseResponse = async (response, onEvent) => {
     if (!response.body) {
-      throw new Error('Streaming non disponibile: risposta senza body.');
+      throw new Error('Streaming not available: response body is missing.');
     }
 
     const decoder = new TextDecoder('utf-8');
@@ -404,7 +490,7 @@ export default function App() {
       });
 
       if (!response.ok) {
-        let errText = 'Errore nella risposta del server';
+        let errText = 'Server response error';
         try {
           const err = await response.json();
           errText = err?.error || errText;
@@ -440,11 +526,11 @@ export default function App() {
         }
 
         if (eventName === 'error') {
-          throw new Error(payload?.message || 'Errore nella ricerca');
+          throw new Error(payload?.message || 'Search error');
         }
 
         if (eventName === 'cancelled') {
-          throw new Error(payload?.message || 'Ricerca interrotta manualmente.');
+          throw new Error(payload?.message || 'Search manually stopped.');
         }
 
         if (eventName === 'final') {
@@ -454,7 +540,7 @@ export default function App() {
             content:
               payload?.response
               || msg.content
-              || 'Ricerca completata. Controlla i risultati disponibili.',
+              || 'Search completed. Check available results.',
             metadata: {
               classification: payload?.classification,
               articles: payload?.articles,
@@ -465,25 +551,24 @@ export default function App() {
       });
 
       if (!finalPayload) {
-        throw new Error('Streaming ricerca interrotto prima del risultato finale.');
+        throw new Error('Search stream stopped before the final result.');
       }
     } catch (error) {
-      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      const errorMessage = (error && error.message) ? error.message : 'Unknown error';
       const isManualStop = (
         manualSearchReasonStopRef.current
-        || error?.name === 'AbortError'
-        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+        || error?.name === 'AbortError' || String(errorMessage).toLowerCase().includes('manually stopped')
       );
       if (!isManualStop) {
-        console.error('Errore ricerca:', error);
+        console.error('Search error:', error);
       }
       updateAssistantMessage((msg) => ({
         ...msg,
         content: (msg.content || '').trim()
-          ? `${msg.content}\n\n${isManualStop ? '[Esecuzione interrotta manualmente]' : `[Errore] ${errorMessage}`}`
+          ? `${msg.content}\n\n${isManualStop ? '[Execution manually stopped]' : `[Error] ${errorMessage}`}`
           : (isManualStop
-            ? 'Ricerca interrotta manualmente.'
-            : `Mi dispiace, si è verificato un errore. ${errorMessage}`),
+            ? 'Search manually stopped.'
+            : `Sorry, an error occurred. ${errorMessage}`),
       }));
     } finally {
       searchReasonAbortControllerRef.current = null;
@@ -548,7 +633,7 @@ export default function App() {
       });
 
       if (!response.ok) {
-        let errText = 'Errore nella risposta del server';
+        let errText = 'Server response error';
         try {
           const err = await response.json();
           errText = err?.error || errText;
@@ -589,11 +674,11 @@ export default function App() {
         }
 
         if (eventName === 'error') {
-          throw new Error(payload?.message || 'Errore nel ragionamento');
+          throw new Error(payload?.message || 'Reasoning error');
         }
 
         if (eventName === 'cancelled') {
-          throw new Error(payload?.message || 'Ragionamento interrotto manualmente.');
+          throw new Error(payload?.message || 'Reasoning manually stopped.');
         }
 
         if (eventName === 'final') {
@@ -604,32 +689,31 @@ export default function App() {
             content:
               payload?.raw_response
               || msg.content
-              || 'Ho completato l’analisi del ragionamento. Qui sotto trovi la risposta con i dettagli.',
+              || 'Reasoning analysis completed. See the detailed response below.',
           }));
         }
       });
 
       if (!finalPayload) {
-        throw new Error('Streaming ragionamento interrotto prima del risultato finale.');
+        throw new Error('Reasoning stream stopped before the final result.');
       }
     } catch (error) {
-      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      const errorMessage = (error && error.message) ? error.message : 'Unknown error';
       const isManualStop = (
         manualSearchReasonStopRef.current
-        || error?.name === 'AbortError'
-        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+        || error?.name === 'AbortError' || String(errorMessage).toLowerCase().includes('manually stopped')
       );
       if (!isManualStop) {
-        console.error('Errore ragionamento:', error);
+        console.error('Reasoning error:', error);
       }
       setReasoningResult(isManualStop ? null : { error: errorMessage });
       updateAssistantMessage((msg) => ({
         ...msg,
         content: (msg.content || '').trim()
-          ? `${msg.content}\n\n${isManualStop ? '[Esecuzione interrotta manualmente]' : `[Errore] ${errorMessage}`}`
+          ? `${msg.content}\n\n${isManualStop ? '[Execution manually stopped]' : `[Error] ${errorMessage}`}`
           : (isManualStop
-            ? 'Ragionamento interrotto manualmente.'
-            : `Mi dispiace, si è verificato un errore durante il ragionamento: ${errorMessage}`),
+            ? 'Reasoning manually stopped.'
+            : `Sorry, an error occurred during reasoning: ${errorMessage}`),
       }));
     } finally {
       searchReasonAbortControllerRef.current = null;
@@ -655,7 +739,7 @@ export default function App() {
             ...(prev._stream || {}),
             phase_details: {
               ...(prev._stream?.phase_details || {}),
-              final_evaluation: 'Interruzione richiesta...',
+              final_evaluation: 'Stop requested...',
             },
           },
         };
@@ -763,14 +847,14 @@ export default function App() {
 
   const describeCounterTaxonomySetup = (settings = {}) => {
     if (!settings?.counter_enable_causality) {
-      return 'Counter tassonomia OFF';
+      return 'Counter taxonomy OFF';
     }
     const enabledParts = [];
     if (settings?.counter_pass_causal_identity) enabledParts.push('identity');
     if (settings?.counter_pass_taxonomy_attacks) enabledParts.push('attacks');
     if (settings?.counter_pass_norms) enabledParts.push('norms');
     if (enabledParts.length === 0) {
-      return 'Counter tassonomia ON (senza pass-through)';
+      return 'Counter taxonomy ON (no pass-through)';
     }
     return `Counter tassonomia ON (${enabledParts.join(' + ')})`;
   };
@@ -835,7 +919,7 @@ export default function App() {
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      let errText = 'Errore nel salvataggio del log DoE';
+      let errText = 'Error saving DoE log';
       try {
         const err = await response.json();
         errText = err?.error || errText;
@@ -920,10 +1004,10 @@ export default function App() {
           final_evaluation: 0,
         },
         phase_details: {
-          context_setup: `DoE pronto: A=${setupADescription} | B=${setupBDescription}`,
-          support: 'Reasoner condiviso A/B in esecuzione',
-          counter: 'In attesa',
-          final_evaluation: 'In attesa',
+          context_setup: `DoE ready: A=${setupADescription} | B=${setupBDescription}`,
+          support: 'Shared A/B Reasoner running',
+          counter: 'Pending',
+          final_evaluation: 'Pending',
         },
       },
     });
@@ -1144,7 +1228,7 @@ export default function App() {
         signal: controller.signal,
       });
       if (!response.ok) {
-        let errText = 'Errore nella pipeline';
+        let errText = 'Pipeline error';
         try {
           const err = await response.json();
           errText = err?.error || errText;
@@ -1154,7 +1238,7 @@ export default function App() {
         throw new Error(errText);
       }
       if (!response.body) {
-        throw new Error('Streaming non disponibile: risposta senza body.');
+        throw new Error('Streaming not available: response body is missing.');
       }
 
       const decoder = new TextDecoder('utf-8');
@@ -1234,7 +1318,7 @@ export default function App() {
                   `Step ${eventPayload.step}/${mergedDoeSettings.chain_max_steps}`,
                 );
               } else if (phase === 'support_conclusion') {
-                setDoePhaseDetail('support', 'Sintesi e formattazione conclusione');
+                setDoePhaseDetail('support', 'Conclusion summary and formatting');
               }
             }
             if (phase === 'counter') {
@@ -1264,7 +1348,7 @@ export default function App() {
           }
 
           if (eventName === 'reasoner_result') {
-            setDoePhaseStatus('support', 'done', 'Argomentazione e ASPIC+ completati');
+            setDoePhaseStatus('support', 'done', 'Argumentation and ASPIC+ completed');
             setPipelineResult((prev) => ({
               ...(prev || {}),
               reasoner: eventPayload || {},
@@ -1273,7 +1357,7 @@ export default function App() {
           }
 
           if (eventName === 'counter_result') {
-            setDoePhaseStatus('counter', 'done', 'Contro-argomentazione e ASPIC+ completati');
+            setDoePhaseStatus('counter', 'done', 'Counter-argumentation and ASPIC+ completed');
             mergeDoeView('baseline', {
               counter_reasoner: eventPayload || {},
             });
@@ -1286,7 +1370,7 @@ export default function App() {
 
           if (eventName === 'evaluation_partial') {
             setDoePhaseStatus('final_evaluation', 'active');
-            setDoePhaseDetail('final_evaluation', 'Aggiornamento valutazione in corso');
+            setDoePhaseDetail('final_evaluation', 'Evaluation update in progress');
             mergeDoeEvaluationPartial('baseline', eventPayload || {});
             setPipelineResult((prev) => ({
               ...(prev || {}),
@@ -1306,7 +1390,7 @@ export default function App() {
           }
 
           if (eventName === 'evaluation_result') {
-            setDoePhaseStatus('final_evaluation', 'done', 'Report finale consolidato');
+            setDoePhaseStatus('final_evaluation', 'done', 'Final consolidated report');
             mergeDoeView('baseline', {
               evaluation: eventPayload || {},
             });
@@ -1318,11 +1402,11 @@ export default function App() {
           }
 
           if (eventName === 'error') {
-            throw new Error(eventPayload.message || 'Errore nella pipeline');
+            throw new Error(eventPayload.message || 'Pipeline error');
           }
 
           if (eventName === 'cancelled') {
-            throw new Error(eventPayload?.message || 'Esecuzione interrotta manualmente.');
+            throw new Error(eventPayload?.message || 'Execution manually stopped.');
           }
 
           if (eventName === 'final') {
@@ -1352,7 +1436,7 @@ export default function App() {
       }
 
       if (!finalPayload) {
-        throw new Error('Streaming interrotto prima del risultato finale.');
+        throw new Error('Stream stopped before the final result.');
       }
       return finalPayload;
     };
@@ -1365,7 +1449,7 @@ export default function App() {
         signal: controller.signal,
       });
       if (!response.ok) {
-        let errText = 'Errore nel Counter-Reasoner (stream)';
+        let errText = 'Counter-Reasoner stream error';
         try {
           const err = await response.json();
           errText = err?.error || errText;
@@ -1375,7 +1459,7 @@ export default function App() {
         throw new Error(errText);
       }
       if (!response.body) {
-        throw new Error('Streaming counter non disponibile: risposta senza body.');
+        throw new Error('Streaming counter not available: response body is missing.');
       }
 
       const decoder = new TextDecoder('utf-8');
@@ -1472,7 +1556,7 @@ export default function App() {
             continue;
           }
           if (eventName === 'counter_result') {
-            setDoePhaseStatus('counter', 'done', 'Contro-argomentazione e ASPIC+ completati');
+            setDoePhaseStatus('counter', 'done', 'Counter-argumentation and ASPIC+ completed');
             mergeDoeView('treatment', {
               counter_reasoner: eventPayload || {},
             });
@@ -1483,10 +1567,10 @@ export default function App() {
             continue;
           }
           if (eventName === 'error') {
-            throw new Error(eventPayload.message || 'Errore nel Counter-Reasoner');
+            throw new Error(eventPayload.message || 'Counter-Reasoner error');
           }
           if (eventName === 'cancelled') {
-            throw new Error(eventPayload?.message || 'Counter-Reasoner interrotto manualmente.');
+            throw new Error(eventPayload?.message || 'Counter-Reasoner manually stopped.');
           }
           if (eventName === 'final') {
             finalPayload = eventPayload;
@@ -1496,7 +1580,7 @@ export default function App() {
       }
 
       if (!finalPayload) {
-        throw new Error('Streaming Counter interrotto prima del risultato finale.');
+        throw new Error('Counter stream stopped before the final result.');
       }
       return finalPayload;
     };
@@ -1509,7 +1593,7 @@ export default function App() {
         signal: controller.signal,
       });
       if (!response.ok) {
-        let errText = 'Errore nella valutazione finale (stream)';
+        let errText = 'Final evaluation stream error';
         try {
           const err = await response.json();
           errText = err?.error || errText;
@@ -1519,7 +1603,7 @@ export default function App() {
         throw new Error(errText);
       }
       if (!response.body) {
-        throw new Error('Streaming evaluator non disponibile: risposta senza body.');
+        throw new Error('Streaming evaluator not available: response body is missing.');
       }
 
       const decoder = new TextDecoder('utf-8');
@@ -1583,7 +1667,7 @@ export default function App() {
           }
           if (eventName === 'evaluation_partial') {
             setDoePhaseStatus('final_evaluation', 'active');
-            setDoePhaseDetail('final_evaluation', 'Aggiornamento valutazione in corso');
+            setDoePhaseDetail('final_evaluation', 'Evaluation update in progress');
             mergeDoeEvaluationPartial('treatment', eventPayload || {});
             setPipelineResult((prev) => ({
               ...(prev || {}),
@@ -1594,14 +1678,14 @@ export default function App() {
           if (eventName === 'evaluation_status') {
             const stage = eventPayload?.stage || '';
             const stageDetailMap = {
-              start: 'Check KB catena principale',
-              kb_reasoner_done: 'Check KB catena contraria',
-              kb_counter_done: 'Verifica opposizione tra tesi',
-              gate_done: 'Gate opposizione completato',
-              repair_start: 'Riparazione citazioni/catene in corso',
-              repair_done: 'Riparazione completata, avvio AQA',
-              aqa_done: 'AQA completata, preparazione report',
-              done: 'Valutazione completata',
+              start: 'Check main chain KB',
+              kb_reasoner_done: 'Check counter chain KB',
+              kb_counter_done: 'Opposition check between theses',
+              gate_done: 'Opposition gate completed',
+              repair_start: 'Citation/chain repair in progress',
+              repair_done: 'Repair completed, starting AQA',
+              aqa_done: 'AQA completed, preparing report',
+              done: 'Evaluation completed',
             };
             if (stageDetailMap[stage]) {
               setDoePhaseDetail('final_evaluation', stageDetailMap[stage]);
@@ -1627,7 +1711,7 @@ export default function App() {
             continue;
           }
           if (eventName === 'evaluation_aqa_progress') {
-            const message = eventPayload?.message || 'AQA in corso';
+            const message = eventPayload?.message || 'AQA in progress';
             const relativeProgress = Number(eventPayload?.progress);
             setDoePhaseStatus('final_evaluation', 'active');
             setDoePhaseDetail('final_evaluation', message);
@@ -1639,7 +1723,7 @@ export default function App() {
             continue;
           }
           if (eventName === 'evaluation_result') {
-            setDoePhaseStatus('final_evaluation', 'done', 'Report finale consolidato');
+            setDoePhaseStatus('final_evaluation', 'done', 'Final consolidated report');
             mergeDoeView('treatment', {
               evaluation: eventPayload || {},
             });
@@ -1650,10 +1734,10 @@ export default function App() {
             continue;
           }
           if (eventName === 'error') {
-            throw new Error(eventPayload.message || 'Errore nella valutazione finale');
+            throw new Error(eventPayload.message || 'Final evaluation error');
           }
           if (eventName === 'cancelled') {
-            throw new Error(eventPayload?.message || 'Valutazione interrotta manualmente.');
+            throw new Error(eventPayload?.message || 'Evaluation manually stopped.');
           }
           if (eventName === 'final') {
             finalPayload = eventPayload;
@@ -1663,7 +1747,7 @@ export default function App() {
       }
 
       if (!finalPayload) {
-        throw new Error('Streaming Evaluator interrotto prima del risultato finale.');
+        throw new Error('Evaluator stream stopped before the final result.');
       }
       return finalPayload;
     };
@@ -1698,7 +1782,7 @@ export default function App() {
 
       const sharedReasonerConclusion = String(runAResult?.reasoner?.conclusion || '').trim();
       if (!sharedReasonerConclusion) {
-        throw new Error('Conclusione del Reasoner non disponibile per il confronto DoE.');
+        throw new Error('Reasoner conclusion not available for DoE comparison.');
       }
 
       setPipelineResult((prev) => ({
@@ -1718,10 +1802,10 @@ export default function App() {
             final_evaluation: 0,
           },
           phase_details: {
-            context_setup: 'Run A baseline completato (Reasoner condiviso fissato)',
-            support: `Reasoner condiviso completato (${formatDurationHuman(runADurationMs)})`,
-            counter: `Run B treatment in corso (solo Counter + Evaluator): ${setupBDescription}`,
-            final_evaluation: 'Confronto A/B in preparazione',
+            context_setup: 'Run A (baseline) completed, shared Reasoner is now fixed',
+            support: `Shared Reasoner completed (${formatDurationHuman(runADurationMs)})`,
+            counter: `Run B (treatment) in progress (Counter + Evaluator only): ${setupBDescription}`,
+            final_evaluation: 'A/B comparison in preparation',
           },
         },
       }));
@@ -1852,7 +1936,7 @@ export default function App() {
           },
         });
       } catch (persistError) {
-        console.warn('Salvataggio log DoE non riuscito:', persistError);
+        console.warn('Failed to save DoE log:', persistError);
       }
 
       const doeComparison = {
@@ -1914,10 +1998,10 @@ export default function App() {
             final_evaluation: 'done',
           },
           phase_details: {
-            context_setup: 'Run A/B completati con Reasoner condiviso',
-            support: `A baseline completo (${formatDurationHuman(runADurationMs)}, include Reasoner)`,
-            counter: `B treatment completato (${formatDurationHuman(runBDurationMs)}, Counter+Evaluator)`,
-            final_evaluation: 'Confronto A/B completato',
+            context_setup: 'A/B run completed with a shared Reasoner',
+            support: `Setup A (baseline) completed (${formatDurationHuman(runADurationMs)}, includes Reasoner)`,
+            counter: `Setup B (treatment) completed (${formatDurationHuman(runBDurationMs)}, Counter+Evaluator)`,
+            final_evaluation: 'A/B comparison completed',
           },
           phase_progress: {
             context_setup: 100,
@@ -1928,12 +2012,12 @@ export default function App() {
         },
       });
     } catch (error) {
-      console.error('Errore DoE automatico:', error);
-      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      console.error('Automatic DoE error:', error);
+      const errorMessage = (error && error.message) ? error.message : 'Unknown error';
       const isManualStop = (
         manualPipelineStopRef.current
         || error?.name === 'AbortError'
-        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+        || String(errorMessage).toLowerCase().includes('manually stopped')
       );
       if (isManualStop) {
         setPipelineResult((prev) => {
@@ -1944,7 +2028,7 @@ export default function App() {
               ...(prev._stream || {}),
               phase_details: {
                 ...(prev._stream?.phase_details || {}),
-                final_evaluation: 'DoE interrotto manualmente',
+                final_evaluation: 'DoE manually stopped',
               },
             },
           };
@@ -1955,7 +2039,7 @@ export default function App() {
           ...prev,
           {
             role: 'assistant',
-            content: `DoE interrotto: ${errorMessage}.`,
+            content: `DoE stopped: ${errorMessage}.`,
           },
         ]);
       }
@@ -2170,7 +2254,7 @@ export default function App() {
           reasoner_refinement_meta: payload || {},
           phase_details: {
             ...(prev._stream?.phase_details || {}),
-            support: 'Riclassificazione causale e rigenerazione con norme di tassonomia...',
+            support: 'Causal reclassification and regeneration with taxonomy statutes...',
           },
           phase_progress: {
             ...(prev._stream?.phase_progress || {}),
@@ -2192,7 +2276,7 @@ export default function App() {
           },
           phase_details: {
             ...(prev._stream?.phase_details || {}),
-            support: 'Rigenerazione del Reasoner completata, finalizzazione output...',
+            support: 'Reasoner regeneration completed, finalizing output...',
           },
           phase_progress: {
             ...(prev._stream?.phase_progress || {}),
@@ -2248,7 +2332,7 @@ export default function App() {
       });
 
       if (!response.ok) {
-        let errText = 'Errore nella pipeline';
+        let errText = 'Pipeline error';
         try {
           const err = await response.json();
           errText = err?.error || errText;
@@ -2357,7 +2441,7 @@ export default function App() {
                   `Step ${payload.step}/${pipelineSettings.chain_max_steps}`,
                 );
               } else if (phase === 'support_conclusion') {
-                setPhaseDetail('support', 'Sintesi e formattazione conclusione');
+                setPhaseDetail('support', 'Conclusion summary and formatting');
               }
             }
             if (phase === 'counter') {
@@ -2375,7 +2459,7 @@ export default function App() {
           }
 
           if (eventName === 'reasoner_result') {
-            setPhaseStatus('support', 'done', 'Argomentazione e ASPIC+ completati');
+            setPhaseStatus('support', 'done', 'Argumentation and ASPIC+ completed');
             setPipelineResult((prev) => ({
               ...(prev || {}),
               reasoner: payload || {},
@@ -2400,7 +2484,7 @@ export default function App() {
           }
 
           if (eventName === 'counter_result') {
-            setPhaseStatus('counter', 'done', 'Contro-argomentazione e ASPIC+ completati');
+            setPhaseStatus('counter', 'done', 'Counter-argumentation and ASPIC+ completed');
             setPipelineResult((prev) => ({
               ...(prev || {}),
               counter_reasoner: payload || {},
@@ -2409,7 +2493,7 @@ export default function App() {
           }
 
           if (eventName === 'evaluation_result') {
-            setPhaseStatus('final_evaluation', 'done', 'Report finale consolidato');
+            setPhaseStatus('final_evaluation', 'done', 'Final consolidated report');
             setPipelineResult((prev) => ({
               ...(prev || {}),
               evaluation: payload || {},
@@ -2419,7 +2503,7 @@ export default function App() {
 
           if (eventName === 'evaluation_partial') {
             setPhaseStatus('final_evaluation', 'active');
-            setPhaseDetail('final_evaluation', 'Aggiornamento valutazione in corso');
+            setPhaseDetail('final_evaluation', 'Evaluation update in progress');
             setPipelineResult((prev) => ({
               ...(prev || {}),
               evaluation: mergeEvaluationPartial(prev?.evaluation, payload || {}),
@@ -2430,14 +2514,14 @@ export default function App() {
           if (eventName === 'evaluation_status') {
             const stage = payload?.stage || '';
             const stageDetailMap = {
-              start: 'Check KB catena principale',
-              kb_reasoner_done: 'Check KB catena contraria',
-              kb_counter_done: 'Verifica opposizione tra tesi',
-              gate_done: 'Gate opposizione completato',
-              repair_start: 'Riparazione citazioni/catene in corso',
-              repair_done: 'Riparazione completata, avvio AQA',
-              aqa_done: 'AQA completata, preparazione report',
-              done: 'Valutazione completata',
+              start: 'Check main chain KB',
+              kb_reasoner_done: 'Check counter chain KB',
+              kb_counter_done: 'Opposition check between theses',
+              gate_done: 'Opposition gate completed',
+              repair_start: 'Citation/chain repair in progress',
+              repair_done: 'Repair completed, starting AQA',
+              aqa_done: 'AQA completed, preparing report',
+              done: 'Evaluation completed',
             };
             if (stageDetailMap[stage]) {
               setPhaseDetail('final_evaluation', stageDetailMap[stage]);
@@ -2464,7 +2548,7 @@ export default function App() {
           }
 
           if (eventName === 'evaluation_aqa_progress') {
-            const message = payload?.message || 'AQA in corso';
+            const message = payload?.message || 'AQA in progress';
             const relativeProgress = Number(payload?.progress);
             setPhaseStatus('final_evaluation', 'active');
             setPhaseDetail('final_evaluation', message);
@@ -2597,11 +2681,11 @@ export default function App() {
           }
 
           if (eventName === 'error') {
-            throw new Error(payload.message || 'Errore nella pipeline');
+            throw new Error(payload.message || 'Pipeline error');
           }
 
           if (eventName === 'cancelled') {
-            throw new Error(payload?.message || 'Esecuzione interrotta manualmente.');
+            throw new Error(payload?.message || 'Execution manually stopped.');
           }
 
           if (eventName === 'final') {
@@ -2617,10 +2701,10 @@ export default function App() {
                   final_evaluation: 'done',
                 },
                 phase_details: {
-                  context_setup: 'Completata',
-                  support: 'Completata',
-                  counter: 'Completata',
-                  final_evaluation: 'Completata',
+                  context_setup: 'Completed',
+                  support: 'Completed',
+                  counter: 'Completed',
+                  final_evaluation: 'Completed',
                 },
                 phase_progress: {
                   context_setup: 100,
@@ -2637,7 +2721,7 @@ export default function App() {
       }
 
       if (!finalPayload) {
-        throw new Error('Streaming interrotto prima del risultato finale.');
+        throw new Error('Stream stopped before the final result.');
       }
       return finalPayload;
     };
@@ -2663,7 +2747,7 @@ export default function App() {
           setPhaseStatus(
             'context_setup',
             'active',
-            `Riconnessione stream (${attempt}/${maxRetries})...`,
+            `Reconnecting stream (${attempt}/${maxRetries})...`,
           );
           setPhaseProgress('context_setup', 6);
         }
@@ -2671,7 +2755,7 @@ export default function App() {
           finalPayload = await runPipelineStreamAttempt();
           break;
         } catch (attemptError) {
-          const errorMessage = attemptError?.message || 'Errore sconosciuto';
+          const errorMessage = attemptError?.message || 'Unknown error';
           if (
             attempt < maxRetries
             && !manualPipelineStopRef.current
@@ -2681,7 +2765,7 @@ export default function App() {
             setPhaseStatus('final_evaluation', 'active');
             setPhaseDetail(
               'final_evaluation',
-              `Connessione instabile, nuovo tentativo tra ${Math.ceil(waitMs / 1000)}s...`,
+              `Unstable connection, retrying in ${Math.ceil(waitMs / 1000)}s...`,
             );
             await new Promise((resolve) => setTimeout(resolve, waitMs));
             continue;
@@ -2691,15 +2775,15 @@ export default function App() {
       }
 
       if (!finalPayload) {
-        throw new Error('Streaming interrotto prima del risultato finale.');
+        throw new Error('Stream stopped before the final result.');
       }
     } catch (error) {
-      console.error('Errore pipeline:', error);
-      const errorMessage = (error && error.message) ? error.message : 'Errore sconosciuto';
+      console.error('Pipeline error:', error);
+      const errorMessage = (error && error.message) ? error.message : 'Unknown error';
       const isManualStop = (
         manualPipelineStopRef.current
         || error?.name === 'AbortError'
-        || String(errorMessage).toLowerCase().includes('interrotta manualmente')
+        || String(errorMessage).toLowerCase().includes('manually stopped')
       );
       if (isManualStop) {
         setPipelineResult((prev) => {
@@ -2716,7 +2800,7 @@ export default function App() {
               phases: normalizedPhases,
               phase_details: {
                 ...(prev._stream?.phase_details || {}),
-                final_evaluation: 'Esecuzione interrotta manualmente',
+                final_evaluation: 'Execution manually stopped',
               },
             },
           };
@@ -2725,7 +2809,7 @@ export default function App() {
           ...prev,
           {
             role: 'assistant',
-            content: 'Pipeline interrotta manualmente. Puoi correggere i parametri e rilanciare.',
+            content: 'Pipeline manually stopped. You can adjust the parameters and rerun.',
           },
         ]);
       } else {
@@ -2734,7 +2818,7 @@ export default function App() {
           ...prev,
           {
             role: 'assistant',
-            content: `Pipeline interrotta: ${errorMessage}. Ho eliminato i risultati parziali, puoi riprovare.`,
+            content: `Pipeline stopped: ${errorMessage}. Partial results were cleared, you can retry.`,
           },
         ]);
       }
@@ -2760,6 +2844,9 @@ export default function App() {
       case TABS.DOE:
         handleDoeSubmit();
         break;
+      case TABS.DOE_ADV:
+        handleMultiDoeSubmit();
+        break;
       default:
         handleSearchSubmit();
     }
@@ -2768,15 +2855,17 @@ export default function App() {
   const getPlaceholder = () => {
     switch (activeTab) {
       case TABS.SEARCH:
-        return 'Inserisci un claim per eseguire la ricerca: norme e precedenti...';
+        return 'Enter a claim to run search: statutes and precedents...';
       case TABS.REASON:
-        return 'Inserisci un claim per eseguire il ragionamento: tesi principale...';
+        return 'Enter a claim to run reasoning: main thesis...';
       case TABS.PIPELINE:
-        return 'Inserisci un claim per eseguire la pipeline completa: retrieval, tesi, controtesi e valutazione...';
+        return 'Enter a claim to run the full pipeline: retrieval, thesis, counter-thesis, and evaluation...';
       case TABS.DOE:
-        return 'Inserisci un claim per eseguire il DoE automatico: run A baseline vs run B treatment...';
+        return 'Enter a claim to run automatic DoE: run A baseline vs run B treatment...';
+      case TABS.DOE_ADV:
+        return 'Configure Multi-DoE settings above and start the batch...';
       default:
-        return 'Scrivi un messaggio...';
+        return 'Write a message...';
     }
   };
 
@@ -2817,15 +2906,15 @@ export default function App() {
         body: formData,
       });
       if (!response.ok) {
-        throw new Error(`Persistenza PDF fallita (${response.status})`);
+        throw new Error(`PDF persistence failed (${response.status})`);
       }
       const data = await response.json();
       if (data?.pdf_file?.relative_path) {
-        console.info(`PDF salvato automaticamente in ${data.pdf_file.relative_path}`);
+        console.info(`PDF automatically saved to ${data.pdf_file.relative_path}`);
       }
       return data;
     } catch (error) {
-      console.error('Errore salvataggio automatico PDF:', error);
+      console.error('Automatic PDF save error:', error);
       return null;
     }
   };
@@ -2922,7 +3011,7 @@ export default function App() {
       await worker.save();
       await persistPromise;
     } catch (error) {
-      console.error('Errore durante export PDF:', error);
+      console.error('Error during PDF export:', error);
     } finally {
       if (root) {
         root.unmount();
@@ -2935,6 +3024,9 @@ export default function App() {
   };
 
   const isDoeTab = activeTab === TABS.DOE;
+  const isMultiDoeTab = activeTab === TABS.DOE_ADV;
+  const multiDoeStatus = multiDoeRun?.status || 'idle';
+  const isMultiDoeRunning = ['queued', 'running'].includes(multiDoeStatus);
   const doeComparison = pipelineResult?.doe_ab_comparison;
   const doeHasComparison = Boolean(doeComparison);
   const doeHasCompletedComparison = Boolean(doeComparison?.delta);
@@ -2982,7 +3074,7 @@ export default function App() {
     const absMs = Math.abs(Math.round(numeric));
 
     if (absMs < 1000) {
-      return signed ? '≈ 0 s' : 'meno di 1 s';
+      return signed ? '≈ 0s' : 'less than 1s';
     }
 
     let totalSeconds = Math.round(absMs / 1000);
@@ -2994,7 +3086,7 @@ export default function App() {
     const seconds = totalSeconds - minutes * 60;
 
     const parts = [];
-    if (days > 0) parts.push(`${days} g`);
+    if (days > 0) parts.push(`${days}d`);
     if (hours > 0) parts.push(`${hours} h`);
     if (minutes > 0) parts.push(`${minutes} min`);
     if (seconds > 0 || parts.length === 0) parts.push(`${seconds} s`);
@@ -3150,7 +3242,7 @@ export default function App() {
   const parseConsistencySummary = (summaryText = '') => {
     const source = (summaryText || '').replace(/\r/g, '').trim();
     if (!source) {
-      return { title: 'Riepilogo', sections: [], notes: [] };
+      return { title: 'Summary', sections: [], notes: [] };
     }
     const lines = source
       .split('\n')
@@ -3158,7 +3250,7 @@ export default function App() {
       .filter(Boolean);
 
     const parsed = {
-      title: 'Riepilogo',
+      title: 'Summary',
       sections: [],
       notes: [],
     };
@@ -3197,7 +3289,7 @@ export default function App() {
       if (currentSection) {
         currentSection.freeText.push(line);
       } else {
-        parsed.notes.push({ label: 'Nota', value: line });
+        parsed.notes.push({ label: 'Note', value: line });
       }
     });
 
@@ -3205,22 +3297,23 @@ export default function App() {
     return parsed;
   };
 
+  /// TODO: Controllare che la traduzione non abbia creato problemi
   const getSummaryMetricClass = (label = '') => {
     const normalized = label.toLowerCase();
-    if (normalized.includes('problemi')) return 'summary-metric-negative';
+    if (normalized.includes('issues')) return 'summary-metric-negative';
     if (normalized.includes('score')) return 'summary-metric-info';
-    if (normalized.includes('valide')) return 'summary-metric-positive';
-    if (normalized.includes('riparat')) return 'summary-metric-warning';
+    if (normalized.includes('valid')) return 'summary-metric-positive';
+    if (normalized.includes('repaired')) return 'summary-metric-warning';
     return '';
   };
 
   const renderCausalityCard = (title, causality = {}) => {
     if (!causality || typeof causality !== 'object') return null;
     const rows = [
-      { label: 'Tipo Causale', value: causality.causal_type_id || 'Non disponibile' },
-      { label: 'Teoria', value: causality.theory_id || 'Non disponibile' },
-      ...(causality.domain ? [{ label: 'Dominio', value: causality.domain }] : []),
-      ...(causality.source ? [{ label: 'Fonte', value: causality.source }] : []),
+      { label: 'Causal Type', value: causality.causal_type_id || 'Not available' },
+      { label: 'Theory', value: causality.theory_id || 'Not available' },
+      ...(causality.domain ? [{ label: 'Domain', value: causality.domain }] : []),
+      ...(causality.source ? [{ label: 'Source', value: causality.source }] : []),
     ];
     return (
       <div className="causality-card">
@@ -3238,7 +3331,7 @@ export default function App() {
   };
 
   const normalizeAttackLabel = (attackId = '') =>
-    ATTACK_LABELS_IT[String(attackId || '').trim()]
+    ATTACK_LABELS[String(attackId || '').trim()]
     || String(attackId || '')
       .replace(/_/g, ' ')
       .trim();
@@ -3279,7 +3372,7 @@ export default function App() {
 
     return (
       <div className="subsection counter-attack-usage">
-        <h4>Attacchi Utilizzati</h4>
+        <h4>Attacks Used</h4>
         {uniqueSelected.length > 0 && (
           <div className="counter-attack-chip-row">
             {uniqueSelected.map((attackId, idx) => (
@@ -3322,7 +3415,7 @@ export default function App() {
             key={`${keyPrefix}-statute-${item?.statute_id || item?.label || idx}`}
             className="aspic-citation-pill aspic-citation-pill-statute"
           >
-            {item?.label || (item?.articolo ? `Art. ${item.articolo}` : item?.statute_id || `Norma ${idx + 1}`)}
+            {item?.label || (item?.articolo ? `Art. ${item.articolo}` : item?.statute_id || `Statute ${idx + 1}`)}
           </span>
         ))}
         {precedents.map((item, idx) => (
@@ -3330,7 +3423,7 @@ export default function App() {
             key={`${keyPrefix}-precedent-${item?.id || item?.title || idx}`}
             className="aspic-citation-pill aspic-citation-pill-precedent"
           >
-            {item?.title || item?.id || `Precedente ${idx + 1}`}
+            {item?.title || item?.id || `Precedent ${idx + 1}`}
           </span>
         ))}
         {unknown.map((item, idx) => (
@@ -3338,7 +3431,7 @@ export default function App() {
             key={`${keyPrefix}-unknown-${item?.label || item?.article_num || idx}`}
             className="aspic-citation-pill aspic-citation-pill-unknown"
           >
-            {item?.label || item?.article_num || `Sconosciuta ${idx + 1}`}
+            {item?.label || item?.article_num || `Unknown ${idx + 1}`}
           </span>
         ))}
       </div>
@@ -3366,7 +3459,7 @@ export default function App() {
 
   const renderAspicFullView = (aspicData = {}, keyPrefix = 'aspic') => {
     if (!aspicData || typeof aspicData !== 'object' || Object.keys(aspicData).length === 0) {
-      return <p className="aspic-empty">Nessun contenuto ASPIC+ disponibile.</p>;
+      return <p className="aspic-empty">No ASPIC+ content available.</p>;
     }
 
     const chain = Array.isArray(aspicData.reasoning_chain) ? aspicData.reasoning_chain : [];
@@ -3402,23 +3495,23 @@ export default function App() {
             <strong>{aspicData.schema || 'aspic_ir'}</strong>
           </div>
           <div className="aspic-full-kpi">
-            <span>Ruolo</span>
+            <span>Role</span>
             <strong>{aspicData.role || '-'}</strong>
           </div>
           <div className="aspic-full-kpi">
-            <span>Step Catena</span>
+            <span>Chain Steps</span>
             <strong>{chain.length}</strong>
           </div>
           <div className="aspic-full-kpi">
-            <span>Argomenti</span>
+            <span>Arguments</span>
             <strong>{argumentsList.length}</strong>
           </div>
           <div className="aspic-full-kpi">
-            <span>Norme</span>
+            <span>Statutes</span>
             <strong>{statutes.length}</strong>
           </div>
           <div className="aspic-full-kpi">
-            <span>Precedenti</span>
+            <span>Precedents</span>
             <strong>{precedents.length}</strong>
           </div>
         </div>
@@ -3479,7 +3572,7 @@ export default function App() {
 
                     {premises.length > 0 && (
                       <div className="aspic-full-subsection">
-                        <h6>Premesse</h6>
+                        <h6>Premises</h6>
                         <div className="aspic-full-stack">
                           {premises.map((prem, premIdx) => (
                             <div key={`${keyPrefix}-arg-${argIdx}-prem-${prem?.id || premIdx}`} className="aspic-full-subcard">
@@ -3556,7 +3649,7 @@ export default function App() {
                 {statutes.map((st, idx) => (
                   <div key={`${keyPrefix}-src-statute-${st?.statute_id || st?.label || idx}`} className="aspic-full-subcard">
                     <div className="aspic-full-card-head">
-                      <span className="aspic-full-card-id">{st?.label || st?.statute_id || `Statuto ${idx + 1}`}</span>
+                      <span className="aspic-full-card-id">{st?.label || st?.statute_id || `Statute ${idx + 1}`}</span>
                     </div>
                     <p className="aspic-full-text">{st?.title || '-'}</p>
                     {renderAspicKeyValueFields(st, `${keyPrefix}-src-stat-extra-${idx}`, ['label', 'title'])}
@@ -3569,7 +3662,7 @@ export default function App() {
                 {precedents.map((pr, idx) => (
                   <div key={`${keyPrefix}-src-prec-${pr?.id || pr?.title || idx}`} className="aspic-full-subcard">
                     <div className="aspic-full-card-head">
-                      <span className="aspic-full-card-id">{pr?.title || `Precedente ${idx + 1}`}</span>
+                      <span className="aspic-full-card-id">{pr?.title || `Precedent ${idx + 1}`}</span>
                     </div>
                     <p className="aspic-full-text">{pr?.id || '-'}</p>
                     {renderAspicKeyValueFields(pr, `${keyPrefix}-src-prec-extra-${idx}`, ['id', 'title'])}
@@ -3636,7 +3729,7 @@ export default function App() {
 
         {extraEntries.length > 0 && (
           <div className="aspic-full-section">
-            <h6>Campi Extra</h6>
+            <h6>Extra Fields</h6>
             <pre className="aspic-full-pre">{JSON.stringify(Object.fromEntries(extraEntries), null, 2)}</pre>
           </div>
         )}
@@ -3690,7 +3783,7 @@ export default function App() {
     <div className="aqa-full-section">
       <h6>{title}</h6>
       {links.length === 0 ? (
-        <p className="aqa-tree-empty">Nessun link.</p>
+        <p className="aqa-tree-empty">No links.</p>
       ) : (
         <div className="aqa-link-summary-list">
           {links.map((link, idx) => (
@@ -3702,7 +3795,7 @@ export default function App() {
                 </span>
               </div>
               <div className="aqa-link-summary-metrics">
-                <span>Nesso {(link.nesso_plausibility ?? 0).toFixed(3)}</span>
+                <span>Link {(link.nesso_plausibility ?? 0).toFixed(3)}</span>
                 <span>Base {(link.base_score ?? 0).toFixed(3)}</span>
                 <span>Norm {(link.norm_support ?? 0).toFixed(3)}</span>
                 <span>Cog {(link.cogency ?? 0).toFixed(3)}</span>
@@ -3718,7 +3811,7 @@ export default function App() {
 
   const renderAqaFullView = (aqaData = {}) => {
     if (!aqaData || typeof aqaData !== 'object' || Object.keys(aqaData).length === 0) {
-      return <p className="aqa-tree-empty">Nessun dettaglio AQA disponibile.</p>;
+      return <p className="aqa-tree-empty">No AQA details available.</p>;
     }
 
     const proLinksCount = Array.isArray(aqaData.links?.pro) ? aqaData.links.pro.length : 0;
@@ -3735,57 +3828,57 @@ export default function App() {
       <div className="aqa-full-view">
         <div className="aqa-full-kpis">
           <div className="aqa-full-kpi">
-            <span>Verdetto</span>
+            <span>Verdict</span>
             <strong>{verdict}</strong>
           </div>
           <div className="aqa-full-kpi">
-            <span>Score Finale</span>
+            <span>Final Score</span>
             <strong>{typeof finalScore === 'number' ? finalScore.toFixed(4) : '-'}</strong>
           </div>
           <div className="aqa-full-kpi">
-            <span>Link Pro</span>
+            <span>Pro Links</span>
             <strong>{proLinksCount}</strong>
           </div>
           <div className="aqa-full-kpi">
-            <span>Link Contro</span>
+            <span>Counter Links</span>
             <strong>{contraLinksCount}</strong>
           </div>
         </div>
 
         <div className="aqa-full-section">
-          <h6>Pesi AQA</h6>
+          <h6>AQA Weights</h6>
           {renderAqaMetricGrid(aqaData.weights || {}, 'aqa-weights')}
         </div>
 
         <div className="aqa-full-section">
-          <h6>Plausibilità Netta</h6>
+          <h6>Net Plausibility</h6>
           {renderAqaMetricGrid(aqaData.net_plausibility || {}, 'aqa-net')}
         </div>
 
         {aqaData.chain_scores && (
           <div className="aqa-full-section">
-            <h6>Score Catene</h6>
+            <h6>Chain Scores</h6>
             <div className="aqa-chain-grid">
               <div className="aqa-chain-card">
                 <h6>Pro</h6>
                 {renderAqaMetricGrid(aqaData.chain_scores.pro || {}, 'aqa-chain-pro')}
               </div>
               <div className="aqa-chain-card">
-                <h6>Contro</h6>
+                <h6>Counter</h6>
                 {renderAqaMetricGrid(aqaData.chain_scores.contra || {}, 'aqa-chain-contra')}
               </div>
             </div>
           </div>
         )}
 
-        {renderAqaLinksCompact('Link Pro (sintesi)', proLinks, 'aqa-pro')}
-        {renderAqaLinksCompact('Link Contro (sintesi)', contraLinks, 'aqa-contra')}
+        {renderAqaLinksCompact('Pro Links (summary)', proLinks, 'aqa-pro')}
+        {renderAqaLinksCompact('Counter Links (summary)', contraLinks, 'aqa-contra')}
 
         <div className="aqa-full-section">
-          <h6>Note Tecniche</h6>
+          <h6>Technical Notes</h6>
           <div className="aqa-full-metric-grid">
             <div className="aqa-full-metric">
-              <span>Attacchi Abilitati</span>
+              <span>Attacks Enabled</span>
               <strong>{formatPrettyScalar(aqaData.notes?.attacks_enabled)}</strong>
             </div>
             <div className="aqa-full-metric">
@@ -3805,7 +3898,7 @@ export default function App() {
             <ul className="aqa-compact-list">
               {weakestLinks.slice(0, 8).map((item, idx) => (
                 <li key={`aqa-weak-${idx}`}>
-                  {item.link_id || `Link ${idx + 1}`} - nesso {(item.nesso_plausibility ?? 0).toFixed(3)}
+                  {item.link_id || `Link ${idx + 1}`} - causal link {(item.nesso_plausibility ?? 0).toFixed(3)}
                 </li>
               ))}
             </ul>
@@ -3854,10 +3947,10 @@ export default function App() {
   const aqaContraLinks = aqaReport?.links?.contra ?? [];
   const aqaVerdict = aqaReport?.verdict ?? 'uncertain';
   const aqaVerdictLabel = aqaVerdict === 'plausible'
-    ? 'Plausibile'
+    ? 'Plausible'
     : aqaVerdict === 'implausible'
-      ? 'Implausibile'
-      : 'Incerto';
+      ? 'Implausible'
+      : 'Uncertain';
   const aqaVerdictClass = aqaVerdict === 'plausible'
     ? 'aqa-verdict-positive'
     : aqaVerdict === 'implausible'
@@ -3958,15 +4051,15 @@ export default function App() {
     const deltaFinal = Number(comparison?.delta?.final_score);
     const deltaContraLinks = Number(comparison?.delta?.contra_links);
     const deltaDuration = Number(comparison?.delta?.duration_ms);
-    let headline = 'Impatto DoE neutro';
+    let headline = 'Neutral DoE impact';
     let toneClass = 'summary-metric-info';
     // In AQA, final_score = pro - contra:
     // lower final_score => stronger counter side.
     if (Number.isFinite(deltaFinal) && deltaFinal < -0.01) {
-      headline = 'Setup B migliora la forza dialettica del Counter';
+      headline = 'Setup B improves the counter-side dialectical strength';
       toneClass = 'summary-metric-positive';
     } else if (Number.isFinite(deltaFinal) && deltaFinal > 0.01) {
-      headline = 'Setup A resta piu incisivo sul claim corrente';
+      headline = 'Setup A remains more incisive on the current claim';
       toneClass = 'summary-metric-warning';
     }
     const notes = [];
@@ -3974,38 +4067,38 @@ export default function App() {
       const finalGap = formatDoePercent(Math.abs(deltaFinal));
       notes.push(
         deltaFinal < -0.01
-          ? `Il treatment riduce l'AQA finale di ${finalGap} rispetto al baseline (counter piu incisivo).`
+          ? `Treatment reduces final AQA by ${finalGap} compared to baseline (more incisive counter).`
           : deltaFinal > 0.01
-            ? `Il baseline mantiene un vantaggio di ${finalGap} sull'AQA finale.`
-            : 'La differenza di AQA finale tra A e B e quasi nulla su questo claim.',
+            ? `The baseline keeps an advantage of ${finalGap} on final AQA.`
+            : 'The final AQA difference between A and B is nearly zero for this claim.',
       );
     }
     if (treatmentAttackLabels.length > baselineAttackLabels.length) {
       notes.push(
-        `Setup B usa attacchi tassonomici espliciti (${treatmentAttackLabels.join(', ')}) mentre Setup A resta piu attack-agnostic.`,
+        `Setup B uses explicit taxonomy attacks (${treatmentAttackLabels.join(', ')}) while Setup A stays more attack-agnostic.`,
       );
     } else if (baselineAttackLabels.length > 0) {
-      notes.push(`Setup A espone attacchi espliciti: ${baselineAttackLabels.join(', ')}.`);
+      notes.push(`Setup A exposes explicit attacks: ${baselineAttackLabels.join(', ')}.`);
     } else {
-      notes.push('Setup A non espone attacchi tassonomici espliciti nella risposta finale.');
+      notes.push('Setup A does not expose explicit taxonomy attacks in the final response.');
     }
     if (baselineOnlyNorms.length > 0 || treatmentOnlyNorms.length > 0) {
       notes.push(
-        `Le norme distintive cambiano: A-only ${baselineOnlyNorms.join(', ') || 'nessuna'} | B-only ${treatmentOnlyNorms.join(', ') || 'nessuna'}.`,
+        `Distinctive statutes change: A-only ${baselineOnlyNorms.join(', ') || 'none'} | B-only ${treatmentOnlyNorms.join(', ') || 'none'}.`,
       );
     }
     if (Number.isFinite(deltaContraLinks) && deltaContraLinks !== 0) {
       notes.push(
-        `Il numero di link contro varia di ${formatDoeSignedInt(deltaContraLinks)} tra treatment e baseline.`,
+        `The number of counter links changes by ${formatDoeSignedInt(deltaContraLinks)} between treatment and baseline.`,
       );
     }
     if (Number.isFinite(deltaDuration)) {
       notes.push(
         deltaDuration < 0
-          ? `Setup B completa piu rapidamente di ${formatDurationHuman(Math.abs(deltaDuration))}.`
+          ? `Setup B completes faster by ${formatDurationHuman(Math.abs(deltaDuration))}.`
           : deltaDuration > 0
-            ? `Setup B impiega ${formatDurationHuman(deltaDuration)} in piu rispetto ad A.`
-            : 'I tempi di esecuzione A/B sono equivalenti.',
+            ? `Setup B takes ${formatDurationHuman(deltaDuration)} more than A.`
+            : 'A/B execution times are equivalent.',
       );
     }
     return {
@@ -4024,7 +4117,7 @@ export default function App() {
       <div className="result-section pipeline-section" data-pdf-section="doe-comparison">
         <h3 className="section-header">
           <GitBranch size={20} style={{ color: '#6366f1' }} />
-          Confronto DoE Automatico (A/B)
+          Automatic DoE Comparison (A/B)
         </h3>
         <div className="summary-cards-grid">
           <div className="summary-card">
@@ -4041,11 +4134,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{Number(doeComparison.baseline?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(doeComparison.baseline?.duration_ms))
                     ? formatDurationHuman(doeComparison.baseline.duration_ms)
@@ -4068,11 +4161,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{Number(doeComparison.treatment?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(doeComparison.treatment?.duration_ms))
                     ? formatDurationHuman(doeComparison.treatment.duration_ms)
@@ -4093,11 +4186,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.contra_score)}</span>
               </div>
               <div className="summary-metric summary-metric-warning">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{formatDoeSignedInt(doeComparison.delta?.contra_links)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(doeComparison.delta?.duration_ms))
                     ? formatDurationHuman(doeComparison.delta.duration_ms, { signed: true })
@@ -4110,16 +4203,16 @@ export default function App() {
 
         <div className="summary-cards-grid" style={{ marginTop: 12 }}>
           <div className="summary-card">
-            <div className="summary-card-title">Counter A (baseline) - vista parallela</div>
+            <div className="summary-card-title">Counter A (baseline) - parallel view</div>
             {(doeBaselineView?.counter_reasoner?.raw_response || doeComparison?.baseline?.status === 'done')
               ? renderStructuredResponse({ parsed: doeBaselineCounterParsed })
-              : <p className="aqa-tree-empty">In attesa dell&apos;output baseline.</p>}
+              : <p className="aqa-tree-empty">Waiting for baseline output.</p>}
           </div>
           <div className="summary-card">
-            <div className="summary-card-title">Counter B (treatment) - vista parallela</div>
+            <div className="summary-card-title">Counter B (treatment) - parallel view</div>
             {(doeTreatmentView?.counter_reasoner?.raw_response || doeComparison?.treatment?.status === 'done')
               ? renderStructuredResponse({ parsed: doeTreatmentCounterParsed })
-              : <p className="aqa-tree-empty">Treatment non ancora disponibile o in generazione.</p>}
+              : <p className="aqa-tree-empty">Treatment not available yet or still generating.</p>}
           </div>
         </div>
       </div>
@@ -4132,13 +4225,13 @@ export default function App() {
       <div className="result-section pipeline-section" data-pdf-section="doe-analysis">
         <h3 className="section-header">
           <GitBranch size={20} style={{ color: '#2563eb' }} />
-          Analisi DoE - Differenze A/B
+          DoE Analysis - A/B Differences
         </h3>
         <div className="summary-cards-grid">
           <div className="summary-card">
-            <div className="summary-card-title">Lettura tecnica</div>
+            <div className="summary-card-title">Technical Analysis</div>
             <div className={`summary-metric ${doeAnalysis.toneClass}`} style={{ marginBottom: 12 }}>
-              <span className="summary-metric-label">Sintesi</span>
+              <span className="summary-metric-label">Summary</span>
               <span className="summary-metric-value">{doeAnalysis.headline}</span>
             </div>
             <ul className="summary-notes-list">
@@ -4148,9 +4241,9 @@ export default function App() {
             </ul>
           </div>
           <div className="summary-card">
-            <div className="summary-card-title">Attacchi e Norme Distintive</div>
+            <div className="summary-card-title">Distinctive Attacks and Statutes</div>
             <div className="structured-block" style={{ marginBottom: 10 }}>
-              <h5>Attacchi Setup A</h5>
+              <h5>Setup A Attacks</h5>
               {doeBaselineAttackLabels.length > 0 ? (
                 <ul className="structured-list">
                   {doeBaselineAttackLabels.map((label, idx) => (
@@ -4158,11 +4251,11 @@ export default function App() {
                   ))}
                 </ul>
               ) : (
-                <p>Nessun attacco tassonomico esplicito.</p>
+                <p>No explicit taxonomy attacks.</p>
               )}
             </div>
             <div className="structured-block" style={{ marginBottom: 10 }}>
-              <h5>Attacchi Setup B</h5>
+              <h5>Setup B Attacks</h5>
               {doeTreatmentAttackLabels.length > 0 ? (
                 <ul className="structured-list">
                   {doeTreatmentAttackLabels.map((label, idx) => (
@@ -4170,32 +4263,32 @@ export default function App() {
                   ))}
                 </ul>
               ) : (
-                <p>Nessun attacco tassonomico esplicito.</p>
+                <p>No explicit taxonomy attacks.</p>
               )}
             </div>
             <div className="structured-block">
-              <h5>Norme solo A / solo B</h5>
+              <h5>Statutes in A only / B only</h5>
               <p>
-                <strong>A:</strong> {doeBaselineOnlyNorms.join(', ') || 'nessuna'}
+                <strong>A:</strong> {doeBaselineOnlyNorms.join(', ') || 'none'}
               </p>
               <p>
-                <strong>B:</strong> {doeTreatmentOnlyNorms.join(', ') || 'nessuna'}
+                <strong>B:</strong> {doeTreatmentOnlyNorms.join(', ') || 'none'}
               </p>
             </div>
           </div>
           <div className="summary-card">
-            <div className="summary-card-title">Conclusioni Counter</div>
+            <div className="summary-card-title">Counter Conclusions</div>
             <div className="structured-block" style={{ marginBottom: 10 }}>
               <h5>Setup A</h5>
-              <p>{doeBaselineCounterParsed?.conclusione || 'Conclusione non disponibile.'}</p>
+              <p>{doeBaselineCounterParsed?.conclusione || 'Conclusion not available.'}</p>
             </div>
             <div className="structured-block">
               <h5>Setup B</h5>
-              <p>{doeTreatmentCounterParsed?.conclusione || 'Conclusione non disponibile.'}</p>
+              <p>{doeTreatmentCounterParsed?.conclusione || 'Conclusion not available.'}</p>
             </div>
             {doeComparison?.artifacts?.doe_log_file?.relative_path && (
               <div className="structured-block doe-log-artifact">
-                <h5>Artefatti DoE</h5>
+                <h5>DoE Artifacts</h5>
                 <p>Log: {doeComparison.artifacts.doe_log_file.relative_path}</p>
                 {doeComparison?.artifacts?.doe_report_file?.relative_path && (
                   <p>Report: {doeComparison.artifacts.doe_report_file.relative_path}</p>
@@ -4232,13 +4325,13 @@ export default function App() {
       <div className={`structured-response ${variant === 'repaired' ? 'repaired-chain' : ''}`}>
         {parsed.premessa && (
           <div className="structured-block">
-            <h5>Premessa</h5>
+            <h5>Premise</h5>
             <p>{parsed.premessa}</p>
           </div>
         )}
         {norms.length > 0 && (
           <div className="structured-block">
-            <h5>Norme Richiamate</h5>
+            <h5>Cited Statutes</h5>
             <ul className="structured-list">
               {norms.map((norm, idx) => (
                 <li key={`norm-${idx}`}>{norm}</li>
@@ -4248,19 +4341,19 @@ export default function App() {
         )}
         {parsed.nesso && (
           <div className="structured-block">
-            <h5>Nesso Causale</h5>
+            <h5>Causal Link</h5>
             <p>{parsed.nesso}</p>
           </div>
         )}
         {(parsed.conclusione || liveConclusion) && (
           <div className="structured-block">
-            <h5>Conclusione</h5>
+            <h5>Conclusion</h5>
             <p>{parsed.conclusione || liveConclusion}</p>
           </div>
         )}
         {chainSteps.length > 0 && (
           <div className="structured-block">
-            <h5>Catena di Ragionamento</h5>
+            <h5>Reasoning Chain</h5>
             <ol className="live-steps-list">
               {chainSteps.map((stepText, idx) => (
                 <li key={`chain-step-${idx}`}>
@@ -4276,7 +4369,7 @@ export default function App() {
         {liveMode && (
           <div className="structured-live-tag">
             <Loader2 size={14} className="loading-spinner" />
-            <span>Aggiornamento live in corso...</span>
+            <span>Live update in progress...</span>
           </div>
         )}
       </div>
@@ -4309,7 +4402,7 @@ export default function App() {
         <ul className="articles-list pdf-export-list">
           {precedents.map((prec, idx) => (
             <li key={`${keyPrefix}-${prec?.id || prec?.title || idx}`}>
-              <strong>{idx + 1}. {prec?.title || `Precedente ${idx + 1}`}</strong>
+              <strong>{idx + 1}. {prec?.title || `Precedent ${idx + 1}`}</strong>
               {prec?.id ? ` - ${prec.id}` : ''}
             </li>
           ))}
@@ -4368,13 +4461,13 @@ export default function App() {
         <div className="summary-card-title">{title}</div>
         <div className="summary-metrics">
           <div className="summary-metric">
-            <span className="summary-metric-label">Citazioni valide</span>
+            <span className="summary-metric-label">Valid citations</span>
             <span className="summary-metric-value">
               {Number(report.valid_citations || 0)}/{totalCitations}
             </span>
           </div>
           <div className="summary-metric">
-            <span className="summary-metric-label">Testo verificato</span>
+            <span className="summary-metric-label">Text verified</span>
             <span className="summary-metric-value">
               {Number(report.text_matches || 0)}/{totalTextChecks}
             </span>
@@ -4406,7 +4499,7 @@ export default function App() {
     if (!hasConsistency && !summaryText) return null;
     return (
       <div className="subsection">
-        <h4>Evaluator - Verifica Consistenza</h4>
+        <h4>Evaluator - Consistency Check</h4>
         {hasConsistency && (
           <div className="summary-cards-grid">
             {renderPdfConsistencyAgentCard(
@@ -4435,10 +4528,10 @@ export default function App() {
     if (!hasRepairs && !hasRepairStats) return null;
     return (
       <div className="subsection">
-        <h4>Catene di Ragionamento Riparate</h4>
+        <h4>Repaired Reasoning Chains</h4>
         {repairedReasonerChain && (
           <div className="structured-block">
-            <h5>Reasoner - Catena Riparata</h5>
+            <h5>Reasoner - Repaired Chain</h5>
             {renderStructuredResponse({
               parsed: parseStructuredResponse(repairedReasonerChain),
               variant: 'repaired',
@@ -4447,7 +4540,7 @@ export default function App() {
         )}
         {repairedCounterChain && (
           <div className="structured-block">
-            <h5>Counter-Reasoner - Catena Riparata</h5>
+            <h5>Counter-Reasoner - Repaired Chain</h5>
             {renderStructuredResponse({
               parsed: parseStructuredResponse(repairedCounterChain),
               variant: 'repaired',
@@ -4458,12 +4551,12 @@ export default function App() {
           <div className="consistency-stats">
             {consistencyReport.reasoner && (
               <span className="stat-item stat-repaired">
-                🔧 Reasoner: {consistencyReport.reasoner.repaired_citations || 0} riparate, {consistencyReport.reasoner.dropped_citations || 0} scartate
+                🔧 Reasoner: {consistencyReport.reasoner.repaired_citations || 0} repaired, {consistencyReport.reasoner.dropped_citations || 0} dropped
               </span>
             )}
             {consistencyReport.counter_reasoner && (
               <span className="stat-item stat-repaired">
-                🔧 Counter: {consistencyReport.counter_reasoner.repaired_citations || 0} riparate, {consistencyReport.counter_reasoner.dropped_citations || 0} scartate
+                🔧 Counter: {consistencyReport.counter_reasoner.repaired_citations || 0} repaired, {consistencyReport.counter_reasoner.dropped_citations || 0} dropped
               </span>
             )}
           </div>
@@ -4480,12 +4573,12 @@ export default function App() {
     return (
       <>
         <div className="subsection">
-          <h4>AQA - Valutazione Argomentativa</h4>
+          <h4>AQA - Argumentative Evaluation</h4>
           {renderAqaFullView(aqaData)}
         </div>
         {aqaData.enabled && (proLinks.length > 0 || contraLinks.length > 0) && (
           <div className="subsection pdf-export-metagraph-subsection">
-            <h4>ASPIC+ Metagrafo</h4>
+            <h4>ASPIC+ Metagraph</h4>
             <AspicMetagraph
               aqaReport={aqaData}
               reasonerIr={evaluation?.repaired_reasoner_aspic_ir}
@@ -4511,22 +4604,22 @@ export default function App() {
       <div className="result-section pipeline-section">
         <h3 className="section-header">
           <CheckCircle2 size={20} style={{ color: '#10b981' }} />
-          2. REASONER CONDIVISO
+          2. SHARED REASONER
         </h3>
         <p className="pdf-export-context-note">
-          La tesi principale viene generata una sola volta e riusata da Setup A e Setup B.
+          The main thesis is generated once and reused by Setup A and Setup B.
         </p>
         {reasoner?.causality && (
           <div className="subsection">
-            <h4>Classificazione Causalità</h4>
-            {renderCausalityCard('Mappatura Causale', reasoner.causality)}
+            <h4>Causality Classification</h4>
+            {renderCausalityCard('Causal Mapping', reasoner.causality)}
           </div>
         )}
-        {renderPdfStatuteList('Articoli Trovati (Reasoner)', reasoner?.statutes, 'pdf-reasoner-statutes')}
-        {renderPdfPrecedentList('Precedenti Trovati (Reasoner)', reasoner?.precedents, 'pdf-reasoner-precedents')}
+        {renderPdfStatuteList('Found Statutes (Reasoner)', reasoner?.statutes, 'pdf-reasoner-statutes')}
+        {renderPdfPrecedentList('Found Precedents (Reasoner)', reasoner?.precedents, 'pdf-reasoner-precedents')}
         {reasoner?.raw_response && (
           <div className="subsection">
-            <h4>Risposta Completa</h4>
+            <h4>Full Response</h4>
             {renderStructuredResponse({ parsed: parsedReasoner })}
           </div>
         )}
@@ -4557,7 +4650,7 @@ export default function App() {
         </h3>
         <div className="summary-cards-grid">
           <div className="summary-card">
-            <div className="summary-card-title">Metriche Setup {setupKey}</div>
+            <div className="summary-card-title">Setup {setupKey} Metrics</div>
             <div className="summary-metrics">
               <div className="summary-metric">
                 <span className="summary-metric-label">AQA Verdetto</span>
@@ -4568,11 +4661,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(comparisonEntry?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{Number(comparisonEntry?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(comparisonEntry?.duration_ms))
                     ? formatDurationHuman(comparisonEntry.duration_ms)
@@ -4584,24 +4677,24 @@ export default function App() {
         </div>
         {counterData?.reasoner_causality && (
           <div className="subsection">
-            <h4>Causalità del Reasoner (da Attaccare)</h4>
-            {renderCausalityCard('Target Causale da Attaccare', counterData.reasoner_causality)}
+            <h4>Reasoner Causality (Target to Attack)</h4>
+            {renderCausalityCard('Causal Target to Attack', counterData.reasoner_causality)}
           </div>
         )}
         {renderCounterAttacksUsed(counterData, `pdf-counter-attacks-${setupKey}`)}
         {renderPdfStatuteList(
-          'Articoli Trovati (Counter-Reasoner)',
+          'Found Statutes (Counter-Reasoner)',
           counterData?.statutes,
           `pdf-counter-statutes-${setupKey}`,
         )}
         {renderPdfPrecedentList(
-          'Precedenti Trovati (Counter-Reasoner)',
+          'Found Precedents (Counter-Reasoner)',
           counterData?.precedents,
           `pdf-counter-precedents-${setupKey}`,
         )}
         {counterData?.raw_response && (
           <div className="subsection">
-            <h4>Controtesi</h4>
+            <h4>Counter-thesis</h4>
             {renderStructuredResponse({ parsed: parsedCounter })}
           </div>
         )}
@@ -4624,7 +4717,7 @@ export default function App() {
       <div className="result-section pipeline-section">
         <h3 className="section-header">
           <GitBranch size={20} style={{ color: '#6366f1' }} />
-          5. CONFRONTO DOE AUTOMATICO (A/B)
+          5. AUTOMATIC DOE COMPARISON (A/B)
         </h3>
         <div className="summary-cards-grid">
           <div className="summary-card">
@@ -4637,11 +4730,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(comparison?.baseline?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{Number(comparison?.baseline?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(comparison?.baseline?.duration_ms))
                     ? formatDurationHuman(comparison.baseline.duration_ms)
@@ -4660,11 +4753,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoePercent(comparison?.treatment?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{Number(comparison?.treatment?.metrics?.contra_links ?? 0)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(comparison?.treatment?.duration_ms))
                     ? formatDurationHuman(comparison.treatment.duration_ms)
@@ -4685,11 +4778,11 @@ export default function App() {
                 <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.contra_score)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Link Contro</span>
+                <span className="summary-metric-label">Counter Links</span>
                 <span className="summary-metric-value">{formatDoeSignedInt(comparison?.delta?.contra_links)}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">Durata</span>
+                <span className="summary-metric-label">Duration</span>
                 <span className="summary-metric-value">
                   {Number.isFinite(Number(comparison?.delta?.duration_ms))
                     ? formatDurationHuman(comparison.delta.duration_ms, { signed: true })
@@ -4701,16 +4794,16 @@ export default function App() {
         </div>
         <div className="summary-cards-grid">
           <div className="summary-card">
-            <div className="summary-card-title">Controtesi A - Sintesi</div>
+            <div className="summary-card-title">Counter-thesis A - Summary</div>
             {baselineView?.counter_reasoner?.raw_response
               ? renderStructuredResponse({ parsed: baselineCounterParsed })
-              : <p className="aqa-tree-empty">Output baseline non disponibile.</p>}
+              : <p className="aqa-tree-empty">Baseline output not available.</p>}
           </div>
           <div className="summary-card">
-            <div className="summary-card-title">Controtesi B - Sintesi</div>
+            <div className="summary-card-title">Counter-thesis B - Summary</div>
             {treatmentView?.counter_reasoner?.raw_response
               ? renderStructuredResponse({ parsed: treatmentCounterParsed })
-              : <p className="aqa-tree-empty">Output treatment non disponibile.</p>}
+              : <p className="aqa-tree-empty">Treatment output not available.</p>}
           </div>
         </div>
       </div>
@@ -4724,13 +4817,13 @@ export default function App() {
       <div className="result-section pipeline-section">
         <h3 className="section-header">
           <GitBranch size={20} style={{ color: '#2563eb' }} />
-          6. ANALISI DOE - DIFFERENZE A/B
+          6. DOE ANALYSIS - A/B DIFFERENCES
         </h3>
         <div className="summary-cards-grid">
           <div className="summary-card">
-            <div className="summary-card-title">Lettura tecnica</div>
+            <div className="summary-card-title">Technical analysis</div>
             <div className={`summary-metric ${analysis.toneClass}`} style={{ marginBottom: 12 }}>
-              <span className="summary-metric-label">Sintesi</span>
+              <span className="summary-metric-label">Summary</span>
               <span className="summary-metric-value">{analysis.headline}</span>
             </div>
             <ul className="summary-notes-list">
@@ -4746,13 +4839,13 @@ export default function App() {
 
   const renderPdfPipelineHeader = (exportContext = 'pipeline', reportData = {}) => {
     const isDoeExport = exportContext === 'doe' && reportData?.doe_ab_comparison;
-    const exportLabel = isDoeExport ? 'Esportazione DoE' : 'Esportazione Pipeline';
+    const exportLabel = isDoeExport ? 'DoE Export' : 'Pipeline Export';
     const exportTitle = isDoeExport
-      ? 'Report Completo DoE + Pipeline'
-      : 'Report Pipeline Completa';
+      ? 'Full DoE + Pipeline Report'
+      : 'Full Pipeline Report';
     const exportSubtitle = isDoeExport
-      ? 'Il PDF include pipeline condivisa, Setup A, Setup B, confronto finale DoE e metagrafi dei due Counter-Reasoner.'
-      : 'Il PDF include retrieval, Reasoner, Counter-Reasoner, Evaluator e metagrafo finale.';
+      ? 'The PDF includes the shared pipeline, Setup A, Setup B, final DoE comparison, and metagraphs for both Counter-Reasoners.'
+      : 'The PDF includes retrieval, Reasoner, Counter-Reasoner, Evaluator, and the final metagraph.';
     return (
       <div className="pdf-export-header">
         <div className="pdf-export-kicker">{exportLabel}</div>
@@ -4772,7 +4865,7 @@ export default function App() {
         <div className="result-section pipeline-section">
           <h3 className="section-header">
             <FileText size={20} style={{ color: '#111827' }} />
-            Claim Analizzato
+            Claim Analyzed
           </h3>
           <p>{reportData?.claim || '—'}</p>
         </div>
@@ -4780,18 +4873,18 @@ export default function App() {
           <div className="result-section pipeline-section">
             <h3 className="section-header">
               <CheckCircle2 size={20} style={{ color: '#64748b' }} />
-              1. CONTESTO PRE-RETRIEVAL
+              1. PRE-RETRIEVAL CONTEXT
             </h3>
             <p className="pdf-export-context-note">
-              Knowledge base condivisa
+              Shared knowledge base
               {reportData?.retrieval_context?.memory?.enabled
                 ? reportData?.retrieval_context?.memory?.hit
-                  ? ' da memoria cache.'
-                  : ' da retrieval live.'
+                  ? ' from cache memory.'
+                  : ' from live retrieval.'
                 : '.'}
             </p>
-            {renderPdfStatuteList('Articoli', reportData?.retrieval_context?.statutes, 'pdf-pipeline-ctx-statutes')}
-            {renderPdfPrecedentList('Precedenti', reportData?.retrieval_context?.precedents, 'pdf-pipeline-ctx-precedents')}
+            {renderPdfStatuteList('Statutes', reportData?.retrieval_context?.statutes, 'pdf-pipeline-ctx-statutes')}
+            {renderPdfPrecedentList('Precedents', reportData?.retrieval_context?.precedents, 'pdf-pipeline-ctx-precedents')}
           </div>
         )}
         {renderPdfSharedReasonerSection(reportData)}
@@ -4802,16 +4895,16 @@ export default function App() {
           </h3>
           {counterData?.reasoner_causality && (
             <div className="subsection">
-              <h4>Causalità del Reasoner (da Attaccare)</h4>
-              {renderCausalityCard('Target Causale da Attaccare', counterData.reasoner_causality)}
+              <h4>Reasoner Causality (Target to Attack)</h4>
+              {renderCausalityCard('Causal Target to Attack', counterData.reasoner_causality)}
             </div>
           )}
           {renderCounterAttacksUsed(counterData, 'pdf-single-counter-attacks')}
-          {renderPdfStatuteList('Articoli Trovati (Counter-Reasoner)', counterData?.statutes, 'pdf-single-counter-statutes')}
-          {renderPdfPrecedentList('Precedenti Trovati (Counter-Reasoner)', counterData?.precedents, 'pdf-single-counter-precedents')}
+          {renderPdfStatuteList('Found Statutes (Counter-Reasoner)', counterData?.statutes, 'pdf-single-counter-statutes')}
+          {renderPdfPrecedentList('Found Precedents (Counter-Reasoner)', counterData?.precedents, 'pdf-single-counter-precedents')}
           {counterData?.raw_response && (
             <div className="subsection">
-              <h4>Risposta Completa</h4>
+              <h4>Full Response</h4>
               {renderStructuredResponse({ parsed: parsedCounter })}
             </div>
           )}
@@ -4833,7 +4926,7 @@ export default function App() {
         <div className="result-section pipeline-section">
           <h3 className="section-header">
             <GitBranch size={20} style={{ color: '#111827' }} />
-            Claim Analizzato
+            Claim Analyzed
           </h3>
           <p>{reportData?.claim || '—'}</p>
         </div>
@@ -4841,18 +4934,18 @@ export default function App() {
           <div className="result-section pipeline-section">
             <h3 className="section-header">
               <CheckCircle2 size={20} style={{ color: '#64748b' }} />
-              1. CONTESTO PRE-RETRIEVAL
+              1. PRE-RETRIEVAL CONTEXT
             </h3>
             <p className="pdf-export-context-note">
-              Knowledge base condivisa tra Setup A e Setup B
+              Knowledge base shared between Setup A and Setup B
               {reportData?.retrieval_context?.memory?.enabled
                 ? reportData?.retrieval_context?.memory?.hit
-                  ? ', recuperata da memoria cache.'
-                  : ', recuperata live.'
+                  ? ', retrieved from cache memory.'
+                  : ', retrieved live.'
                 : '.'}
             </p>
-            {renderPdfStatuteList('Articoli', reportData?.retrieval_context?.statutes, 'pdf-doe-ctx-statutes')}
-            {renderPdfPrecedentList('Precedenti', reportData?.retrieval_context?.precedents, 'pdf-doe-ctx-precedents')}
+            {renderPdfStatuteList('Statutes', reportData?.retrieval_context?.statutes, 'pdf-doe-ctx-statutes')}
+            {renderPdfPrecedentList('Precedents', reportData?.retrieval_context?.precedents, 'pdf-doe-ctx-precedents')}
           </div>
         )}
         {renderPdfSharedReasonerSection(reportData)}
@@ -4888,6 +4981,7 @@ export default function App() {
   const showInlineInputTools = isPipelineLikeTab || isSearchReasonTab;
   const showStopButton = isLoading && (isPipelineLikeTab || isSearchReasonTab);
   const isPipelineTab = activeTab === TABS.PIPELINE;
+  const showSettingsPanel = !isMultiDoeTab;
   const searchMessagesVisible = messages.filter(
     (msg, idx) => !(
       idx === 0
@@ -4897,16 +4991,16 @@ export default function App() {
   );
   const showModelsSection = isReasonTab || isPipelineLikeTab;
   const showRetrievalSection = isSearchTab || isPipelineLikeTab;
-  const showCounterModelControls = isPipelineLikeTab;
+  const showCounterModelCounterls = isPipelineLikeTab;
   const showAdvancedPipelineSections = isPipelineLikeTab;
   const showTaxonomySection = isPipelineTab;
   const settingsPanelTitle = isSearchTab
-    ? 'Impostazioni Ricerca'
+    ? 'Search Settings'
     : isDoeTab
-      ? 'Impostazioni DoE'
+      ? 'DoE Settings'
       : isReasonTab
-        ? 'Impostazioni Ragionamento'
-        : 'Impostazioni Pipeline';
+        ? 'Reasoner Settings'
+        : 'Pipeline Settings';
   const inlineSettings = activeTab === TABS.DOE ? doeSettings : pipelineSettings;
   const updateInlineSetting = activeTab === TABS.DOE ? updateDoeSetting : updateSetting;
 
@@ -4921,7 +5015,7 @@ export default function App() {
           <div>
             <h1 className="header-title">LexCausa</h1>
             <p className="header-subtitle">
-              Framework per il ragionamento giuridico causale
+              Framework for Causal-Aware Structured Multi-Step Reasoning in Legal Argument Generation
             </p>
           </div>
         </div>
@@ -4934,46 +5028,54 @@ export default function App() {
           onClick={() => setActiveTab(TABS.PIPELINE)}
         >
           <FileText size={16} />
-          <span>Pipeline Completa</span>
+          <span>Full Pipeline</span>
         </button>
         <button
           className={`tab-button ${activeTab === TABS.DOE ? 'tab-active' : ''}`}
           onClick={() => setActiveTab(TABS.DOE)}
         >
           <GitBranch size={16} />
-          <span>DoE</span>
+          <span>DoE A/B</span>
+        </button>
+        <button
+          className={`tab-button ${activeTab === TABS.DOE_ADV ? 'tab-active' : ''}`}
+          onClick={() => setActiveTab(TABS.DOE_ADV)}
+        >
+          <ClipboardCheck size={16} />
+          <span>Multi-DoE</span>
         </button>
         <button
           className={`tab-button ${activeTab === TABS.REASON ? 'tab-active' : ''}`}
           onClick={() => setActiveTab(TABS.REASON)}
         >
           <Brain size={16} />
-          <span>Ragionamento</span>
+          <span>Reasoning</span>
         </button>
         <button
           className={`tab-button ${activeTab === TABS.SEARCH ? 'tab-active' : ''}`}
           onClick={() => setActiveTab(TABS.SEARCH)}
         >
           <Search size={16} />
-          <span>Ricerca</span>
+          <span>Search</span>
         </button>
       </div>
 
       {/* Settings Panel (collapsible) */}
-      <div className="settings-panel">
-        <button className="settings-toggle" onClick={() => setSettingsOpen(!settingsOpen)}>
-          <Settings size={16} />
-          <span>{settingsPanelTitle}</span>
-          <span className={`settings-chevron ${settingsOpen ? 'open' : ''}`}>▸</span>
-        </button>
+      {showSettingsPanel && (
+        <div className="settings-panel">
+          <button className="settings-toggle" onClick={() => setSettingsOpen(!settingsOpen)}>
+            <Settings size={16} />
+            <span>{settingsPanelTitle}</span>
+            <span className={`settings-chevron ${settingsOpen ? 'open' : ''}`}>▸</span>
+          </button>
 
-        {settingsOpen && (
-          <div className="settings-body">
-            {showModelsSection && (
-              <>
+          {settingsOpen && (
+            <div className="settings-body">
+              {showModelsSection && (
+                <>
                 {/* Models per step */}
                 <fieldset className="settings-group">
-                  <legend>{isReasonTab ? '🤖 Modello Reasoner' : '🤖 Modelli LLM per Step'}</legend>
+                  <legend>{isReasonTab ? '🤖 Reasoner Model' : '🤖 LLM Models per Step'}</legend>
                   <div className="settings-row">
                     <label>
                       <span>Reasoner</span>
@@ -4986,7 +5088,7 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    {showCounterModelControls && (
+                    {showCounterModelCounterls && (
                       <label>
                         <span>Counter-Reasoner</span>
                         <select
@@ -5004,10 +5106,10 @@ export default function App() {
 
                 {/* Temperature & Max Tokens */}
                 <fieldset className="settings-group">
-                  <legend>🎛️ Parametri LLM</legend>
+                  <legend>🎛️ LLM Parameters</legend>
                   <div className="settings-row">
                     <label>
-                      <span>Temperature Reasoner <strong>{pipelineSettings.reasoner_temperature.toFixed(2)}</strong></span>
+                      <span>Reasoner Temperature <strong>{pipelineSettings.reasoner_temperature.toFixed(2)}</strong></span>
                       <input
                         type="range"
                         min="0"
@@ -5017,9 +5119,9 @@ export default function App() {
                         onChange={(e) => updateSetting('reasoner_temperature', parseFloat(e.target.value))}
                       />
                     </label>
-                    {showCounterModelControls && (
+                    {showCounterModelCounterls && (
                       <label>
-                        <span>Temperature Counter <strong>{pipelineSettings.counter_temperature.toFixed(2)}</strong></span>
+                        <span>Counter Temperature <strong>{pipelineSettings.counter_temperature.toFixed(2)}</strong></span>
                         <input
                           type="range"
                           min="0"
@@ -5049,10 +5151,10 @@ export default function App() {
             {/* Search & Retrieval */}
             {showRetrievalSection && (
               <fieldset className="settings-group">
-                <legend>🔍 Ricerca e Retrieval</legend>
+                <legend>🔍 Search and Retrieval</legend>
                 <div className="settings-row">
                   <label>
-                    <span>Top-K Articoli</span>
+                    <span>Top-K Statutes</span>
                     <input
                       type="number"
                       min="10"
@@ -5063,7 +5165,7 @@ export default function App() {
                     />
                   </label>
                   <label>
-                    <span>Min Statuti Mantenuti</span>
+                    <span>Min Statutes Kept</span>
                     <input
                       type="number"
                       min="1"
@@ -5074,7 +5176,7 @@ export default function App() {
                     />
                   </label>
                   <label>
-                    <span>Top-N Libri</span>
+                    <span>Top-N Books</span>
                     <input
                       type="number"
                       min="1"
@@ -5084,7 +5186,7 @@ export default function App() {
                     />
                   </label>
                   <label>
-                    <span>Max Precedenti</span>
+                    <span>Max Precedents</span>
                     <input
                       type="number"
                       min="0"
@@ -5102,7 +5204,7 @@ export default function App() {
                         checked={pipelineSettings.include_precedents}
                         onChange={(e) => updateSetting('include_precedents', e.target.checked)}
                       />
-                      <span>Includi Precedenti</span>
+                      <span>Include Precedents</span>
                     </label>
                   </div>
                 )}
@@ -5111,7 +5213,7 @@ export default function App() {
 
             {showAdvancedPipelineSections && (
               <fieldset className="settings-group">
-                <legend>🔗 Catena di Ragionamento</legend>
+                <legend>🔗 Reasoning Chain</legend>
                 <div className="settings-row">
                   <label>
                     <span>Min Steps</span>
@@ -5140,7 +5242,7 @@ export default function App() {
             {/* Causal Taxonomy */}
             {showTaxonomySection && (
               <fieldset className="settings-group">
-                <legend>🧬 Tassonomia Causale</legend>
+                <legend>🧬 Causal Taxonomy</legend>
                 <div className="settings-row">
                   <label className="settings-toggle-label">
                     <input
@@ -5148,7 +5250,7 @@ export default function App() {
                       checked={pipelineSettings.reasoner_enable_causality}
                       onChange={(e) => updateSetting('reasoner_enable_causality', e.target.checked)}
                     />
-                    <span>Abilita Tassonomia nel Reasoner</span>
+                    <span>Enable Taxonomy in Reasoner</span>
                   </label>
                   <label className="settings-toggle-label">
                     <input
@@ -5156,7 +5258,7 @@ export default function App() {
                       checked={pipelineSettings.counter_enable_causality}
                       onChange={(e) => updateSetting('counter_enable_causality', e.target.checked)}
                     />
-                    <span>Abilita Tassonomia nel Counter</span>
+                    <span>Enable Taxonomy in Counter</span>
                   </label>
                 </div>
               </fieldset>
@@ -5164,14 +5266,14 @@ export default function App() {
 
             {isDoeTab && (
               <div className="settings-note">
-                I controlli DoE del Counter permettono di isolare l’effetto della tassonomia sul contro-ragionamento.
+                Counter DoE controls help isolate the taxonomy effect on counter reasoning.
               </div>
             )}
 
             {/* AQA Weights */}
             {showAdvancedPipelineSections && (
               <fieldset className="settings-group">
-                <legend>⚖️ Pesi AQA (α + β + γ = 1)</legend>
+                <legend>⚖️ AQA Weights (α + β + γ = 1)</legend>
                 <div className="settings-row">
                   <label>
                     <span>α Cogency <strong>{pipelineSettings.aqa_alpha.toFixed(2)}</strong></span>
@@ -5208,76 +5310,77 @@ export default function App() {
                   </label>
                 </div>
                 <div className="aqa-weight-sum">
-                  Somma: {(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma).toFixed(2)}
+                  Sum: {(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma).toFixed(2)}
                   {Math.abs(pipelineSettings.aqa_alpha + pipelineSettings.aqa_beta + pipelineSettings.aqa_gamma - 1) > 0.01 && (
-                    <span className="aqa-weight-warning"> ⚠️ Dovrebbe essere 1.00</span>
+                    <span className="aqa-weight-warning"> ⚠️ Should be 1.00</span>
                   )}
                 </div>
               </fieldset>
             )}
 
             {/* AQA Cross-Attack Parameters */}
-            {showAdvancedPipelineSections && (
-              <fieldset className="settings-group">
-                <legend>⚔️ Parametri Cross-Attack</legend>
-                <div className="settings-row">
-                  <label>
-                    <span>Min Overlap Semantico <strong>{pipelineSettings.aqa_min_semantic_overlap.toFixed(2)}</strong></span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={pipelineSettings.aqa_min_semantic_overlap}
-                      onChange={(e) => updateSetting('aqa_min_semantic_overlap', parseFloat(e.target.value))}
-                    />
-                  </label>
-                  <label>
-                    <span>Min Strength Ratio <strong>{pipelineSettings.aqa_min_strength_ratio.toFixed(2)}</strong></span>
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="2.0"
-                      step="0.05"
-                      value={pipelineSettings.aqa_min_strength_ratio}
-                      onChange={(e) => updateSetting('aqa_min_strength_ratio', parseFloat(e.target.value))}
-                    />
-                  </label>
-                  <label>
-                    <span>Damage Factor <strong>{pipelineSettings.aqa_damage_factor.toFixed(2)}</strong></span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={pipelineSettings.aqa_damage_factor}
-                      onChange={(e) => updateSetting('aqa_damage_factor', parseFloat(e.target.value))}
-                    />
-                  </label>
-                </div>
-                <div className="settings-row">
-                  <label className="settings-toggle-label">
-                    <input
-                      type="checkbox"
-                      checked={pipelineSettings.aqa_allow_factual_attacks}
-                      onChange={(e) => updateSetting('aqa_allow_factual_attacks', e.target.checked)}
-                    />
-                    <span>Attacchi Fattuali su Norme</span>
-                  </label>
-                  <label className="settings-toggle-label">
-                    <input
-                      type="checkbox"
-                      checked={pipelineSettings.aqa_allow_cross_codice}
-                      onChange={(e) => updateSetting('aqa_allow_cross_codice', e.target.checked)}
-                    />
-                    <span>Cross-Codice (doppia rilevanza)</span>
-                  </label>
-                </div>
-              </fieldset>
-            )}
-          </div>
-        )}
-      </div>
+              {showAdvancedPipelineSections && (
+                <fieldset className="settings-group">
+                  <legend>⚔️ Cross-Attack Parameters</legend>
+                  <div className="settings-row">
+                    <label>
+                      <span>Min Semantic Overlap <strong>{pipelineSettings.aqa_min_semantic_overlap.toFixed(2)}</strong></span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={pipelineSettings.aqa_min_semantic_overlap}
+                        onChange={(e) => updateSetting('aqa_min_semantic_overlap', parseFloat(e.target.value))}
+                      />
+                    </label>
+                    <label>
+                      <span>Min Strength Ratio <strong>{pipelineSettings.aqa_min_strength_ratio.toFixed(2)}</strong></span>
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="2.0"
+                        step="0.05"
+                        value={pipelineSettings.aqa_min_strength_ratio}
+                        onChange={(e) => updateSetting('aqa_min_strength_ratio', parseFloat(e.target.value))}
+                      />
+                    </label>
+                    <label>
+                      <span>Damage Factor <strong>{pipelineSettings.aqa_damage_factor.toFixed(2)}</strong></span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={pipelineSettings.aqa_damage_factor}
+                        onChange={(e) => updateSetting('aqa_damage_factor', parseFloat(e.target.value))}
+                      />
+                    </label>
+                  </div>
+                  <div className="settings-row">
+                    <label className="settings-toggle-label">
+                      <input
+                        type="checkbox"
+                        checked={pipelineSettings.aqa_allow_factual_attacks}
+                        onChange={(e) => updateSetting('aqa_allow_factual_attacks', e.target.checked)}
+                      />
+                      <span>Factual Attacks on Statutes</span>
+                    </label>
+                    <label className="settings-toggle-label">
+                      <input
+                        type="checkbox"
+                        checked={pipelineSettings.aqa_allow_cross_codice}
+                        onChange={(e) => updateSetting('aqa_allow_cross_codice', e.target.checked)}
+                      />
+                      <span>Cross-Code (dual relevance)</span>
+                    </label>
+                  </div>
+                </fieldset>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Content Area */}
       <div
@@ -5294,6 +5397,128 @@ export default function App() {
               <p className="message-text">{TAB_WELCOME_MESSAGES[activeTab]}</p>
             </div>
           </div>
+
+          {activeTab === TABS.DOE_ADV && (
+            <div className="result-card multi-doe-card">
+              <h3 className="result-title">
+                <ClipboardCheck size={20} />
+                Multi-DoE (Batch)
+              </h3>
+              <p className="multi-doe-note">
+                Run a multi-replicate DoE batch. The backend executes the script and saves results under the output directory.
+              </p>
+
+              <div className="multi-doe-grid">
+                <label>
+                  <span>Claims file</span>
+                  <input
+                    type="text"
+                    value={multiDoeSettings.claims_file}
+                    onChange={(e) => updateMultiDoeSetting('claims_file', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Models (CSV)</span>
+                  <input
+                    type="text"
+                    value={multiDoeSettings.models}
+                    onChange={(e) => updateMultiDoeSetting('models', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Domains (CSV)</span>
+                  <input
+                    type="text"
+                    value={multiDoeSettings.domains}
+                    onChange={(e) => updateMultiDoeSetting('domains', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Planning Ablations</span>
+                  <select
+                    value={multiDoeSettings.planning_ablations}
+                    onChange={(e) => updateMultiDoeSetting('planning_ablations', e.target.value)}
+                  >
+                    <option value="on,off">on,off</option>
+                    <option value="on">on</option>
+                    <option value="off">off</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Replicates</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={multiDoeSettings.replicates}
+                    onChange={(e) => updateMultiDoeSetting('replicates', e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Seed</span>
+                  <input
+                    type="number"
+                    value={multiDoeSettings.seed}
+                    onChange={(e) => updateMultiDoeSetting('seed', e.target.value)}
+                  />
+                </label>
+                <label className="multi-doe-span-full">
+                  <span>Output dir (optional)</span>
+                  <input
+                    type="text"
+                    value={multiDoeSettings.output_dir}
+                    onChange={(e) => updateMultiDoeSetting('output_dir', e.target.value)}
+                    placeholder="experiments/multi_doe/runs/YYYYMMDD_HHMMSS"
+                  />
+                </label>
+              </div>
+
+              <div className="multi-doe-actions">
+                <button
+                  type="button"
+                  className="multi-doe-run-btn"
+                  onClick={handleMultiDoeSubmit}
+                  disabled={multiDoeBusy || isMultiDoeRunning}
+                >
+                  {multiDoeBusy || isMultiDoeRunning ? 'Running…' : 'Run Multi-DoE'}
+                </button>
+                <button
+                  type="button"
+                  className="multi-doe-refresh-btn"
+                  onClick={async () => {
+                    if (!multiDoeRun?.run_id) return;
+                    const response = await fetch(`${API_BASE}/doe/multi/status/${multiDoeRun.run_id}?tail=200`);
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    setDoeAdvancedRun(data);
+                  }}
+                  disabled={!multiDoeRun?.run_id}
+                >
+                  Refresh status
+                </button>
+                {multiDoeRun?.output_dir && (
+                  <span className="multi-doe-output">Output: {multiDoeRun.output_dir}</span>
+                )}
+              </div>
+
+              {multiDoeRun && (
+                <div className="multi-doe-status">
+                  <div className="multi-doe-status-row">
+                    <strong>Status:</strong> {multiDoeStatus}
+                    {multiDoeRun?.run_id && (
+                      <span className="multi-doe-runid">Run ID: {multiDoeRun.run_id}</span>
+                    )}
+                  </div>
+                  {multiDoeRun?.error && (
+                    <div className="multi-doe-error">{multiDoeRun.error}</div>
+                  )}
+                  {multiDoeRun?.log_tail && (
+                    <pre className="multi-doe-log">{multiDoeRun.log_tail}</pre>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {activeTab === TABS.SEARCH && (
             <>
@@ -5316,7 +5541,7 @@ export default function App() {
           {activeTab === TABS.SEARCH && searchMessagesVisible.length === 0 && !isLoading && (
             <div className="empty-state">
               <Search size={48} className="empty-icon" />
-              <p>Esegui retrieval di norme e precedenti rilevanti a partire dal claim.</p>
+              <p>Run retrieval of relevant statutes and precedents from the claim.</p>
             </div>
           )}
 
@@ -5342,22 +5567,22 @@ export default function App() {
             <div className="result-card">
               <h3 className="result-title">
                 <Brain size={20} />
-                Risultato Ragionamento
+                Reasoning Result
               </h3>
 
               {reasoningResult.error ? (
-                <p className="error-text">Errore: {reasoningResult.error}</p>
+                <p className="error-text">Error: {reasoningResult.error}</p>
               ) : (
                 <>
                   <div className="result-section">
-                    <h4>Claim Analizzato</h4>
+                    <h4>Claim Analyzed</h4>
                     <p>{reasoningResult.claim}</p>
                   </div>
 
                   {reasoningResult.causality && (
                     <div className="result-section">
-                      <h4>Classificazione Causalità</h4>
-                      {renderCausalityCard('Mappatura Causale', reasoningResult.causality)}
+                      <h4>Causality Classification</h4>
+                      {renderCausalityCard('Causal Mapping', reasoningResult.causality)}
                     </div>
                   )}
 
@@ -5369,7 +5594,7 @@ export default function App() {
 
                   {reasoningResult.raw_response && (
                     <div className="result-section">
-                      <h4>Risposta Completa</h4>
+                      <h4>Full Response</h4>
                       <div className="raw-response">{reasoningResult.raw_response}</div>
                     </div>
                   )}
@@ -5444,7 +5669,7 @@ export default function App() {
                               reportData: run,
                               claim: run?.claim || '',
                               key: `history-${idx}`,
-                              prefix: `${run?.doe_ab_comparison ? 'doe_precedente' : 'pipeline_precedente'}_${idx + 1}`,
+                              prefix: `${run?.doe_ab_comparison ? 'doe_previous' : 'pipeline_previous'}_${idx + 1}`,
                               exportContext: run?.doe_ab_comparison ? 'doe' : 'pipeline',
                             });
                           }}
@@ -5453,22 +5678,22 @@ export default function App() {
                           {exportingPdfKey === `history-${idx}`
                             ? <Loader2 size={14} className="loading-spinner" />
                             : <Download size={14} />}
-                          <span>{exportingPdfKey === `history-${idx}` ? 'Esporto PDF...' : 'Scarica PDF'}</span>
+                          <span>{exportingPdfKey === `history-${idx}` ? 'Exporting PDF...' : 'Download PDF'}</span>
                         </button>
                       </div>
                       <details className="ir-toggle history-run-toggle">
                         <summary>
-                          Risultato Pipeline Precedente #{idx + 1}
+                          Previous Pipeline Result #{idx + 1}
                         </summary>
                         {run?.reasoner?.raw_response && (
                           <div className="result-section" style={{ marginTop: '0.75rem' }}>
-                            <h4>Argomentazione Principale</h4>
+                            <h4>Main Argument</h4>
                             {renderStructuredResponse({ parsed: histReasonerParsed })}
                           </div>
                         )}
                         {run?.counter_reasoner?.raw_response && (
                           <div className="result-section">
-                            <h4>Argomentazione Contraria</h4>
+                            <h4>Counter Argument</h4>
                             {renderCounterAttacksUsed(
                               run.counter_reasoner,
                               `history-counter-attacks-${idx}`,
@@ -5516,10 +5741,10 @@ export default function App() {
 
                         {run?.evaluation && histHasAnyRepairs && (
                           <div className="result-section pipeline-section">
-                            <h4>Catene di Ragionamento Riparate</h4>
+                            <h4>Repaired Reasoning Chains</h4>
                             {run?.evaluation?.repaired_reasoner_chain && (
                               <div className="subsection">
-                                <h5>Reasoner - Catena Riparata</h5>
+                                <h5>Reasoner - Repaired Chain</h5>
                                 {renderStructuredResponse({
                                   parsed: histRepairedReasonerParsed,
                                   variant: 'repaired',
@@ -5528,7 +5753,7 @@ export default function App() {
                             )}
                             {run?.evaluation?.repaired_counter_chain && (
                               <div className="subsection">
-                                <h5>Counter-Reasoner - Catena Riparata</h5>
+                                <h5>Counter-Reasoner - Repaired Chain</h5>
                                 {renderStructuredResponse({
                                   parsed: histRepairedCounterParsed,
                                   variant: 'repaired',
@@ -5537,10 +5762,10 @@ export default function App() {
                             )}
                             <div className="consistency-stats">
                               <span className="stat-item stat-repaired">
-                                🔧 Reasoner: {histReasonerRepairStats.repaired_citations || 0} riparate, {histReasonerRepairStats.dropped_citations || 0} scartate
+                                🔧 Reasoner: {histReasonerRepairStats.repaired_citations || 0} repaired, {histReasonerRepairStats.dropped_citations || 0} dropped
                               </span>
                               <span className="stat-item stat-repaired">
-                                🔧 Counter: {histCounterRepairStats.repaired_citations || 0} riparate, {histCounterRepairStats.dropped_citations || 0} scartate
+                                🔧 Counter: {histCounterRepairStats.repaired_citations || 0} repaired, {histCounterRepairStats.dropped_citations || 0} dropped
                               </span>
                             </div>
                           </div>
@@ -5548,14 +5773,14 @@ export default function App() {
 
                         {histAqaReport && (
                           <div className="result-section pipeline-section">
-                            <h4>AQA - Valutazione Argomentativa</h4>
+                            <h4>AQA - Argumentative Evaluation</h4>
                             <div className="aqa-stats">
                               <span className={`aqa-badge ${histAqaVerdictClass}`}>
-                                Verdetto: {histAqaVerdictLabel}
+                                Verdict: {histAqaVerdictLabel}
                               </span>
-                              <span className="stat-item stat-valid">Tesi primaria: {(histAqaProScore * 100).toFixed(0)}%</span>
-                              <span className="stat-item stat-text">Controtesi: {(histAqaContraScore * 100).toFixed(0)}%</span>
-                              <span className="stat-item stat-repaired">Finale: {(histAqaFinalScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-valid">Primary thesis: {(histAqaProScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-text">Counter-thesis: {(histAqaContraScore * 100).toFixed(0)}%</span>
+                              <span className="stat-item stat-repaired">Final: {(histAqaFinalScore * 100).toFixed(0)}%</span>
                             </div>
                             {(histAqaProLinks.length > 0 || histAqaContraLinks.length > 0) && (
                               <>
@@ -5597,7 +5822,7 @@ export default function App() {
                       reportData: pipelineResult,
                       claim: pipelineResult?.claim || '',
                       key: 'current',
-                      prefix: activeTab === TABS.DOE ? 'doe_automatico' : 'pipeline_completa',
+                      prefix: activeTab === TABS.DOE ? 'doe_automatic' : 'pipeline_full',
                       exportContext: activeTab === TABS.DOE ? 'doe' : 'pipeline',
                     });
                   }}
@@ -5606,16 +5831,16 @@ export default function App() {
                   {exportingPdfKey === 'current'
                     ? <Loader2 size={14} className="loading-spinner" />
                     : <Download size={14} />}
-                  <span>{exportingPdfKey === 'current' ? 'Esporto PDF...' : 'Scarica PDF'}</span>
+                  <span>{exportingPdfKey === 'current' ? 'Exporting PDF...' : 'Download PDF'}</span>
                 </button>
               </div>
               <h3 className="result-title">
                 {activeTab === TABS.DOE ? <GitBranch size={20} /> : <FileText size={20} />}
-                {activeTab === TABS.DOE ? 'Risultato DoE' : 'Risultato Pipeline Completa'}
+                {activeTab === TABS.DOE ? 'DoE Result' : 'Full Pipeline Result'}
               </h3>
 
               {pipelineResult.error ? (
-                <p className="error-text">Errore: {pipelineResult.error}</p>
+                <p className="error-text">Error: {pipelineResult.error}</p>
               ) : (
                 <>
                   <div className="result-section" data-pdf-section="claim">
@@ -5627,11 +5852,11 @@ export default function App() {
                     <div className="doe-floating-switch-wrap" data-pdf-ignore="true">
                       <div className="doe-inline-switch doe-floating-switch">
                         <div className="ios-toggle-copy">
-                          <div className="ios-toggle-title">Vista Counter</div>
+                          <div className="ios-toggle-title">Counter View</div>
                           <div className="ios-toggle-subtitle">
                             {doeDisplaySetup === 'baseline'
-                              ? `Setup A baseline${doeComparison?.baseline?.status === 'running' ? ' in generazione' : ''}`
-                              : `Setup B treatment${doeComparison?.treatment?.status === 'running' ? ' in generazione' : ''}`}
+                              ? `Setup A (baseline)${doeComparison?.baseline?.status === 'running' ? ' generating' : ''}`
+                              : `Setup B (treatment)${doeComparison?.treatment?.status === 'running' ? ' generating' : ''}`}
                           </div>
                         </div>
                         <div className="doe-inline-switch-controls">
@@ -5639,9 +5864,9 @@ export default function App() {
                           <button
                             type="button"
                             role="switch"
-                            aria-label="Cambia vista Counter tra Setup A e Setup B"
+                            aria-label="Switch Counter view between Setup A and Setup B"
                             aria-checked={doeDisplaySetup === 'treatment'}
-                            aria-valuetext={doeDisplaySetup === 'baseline' ? 'Setup A baseline' : 'Setup B treatment'}
+                            aria-valuetext={doeDisplaySetup === 'baseline' ? 'Setup A (baseline)' : 'Setup B (treatment)'}
                             className={`ios-switch ${doeDisplaySetup === 'treatment' ? 'is-on' : ''}`}
                             onClick={() =>
                               applyDoeViewSelection(
@@ -5660,19 +5885,19 @@ export default function App() {
 
                   {pipelineResult._stream && (
                     <div className="result-section stream-progress-section" data-pdf-section="stream">
-                      <h4>Avanzamento Live</h4>
+                      <h4>Live Progress</h4>
                       <div className="stream-phase-grid">
                         {PIPELINE_PHASES.map((phase) => {
                           const phaseStatus = pipelineResult._stream?.phases?.[phase.key] || 'pending';
                           const phaseProgress = pipelineResult._stream?.phase_progress?.[phase.key] ?? 0;
                           const phaseDetail = pipelineResult._stream?.phase_details?.[phase.key] || '';
                           const phaseLabel = phaseStatus === 'active'
-                            ? `In corso (${Math.round(phaseProgress)}%)`
+                            ? `In progress (${Math.round(phaseProgress)}%)`
                             : phaseStatus === 'done'
-                              ? 'Completata'
+                              ? 'Completed'
                               : phaseStatus === 'error'
-                                ? 'Errore'
-                                : 'In attesa';
+                                ? 'Error'
+                                : 'Pending';
                           return (
                             <div key={phase.key} className={`stream-phase-item ${phaseStatus === 'active' ? 'active-phase' : ''}`}>
                               <div className="stream-phase-head">
@@ -5703,23 +5928,23 @@ export default function App() {
                     <div className="result-section pipeline-section" data-pdf-section="retrieval">
                       <h3 className="section-header">
                         <CheckCircle2 size={20} style={{ color: '#64748b' }} />
-                        Contesto Pre-retrieval
+                        Pre-retrieval Context
                       </h3>
                       <div className="subsection">
                         <h4>
-                          Knowledge Base condivisa
+                          Shared Knowledge Base
                           {pipelineResult.retrieval_context?.memory?.enabled && (
                             <span style={{ marginLeft: 8, fontWeight: 500, opacity: 0.85 }}>
                               {pipelineResult.retrieval_context?.memory?.hit
-                                ? '(da memoria cache)'
-                                : '(da retrieval live)'}
+                                ? '(from cache memory)'
+                                : '(from live retrieval)'}
                             </span>
                           )}
                         </h4>
                         {pipelineResult.retrieval_context?.statutes?.length > 0 && (
                           <>
                             <p style={{ marginTop: 0, marginBottom: 8, opacity: 0.85 }}>
-                              Articoli ({pipelineResult.retrieval_context.statutes.length})
+                              Statutes ({pipelineResult.retrieval_context.statutes.length})
                             </p>
                             <CollapsibleList
                               items={pipelineResult.retrieval_context.statutes}
@@ -5737,7 +5962,7 @@ export default function App() {
                         {pipelineResult.retrieval_context?.precedents?.length > 0 && (
                           <>
                             <p style={{ marginTop: 12, marginBottom: 8, opacity: 0.85 }}>
-                              Precedenti ({pipelineResult.retrieval_context.precedents.length})
+                              Precedents ({pipelineResult.retrieval_context.precedents.length})
                             </p>
                             <CollapsibleList
                               items={pipelineResult.retrieval_context.precedents}
@@ -5758,19 +5983,19 @@ export default function App() {
                   <div className="result-section pipeline-section" data-pdf-section="reasoner">
                     <h3 className="section-header">
                       <CheckCircle2 size={20} style={{ color: '#10b981' }} />
-                      1. REASONER - Tesi Principale
+                          1. REASONER - Main Thesis
                     </h3>
 
                     {pipelineResult.reasoner?.causality && (
                       <div className="subsection">
-                        <h4>Classificazione Causalità</h4>
-                        {renderCausalityCard('Mappatura Causale', pipelineResult.reasoner.causality)}
+                        <h4>Causality Classification</h4>
+                        {renderCausalityCard('Causal Mapping', pipelineResult.reasoner.causality)}
                       </div>
                     )}
 
                     {pipelineResult.reasoner?.statutes && pipelineResult.reasoner.statutes.length > 0 && (
                       <div className="subsection">
-                        <h4>Articoli Trovati (Reasoner) ({pipelineResult.reasoner.statutes.length})</h4>
+                        <h4>Found Statutes (Reasoner) ({pipelineResult.reasoner.statutes.length})</h4>
                         <CollapsibleList items={pipelineResult.reasoner.statutes} limit={5} renderItem={(art, idx) => (
                           <li key={idx}>
                             <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
@@ -5783,10 +6008,10 @@ export default function App() {
 
                     {pipelineResult.reasoner?.precedents && pipelineResult.reasoner.precedents.length > 0 && (
                       <div className="subsection">
-                        <h4>Precedenti Trovati (Reasoner) ({pipelineResult.reasoner.precedents.length})</h4>
+                        <h4>Found Precedents (Reasoner) ({pipelineResult.reasoner.precedents.length})</h4>
                         <CollapsibleList items={pipelineResult.reasoner.precedents} limit={5} renderItem={(prec, idx) => (
                           <li key={idx}>
-                            <strong>{idx + 1}. {prec.title || `Precedente ${idx + 1}`}</strong>
+                            <strong>{idx + 1}. {prec.title || `Precedent ${idx + 1}`}</strong>
                           </li>
                         )} />
                       </div>
@@ -5802,7 +6027,7 @@ export default function App() {
                         <h4>ASPIC+ IR (Reasoner)</h4>
                         <div className="structured-live-tag">
                           <Loader2 size={14} className="loading-spinner" />
-                          <span>Costruzione ASPIC+ in corso...</span>
+                          <span>Building ASPIC+...</span>
                         </div>
                       </div>
                     )}
@@ -5813,7 +6038,7 @@ export default function App() {
                         <div className="structured-live-tag">
                           <Loader2 size={14} className="loading-spinner" />
                           <span>
-                            Riclassificazione causale e rigenerazione della catena con norme tassonomiche...
+                            Causal re-classification and chain regeneration with taxonomy norms...
                           </span>
                         </div>
                       </div>
@@ -5821,7 +6046,7 @@ export default function App() {
 
                     {(pipelineResult.reasoner?.raw_response || liveSupportSteps.length > 0 || reasonerLiveConclusion) && (
                       <div className="subsection">
-                        <h4>Risposta Completa</h4>
+                        <h4>Full Response</h4>
                         {renderStructuredResponse({
                           parsed: reasonerParsedResponse,
                           liveSteps: liveSupportStepTexts,
@@ -5836,7 +6061,7 @@ export default function App() {
                   <div className="result-section pipeline-section" data-pdf-section="counter">
                     <h3 className="section-header">
                       <XCircle size={20} style={{ color: '#ef4444' }} />
-                      2. COUNTER-REASONER - Controtesi
+                      2. COUNTER-REASONER - Counter-thesis
                       {isDoeTab && (
                         <span className={`doe-setup-badge tone-${selectedCounterLiveBadgeTone}`}>
                           {selectedCounterLiveBadgeLabel}
@@ -5854,8 +6079,8 @@ export default function App() {
                             <Loader2 size={14} className="loading-spinner" />
                             <span>
                               {doeDisplaySetup === 'baseline'
-                                ? 'Setup A non ha ancora prodotto output del Counter.'
-                                : 'Setup B non ha ancora prodotto output del Counter.'}
+                                ? 'Setup A has not produced Counter output yet.'
+                                : 'Setup B has not produced Counter output yet.'}
                             </span>
                           </div>
                         </div>
@@ -5871,11 +6096,11 @@ export default function App() {
                       }}>
                         <h4 style={{ color: '#eab308', display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <AlertTriangle size={18} />
-                          Astensione del Counter-Reasoner
+                          Counter-Reasoner Abstention
                         </h4>
                         {displayedEvaluation?.consistency_report?.counter_reasoner_gate?.abstain && (
                           <p style={{ margin: '8px 0 0', opacity: 0.95 }}>
-                            Astensione applicata dal Polisher gate
+                            Abstention applied by Polisher gate
                             {displayedEvaluation.consistency_report.counter_reasoner_gate.label
                               ? ` (label: ${displayedEvaluation.consistency_report.counter_reasoner_gate.label})`
                               : ''}.
@@ -5883,12 +6108,12 @@ export default function App() {
                         )}
                         <p style={{ margin: '8px 0 0', opacity: 0.9 }}>
                           {displayedCounterReasoner.abstention_reason || 
-                           'Il sistema non ha individuato contro-argomentazioni giuridicamente solide per questo caso.'}
+                           'The system did not identify legally solid counter-arguments for this case.'}
                         </p>
                         <details className="ir-toggle" style={{ marginTop: '10px' }}>
-                          <summary>Conclusione del Reasoner passata al Counter-Reasoner</summary>
+                          <summary>Reasoner conclusion passed to Counter-Reasoner</summary>
                           <div className="raw-response" style={{ marginTop: '8px' }}>
-                            {displayedCounterReasoner.reasoner_conclusion_context || 'Conclusione non disponibile.'}
+                            {displayedCounterReasoner.reasoner_conclusion_context || 'Conclusion not available.'}
                           </div>
                         </details>
                       </div>
@@ -5896,8 +6121,8 @@ export default function App() {
 
                     {displayedCounterReasoner?.reasoner_causality && (
                       <div className="subsection">
-                        <h4>Causalità del Reasoner (da Attaccare)</h4>
-                        {renderCausalityCard('Target Causale da Attaccare', displayedCounterReasoner.reasoner_causality)}
+                        <h4>Reasoner Causality (Target to Attack)</h4>
+                        {renderCausalityCard('Causal Target to Attack', displayedCounterReasoner.reasoner_causality)}
                       </div>
                     )}
 
@@ -5908,7 +6133,7 @@ export default function App() {
 
                     {displayedCounterReasoner?.warrant_info && (
                       <div className="subsection">
-                        <h4>Warrant e Causalità Attaccanti</h4>
+                        <h4>Attacking Warrants and Causality</h4>
                         <pre className="code-block">
                           {JSON.stringify(displayedCounterReasoner.warrant_info, null, 2)}
                         </pre>
@@ -5917,7 +6142,7 @@ export default function App() {
 
                     {displayedCounterReasoner?.statutes && displayedCounterReasoner.statutes.length > 0 && (
                       <div className="subsection">
-                        <h4>Articoli Trovati (Counter-Reasoner) ({displayedCounterReasoner.statutes.length})</h4>
+                        <h4>Found Statutes (Counter-Reasoner) ({displayedCounterReasoner.statutes.length})</h4>
                         <CollapsibleList items={displayedCounterReasoner.statutes} limit={5} renderItem={(art, idx) => (
                           <li key={idx}>
                             <strong>{idx + 1}. Art. {art.articolo || art.statute_id}</strong>
@@ -5930,10 +6155,10 @@ export default function App() {
 
                     {displayedCounterReasoner?.precedents && displayedCounterReasoner.precedents.length > 0 && (
                       <div className="subsection">
-                        <h4>Precedenti Trovati (Counter-Reasoner) ({displayedCounterReasoner.precedents.length})</h4>
+                        <h4>Found Precedents (Counter-Reasoner) ({displayedCounterReasoner.precedents.length})</h4>
                         <CollapsibleList items={displayedCounterReasoner.precedents} limit={5} renderItem={(prec, idx) => (
                           <li key={idx}>
-                            <strong>{idx + 1}. {prec.title || `Precedente ${idx + 1}`}</strong>
+                            <strong>{idx + 1}. {prec.title || `Precedent ${idx + 1}`}</strong>
                           </li>
                         )} />
                       </div>
@@ -5949,14 +6174,14 @@ export default function App() {
                         <h4>ASPIC+ IR (Counter-Reasoner)</h4>
                         <div className="structured-live-tag">
                           <Loader2 size={14} className="loading-spinner" />
-                          <span>Costruzione ASPIC+ in corso...</span>
+                          <span>Building ASPIC+...</span>
                         </div>
                       </div>
                     )}
 
                     {(displayedCounterReasoner?.raw_response || selectedCounterLiveSteps.length > 0) && (
                       <div className="subsection">
-                        <h4>Risposta Completa</h4>
+                        <h4>Full Response</h4>
                         {renderStructuredResponse({
                           parsed: counterParsedResponse,
                           liveSteps: selectedCounterLiveSteps,
@@ -5978,7 +6203,7 @@ export default function App() {
                         <div className="subsection evaluation-live-status">
                           <div className="structured-live-tag">
                             <Loader2 size={14} className="loading-spinner" />
-                            <span>Valutazione in corso ({evaluationPhaseProgress}%)</span>
+                            <span>Evaluation in progress ({evaluationPhaseProgress}%)</span>
                           </div>
                           {evaluationPhaseDetail && (
                             <div className="stream-phase-detail">{evaluationPhaseDetail}</div>
@@ -5990,14 +6215,14 @@ export default function App() {
                       {evaluationReasonerReport && (
                         <div className="subsection">
                           <h4>
-                            Reasoner - Verifica citazioni
+                            Reasoner - Citation Check
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
-                              ✅ Valide: {(evaluationReasonerReport.valid_citations ?? 0)}/{(evaluationReasonerReport.total_citations ?? 0)}
+                              ✅ Valid: {(evaluationReasonerReport.valid_citations ?? 0)}/{(evaluationReasonerReport.total_citations ?? 0)}
                             </span>
                             <span className="stat-item stat-text">
-                              📝 Testo match: {(evaluationReasonerReport.text_matches ?? 0)}/{((evaluationReasonerReport.text_matches ?? 0) + (evaluationReasonerReport.text_mismatches ?? 0))}
+                              📝 Text match: {(evaluationReasonerReport.text_matches ?? 0)}/{((evaluationReasonerReport.text_matches ?? 0) + (evaluationReasonerReport.text_mismatches ?? 0))}
                             </span>
                           </div>
 
@@ -6011,8 +6236,8 @@ export default function App() {
                                     {check.text_verified && (
                                       <span className={`text-badge ${check.llm_validated ? 'badge-llm-validated' : check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
                                         {check.llm_validated
-                                          ? `🤖 Validato LLM (sim. ${(check.text_similarity * 100).toFixed(0)}%)`
-                                          : check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
+                                          ? `🤖 LLM Validated (sim. ${(check.text_similarity * 100).toFixed(0)}%)`
+                                          : check.text_match ? '✅ Text OK' : '⚠️ Text different'}
                                         {!check.llm_validated && check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
                                       </span>
                                     )}
@@ -6021,17 +6246,17 @@ export default function App() {
 
                                   {check.text_verified && (check.cited_text || check.db_text_preview) && (
                                     <details className="text-comparison">
-                                      <summary>Confronta Testi</summary>
+                                      <summary>Compare Texts</summary>
                                       <div className="text-comparison-content">
                                         {check.cited_text && (
                                           <div className="text-block cited-text">
-                                            <h5>📖 Testo Citato nella Catena:</h5>
+                                            <h5>📖 Cited Text in Chain:</h5>
                                             <p>{check.cited_text}</p>
                                           </div>
                                         )}
                                         {check.db_text_preview && (
                                           <div className="text-block db-text">
-                                            <h5>🗄️ Testo nel Database:</h5>
+                                            <h5>🗄️ Text in Database:</h5>
                                             <p>{check.db_text_preview}</p>
                                           </div>
                                         )}
@@ -6045,7 +6270,7 @@ export default function App() {
 
                           {evaluationReasonerReport.issues?.length > 0 && (
                             <div className="issues-list">
-                              <h5><AlertTriangle size={14} /> Problemi Rilevati:</h5>
+                              <h5><AlertTriangle size={14} /> Issues Detected:</h5>
                               <ul>
                                 {evaluationReasonerReport.issues.map((issue, idx) => (
                                   <li key={idx}>{issue}</li>
@@ -6060,14 +6285,14 @@ export default function App() {
                       {evaluationCounterReport && (
                         <div className="subsection">
                           <h4>
-                            Counter-Reasoner - Verifica citazioni
+                            Counter-Reasoner - Citation Check
                           </h4>
                           <div className="consistency-stats">
                             <span className="stat-item stat-valid">
-                              ✅ Valide: {(evaluationCounterReport.valid_citations ?? 0)}/{(evaluationCounterReport.total_citations ?? 0)}
+                              ✅ Valid: {(evaluationCounterReport.valid_citations ?? 0)}/{(evaluationCounterReport.total_citations ?? 0)}
                             </span>
                             <span className="stat-item stat-text">
-                              📝 Testo match: {(evaluationCounterReport.text_matches ?? 0)}/{((evaluationCounterReport.text_matches ?? 0) + (evaluationCounterReport.text_mismatches ?? 0))}
+                              📝 Text match: {(evaluationCounterReport.text_matches ?? 0)}/{((evaluationCounterReport.text_matches ?? 0) + (evaluationCounterReport.text_mismatches ?? 0))}
                             </span>
                           </div>
 
@@ -6081,8 +6306,8 @@ export default function App() {
                                     {check.text_verified && (
                                       <span className={`text-badge ${check.llm_validated ? 'badge-llm-validated' : check.text_match ? 'badge-match' : 'badge-mismatch'}`}>
                                         {check.llm_validated
-                                          ? `🤖 Validato LLM (sim. ${(check.text_similarity * 100).toFixed(0)}%)`
-                                          : check.text_match ? '✅ Testo OK' : '⚠️ Testo diverso'}
+                                          ? `🤖 LLM Validated (sim. ${(check.text_similarity * 100).toFixed(0)}%)`
+                                          : check.text_match ? '✅ Text OK' : '⚠️ Text different'}
                                         {!check.llm_validated && check.text_similarity > 0 && ` (${(check.text_similarity * 100).toFixed(0)}%)`}
                                       </span>
                                     )}
@@ -6091,17 +6316,17 @@ export default function App() {
 
                                   {check.text_verified && (check.cited_text || check.db_text_preview) && (
                                     <details className="text-comparison">
-                                      <summary>Confronta Testi</summary>
+                                      <summary>Compare Texts</summary>
                                       <div className="text-comparison-content">
                                         {check.cited_text && (
                                           <div className="text-block cited-text">
-                                            <h5>📖 Testo Citato nella Catena:</h5>
+                                            <h5>📖 Cited Text in Chain:</h5>
                                             <p>{check.cited_text}</p>
                                           </div>
                                         )}
                                         {check.db_text_preview && (
                                           <div className="text-block db-text">
-                                            <h5>🗄️ Testo nel Database:</h5>
+                                            <h5>🗄️ Text in Database:</h5>
                                             <p>{check.db_text_preview}</p>
                                           </div>
                                         )}
@@ -6115,7 +6340,7 @@ export default function App() {
 
                           {evaluationCounterReport.issues?.length > 0 && (
                             <div className="issues-list">
-                              <h5><AlertTriangle size={14} /> Problemi Rilevati:</h5>
+                              <h5><AlertTriangle size={14} /> Issues Detected:</h5>
                               <ul>
                                 {evaluationCounterReport.issues.map((issue, idx) => (
                                   <li key={idx}>{issue}</li>
@@ -6129,7 +6354,7 @@ export default function App() {
                       {/* Summary */}
                       {displayedEvaluation.summary && (
                         <div className="subsection">
-                          <h4>{parsedSummary.title || 'Riepilogo'}</h4>
+                          <h4>{parsedSummary.title || 'Summary'}</h4>
                           <div className="summary-cards-grid">
                             {parsedSummary.sections.map((section, idx) => (
                               <div key={`summary-section-${idx}`} className="summary-card">
@@ -6173,7 +6398,7 @@ export default function App() {
                     <div className="result-section pipeline-section" data-pdf-section="repaired">
                       <h3 className="section-header">
                         <Wrench size={20} style={{ color: '#f59e0b' }} />
-                        4. CATENE DI RAGIONAMENTO RIPARATE
+                        4. REPAIRED REASONING CHAINS
                       </h3>
 
                       {/* Repaired Reasoner Chain */}
@@ -6181,7 +6406,7 @@ export default function App() {
                         <div className="subsection">
                           <h4 className="subsection-title-with-icon">
                             <CheckCircle2 size={20} style={{ color: '#10b981' }} />
-                            Reasoner - Catena Riparata
+                            Reasoner - Repaired Chain
                           </h4>
                           {renderStructuredResponse({
                             parsed: repairedReasonerParsedResponse,
@@ -6206,7 +6431,7 @@ export default function App() {
                         <div className="subsection">
                           <h4 className="subsection-title-with-icon">
                             <XCircle size={20} style={{ color: '#ef4444' }} />
-                            Counter-Reasoner - Catena Riparata
+                            Counter-Reasoner - Repaired Chain
                             {isDoeTab && (
                               <span className={`doe-setup-badge tone-${selectedCounterLiveBadgeTone}`}>
                                 {selectedCounterLiveBadgeLabel}
@@ -6234,19 +6459,19 @@ export default function App() {
                       {/* Repair Statistics */}
                       {displayedEvaluation.consistency_report && (
                         <div className="subsection repair-stats">
-                          <h4>Statistiche Riparazione</h4>
+                          <h4>Repair Statistics</h4>
                           <div className="consistency-stats">
                             {displayedEvaluation.consistency_report.reasoner && (
                               <>
                                 <span className="stat-item stat-repaired">
-                                  🔧 Reasoner: {displayedEvaluation.consistency_report.reasoner.repaired_citations || 0} riparate, {displayedEvaluation.consistency_report.reasoner.dropped_citations || 0} scartate
+                                  🔧 Reasoner: {displayedEvaluation.consistency_report.reasoner.repaired_citations || 0} repaired, {displayedEvaluation.consistency_report.reasoner.dropped_citations || 0} dropped
                                 </span>
                               </>
                             )}
                             {displayedEvaluation.consistency_report.counter_reasoner && (
                               <>
                                 <span className="stat-item stat-repaired">
-                                  🔧 Counter: {displayedEvaluation.consistency_report.counter_reasoner.repaired_citations || 0} riparate, {displayedEvaluation.consistency_report.counter_reasoner.dropped_citations || 0} scartate
+                                  🔧 Counter: {displayedEvaluation.consistency_report.counter_reasoner.repaired_citations || 0} repaired, {displayedEvaluation.consistency_report.counter_reasoner.dropped_citations || 0} dropped
                                 </span>
                               </>
                             )}
@@ -6259,47 +6484,47 @@ export default function App() {
                   {evaluationPhaseActive && (
                     <div className="pipeline-working-indicator evaluation-working-footer">
                       <Loader2 size={14} className="loading-spinner" />
-                      <span>{evaluationPhaseDetail || 'Valutazione AQA e attacchi in corso...'}</span>
+                      <span>{evaluationPhaseDetail || 'AQA evaluation and attacks in progress...'}</span>
                     </div>
                   )}
 
-                  {/* SEZIONE AQA - Valutazione Argomentativa (sulle catene riparate) */}
+                  {/* SEZIONE AQA - Argumentative Evaluation (sulle catene repaired) */}
                   {aqaReport && (
                     <div className="result-section pipeline-section" data-pdf-section="aqa">
                       <h3 className="section-header">
                         <Scale size={20} style={{ color: '#06b6d4' }} />
-                        5. AQA - Valutazione Argomentativa
+                        5. AQA - Argumentative Evaluation
                       </h3>
-                      <p className="aqa-note">Valutazione effettuata sulle catene di ragionamento riparate</p>
+                      <p className="aqa-note">Evaluation performed on repaired reasoning chains</p>
                       {aqaReport.enabled ? (
                         <>
                           <div className="aqa-stats">
                             <span className={`aqa-badge ${aqaVerdictClass}`}>
-                              Verdetto: {aqaVerdictLabel}
+                              Verdict: {aqaVerdictLabel}
                             </span>
                             <span className="stat-item stat-valid">
-                              Tesi primaria: {(aqaProScore * 100).toFixed(0)}%
+                              Primary thesis: {(aqaProScore * 100).toFixed(0)}%
                             </span>
                             <span className="stat-item stat-text">
-                              Controtesi: {(aqaContraScore * 100).toFixed(0)}%
+                              Counter-thesis: {(aqaContraScore * 100).toFixed(0)}%
                             </span>
                             <span className="stat-item stat-repaired">
-                              Finale: {(aqaFinalScore * 100).toFixed(0)}%
+                              Final: {(aqaFinalScore * 100).toFixed(0)}%
                             </span>
                           </div>
                           <div className="aqa-meta">
-                            <span>Link tesi primaria: {aqaProLinks.length}</span>
-                            <span>Link controtesi: {aqaContraLinks.length}</span>
+                            <span>Primary-thesis links: {aqaProLinks.length}</span>
+                            <span>Counter-thesis links: {aqaContraLinks.length}</span>
                             {aqaReport.weights && (
                               <span>
                                 Pesi: α {aqaReport.weights.alpha.toFixed(2)}, β {aqaReport.weights.beta.toFixed(2)}, γ {aqaReport.weights.gamma.toFixed(2)}
                               </span>
                             )}
                             {aqaReport.notes?.attacks_enabled === false && (
-                              <span>Attacchi: disabilitati</span>
+                              <span>Attacks: disabled</span>
                             )}
                             {aqaReport.notes?.attacks_enabled === true && (
-                              <span style={{ color: '#f59e0b' }}>⚔️ Attacchi: abilitati</span>
+                              <span style={{ color: '#f59e0b' }}>⚔️ Attacks: enabled</span>
                             )}
                           </div>
 
@@ -6307,10 +6532,10 @@ export default function App() {
                           {aqaReport.chain_scores && (
                             <div className="aqa-meta" style={{ marginTop: '0.5rem' }}>
                               <span className="stat-item stat-valid">
-                                📚 Norm Tesi primaria: {((aqaReport.chain_scores.pro?.norm_support_avg ?? 0) * 100).toFixed(0)}%
+                                📚 Primary Thesis Norm Support: {((aqaReport.chain_scores.pro?.norm_support_avg ?? 0) * 100).toFixed(0)}%
                               </span>
                               <span className="stat-item stat-text">
-                                📚 Norm Controtesi: {((aqaReport.chain_scores.contra?.norm_support_avg ?? 0) * 100).toFixed(0)}%
+                                📚 Counter-thesis Norm Support: {((aqaReport.chain_scores.contra?.norm_support_avg ?? 0) * 100).toFixed(0)}%
                               </span>
                               {aqaReport.chain_scores.pro?.attacks_avg > 0 && (
                                 <span className="stat-item stat-repaired">
@@ -6319,7 +6544,7 @@ export default function App() {
                               )}
                               {aqaReport.chain_scores.contra?.attacks_avg > 0 && (
                                 <span className="stat-item stat-repaired">
-                                  ⚔️ Attacchi Controtesi: {((aqaReport.chain_scores.contra?.attacks_avg ?? 0)).toFixed(3)}
+                                  ⚔️ Counter-thesis Attacks: {((aqaReport.chain_scores.contra?.attacks_avg ?? 0)).toFixed(3)}
                                 </span>
                               )}
                             </div>
@@ -6327,11 +6552,11 @@ export default function App() {
 
                           {aqaReport.notes?.weakest_links?.length > 0 && (
                             <div className="aqa-notes">
-                              <h5>Link più deboli</h5>
+                              <h5>Weakest links</h5>
                               <ul className="aqa-list">
                                 {aqaReport.notes.weakest_links.map((link, idx) => (
                                   <li key={idx}>
-                                    {link.link_id || `Link ${idx + 1}`} - nesso {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                    {link.link_id || `Link ${idx + 1}`} - causal link {(link.nesso_plausibility ?? 0).toFixed(2)}
                                   </li>
                                 ))}
                               </ul>
@@ -6340,7 +6565,7 @@ export default function App() {
 
                           {aqaReport.notes?.dominant_attacks?.length > 0 && (
                             <div className="aqa-notes">
-                              <h5>Attacchi dominanti</h5>
+                              <h5>Dominant attacks</h5>
                               <ul className="aqa-list">
                                 {aqaReport.notes.dominant_attacks.map((attack, idx) => {
                                   const attackerLabel = attack.attacker_role === 'contra' ? 'C' : 'P';
@@ -6362,7 +6587,7 @@ export default function App() {
 
                           {aqaReport.notes?.precedent_swings?.length > 0 && (
                             <div className="aqa-notes">
-                              <h5>Impatto precedenti</h5>
+                              <h5>Precedent impact</h5>
                               <ul className="aqa-list">
                                 {aqaReport.notes.precedent_swings.map((item, idx) => (
                                   <li key={idx}>
@@ -6375,7 +6600,7 @@ export default function App() {
 
                           {(aqaProLinks.length > 0 || aqaContraLinks.length > 0) && (
                             <div className="aqa-link-breakdown">
-                              <h5>Dettaglio valutazioni per link</h5>
+                              <h5>Link evaluation details</h5>
                               {aqaProLinks.length > 0 && (
                                 <div className="aqa-link-group">
                                   <h6>Reasoner (Tesi primaria)</h6>
@@ -6385,7 +6610,7 @@ export default function App() {
                                         <div className="aqa-link-header">
                                           <strong>{link.link_id || `Pro ${idx + 1}`}</strong>
                                           <span className="aqa-link-score">
-                                            Nesso {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                            Link {(link.nesso_plausibility ?? 0).toFixed(2)}
                                           </span>
                                         </div>
                                         <div className="aqa-link-metrics">
@@ -6406,14 +6631,14 @@ export default function App() {
 
                               {aqaContraLinks.length > 0 && (
                                 <div className="aqa-link-group">
-                                  <h6>Counter-Reasoner (Controtesi)</h6>
+                                  <h6>Counter-Reasoner (Counter-thesis)</h6>
                                   <div className="aqa-link-list">
                                     {aqaContraLinks.map((link, idx) => (
                                       <div key={idx} className="aqa-link-card">
                                         <div className="aqa-link-header">
-                                          <strong>{link.link_id || `Contro ${idx + 1}`}</strong>
+                                          <strong>{link.link_id || `Counter ${idx + 1}`}</strong>
                                           <span className="aqa-link-score">
-                                            Nesso {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                            Link {(link.nesso_plausibility ?? 0).toFixed(2)}
                                           </span>
                                         </div>
                                         <div className="aqa-link-metrics">
@@ -6435,12 +6660,12 @@ export default function App() {
                           )}
 
                           <details className="ir-toggle aqa-full-toggle">
-                            <summary>Dettagli AQA completi</summary>
+                            <summary>Full AQA details</summary>
                             {renderAqaFullView(aqaReport)}
                           </details>
                         </>
                       ) : (
-                        <div className="aqa-disabled">AQA disabilitata</div>
+                        <div className="aqa-disabled">AQA disabled</div>
                       )}
                     </div>
                   )}
@@ -6450,10 +6675,10 @@ export default function App() {
                     <div className="result-section pipeline-section" data-pdf-section="attacks-metagraph">
                       <h3 className="section-header">
                         <GitBranch size={20} style={{ color: '#7c3aed' }} />
-                        6. ASPIC+ Metagrafo — Attacchi Incrociati
+                        6. ASPIC+ Metagraph — Cross-Attacks
                       </h3>
                       <p style={{ fontSize: '0.82rem', color: '#6b7280', marginBottom: '0.75rem' }}>
-                        Clicca su un nodo per vedere i dettagli. Scroll per zoomare, trascina per spostare il grafo.
+                        Click a node to see details. Scroll to zoom, drag to move the graph.
                       </p>
                       <AspicMetagraph
                         aqaReport={aqaReport}
@@ -6468,10 +6693,10 @@ export default function App() {
                     <div className="result-section pipeline-section" data-pdf-section="attacks-detail">
                       <h3 className="section-header">
                         <Swords size={20} style={{ color: '#ef4444' }} />
-                        7. Dettaglio Testuale Attacchi
+                        7. Attack Text Details
                       </h3>
                       <p style={{ fontSize: '0.82rem', color: '#6b7280', marginBottom: '0.75rem' }}>
-                        Clicca su un attacco per espandere il testo completo dei link coinvolti.
+                        Click an attack to expand the full text of involved links.
                       </p>
                       <AttackTextDetails aqaReport={aqaReport} />
                     </div>
@@ -6488,7 +6713,7 @@ export default function App() {
           {activeTab === TABS.REASON && !reasoningResult && reasonMessages.length === 0 && !isLoading && (
             <div className="empty-state">
               <Brain size={48} className="empty-icon" />
-              <p>Esegui il Reasoner per costruire la tesi principale con catena argomentativa.</p>
+              <p>Run the Reasoner to build the main thesis with an argumentative chain.</p>
             </div>
           )}
 
@@ -6499,8 +6724,8 @@ export default function App() {
                 : <FileText size={48} className="empty-icon" />}
               <p>
                 {activeTab === TABS.DOE
-                  ? 'Esegui il DoE automatico: due run A/B sullo stesso claim con confronto diretto delle metriche.'
-                  : 'Esegui la pipeline completa: retrieval, Reasoner, Counter-Reasoner e Polisher-Evaluator.'}
+                  ? 'Run automatic DoE: two A/B runs on the same claim with direct metric comparison.'
+                  : 'Run the full pipeline: retrieval, Reasoner, Counter-Reasoner, and Polisher-Evaluator.'}
               </p>
             </div>
           )}
@@ -6511,7 +6736,7 @@ export default function App() {
                 <Loader2 size={20} className="loading-spinner" />
               </div>
               <div className="message-bubble bubble-assistant">
-                <p>Elaborazione in corso...</p>
+                <p>Processing...</p>
               </div>
             </div>
           )}
@@ -6544,8 +6769,8 @@ export default function App() {
                 <button
                   type="button"
                   className={`input-plus-button ${claimMemoryMenuOpen ? 'is-open' : ''}`}
-                  title={activeTab === TABS.DOE ? 'Opzioni DoE' : 'Opzioni memoria pre-retrieval'}
-                  aria-label={activeTab === TABS.DOE ? 'Apri opzioni DoE' : 'Apri opzioni memoria pre-retrieval'}
+                  title={activeTab === TABS.DOE ? 'DoE options' : 'Pre-retrieval memory options'}
+                  aria-label={activeTab === TABS.DOE ? 'Open DoE options' : 'Open pre-retrieval memory options'}
                   aria-expanded={claimMemoryMenuOpen}
                   onClick={() => setClaimMemoryMenuOpen((prev) => !prev)}
                   disabled={isLoading}
@@ -6553,16 +6778,16 @@ export default function App() {
                   <Plus size={18} />
                 </button>
                 {claimMemoryMenuOpen && (
-                  <div className="input-tools-menu" role="dialog" aria-label="Opzioni aggiuntive">
+                  <div className="input-tools-menu" role="dialog" aria-label="Additional options">
                     <div className="input-tools-menu-header">
-                      {activeTab === TABS.DOE ? 'Opzioni DoE' : 'Memoria pre-retrieval'}
+                      {activeTab === TABS.DOE ? 'DoE options' : 'Pre-retrieval memory'}
                     </div>
 
                     <div className="ios-toggle-row">
                       <div className="ios-toggle-copy">
-                        <div className="ios-toggle-title">Usa memoria</div>
+                        <div className="ios-toggle-title">Use memory</div>
                         <div className="ios-toggle-subtitle">
-                          Riusa statuti e precedenti già filtrati per questo claim
+                          Reuse statutes and precedents already filtered for this claim
                         </div>
                       </div>
                       <button
@@ -6588,9 +6813,9 @@ export default function App() {
 
                     <div className={`ios-toggle-row ${!inlineSettings.claim_context_memory_enabled ? 'is-disabled' : ''}`}>
                       <div className="ios-toggle-copy">
-                        <div className="ios-toggle-title">Sovrascrivi</div>
+                        <div className="ios-toggle-title">Overwrite</div>
                         <div className="ios-toggle-subtitle">
-                          Rigenera e aggiorna la memoria per il claim corrente
+                          Regenerate and update memory for the current claim
                         </div>
                       </div>
                       <button
@@ -6613,14 +6838,14 @@ export default function App() {
                     {activeTab === TABS.DOE && (
                       <>
                         <div className="input-tools-menu-header" style={{ marginTop: 10 }}>
-                          Controlli Counter Setup A (DoE)
+                          Counter Controls for Setup A (DoE)
                         </div>
 
                         <div className="ios-toggle-row">
                           <div className="ios-toggle-copy">
-                            <div className="ios-toggle-title">Reasoner: tassonomia</div>
+                            <div className="ios-toggle-title">Reasoner: taxonomy</div>
                             <div className="ios-toggle-subtitle">
-                              Abilita/disabilita classificazione causale nel Reasoner (uguale per run A e run B)
+                              Enable/disable causal classification in Reasoner (same for run A and run B)
                             </div>
                           </div>
                           <button
@@ -6641,9 +6866,9 @@ export default function App() {
 
                         <div className="ios-toggle-row">
                           <div className="ios-toggle-copy">
-                            <div className="ios-toggle-title">Passa causal_type/theory (Setup A)</div>
+                            <div className="ios-toggle-title">Pass causal_type/theory (Setup A)</div>
                             <div className="ios-toggle-subtitle">
-                              Invia al Counter causal_type_id e theory_id del Reasoner
+                              Send reasoner causal_type_id and theory_id to Counter
                             </div>
                           </div>
                           <button
@@ -6664,9 +6889,9 @@ export default function App() {
 
                         <div className="ios-toggle-row">
                           <div className="ios-toggle-copy">
-                            <div className="ios-toggle-title">Passa attacchi tassonomici (Setup A)</div>
+                            <div className="ios-toggle-title">Pass taxonomy attacks (Setup A)</div>
                             <div className="ios-toggle-subtitle">
-                              Invia al Counter il pool di attack ids da tassonomia
+                              Send taxonomy-derived attack ID pool to Counter
                             </div>
                           </div>
                           <button
@@ -6687,9 +6912,9 @@ export default function App() {
 
                         <div className="ios-toggle-row">
                           <div className="ios-toggle-copy">
-                            <div className="ios-toggle-title">Passa norme tassonomiche (Setup A)</div>
+                            <div className="ios-toggle-title">Pass taxonomy statutes (Setup A)</div>
                             <div className="ios-toggle-subtitle">
-                              Invia al Counter anchor norms e principle tests (non la KB pre-retrieval)
+                              Send anchor norms and principle tests to Counter (not the pre-retrieval KB)
                             </div>
                           </div>
                           <button
@@ -6733,7 +6958,7 @@ export default function App() {
           )}
         </div>
         <p className="input-hint">
-          Premi Invio per inviare, Shift+Invio per andare a capo
+          Press Enter to send, Shift+Enter for a new line
         </p>
       </div>
     </div>

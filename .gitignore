@@ -78,6 +78,11 @@ claims_gold_labels.json
 
 # DoE artifacts
 experiments/doe/batch_runs
+experiments/multi_doe/runs/
+experiments/multi_doe/analysis/
+
+# Claude Code project instructions (thesis-private)
+CLAUDE.md
 
 # Notebook benchmark artifacts (SCOPE feasibility)
 notebooks/.scope_hpc_outputs/

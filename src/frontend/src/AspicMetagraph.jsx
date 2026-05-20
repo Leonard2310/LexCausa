@@ -361,7 +361,7 @@ function AttackDetailPanel({ link, onClose }) {
         {attacks.length > 0 && (
           <>
             <h6 className="metagraph-detail-sub">
-              Attacchi ricevuti ({attacks.length})
+              Received attacks ({attacks.length})
             </h6>
             {attacks.map((atk, i) => {
               const boosted = atk.boosted_attack ?? (atk.overlap * atk.attacker_base_score * (atk.type_multiplier || 1));
@@ -785,35 +785,35 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
             className="metagraph-legend-swatch"
             style={{ background: COLORS.proBg, border: `2px solid ${COLORS.proBorder}` }}
           />
-          Tesi primaria (Reasoner)
+          Primary Thesis (Reasoner)
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.contraBg, border: `2px solid ${COLORS.contraBorder}` }}
           />
-          Controtesi (Counter)
+          Counter-thesis (Counter)
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.attackProStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
           />
-          Attacco Tesi primaria
+          Primary Thesis Attack
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.attackContraStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center' }}
           />
-          Attacco Controtesi
+          Counter-thesis Attack
         </span>
         <span className="metagraph-legend-item">
           <span
             className="metagraph-legend-swatch"
             style={{ background: COLORS.attackCappedStroke, borderRadius: 0, height: 3, width: 20, alignSelf: 'center', opacity: 0.5 }}
           />
-          Attacco capped (top-K)
+          Capped Attack (top-K)
         </span>
         {precNodes.length > 0 && (
           <span className="metagraph-legend-item">
@@ -825,7 +825,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
           </span>
         )}
         <span className="metagraph-zoom-info">
-          Zoom: {(zoom * 100).toFixed(0)}% · Scroll per zoom, trascina per spostare
+          Zoom: {(zoom * 100).toFixed(0)}% · Scroll to zoom, drag to move
         </span>
       </div>
 
@@ -918,7 +918,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
               fontSize="14"
               fill={COLORS.proText}
             >
-              Tesi primaria (Reasoner) — net {f2(proNet)}
+              Primary Thesis (Reasoner) — net {f2(proNet)}
             </text>
             <text
               x={nodeX(1) + NODE_W / 2}
@@ -928,7 +928,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
               fontSize="14"
               fill={COLORS.contraText}
             >
-              Controtesi (Counter) — net {f2(contraNet)}
+              Counter-thesis (Counter) — net {f2(contraNet)}
             </text>
 
             {/* PRO chain arrows */}
@@ -1041,13 +1041,13 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
               fontSize="15"
               fill="#111827"
             >
-              Plausibility finale = {f2(proNet)} − {f2(contraNet)} = {finalNet >= 0 ? '+' : ''}{f2(finalNet)}
+              Final Plausibility = {f2(proNet)} − {f2(contraNet)} = {finalNet >= 0 ? '+' : ''}{f2(finalNet)}
               {'  →  '}
               {verdict === 'plausible'
-                ? '✅ Plausibile'
+                ? '✅ Plausible'
                 : verdict === 'implausible'
-                  ? '❌ Implausibile'
-                  : '⚠️ Incerto'}
+                    ? '❌ Implausible'
+                  : '⚠️ Uncertain'}
             </text>
             </g>
           </g>

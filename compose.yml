@@ -13,7 +13,54 @@ services:
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+    networks:
+      - lexcausa-net
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER:-neo4j}", "-p", "${NEO4J_PASSWORD:-neo4jpassword}", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lexcausa-api
+    ports:
+      - "8000:8000"
+    environment:
+      NEO4J_URI: "bolt://neo4j:7687"
+      NEO4J_USER: "${NEO4J_USER:-neo4j}"
+      NEO4J_PASSWORD: "${NEO4J_PASSWORD:-neo4jpassword}"
+      GROQ_API_KEY_V1: "${GROQ_API_KEY_V1:-}"
+      GROQ_API_KEY_V2: "${GROQ_API_KEY_V2:-}"
+      GROQ_API_KEY_V3: "${GROQ_API_KEY_V3:-}"
+      GROQ_API_KEY_V4: "${GROQ_API_KEY_V4:-}"
+      GROQ_API_KEY_V5: "${GROQ_API_KEY_V5:-}"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+      DEBUG: "${DEBUG:-false}"
+      ENABLE_PLANNING_REASONER: "${ENABLE_PLANNING_REASONER:-true}"
+      ENABLE_PLANNING_COUNTER: "${ENABLE_PLANNING_COUNTER:-true}"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - lexcausa-net
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   neo4j_data:
   neo4j_logs:
+
+networks:
+  lexcausa-net:
+    driver: bridge

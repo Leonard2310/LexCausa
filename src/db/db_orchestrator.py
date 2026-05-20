@@ -2,20 +2,20 @@
 """
 LexCausa Database Orchestrator.
 
-Esegue in ordine tutte le operazioni necessarie per inizializzare il database:
-1. Verifica connessione Neo4j
-2. Pulizia database (opzionale)
-3. Creazione schema (indici, constraint, struttura grafo)
-4. Caricamento statuti (Codice Penale + Civile + Amministrativo) con embeddings
-5. Caricamento precedenti (itacasehold) senza embeddings
+Performs all necessary operations in order to initialize the database:
+1. Verify Neo4j connection
+2. Clean database (optional)
+3. Create schema (indexes, constraints, graph structure)
+4. Load statutes (Penal + Civil + Administrative Code) with embeddings
+5. Load precedents (itacasehold) without embeddings
 
-Uso:
-    python db_orchestrator.py                    # Setup completo
-    python db_orchestrator.py --clean            # Pulisce e reinizializza tutto
-    python db_orchestrator.py --check            # Solo verifica stato DB
-    python db_orchestrator.py --statutes         # Ricarica solo statuti
-    python db_orchestrator.py --precedents       # Ricarica solo precedenti
-    python db_orchestrator.py --clean --statutes # Pulisce e carica solo statuti
+Usage:
+    python db_orchestrator.py                    # Full setup
+    python db_orchestrator.py --clean            # Cleans and reinitializes everything
+    python db_orchestrator.py --check            # Only checks DB status
+    python db_orchestrator.py --statutes         # Reloads only statutes
+    python db_orchestrator.py --precedents       # Reloads only precedents
+    python db_orchestrator.py --clean --statutes # Cleans and loads only statutes
 """
 
 import argparse
@@ -48,25 +48,25 @@ BATCH_SIZE = 100
 
 
 class DatabaseOrchestrator:
-    """Gestisce l'inizializzazione completa del database Neo4j."""
+    """Manages the complete initialization of the Neo4j database."""
 
     def __init__(self):
         self.driver: Optional[GraphDatabase.driver] = None
         self._connect()
 
     def _connect(self) -> bool:
-        """Connessione a Neo4j."""
+        """Connect to Neo4j."""
         try:
             self.driver = GraphDatabase.driver(URI, auth=(USER, PWD))
             self.driver.verify_connectivity()
-            print(f"✅ Connesso a Neo4j: {URI}")
+            print(f"✅ Connected to Neo4j: {URI}")
             return True
         except Exception as e:
-            print(f"❌ Errore connessione Neo4j: {e}")
+            print(f"❌ Neo4j connection error: {e}")
             return False
 
     def close(self):
-        """Chiude la connessione."""
+        """Closes the connection."""
         if self.driver:
             self.driver.close()
 
@@ -75,7 +75,7 @@ class DatabaseOrchestrator:
     # =========================================================================
 
     def check_status(self) -> dict:
-        """Verifica lo stato attuale del database."""
+        """Checks the current status of the database."""
         status = {
             "connected": False,
             "nodes": {},
@@ -118,42 +118,42 @@ class DatabaseOrchestrator:
         return status
 
     def print_status(self):
-        """Stampa lo stato del database."""
+        """Prints the database status."""
         status = self.check_status()
 
         print("\n" + "=" * 60)
-        print("📊 STATO DATABASE")
+        print("📊 DATABASE STATUS")
         print("=" * 60)
 
         if not status["connected"]:
-            print("❌ Non connesso a Neo4j")
+            print("❌ Not connected to Neo4j")
             return
 
-        print("\n📦 Nodi:")
+        print("\n📦 Nodes:")
         for label, count in status["nodes"].items():
             emoji = "✅" if count > 0 else "⚪"
             print(f"   {emoji} {label}: {count}")
 
-        print("\n🔍 Indici:")
+        print("\n🔍 Indexes:")
         for idx in status["indexes"]:
             state_emoji = "✅" if idx["state"] == "ONLINE" else "⏳"
             print(f"   {state_emoji} {idx['name']} ({idx['type']}) - {idx['state']}")
 
         if not status["indexes"]:
-            print("   ⚪ Nessun indice")
+            print("   ⚪ No indexes")
 
-        print("\n🔒 Constraint:")
+        print("\n🔒 Constraints:")
         for c in status["constraints"]:
             print(f"   ✅ {c['name']} ({c['type']})")
 
         if not status["constraints"]:
-            print("   ⚪ Nessun constraint")
+            print("   ⚪ No constraints")
 
         print("=" * 60)
 
     def clean_database(self):
-        """Pulisce completamente il database."""
-        print("\n🗑️ Pulizia database...")
+        """Completely cleans the database."""
+        print("\n🗑️ Cleaning database...")
 
         with self.driver.session() as session:
             # Drop tutti gli indici
@@ -176,25 +176,25 @@ class DatabaseOrchestrator:
                 except Exception:
                     pass
 
-            # Elimina tutti i nodi
+            # Delete all nodes
             session.run("MATCH (n) DETACH DELETE n")
-            print("   Eliminati tutti i nodi")
+            print("   Deleted all nodes")
 
-        print("✅ Database pulito")
+        print("✅ Database cleaned")
 
     # =========================================================================
     # STEP 2: CREAZIONE SCHEMA
     # =========================================================================
 
     def create_schema(self):
-        """Crea indici, constraint e struttura del grafo."""
-        print("\n🏗️ Creazione schema...")
+        """Creates indexes, constraints, and graph structure."""
+        print("\n🏗️ Creating schema...")
 
         with self.driver.session() as session:
             # -----------------------------------------------------------------
             # CONSTRAINT
             # -----------------------------------------------------------------
-            print("\n   📋 Creazione constraint...")
+            print("\n   📋 Creating constraints...")
 
             constraints = [
                 ("statute_unique_id", "Statute", "statute_id"),
@@ -231,7 +231,7 @@ class DatabaseOrchestrator:
             # -----------------------------------------------------------------
             # VECTOR INDEXES
             # -----------------------------------------------------------------
-            print("\n   🔍 Creazione indici vettoriali...")
+            print("\n   🔍 Creating vector indexes...")
 
             vector_indexes = [
                 ("statutes_idx", "Statute", "embedding"),
@@ -239,7 +239,7 @@ class DatabaseOrchestrator:
 
             # Ensure deprecated precedent vector index is removed.
             session.run("DROP INDEX precedents_idx IF EXISTS")
-            print("      ✅ precedents_idx rimosso (precedenti senza embedding)")
+            print("      ✅ precedents_idx removed (precedents without embeddings)")
 
             for name, label, prop in vector_indexes:
                 # Drop e ricrea per assicurare dimensione corretta
@@ -262,7 +262,7 @@ class DatabaseOrchestrator:
             # -----------------------------------------------------------------
             # FULLTEXT INDEX
             # -----------------------------------------------------------------
-            print("\n   📝 Creazione indici fulltext...")
+            print("\n   📝 Creating fulltext indexes...")
 
             session.run(
                 """
@@ -294,7 +294,7 @@ class DatabaseOrchestrator:
             # -----------------------------------------------------------------
             # STRUTTURA GRAFO (Codice -> Libro)
             # -----------------------------------------------------------------
-            print("\n   🏛️ Creazione struttura grafo...")
+            print("\n   🏛️ Creating graph structure...")
 
             # Codici
             session.run(
@@ -358,51 +358,51 @@ class DatabaseOrchestrator:
                     description=libro_desc,
                 )
 
-            print("      ✅ Codice Penale (3 libri)")
-            print("      ✅ Codice Civile (7 libri)")
-            print("      ✅ Codice Amministrativo (senza libri)")
+            print("      ✅ Penal Code (3 books)")
+            print("      ✅ Civil Code (7 books)")
+            print("      ✅ Administrative Code (no books)")
 
-        print("\n✅ Schema creato")
+        print("\n✅ Schema created")
 
     # =========================================================================
     # STEP 3: CARICAMENTO STATUTI
     # =========================================================================
 
     def load_statutes(self):
-        """Carica Codice Penale, Civile e Amministrativo con embeddings."""
+        """Loads Penal, Civil, and Administrative Codes with embeddings."""
         from data_loader import (
             load_codice_amministrativo_with_embeddings,
             load_codice_civile_with_embeddings,
             load_codice_penale_with_embeddings,
         )
 
-        print("\n📖 Caricamento statuti...")
+        print("\n📖 Loading statutes...")
 
         # Replace mode: avoid duplicates on repeated --statutes runs.
         with self.driver.session() as session:
             session.run("MATCH (s:Statute) DETACH DELETE s")
-        print("   🧹 Nodi Statute esistenti rimossi")
+        print("   🧹 Existing Statute nodes removed")
 
         # Codice Penale
-        print("\n   📕 Codice Penale...")
+        print("\n   📕 Penal Code...")
         df_penale, emb_penale = load_codice_penale_with_embeddings()
         self._ingest_statutes(df_penale, "codice_penale", emb_penale)
 
         # Codice Civile
-        print("\n   📗 Codice Civile...")
+        print("\n   📗 Civil Code...")
         df_civile, emb_civile = load_codice_civile_with_embeddings()
         self._ingest_statutes(df_civile, "codice_civile", emb_civile)
 
         # Codice Amministrativo
-        print("\n   📘 Codice Amministrativo (L. 241/1990)...")
+        print("\n   📘 Administrative Code (L. 241/1990)...")
         df_amm, emb_amm = load_codice_amministrativo_with_embeddings()
         self._ingest_statutes(df_amm, "codice_amministrativo", emb_amm)
 
-        print("\n   🔗 Creazione relazioni CITES...")
+        print("\n   🔗 Creating CITES relationships...")
         cites_count = self._create_cites_relationships()
-        print(f"      ✅ Relazioni CITES create: {cites_count}")
+        print(f"      ✅ CITES relationships created: {cites_count}")
 
-        print("\n✅ Statuti caricati")
+        print("\n✅ Statutes loaded")
 
     @staticmethod
     def _parse_list_field(value) -> list[str]:
@@ -505,14 +505,14 @@ class DatabaseOrchestrator:
             return int(record["rel_count"] if record else 0)
 
     def _ingest_statutes(self, df, source: str, embeddings):
-        """Inserisce statuti nel database."""
+        """Inserts statutes into the database."""
         if embeddings is None:
-            print(f"      ⚠️ Nessun embedding per {source}")
+            print(f"      ⚠️ No embeddings for {source}")
             return
 
         if len(embeddings) != len(df):
             print(
-                f"      ⚠️ Mismatch: {len(df)} articoli vs {len(embeddings)} embeddings"
+                f"      ⚠️ Mismatch: {len(df)} articles vs {len(embeddings)} embeddings"
             )
             return
 
@@ -599,19 +599,19 @@ class DatabaseOrchestrator:
                 )
 
                 inserted = min(i + BATCH_SIZE, len(df))
-                print(f"      Inseriti: {inserted}/{len(df)}", end="\r")
+                print(f"      Inserted: {inserted}/{len(df)}", end="\r")
 
-            print(f"      ✅ {len(df)} articoli con embeddings")
+            print(f"      ✅ {len(df)} articles with embeddings")
 
     # =========================================================================
     # STEP 4: CARICAMENTO PRECEDENTI (itacasehold)
     # =========================================================================
 
     def load_precedents(self):
-        """Carica precedenti itacasehold senza embeddings (fulltext only)."""
+        """Loads itacasehold precedents without embeddings (fulltext only)."""
         from data_loader import load_itacasehold_metadata
 
-        print("\n⚖️ Caricamento precedenti (itacasehold, no-embedding)...")
+        print("\n⚖️ Loading precedents (itacasehold, no-embedding)...")
 
         try:
             metadata = load_itacasehold_metadata()
@@ -657,19 +657,19 @@ class DatabaseOrchestrator:
                 )
 
                 inserted = min(i + BATCH_SIZE, len(metadata))
-                print(f"      Inseriti: {inserted}/{len(metadata)}", end="\r")
+                print(f"      Inserted: {inserted}/{len(metadata)}", end="\r")
 
-            print(f"      ✅ {len(metadata)} precedenti (senza embeddings)")
+            print(f"      ✅ {len(metadata)} precedents (without embeddings)")
 
-        print("\n✅ Precedenti caricati")
+        print("\n✅ Precedents loaded")
 
     # =========================================================================
     # STEP 5: VERIFICA INDICI
     # =========================================================================
 
     def wait_for_indexes(self, timeout: int = 120):
-        """Attende che tutti gli indici siano ONLINE."""
-        print("\n⏳ Attesa indici online...")
+        """Waits for all indexes to be ONLINE."""
+        print("\n⏳ Waiting for indexes to be online...")
 
         start = time.time()
         while time.time() - start < timeout:
@@ -684,13 +684,13 @@ class DatabaseOrchestrator:
                 pending = result.single()["pending"]
 
                 if pending == 0:
-                    print("   ✅ Tutti gli indici sono ONLINE")
+                    print("   ✅ All indexes are ONLINE")
                     return True
 
-                print(f"   ⏳ {pending} indici in attesa...", end="\r")
+                print(f"   ⏳ {pending} indexes pending...", end="\r")
                 time.sleep(2)
 
-        print("   ⚠️ Timeout - alcuni indici potrebbero non essere pronti")
+        print("   ⚠️ Timeout - some indexes may not be ready")
         return False
 
     # =========================================================================
@@ -703,12 +703,12 @@ class DatabaseOrchestrator:
         load_statutes: bool = True,
         load_precedents: bool = True,
     ):
-        """Esegue il setup completo del database.
+        """Performs the complete database setup.
 
         Args:
-            clean: Se True, pulisce il database prima di inizializzare
-            load_statutes: Se True, carica gli statuti (Codice Penale + Civile)
-            load_precedents: Se True, carica i precedenti (itacasehold)
+            clean: If True, cleans the database before initializing
+            load_statutes: If True, loads the statutes (Penal + Civil Code)
+            load_precedents: If True, loads the precedents (itacasehold)
         """
         print("\n" + "=" * 60)
         print("🚀 LexCausa Database Orchestrator")
@@ -721,7 +721,7 @@ class DatabaseOrchestrator:
             self.clean_database()
 
         # Step 1: Stato iniziale
-        print("\n📊 Stato iniziale:")
+        print("\n📊 Initial status:")
         self.print_status()
 
         # Step 2: Schema (sempre necessario)
@@ -731,13 +731,13 @@ class DatabaseOrchestrator:
         if load_statutes:
             self.load_statutes()
         else:
-            print("\n📖 Caricamento statuti: SKIP")
+            print("\n📖 Loading statutes: SKIP")
 
         # Step 4: Precedenti (opzionale)
         if load_precedents:
             self.load_precedents()
         else:
-            print("\n⚖️ Caricamento precedenti: SKIP")
+            print("\n⚖️ Loading precedents: SKIP")
 
         # Step 5: Attendi indici
         self.wait_for_indexes()
@@ -745,11 +745,11 @@ class DatabaseOrchestrator:
         # Stato finale
         elapsed = time.time() - start_time
         print("\n" + "=" * 60)
-        print("📊 Stato finale:")
+        print("📊 Final status:")
         self.print_status()
 
-        print(f"\n⏱️ Tempo totale: {elapsed:.1f}s")
-        print("✅ Setup completato!")
+        print(f"\n⏱️ Total time: {elapsed:.1f}s")
+        print("✅ Setup complete!")
 
 
 def main():
@@ -757,34 +757,34 @@ def main():
         description="LexCausa Database Orchestrator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Esempi:
-  python db_orchestrator.py                    # Setup completo
-  python db_orchestrator.py --clean            # Pulisce e reinizializza tutto
-  python db_orchestrator.py --check            # Solo verifica stato DB
-  python db_orchestrator.py --statutes         # Ricarica solo statuti
-  python db_orchestrator.py --precedents       # Ricarica solo precedenti
-  python db_orchestrator.py --clean --statutes # Pulisce e carica solo statuti
+Examples:
+  python db_orchestrator.py                    # Full setup
+  python db_orchestrator.py --clean            # Cleans and reinitializes everything
+  python db_orchestrator.py --check            # Only checks DB status
+  python db_orchestrator.py --statutes         # Reloads only statutes
+  python db_orchestrator.py --precedents       # Reloads only precedents
+  python db_orchestrator.py --clean --statutes # Cleans and loads only statutes
         """,
     )
     parser.add_argument(
         "--clean",
         action="store_true",
-        help="Pulisce il database prima di inizializzare",
+        help="Cleans the database before initializing",
     )
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Solo verifica stato database",
+        help="Only checks database status",
     )
     parser.add_argument(
         "--statutes",
         action="store_true",
-        help="Carica solo statuti (Codice Penale + Civile)",
+        help="Loads only statutes (Penal + Civil Code)",
     )
     parser.add_argument(
         "--precedents",
         action="store_true",
-        help="Carica solo precedenti (itacasehold)",
+        help="Loads only precedents (itacasehold)",
     )
     args = parser.parse_args()
 

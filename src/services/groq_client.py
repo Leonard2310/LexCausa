@@ -261,7 +261,7 @@ def _resilient_loop(
 
     def _check_cancel() -> None:
         if cancel_checker is not None and cancel_checker():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _sleep_with_cancel(delay_s: float) -> None:
         remaining = max(0.0, float(delay_s))
@@ -654,7 +654,7 @@ def resilient_chat_stream(
 
         for chunk in llm.stream(messages, **stream_kwargs):
             if cancel_checker is not None and cancel_checker():
-                raise PipelineCancelled("Esecuzione interrotta manualmente.")
+                raise PipelineCancelled("Execution manually stopped.")
 
             chunk_prompt, chunk_completion, chunk_total = extract_token_usage(chunk)
             if chunk_prompt is not None:

@@ -23,7 +23,38 @@
 .header-content {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.75rem;
+}
+
+.lang-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #d1d5db;
+  border-radius: 9999px;
+  background: white;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #374151;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.lang-toggle:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.lang-flag {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.lang-label {
+  letter-spacing: 0.05em;
 }
 
 .avatar-icon {
@@ -1394,10 +1425,11 @@
   color: #1d4ed8;
 }
 
-.pdf-export-root .pipeline-section,
 .pdf-export-root .summary-card,
-.pdf-export-root .structured-block,
-.pdf-export-root .subsection {
+.pdf-export-root .summary-cards-grid,
+.pdf-export-root .metagraph-wrapper,
+.pdf-export-root .aqa-full-view,
+.pdf-export-root .pdf-export-metagraph-subsection {
   break-inside: avoid;
   page-break-inside: avoid;
 }
@@ -1417,13 +1449,6 @@
   font-size: 0.84rem;
 }
 
-.pdf-export-root .metagraph-wrapper,
-.pdf-export-root .aqa-full-view,
-.pdf-export-root .summary-cards-grid {
-  break-inside: avoid;
-  page-break-inside: avoid;
-}
-
 .pdf-export-root .structured-live-tag,
 .pdf-export-root .metagraph-zoom-info,
 .pdf-export-root .metagraph-detail-panel {
@@ -1434,9 +1459,9 @@
   min-width: 0;
   width: 100%;
   max-width: 100%;
-  height: 540px;
+  height: auto;
   max-height: none;
-  overflow: hidden;
+  overflow: visible;
   background-size: 16px 16px;
 }
 
@@ -1444,6 +1469,82 @@
   min-width: 0;
   width: 100% !important;
   height: auto !important;
+  display: block;
+}
+
+/* Compact PDF spacing — tighten sections/subsections so content packs onto fewer pages */
+.pdf-export-root .pipeline-section {
+  padding: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.pdf-export-root .subsection {
+  border-radius: 0;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.45rem;
+  margin-bottom: 0.4rem;
+}
+
+.pdf-export-root .section-header {
+  margin-bottom: 0.5rem;
+}
+
+.pdf-export-root .subsection h4 {
+  margin-bottom: 0.3rem;
+}
+
+/* Flatten repaired-chain wrapper in PDF: the absolute ::before badge and
+   position:relative prevent Chrome from correctly splitting the container
+   across pages, resulting in an empty yellow box on one page and content
+   on the next. Strip all decoration here; inner structured-blocks keep
+   their yellow background (#fff7d6) as the visual repaired indicator. */
+.pdf-export-root .repaired-chain {
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  position: static !important;
+}
+
+.pdf-export-root .repaired-chain::before {
+  display: none !important;
+}
+
+.pdf-export-root .structured-block {
+  border-radius: 0;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Repaired chain label: keep h5 glued to the first following block.
+   Bilateral hint: avoid-after on the label + avoid-before on the first
+   inner block forces Chrome to move both together to the next page. */
+.pdf-export-root .pdf-repaired-chain-label {
+  break-after: avoid;
+  page-break-after: avoid;
+  margin-top: 0.5rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.pdf-export-root .repaired-chain {
+  break-before: avoid;
+  page-break-before: avoid;
+}
+
+/* Statute/precedent lists: 2 columns + compact item height */
+.pdf-export-root .articles-list.pdf-export-list {
+  column-count: 2;
+  column-gap: 1.25rem;
+}
+
+.pdf-export-root .articles-list.pdf-export-list li {
+  padding: 0.2rem 0.35rem;
+  margin-bottom: 0.15rem;
+  break-inside: avoid;
 }
 
 .pdf-export-root .summary-card .structured-block {
@@ -2573,7 +2674,7 @@
 }
 
 .repaired-chain::before {
-  content: "🔧 RIPARATO";
+  content: "🔧 REPAIRED";
   position: absolute;
   top: -0.75rem;
   right: 0.75rem;

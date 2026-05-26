@@ -28,7 +28,7 @@ from .citation_utils import (
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.prompt_registry import render_prompt
+from .tools.prompt_registry import get_response_language, render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -2454,20 +2454,39 @@ class Reasoner(BaseAgent):
                 conclusion_text = ""
 
         if not conclusion_text:
-            norms_list = ", ".join(norms) if norms else "le norme applicabili"
-            conclusion_text = (
-                f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
-                f"dipende dall'applicazione delle norme richiamate ({norms_list}) "
-                f"ai fatti esposti nella catena di ragionamento."
+            if get_response_language() == "en":
+                norms_list = ", ".join(norms) if norms else "the applicable norms"
+                conclusion_text = (
+                    f"Based on the legal analysis conducted, the assessment of the claim "
+                    f"depends on the application of the cited norms ({norms_list}) "
+                    f"to the facts set out in the reasoning chain."
+                )
+            else:
+                norms_list = ", ".join(norms) if norms else "le norme applicabili"
+                conclusion_text = (
+                    f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
+                    f"dipende dall'applicazione delle norme richiamate ({norms_list}) "
+                    f"ai fatti esposti nella catena di ragionamento."
+                )
+
+        if get_response_language() == "en":
+            causal_link_text = (
+                "The connection between the cited norms and the legal question raised by the claim "
+                "emerges from the reasoning chain below, where each step builds logically on the "
+                "previous one to support the final legal assessment."
+            )
+        else:
+            causal_link_text = (
+                "La connessione tra le norme citate e la questione giuridica posta dal claim "
+                "emerge dalla catena di ragionamento sottostante, dove ciascun passo "
+                "costruisce logicamente sul precedente per motivare la valutazione "
+                "giuridica finale."
             )
 
         raw = (
             f"**Premessa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale**: La connessione tra le norme citate e la questione giuridica posta dal claim "
-            f"emerge dalla catena di ragionamento sottostante, dove ciascun passo "
-            f"costruisce logicamente sul precedente per motivare la valutazione "
-            f"giuridica finale.\n\n"
+            f"**Nesso Causale**: {causal_link_text}\n\n"
             f"**Conclusione**: {conclusion_text}\n\n"
             f"{chain_section}"
         )

@@ -43,7 +43,7 @@ run: backend
 dev:
 	@pkill -f "python.*src/api_server.py" >/dev/null 2>&1 || true
 	@pkill -f "node .*vite" >/dev/null 2>&1 || true
-	@docker compose up -d
+	@docker compose up -d neo4j
 	@echo "Avvio backend + frontend (Ctrl+C ferma i processi locali; Neo4j resta attivo)..."
 	@trap 'kill 0' INT TERM EXIT; \
 	poetry run python src/api_server.py & \
@@ -63,7 +63,7 @@ dev:
 dev-stop:
 	-pkill -f "python.*src/api_server.py" || true
 	-pkill -f "node .*vite" || true
-	@docker compose down
+	@docker compose stop neo4j
 
 test:
 	poetry run pytest -v

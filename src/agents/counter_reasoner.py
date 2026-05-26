@@ -30,7 +30,7 @@ from .citation_utils import (
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_legal_search_pipeline, get_statute_by_article_tool
-from .tools.prompt_registry import render_prompt
+from .tools.prompt_registry import get_response_language, render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -4261,7 +4261,7 @@ class CounterReasoner(BaseAgent):
         for step in reversed(steps):
             first_sentence = self._first_sentence_legal_safe(step)
             first_sentence = re.sub(
-                r"^(?:pertanto|quindi|dunque|in\s+conclusione)\s*,?\s*",
+                r"^(?:pertanto|quindi|dunque|in\s+conclusione|therefore|thus|hence|in\s+conclusion)\s*,?\s*",
                 "",
                 first_sentence,
                 flags=re.IGNORECASE,
@@ -4269,6 +4269,8 @@ class CounterReasoner(BaseAgent):
             first_sentence = first_sentence.rstrip(" .")
             if first_sentence:
                 return first_sentence
+        if get_response_language() == "en":
+            return "the cited norms and alleged facts do not unambiguously support the primary legal thesis"
         return (
             "le norme richiamate e i fatti allegati non giustificano "
             "in modo univoco la tesi principale"
@@ -4300,30 +4302,51 @@ class CounterReasoner(BaseAgent):
                 if attack_id
             )
         )
+        lang = get_response_language()
+        attack_locale = lang if lang in ("it", "en") else "en"
+        _default_attack_desc = (
+            "the cited norms do not unambiguously support the main thesis"
+            if lang == "en"
+            else _DEFAULT_ATTACK_DESCRIPTION_IT
+        )
         attack_desc_list = [
             self._attack_description(
                 attack_id,
-                locale="it",
-                default=_DEFAULT_ATTACK_DESCRIPTION_IT,
+                locale=attack_locale,
+                default=_default_attack_desc,
             )
             for attack_id in unique_attacks
         ]
         if not attack_desc_list:
-            attack_desc_list = [_DEFAULT_ATTACK_DESCRIPTION_IT]
-        attack_desc_it = "; ".join(attack_desc_list[:3])
+            attack_desc_list = [_default_attack_desc]
+        attack_desc_str = "; ".join(d.rstrip(". ") for d in attack_desc_list[:3])
 
-        conclusion_text = (
-            "Pertanto, la tesi giuridica principale deve essere contestata o "
-            f"ridimensionata poiché {conclusion_ground}."
-        )
+        if lang == "en":
+            conclusion_text = (
+                "Therefore, the primary legal thesis must be contested or "
+                f"limited because {conclusion_ground}."
+            )
+            causal_link_text = (
+                f"The legal analysis shows that {attack_desc_str}. "
+                "The argumentative chain highlights how the norms applicable to the case "
+                "allow for an alternative or limiting reconstruction relative to the primary thesis."
+            )
+        else:
+            conclusion_text = (
+                "Pertanto, la tesi giuridica principale deve essere contestata o "
+                f"ridimensionata poiché {conclusion_ground}."
+            )
+            causal_link_text = (
+                f"L'analisi giuridica dimostra che {attack_desc_str}. "
+                "La catena argomentativa evidenzia come "
+                "le norme applicabili al caso consentano una ricostruzione alternativa "
+                "o limitativa rispetto alla tesi principale."
+            )
 
         raw = (
             f"**Premessa Alternativa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale Alternativo**: L'analisi giuridica dimostra che "
-            f"{attack_desc_it}. La catena argomentativa evidenzia come "
-            f"le norme applicabili al caso consentano una ricostruzione alternativa "
-            f"o limitativa rispetto alla tesi principale.\n\n"
+            f"**Nesso Causale Alternativo**: {causal_link_text}\n\n"
             f"**Conclusione Contraria**: {conclusion_text}\n\n"
             f"{chain_section}"
         )

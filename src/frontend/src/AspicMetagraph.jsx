@@ -413,7 +413,7 @@ function AttackDetailPanel({ link, onClose }) {
 }
 
 // ---- MAIN COMPONENT ----
-export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
+export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr, forPdf = false }) {
   const svgRef = useRef(null);
   const canvasWrapRef = useRef(null);
   const [selectedLink, setSelectedLink] = useState(null);
@@ -834,7 +834,9 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr }) {
         <svg
           ref={svgRef}
           width="100%"
-          height={Math.max(svgH * zoom + 40, 300)}
+          height={forPdf ? 'auto' : Math.max(svgH * zoom + 40, 300)}
+          viewBox={forPdf ? `0 0 ${Math.ceil(svgW * zoom)} ${Math.max(Math.ceil(svgH * zoom) + 40, 300)}` : undefined}
+          preserveAspectRatio={forPdf ? 'xMidYMid meet' : undefined}
           style={{
             cursor: isPanning ? 'grabbing' : 'grab',
             userSelect: 'none',

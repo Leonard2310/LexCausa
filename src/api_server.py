@@ -53,6 +53,7 @@ from agents.tools.neo4j_tools import (  # noqa: E402
     get_legal_search_pipeline,
     search_precedents_tool,
 )
+from agents.tools.prompt_registry import set_response_language  # noqa: E402
 from config import settings  # noqa: E402
 from services.claim_context_memory import get_claim_context_memory  # noqa: E402
 from services.pipeline_control import PipelineCancelled  # noqa: E402
@@ -1419,6 +1420,9 @@ def _run_search_only(
         data
     )
     fe_settings = data.get("settings", {}) or {}
+    set_response_language(
+        fe_settings.get("response_language", settings.response_language)
+    )
     fe_search_query_terms_mode = fe_settings.get("search_query_terms_mode")
     fe_search_min_kept_statutes = fe_settings.get("search_min_kept_statutes")
     fe_search_use_top_n_libri = fe_settings.get("search_use_top_n_libri")
@@ -1571,6 +1575,9 @@ def _run_reason_only(
 
     claim = (data.get("claim", data.get("message", "")) or "").strip()
     fe_settings = data.get("settings", {}) or {}
+    set_response_language(
+        fe_settings.get("response_language", settings.response_language)
+    )
     fe_reasoner_temperature = fe_settings.get(
         "reasoner_temperature",
         fe_settings.get("llm_temperature", settings.reasoner_default_temperature),
@@ -1986,6 +1993,9 @@ def _run_counter_reason_only(
 
     claim = (data.get("claim", "") or "").strip()
     fe_settings = data.get("settings", {}) or {}
+    set_response_language(
+        fe_settings.get("response_language", settings.response_language)
+    )
     fe_counter_temperature = fe_settings.get(
         "counter_temperature",
         fe_settings.get("llm_temperature", settings.counter_default_temperature),
@@ -2341,6 +2351,9 @@ def _run_full_pipeline(
 
     # ── Frontend-configurable settings ────────────────────────────────
     fe_settings = data.get("settings", {}) or {}
+    set_response_language(
+        fe_settings.get("response_language", settings.response_language)
+    )
     fe_reasoner_temperature = fe_settings.get(
         "reasoner_temperature",
         fe_settings.get("llm_temperature", settings.reasoner_default_temperature),

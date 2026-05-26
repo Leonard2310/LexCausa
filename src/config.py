@@ -725,6 +725,15 @@ class Settings(BaseSettings):
         alias="ENABLE_PLANNING_COUNTER",
         description="Enable planning phase in Counter-Reasoner agent (for ablation studies).",
     )
+    response_language: str = Field(
+        default="it",
+        alias="RESPONSE_LANGUAGE",
+        description=(
+            "Output language for LLM reasoning content. "
+            "'it' = Italian (default); 'en' = English. "
+            "Internal classification prompts (consistency, NLI) are unaffected."
+        ),
+    )
 
     ancillary_max_tokens_cap: int = Field(
         default=320,

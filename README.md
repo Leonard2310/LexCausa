@@ -7,11 +7,11 @@
    <img src="https://img.shields.io/badge/LLM-Groq_Cloud-F55036?logo=lightning&logoColor=white" alt="Groq">
    <img src="https://img.shields.io/badge/Framework-LangChain-1C3C3C?logo=langchain&logoColor=white" alt="LangChain">
    <img src="https://img.shields.io/badge/ASPIC+-Argumentation-8B5CF6" alt="ASPIC+">
-   <img src="https://img.shields.io/badge/License-AGPL--3.0-yellow" alt="License">
+   <img src="https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey" alt="License">
    <img src="https://img.shields.io/badge/Version-1.0.0-brightgreen" alt="Version">
 </p>
 
-> ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering.
+> ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering at the University of Naples Federico II.
 
 **LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (Groq Cloud), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.
 
@@ -557,69 +557,6 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 
 ## 🧪 Agent & Pipeline Development Status
 
-### ✅ Completed
-- [x] Neo4j Knowledge Base with Civil/Penal/Administrative statutes
-- [x] Normattiva-based statute pipeline (`*_normattiva.csv` + `*_normattiva_embeddings.npy`)
-- [x] Hybrid statute retrieval: exact cosine search (source/libro pre-filtered) + fulltext rank fusion
-- [x] Neo4j `CITES` graph: citation edges built from statute references and used in pre-filter retrieval expansion
-- [x] Claim classification and book routing via LLM
-- [x] Domain Router Agent (CIVILE / PENALE / ENTRAMBI)
-- [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering)
-- [x] Progressive search with adaptive expansion when post-filtering yields too few results
-- [x] Pre-retrieval LLM filtering for statutes and precedents (default-YES soft filter)
-- [x] Shared context retrieval for both Reasoner and CounterReasoner
-- [x] Reasoner Agent: plan-then-execute generation (ASPIC+) with 3-10 planned steps and anti-repetition validation
-- [x] Counter-Reasoner Agent: plan-then-execute counter-generation (ASPIC+) with multi-attack selection, per-step attack assignment, attack blacklist, and feasibility filtering for more stable counter plans
-- [x] CounterReasoner second-pass targeted retrieval with improved filtering discipline and attack-coverage-based activation
-- [x] Taxonomy anchor filtering with claim-aware applicability (soft core / hard accessory) for Reasoner and CounterReasoner
-- [x] BaseAgent caching for legal context extraction and statute applicability decisions (reduces duplicate LLM calls and improves consistency)
-- [x] Explicit precedent citation by full title in Reasoner and Counter-Reasoner prompts
-- [x] Repetition detection in reasoning steps (Jaccard similarity, threshold 0.70)
-- [x] Polisher-Evaluator Agent: modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin)
-- [x] Consistency Checker: KB verification for statutes and precedents, core/peripheral classification, LLM-constrained repair with verbatim quote validation, citation drop
-- [x] AQA (Argument Quality Assessment): Cogency + NormSupport + Semantics scoring with configurable weights
-- [x] Cross-attack computation: domain-aware rules, severity categorization, NLI contradiction detection via LLM, 6 attack types (contradiction, exception, derogation, extinction, factual_impediment, general_opposition) with per-type damage multipliers
-- [x] Precedent influence scoring: recency, bindingness (cassazione/appello/tribunale), stance confidence, semantic similarity
-- [x] Verdict generation (plausible / implausible / uncertain) with winning_side and confidence mapping
-- [x] ASPIC+ Metagraph SVG visualization: interactive PRO/CONTRA graph with attack arrows, chain flow, and detail panel
-- [x] Attack Text Details: expandable panel with full attacker/target text, type, multiplier, NLI label, overlap, damage
-- [x] Resilient Groq Client: retry + dynamic API key discovery (V1…V99) + model fallback + model-down cache with TTL
-- [x] Smart error classification: model-down (503) vs. rate-limit (429) vs. transient errors
-- [x] Cooperative cancellation across API, agents, and pipeline services + `/api/pipeline/stop` endpoint for interrupting active SSE runs
-- [x] NLI contradiction detection via LLM (replaces local DeBERTa model)
-- [x] ASPIC+ IR formatting for Reasoner and Counter-Reasoner
-- [x] Prescriptive prompts and structured output for all agents
-- [x] Centralized configuration via Pydantic Settings (150+ parameters including truncation, attack, chain, coverage, abstention, per-role fallback, domain-specific weights)
-- [x] Frontend Settings Panel: per-step model selection, temperature, max tokens, search params, AQA weights, chain min/max steps, attack parameters
-- [x] Per-claim pipeline logging (`logs/` directory)
-- [x] Optional pre-retrieval claim context memory (SQLite) with frontend toggles and script-based warmup
-- [x] Reasoner provisional causality bootstrap (plan draft → provisional classification → taxonomy anchors → enriched KB before step generation)
-- [x] Reasoner post-hoc anchor refinement fallback with streaming control events and frontend live reset/replace of the support chain
-- [x] React frontend (Vite + React 19) with five tabs (Search, Reasoning, Full Pipeline, DoE A/B, Multi-DoE) + ASPIC+ Metagraph + Attack Details + settings panel
-- [x] DoE A/B workflow with shared Reasoner, baseline/treatment Counter setups, consolidated log/report persistence, and comparative frontend analysis
-- [x] SSE endpoints for standalone Counter-Reasoner and standalone Evaluator
-- [x] Full PDF export for Pipeline/DoE results, including automatic artifact persistence under `logs/pdf_exports/`
-- [x] Precedent ingestion and fulltext search (ITA-CaseHold)
-- [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
-- [x] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)
-- [x] Supervised Tuning Domain-specific retrieval parameters (metodology weights, overlap multipliers and counts)
-- [x] Supervised Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
-- [x] Centralized Prompt Registry (`prompt_registry.py`) with 100+ typed `PromptKey` enum entries covering all agent prompts
-- [x] Attack coverage scoring (AQA bonus for counter-argumentation breadth across weak-point axes)
-- [x] Counter-Reasoner abstention gate with label classification (OPPOSING_STRONG, OPPOSING_LIMITATIVE, AGREEING, UNCLEAR)
-- [x] Reasoner plausibility locking for DoE A/B isolation
-- [x] Per-role model fallback chains (separate Reasoner / Counter-Reasoner fallback aliases and temperatures)
-- [x] Attack precondition evaluation with taxonomy-aware LLM verification and caching
-- [x] Counter-Reasoner second-pass targeted retrieval for insufficient opposing statutes
-- [x] Counter step expansion for multi-attack steps
-- [x] Retrieval fail-fast scope (thread-local context manager for fast filter fallback)
-- [x] DoE batch runner with resume, checkpoint recovery, selective runs, dry-run, abstention tracking, and stability metrics
-- [x] DoE statistical analysis script (paired t-test, sign test, Cohen's d, domain breakdowns, verdict flips, error analysis)
-- [x] Domain-specific hybrid search weights (per-domain vector/fulltext weight pairs and keyword bonus thresholds)
-- [x] ASPIC+ repair and AQA report artifact persistence under `logs/aspic_repairs/` and `logs/aqa_reports/`
-- [x] Planning ablation toggle (`enable_planning_reasoner` / `enable_planning_counter`) in Reasoner and Counter-Reasoner agents, configurable per-request and via environment variables
-- [x] Multi-DoE framework: multi-dimensional ablation (RQ1 model efficacy, RQ2 citation faithfulness, RQ3 planning ablation, token cost analysis) with CLI runner, statistical analysis, frontend tab, and containerized Docker deployment
-
 
 ### 🚧 In Progress
 - [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
@@ -636,13 +573,11 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 
 ## 📄 License
 
-**Open Source**: This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).  
+This project is licensed under the **Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License (CC BY-NC-ND 4.0)**.  
 See the [LICENSE](LICENSE) file for details.
 
-### Commercial licensing
-
-A commercial license is available for organizations that want to use LexCausa in proprietary and/or commercial products **without** AGPL-3.0 obligations.  
-See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for details and contacts.
+**You are free to** share and redistribute the material for non-commercial purposes, with attribution.  
+**You may not** use it for commercial purposes, nor distribute modified versions.
 
 
 ## 📚 References
@@ -652,13 +587,16 @@ See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for details and contacts.
 
 ## 👤 Authors
 
-**Leonardo Catello**  
-Master's Thesis in Computer Engineering  
+**Leonardo Catello** — [@Leonard2310](https://github.com/Leonard2310)  
 Email: leonardo.catello@hotmail.com
 
-**Salvatore Maione**  
-Master's Thesis in Computer Engineering  
+**Salvatore Maione** — [@salvatore22maione](https://github.com/salvatore22maione)  
 Email: salvatore22maione@gmail.com
+
+### Supervisors
+
+**Prof. Roberto Pietrantuono** — [@rpietrantuono](https://github.com/rpietrantuono)  
+**PhD Cristian Mascia** — [@CristianMascia](https://github.com/CristianMascia)
 
 
 ## 🧾 Citation
@@ -667,4 +605,4 @@ If you use LexCausa in academic work, please cite the repository.
 See [CITATION.cff](CITATION.cff).
 ---
 
-*This project is part of a Master's thesis and is not intended for production legal use.*
+*This project is part of a Master's thesis at the University of Naples Federico II and is not intended for production legal use.*

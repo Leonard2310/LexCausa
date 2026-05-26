@@ -150,6 +150,7 @@ function CollapsibleList({ items, limit = 5, renderItem }) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(TABS.PIPELINE);
+  const [responseLanguage, setResponseLanguage] = useState('it');
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -485,6 +486,7 @@ export default function App() {
           settings: {
             search_min_kept_statutes: pipelineSettings.search_min_kept_statutes,
             search_use_top_n_libri: pipelineSettings.search_use_top_n_libri,
+            response_language: responseLanguage,
           },
         }),
       });
@@ -628,6 +630,7 @@ export default function App() {
             reasoner_temperature: pipelineSettings.reasoner_temperature,
             reasoner_enable_causality: pipelineSettings.reasoner_enable_causality,
             llm_max_tokens: pipelineSettings.llm_max_tokens,
+            response_language: responseLanguage,
           },
         }),
       });
@@ -814,6 +817,7 @@ export default function App() {
       counter_pass_causal_identity: activeSettings.counter_pass_causal_identity,
       counter_pass_taxonomy_attacks: activeSettings.counter_pass_taxonomy_attacks,
       counter_pass_norms: activeSettings.counter_pass_norms,
+      response_language: responseLanguage,
     },
   });
 
@@ -1842,6 +1846,7 @@ export default function App() {
           counter_pass_causal_identity: setupBSettings.counter_pass_causal_identity,
           counter_pass_taxonomy_attacks: setupBSettings.counter_pass_taxonomy_attacks,
           counter_pass_norms: setupBSettings.counter_pass_norms,
+          response_language: responseLanguage,
         },
       };
       if (runBRetrievalStatutes && runBRetrievalPrecedents) {
@@ -2318,6 +2323,7 @@ export default function App() {
         counter_pass_causal_identity: activePipelineSettings.counter_pass_causal_identity,
         counter_pass_taxonomy_attacks: activePipelineSettings.counter_pass_taxonomy_attacks,
         counter_pass_norms: activePipelineSettings.counter_pass_norms,
+        response_language: responseLanguage,
       },
     });
 
@@ -4126,11 +4132,11 @@ export default function App() {
             </div>
             <div className="summary-metrics">
               <div className="summary-metric summary-metric-info">
-                <span className="summary-metric-label">AQA Verdetto</span>
+                <span className="summary-metric-label">AQA Verdict</span>
                 <span className="summary-metric-value">{doeComparison.baseline?.metrics?.verdict || 'n/a'}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoePercent(doeComparison.baseline?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
@@ -4153,11 +4159,11 @@ export default function App() {
             </div>
             <div className="summary-metrics">
               <div className="summary-metric summary-metric-info">
-                <span className="summary-metric-label">AQA Verdetto</span>
+                <span className="summary-metric-label">AQA Verdict</span>
                 <span className="summary-metric-value">{doeComparison.treatment?.metrics?.verdict || 'n/a'}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoePercent(doeComparison.treatment?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
@@ -4178,7 +4184,7 @@ export default function App() {
             <div className="summary-card-title">Delta (B - A)</div>
             <div className="summary-metrics">
               <div className="summary-metric summary-metric-positive">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoeSignedPp(doeComparison.delta?.final_score)}</span>
               </div>
               <div className="summary-metric summary-metric-info">
@@ -4411,47 +4417,6 @@ export default function App() {
     );
   };
 
-  const renderPdfSummaryCards = (summaryText = '') => {
-    if (!summaryText) return null;
-    const summary = parseConsistencySummary(summaryText);
-    if (summary.sections.length === 0) {
-      return (
-        <div className="summary-card">
-          <div className="raw-response">{summaryText}</div>
-        </div>
-      );
-    }
-    return (
-      <div className="summary-cards-grid">
-        {summary.sections.map((section, idx) => (
-          <div key={`pdf-summary-${section.name}-${idx}`} className="summary-card">
-            <div className="summary-card-title">{section.name}</div>
-            {section.metrics.length > 0 && (
-              <div className="summary-metrics">
-                {section.metrics.map((metric, metricIdx) => (
-                  <div
-                    key={`pdf-summary-metric-${section.name}-${metric.label}-${metricIdx}`}
-                    className={`summary-metric ${getSummaryMetricClass(metric.label)}`}
-                  >
-                    <span className="summary-metric-label">{metric.label}</span>
-                    <span className="summary-metric-value">{metric.value}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {section.freeText.length > 0 && (
-              <ul className="summary-notes-list">
-                {section.freeText.map((note, noteIdx) => (
-                  <li key={`pdf-summary-note-${section.name}-${noteIdx}`}>{note}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ))}
-      </div>
-    );
-  };
-
   const renderPdfConsistencyAgentCard = (title, report = {}, keyPrefix = 'pdf-consistency') => {
     if (!report || typeof report !== 'object' || Object.keys(report).length === 0) return null;
     const totalCitations = Number(report.total_citations || 0);
@@ -4474,9 +4439,9 @@ export default function App() {
           </div>
           {(Number(report.repaired_citations || 0) > 0 || Number(report.dropped_citations || 0) > 0) && (
             <div className="summary-metric summary-metric-warning">
-              <span className="summary-metric-label">Riparazioni</span>
+              <span className="summary-metric-label">Repairs</span>
               <span className="summary-metric-value">
-                {Number(report.repaired_citations || 0)} rip., {Number(report.dropped_citations || 0)} scart.
+                {Number(report.repaired_citations || 0)} rep., {Number(report.dropped_citations || 0)} drop.
               </span>
             </div>
           )}
@@ -4494,27 +4459,23 @@ export default function App() {
 
   const renderPdfEvaluationSection = (evaluation = {}, keyPrefix = 'pdf-evaluation') => {
     const consistencyReport = evaluation?.consistency_report || {};
-    const summaryText = evaluation?.summary || '';
     const hasConsistency = Boolean(consistencyReport.reasoner || consistencyReport.counter_reasoner);
-    if (!hasConsistency && !summaryText) return null;
+    if (!hasConsistency) return null;
     return (
       <div className="subsection">
         <h4>Evaluator - Consistency Check</h4>
-        {hasConsistency && (
-          <div className="summary-cards-grid">
-            {renderPdfConsistencyAgentCard(
-              'Reasoner',
-              consistencyReport.reasoner,
-              `${keyPrefix}-reasoner`,
-            )}
-            {renderPdfConsistencyAgentCard(
-              'Counter-Reasoner',
-              consistencyReport.counter_reasoner,
-              `${keyPrefix}-counter`,
-            )}
-          </div>
-        )}
-        {summaryText && renderPdfSummaryCards(summaryText)}
+        <div className="summary-cards-grid">
+          {renderPdfConsistencyAgentCard(
+            'Reasoner',
+            consistencyReport.reasoner,
+            `${keyPrefix}-reasoner`,
+          )}
+          {renderPdfConsistencyAgentCard(
+            'Counter-Reasoner',
+            consistencyReport.counter_reasoner,
+            `${keyPrefix}-counter`,
+          )}
+        </div>
       </div>
     );
   };
@@ -4530,22 +4491,22 @@ export default function App() {
       <div className="subsection">
         <h4>Repaired Reasoning Chains</h4>
         {repairedReasonerChain && (
-          <div className="structured-block">
-            <h5>Reasoner - Repaired Chain</h5>
+          <>
+            <h5 className="pdf-repaired-chain-label">Reasoner - Repaired Chain</h5>
             {renderStructuredResponse({
               parsed: parseStructuredResponse(repairedReasonerChain),
               variant: 'repaired',
             })}
-          </div>
+          </>
         )}
         {repairedCounterChain && (
-          <div className="structured-block">
-            <h5>Counter-Reasoner - Repaired Chain</h5>
+          <>
+            <h5 className="pdf-repaired-chain-label">Counter-Reasoner - Repaired Chain</h5>
             {renderStructuredResponse({
               parsed: parseStructuredResponse(repairedCounterChain),
               variant: 'repaired',
             })}
-          </div>
+          </>
         )}
         {hasRepairStats && (
           <div className="consistency-stats">
@@ -4583,6 +4544,7 @@ export default function App() {
               aqaReport={aqaData}
               reasonerIr={evaluation?.repaired_reasoner_aspic_ir}
               counterIr={evaluation?.repaired_counter_aspic_ir}
+              forPdf
             />
           </div>
         )}
@@ -4653,11 +4615,11 @@ export default function App() {
             <div className="summary-card-title">Setup {setupKey} Metrics</div>
             <div className="summary-metrics">
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Verdetto</span>
+                <span className="summary-metric-label">AQA Verdict</span>
                 <span className="summary-metric-value">{comparisonEntry?.metrics?.verdict || 'n/a'}</span>
               </div>
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoePercent(comparisonEntry?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
@@ -4726,7 +4688,7 @@ export default function App() {
             </div>
             <div className="summary-metrics">
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoePercent(comparison?.baseline?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
@@ -4749,7 +4711,7 @@ export default function App() {
             </div>
             <div className="summary-metrics">
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoePercent(comparison?.treatment?.metrics?.final_score)}</span>
               </div>
               <div className="summary-metric">
@@ -4770,7 +4732,7 @@ export default function App() {
             <div className="summary-card-title">Delta (B - A)</div>
             <div className="summary-metrics">
               <div className="summary-metric">
-                <span className="summary-metric-label">AQA Finale</span>
+                <span className="summary-metric-label">AQA Final</span>
                 <span className="summary-metric-value">{formatDoeSignedPp(comparison?.delta?.final_score)}</span>
               </div>
               <div className="summary-metric">
@@ -4908,10 +4870,18 @@ export default function App() {
               {renderStructuredResponse({ parsed: parsedCounter })}
             </div>
           )}
-          {renderPdfEvaluationSection(evaluation, 'pdf-single-eval')}
-          {renderPdfRepairSection(evaluation)}
-          {renderPdfAqaSection(evaluation)}
         </div>
+        {(evaluation?.consistency_report?.reasoner || evaluation?.consistency_report?.counter_reasoner) && (
+          <div className="result-section pipeline-section">
+            {renderPdfEvaluationSection(evaluation, 'pdf-single-eval')}
+          </div>
+        )}
+        {(evaluation?.repaired_reasoner_chain || evaluation?.repaired_counter_chain) && (
+          <div className="result-section pipeline-section">
+            {renderPdfRepairSection(evaluation)}
+          </div>
+        )}
+        {renderPdfAqaSection(evaluation)}
       </div>
     );
   };
@@ -5009,15 +4979,25 @@ export default function App() {
       {/* Header */}
       <div className="chatbot-header">
         <div className="header-content">
-          <div className="avatar-icon assistant-avatar">
-            <Scale size={24} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div className="avatar-icon assistant-avatar">
+              <Scale size={24} />
+            </div>
+            <div>
+              <h1 className="header-title">LexCausa</h1>
+              <p className="header-subtitle">
+                Framework for Causal-Aware Structured Multi-Step Reasoning in Legal Argument Generation
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="header-title">LexCausa</h1>
-            <p className="header-subtitle">
-              Framework for Causal-Aware Structured Multi-Step Reasoning in Legal Argument Generation
-            </p>
-          </div>
+          <button
+            className="lang-toggle"
+            onClick={() => setResponseLanguage(l => l === 'it' ? 'en' : 'it')}
+            title={responseLanguage === 'it' ? 'Switch to English' : 'Switch to Italian'}
+          >
+            <span className="lang-flag">{responseLanguage === 'it' ? '🇮🇹' : '🇬🇧'}</span>
+            <span className="lang-label">{responseLanguage === 'it' ? 'IT' : 'EN'}</span>
+          </button>
         </div>
       </div>
 
@@ -5844,7 +5824,7 @@ export default function App() {
               ) : (
                 <>
                   <div className="result-section" data-pdf-section="claim">
-                    <h4>Claim Analizzato</h4>
+                    <h4>Analyzed Claim</h4>
                     <p>{pipelineResult.claim}</p>
                   </div>
 
@@ -5873,7 +5853,7 @@ export default function App() {
                                 doeDisplaySetup === 'baseline' ? 'treatment' : 'baseline',
                               )
                             }
-                            title="Switch vista Counter tra Setup A e Setup B"
+                            title="Switch Counter view between Setup A and Setup B"
                           >
                             <span className="ios-switch-knob" />
                           </button>
@@ -6196,7 +6176,7 @@ export default function App() {
                     <div className="result-section pipeline-section" data-pdf-section="evaluator">
                       <h3 className="section-header">
                         <ClipboardCheck size={20} style={{ color: '#8b5cf6' }} />
-                        3. EVALUATOR - Verifica Consistenza
+                        3. EVALUATOR - Consistency Check
                       </h3>
 
                       {evaluationPhaseActive && (
@@ -6417,7 +6397,7 @@ export default function App() {
                           {displayedEvaluation.repaired_reasoner_aspic_ir && Object.keys(displayedEvaluation.repaired_reasoner_aspic_ir).length > 0 && (
                             <>
                               {renderAspicOverview(
-                                'ASPIC+ IR Riparato (Reasoner)',
+                                'Repaired ASPIC+ IR (Reasoner)',
                                 displayedEvaluation.repaired_reasoner_aspic_ir,
                                 true,
                               )}
@@ -6447,7 +6427,7 @@ export default function App() {
                           {displayedEvaluation.repaired_counter_aspic_ir && Object.keys(displayedEvaluation.repaired_counter_aspic_ir).length > 0 && (
                             <>
                               {renderAspicOverview(
-                                'ASPIC+ IR Riparato (Counter-Reasoner)',
+                                'Repaired ASPIC+ IR (Counter-Reasoner)',
                                 displayedEvaluation.repaired_counter_aspic_ir,
                                 true,
                               )}
@@ -6539,7 +6519,7 @@ export default function App() {
                               </span>
                               {aqaReport.chain_scores.pro?.attacks_avg > 0 && (
                                 <span className="stat-item stat-repaired">
-                                  ⚔️ Attacchi Tesi primaria: {((aqaReport.chain_scores.pro?.attacks_avg ?? 0)).toFixed(3)}
+                                  ⚔️ Primary Thesis Attacks: {((aqaReport.chain_scores.pro?.attacks_avg ?? 0)).toFixed(3)}
                                 </span>
                               )}
                               {aqaReport.chain_scores.contra?.attacks_avg > 0 && (
@@ -6603,7 +6583,7 @@ export default function App() {
                               <h5>Link evaluation details</h5>
                               {aqaProLinks.length > 0 && (
                                 <div className="aqa-link-group">
-                                  <h6>Reasoner (Tesi primaria)</h6>
+                                  <h6>Reasoner (Primary Thesis)</h6>
                                   <div className="aqa-link-list">
                                     {aqaProLinks.map((link, idx) => (
                                       <div key={idx} className="aqa-link-card">
@@ -6951,7 +6931,7 @@ export default function App() {
               onClick={handleStopPipeline}
               disabled={isPipelineLikeTab ? isStoppingPipeline : false}
               className="stop-button"
-              title="Interrompi esecuzione"
+              title="Stop execution"
             >
               <Square size={18} />
             </button>

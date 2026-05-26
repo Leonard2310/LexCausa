@@ -9,7 +9,32 @@ This module contains:
 from __future__ import annotations
 
 import re
+import threading
 from enum import StrEnum
+
+_lang_local = threading.local()
+
+
+def set_response_language(lang: str) -> None:
+    """Set the response language for the current thread (request-scoped override)."""
+    _lang_local.value = (lang or "it").lower()
+
+
+def get_response_language() -> str:
+    """Return the current per-request language ('it' or 'en')."""
+    lang = getattr(_lang_local, "value", None)
+    if lang is None:
+        try:
+            import sys
+            from pathlib import Path
+
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+            from config import settings
+
+            lang = (settings.response_language or "it").lower()
+        except Exception:
+            lang = "it"
+    return lang
 
 
 class PromptKey(StrEnum):
@@ -339,19 +364,21 @@ REASONING CHAIN (for context):
 """,
     PromptKey.REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian law.
 
-Create a step-by-step plan to analyze the claim and build a primary legal thesis.
-The plan must be executable in sequence and each step must be materially different.
-Return ONLY valid JSON (no markdown, no prose) with this schema:
+Create a sequential plan to analyze the claim and build a primary legal thesis.
+Each step must add a materially new objective.
+
+Return only ONE valid JSON object (no markdown, no prose, no text outside JSON)
+using this schema:
 {
   "steps": [
     {
       "id": "P1",
-      "goal": "specific legal objective for this step",
-      "focus": "single legal/factual focus",
-      "expected_norm": "article expected to be cited or 'N/A'",
+      "goal": "<specific legal objective>",
+      "focus": "<single legal/factual focus>",
+      "expected_norm": "N/A or article expected to be cited",
       "citation_requirement": "required | optional | none",
       "step_type": "FACTS | QUALIFICATION | CAUSAL_LINK | ELEMENTS | BALANCING | CONSEQUENCE | SYNTHESIS | OTHER",
-      "novelty_key": "short unique key for this step objective (snake_case)"
+      "novelty_key": "<unique snake_case key>"
     }
   ]
 }
@@ -396,6 +423,9 @@ RULES:
 - "novelty_key" must be unique across steps and must summarize what is NEW in that step.
 - If ALREADY ACCEPTED STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
+[[language_instruction]]
+
+Return only the JSON object.
 """,
     PromptKey.REASONER_SUPPORT_STEP: """You are an expert Italian jurist.
 You must execute ONLY one planned reasoning step.
@@ -434,7 +464,7 @@ ALREADY GENERATED STEP SUMMARIES:
 NORMS ALREADY USED: [[used_norms_text]]
 
 HARD RULES:
-- Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
+- Generate EXACTLY ONE atomic step in [[response_language_name]] (2-4 sentences).
 - It must advance the plan and add NEW information, not paraphrase prior steps.
 - It must materially advance the legal analysis of the claim.
 - It must realize the declared novelty key by adding a distinct legal point.
@@ -444,9 +474,10 @@ HARD RULES:
 - If citation requirement is "optional", citation is recommended but not mandatory.
 - If citation requirement is "none", do not force a citation.
 - If citing a precedent, include its full exact title from allowed list.
+[[language_instruction]]
 
 RESPONSE FORMAT:
-STEP: [italian atomic step]
+STEP: [atomic step]
 """,
     PromptKey.REASONER_SUPPORT_PLAN_REWRITE: """[[previous_prompt]]
 
@@ -458,7 +489,8 @@ INVALID STEP:
 Rewrite only this step. Keep the same planned objective, but produce NEW,
 non-redundant and logically consistent content.
 RESPONSE FORMAT:
-STEP: [italian atomic step]""",
+STEP: [atomic step]
+[[language_instruction]]""",
     PromptKey.REASONER_GENERATE_CONCLUSION: """You are an expert Italian jurist. Based on the legal reasoning chain below, generate a concise and precise CONCLUSION.
 
 ORIGINAL CLAIM:
@@ -470,12 +502,12 @@ REASONING CHAIN:
 CITED NORMS: [[norms_text]]
 
 INSTRUCTIONS:
-- Write a conclusion of 2-4 sentences in Italian.
+- Write a conclusion of 2-4 sentences.
 - The conclusion must SYNTHESIZE the result of the legal analysis, not repeat the individual steps.
 - Clearly state the resulting legal assessment/qualification and WHY, based on the norms analyzed.
 - Do NOT introduce norms or facts not mentioned in the reasoning chain.
 - Be direct and assertive in the final verdict.
-- Your ENTIRE response must be written in Italian.
+[[language_instruction]]
 
         CONCLUSION:""",
     # ---------------------------------------------------------------------
@@ -517,6 +549,7 @@ Rules:
 - Favor legally meaningful lines (evidence weight, legal qualification boundaries, subjective element, balancing/aggravanti-attenuanti, burden/sufficiency of proof).
 - Keep each description short (max 22 words).
 
+[[language_instruction]]
 Return ONLY JSON in this exact format:
 {
   "attacks": [
@@ -547,6 +580,7 @@ Return ONLY JSON:
   ]
 }
 
+[[language_instruction]]
 Rules:
 - allowed_targets must be legal-inferential targets (qualification, proof threshold, cumulo limits, proportionality, quantification, aggravants/attenuants, etc.).
 - forbidden_assumptions must include hypothetical factual completions not in claim.
@@ -580,6 +614,7 @@ Return ONLY JSON:
   ]
 }
 
+[[language_instruction]]
 Rules:
 - Use at most 8 attack_points.
 - statement must be concise (max 30 words) and traceable to the conclusion text.
@@ -588,19 +623,22 @@ Rules:
 """,
     PromptKey.COUNTER_REASONER_GENERATE_PLAN: """You are a legal planning engine for Italian counter-argumentation.
 
-Create a step-by-step plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
-Return ONLY valid JSON (no markdown, no prose) with this schema:
+Create a sequential plan to build a counter-argument against the primary legal thesis and the Reasoner's conclusion.
+Each step must add a materially new counter-objective.
+
+Return only ONE valid JSON object (no markdown, no prose, no text outside JSON)
+using this schema:
 {
   "steps": [
     {
       "id": "C1",
-      "goal": "specific objective to weaken the primary thesis",
-      "focus": "single weak point for this step",
-      "expected_norm": "article expected to be cited or 'N/A'",
+      "goal": "<specific objective to weaken the primary thesis>",
+      "focus": "<single weak point for this step>",
+      "expected_norm": "N/A or article expected to be cited",
       "citation_requirement": "required | optional | none",
       "attack_id": "one of the selected attack ids",
       "step_type": "TARGET_FACTS | TARGET_CAUSAL_LINK | TARGET_LEGAL_QUALIFICATION | TARGET_ELEMENT | TARGET_BALANCING | TARGET_OUTCOME | OTHER",
-      "novelty_key": "short unique key for this counter objective (snake_case)"
+      "novelty_key": "<unique snake_case key>"
     }
   ]
 }
@@ -657,6 +695,9 @@ RULES:
 - "novelty_key" must be unique across steps and must summarize what is NEW in the counter-attack.
 - If ALREADY ACCEPTED COUNTER STEPS is not empty, generate only missing/remaining steps and avoid duplicate objectives.
 - Keep each 'goal' and 'focus' concise (max 25 words each).
+[[language_instruction]]
+
+Return only the JSON object.
 """,
     PromptKey.COUNTER_REASONER_PLAN_TARGET_ALIGNMENT: """You are checking whether a planned counter step is in-scope.
 
@@ -723,7 +764,7 @@ ALREADY GENERATED STEP SUMMARIES:
 NORMS ALREADY USED: [[used_norms_text]]
 
 HARD RULES:
-- Generate EXACTLY ONE atomic step in Italian (2-4 sentences).
+- Generate EXACTLY ONE atomic step in [[response_language_name]] (2-4 sentences).
 - It must advance the plan and add NEW information, not paraphrase prior steps.
 - It must realize the declared novelty key by adding a distinct counter-argument point.
 - It must function as a counter-step (weakening or challenging the primary thesis / Reasoner conclusion).
@@ -740,9 +781,11 @@ HARD RULES:
 - If citation requirement is "none", do not force a citation.
 [[attack_usage_rules]]
 
+[[language_instruction]]
+
 RESPONSE FORMAT:
 [[attacks_used_format]]
-STEP: [italian atomic counter-step]
+STEP: [atomic counter-step]
 """,
     PromptKey.COUNTER_REASONER_ATTACK_ALIGNMENT: """Assess whether the following counter-argument step is ALIGNED with the planned attack.
 
@@ -790,6 +833,7 @@ Labels:
 - LIMITED: must be reformulated as limitation/containment of effects (not direct denial of fixed facts).
 - UNSAFE: cannot be made compatible without factual contradiction/invention.
 
+[[language_instruction]]
 Return ONLY JSON:
 {
   "attacks": [
@@ -911,7 +955,7 @@ Hard rules:
 - Do not invent facts.
 - Do not contradict explicit claim facts.
 - Do not contradict already generated steps.
-- Keep each satellite concise (2-4 sentences, Italian).
+- Keep each satellite concise (2-4 sentences) in [[response_language_name]].
 - Use attack_id only from PARENT ATTACK IDS.
 - If citation_requirement is "required", include at least one grounded statute citation.
 - If no strong legal citation is feasible, use expected_norm="N/A" and citation_requirement="optional".
@@ -920,7 +964,7 @@ Return ONLY compact JSON:
 {
   "extra_steps": [
     {
-      "step": "Italian counter-step text",
+      "step": "counter-step text",
       "attack_id": "one parent attack id",
       "expected_norm": "article or N/A",
       "citation_requirement": "required | optional | none"
@@ -941,7 +985,8 @@ The rewritten step must clearly weaken or limit the opposing thesis.
 
 RESPONSE FORMAT:
 [[attacks_used_format]]
-STEP: [Italian text, max 4 sentences]""",
+STEP: [text, max 4 sentences]
+[[language_instruction]]""",
     PromptKey.COUNTER_REASONER_FACT_LOCK_CHECK: """You are a strict factual contradiction checker for COUNTER legal steps.
 
 CLAIM (explicit facts only):
@@ -1215,17 +1260,60 @@ def get_prompt(name: str | PromptKey) -> str:
     return PROMPTS[key]
 
 
+def _get_language_defaults() -> dict[str, str]:
+    """Return language-related placeholder defaults derived from settings.
+
+    Resolution order: per-request thread-local (set via set_response_language)
+    → settings.response_language → "it".
+    """
+    lang = getattr(_lang_local, "value", None)
+    if lang is None:
+        try:
+            import sys
+            from pathlib import Path
+
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+            from config import settings
+
+            lang = (settings.response_language or "it").lower()
+        except Exception:
+            lang = "it"
+
+    if lang == "en":
+        return {
+            "language_instruction": (
+                "LANGUAGE INSTRUCTION: Reason and respond exclusively in English. "
+                "Write all legal analysis, planning steps, argumentation, and conclusions in English. "
+                "Legal sources (statutes, precedents) may be quoted verbatim in their original language "
+                "inside «» marks, but all surrounding reasoning must be in English."
+            ),
+            "response_language_name": "English",
+        }
+    return {
+        "language_instruction": (
+            "LANGUAGE INSTRUCTION: Reason and respond exclusively in Italian. "
+            "Write all legal analysis, planning steps, argumentation, and conclusions in Italian."
+        ),
+        "response_language_name": "Italian",
+    }
+
+
 def render_prompt(name: str | PromptKey, **values: object) -> str:
     """
     Render prompt replacing placeholders ``[[name]]`` with provided values.
 
     Missing placeholders are left unchanged.
+    Language placeholders (language_instruction, response_language_name) are
+    auto-injected from settings.response_language if not explicitly provided.
     """
     template = get_prompt(name)
 
+    lang_defaults = _get_language_defaults()
+    merged = {**lang_defaults, **{k: v for k, v in values.items() if v is not None}}
+
     def _replace(match: re.Match[str]) -> str:
         key = match.group(1)
-        value = values.get(key)
+        value = merged.get(key)
         return str(value) if value is not None else match.group(0)
 
     return _PLACEHOLDER_RE.sub(_replace, template)

@@ -23,7 +23,38 @@
 .header-content {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.75rem;
+}
+
+.lang-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #d1d5db;
+  border-radius: 9999px;
+  background: white;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #374151;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.lang-toggle:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+.lang-flag {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.lang-label {
+  letter-spacing: 0.05em;
 }
 
 .avatar-icon {
@@ -1159,6 +1190,127 @@
   cursor: not-allowed;
 }
 
+/* Multi-DoE */
+.multi-doe-card {
+  margin-bottom: 1rem;
+}
+
+.multi-doe-note {
+  margin: 0.5rem 0 0.75rem 0;
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.multi-doe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.multi-doe-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #374151;
+}
+
+.multi-doe-grid input,
+.multi-doe-grid select {
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.85rem;
+  background: #ffffff;
+  color: #111827;
+}
+
+.multi-doe-span-full {
+  grid-column: 1 / -1;
+}
+
+.multi-doe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.85rem;
+}
+
+.multi-doe-run-btn {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.multi-doe-run-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.multi-doe-refresh-btn {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  padding: 0.5rem 0.85rem;
+  border-radius: 0.55rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.multi-doe-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.multi-doe-output {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.multi-doe-status {
+  margin-top: 0.85rem;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+}
+
+.multi-doe-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #374151;
+}
+
+.multi-doe-runid {
+  color: #6b7280;
+}
+
+.multi-doe-error {
+  margin-top: 0.5rem;
+  color: #b91c1c;
+  font-size: 0.85rem;
+}
+
+.multi-doe-log {
+  margin-top: 0.6rem;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .input-hint {
   font-size: 0.75rem;
   color: #6b7280;
@@ -1273,10 +1425,11 @@
   color: #1d4ed8;
 }
 
-.pdf-export-root .pipeline-section,
 .pdf-export-root .summary-card,
-.pdf-export-root .structured-block,
-.pdf-export-root .subsection {
+.pdf-export-root .summary-cards-grid,
+.pdf-export-root .metagraph-wrapper,
+.pdf-export-root .aqa-full-view,
+.pdf-export-root .pdf-export-metagraph-subsection {
   break-inside: avoid;
   page-break-inside: avoid;
 }
@@ -1296,13 +1449,6 @@
   font-size: 0.84rem;
 }
 
-.pdf-export-root .metagraph-wrapper,
-.pdf-export-root .aqa-full-view,
-.pdf-export-root .summary-cards-grid {
-  break-inside: avoid;
-  page-break-inside: avoid;
-}
-
 .pdf-export-root .structured-live-tag,
 .pdf-export-root .metagraph-zoom-info,
 .pdf-export-root .metagraph-detail-panel {
@@ -1313,9 +1459,9 @@
   min-width: 0;
   width: 100%;
   max-width: 100%;
-  height: 540px;
+  height: auto;
   max-height: none;
-  overflow: hidden;
+  overflow: visible;
   background-size: 16px 16px;
 }
 
@@ -1323,6 +1469,82 @@
   min-width: 0;
   width: 100% !important;
   height: auto !important;
+  display: block;
+}
+
+/* Compact PDF spacing — tighten sections/subsections so content packs onto fewer pages */
+.pdf-export-root .pipeline-section {
+  padding: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.pdf-export-root .subsection {
+  border-radius: 0;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.45rem;
+  margin-bottom: 0.4rem;
+}
+
+.pdf-export-root .section-header {
+  margin-bottom: 0.5rem;
+}
+
+.pdf-export-root .subsection h4 {
+  margin-bottom: 0.3rem;
+}
+
+/* Flatten repaired-chain wrapper in PDF: the absolute ::before badge and
+   position:relative prevent Chrome from correctly splitting the container
+   across pages, resulting in an empty yellow box on one page and content
+   on the next. Strip all decoration here; inner structured-blocks keep
+   their yellow background (#fff7d6) as the visual repaired indicator. */
+.pdf-export-root .repaired-chain {
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  position: static !important;
+}
+
+.pdf-export-root .repaired-chain::before {
+  display: none !important;
+}
+
+.pdf-export-root .structured-block {
+  border-radius: 0;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Repaired chain label: keep h5 glued to the first following block.
+   Bilateral hint: avoid-after on the label + avoid-before on the first
+   inner block forces Chrome to move both together to the next page. */
+.pdf-export-root .pdf-repaired-chain-label {
+  break-after: avoid;
+  page-break-after: avoid;
+  margin-top: 0.5rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.pdf-export-root .repaired-chain {
+  break-before: avoid;
+  page-break-before: avoid;
+}
+
+/* Statute/precedent lists: 2 columns + compact item height */
+.pdf-export-root .articles-list.pdf-export-list {
+  column-count: 2;
+  column-gap: 1.25rem;
+}
+
+.pdf-export-root .articles-list.pdf-export-list li {
+  padding: 0.2rem 0.35rem;
+  margin-bottom: 0.15rem;
+  break-inside: avoid;
 }
 
 .pdf-export-root .summary-card .structured-block {
@@ -2452,7 +2674,7 @@
 }
 
 .repaired-chain::before {
-  content: "🔧 RIPARATO";
+  content: "🔧 REPAIRED";
   position: absolute;
   top: -0.75rem;
   right: 0.75rem;

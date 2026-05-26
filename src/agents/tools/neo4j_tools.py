@@ -45,7 +45,7 @@ def get_driver() -> Driver:
 def get_legal_search_pipeline() -> LegalSearchPipeline:
     """Get or create LegalSearchPipeline (singleton, thread-safe).
 
-    This is the SAME pipeline that works in Tab Ricerca!
+    This is the SAME pipeline that works in the Search Tab!
     It handles embedding generation and vector search internally.
     """
     global _legal_search_pipeline

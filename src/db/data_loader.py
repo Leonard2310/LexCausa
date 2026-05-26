@@ -7,8 +7,8 @@ Datasets:
 3. Codice Amministrativo (L. 241/1990) - Local CSV file (src/data/statutes/codice_amministrativo_normattiva.csv)
 4. Precedenti (itacasehold) - Metadata (title/summary/url/materia)
 
-Note: I CSV degli statuti includono le colonne libro_codice_penale e libro_codice_civile
-per il raggruppamento degli articoli per libro di appartenenza.
+Note: The statute CSVs include the 'libro_codice_penale' and 'libro_codice_civile' columns
+for grouping articles by their respective book.
 """
 
 import re
@@ -27,7 +27,7 @@ def load_codice_penale() -> pd.DataFrame:
 
     Returns DataFrame with columns:
     - articolo, titolo, testo, reference, external_reference
-    - libro: libro di appartenenza con prefisso (CP Libro I, II, III)
+    - libro: book it belongs to with a prefix (CP Book I, II, III)
     - source: 'codice_penale'
     """
     csv_path = settings.statutes_dir / "codice_penale_normattiva.csv"
@@ -39,11 +39,11 @@ def load_codice_penale() -> pd.DataFrame:
 
     # Normalizza nome colonna libro e aggiungi prefisso CP
     if "libro_codice_penale" in df.columns:
-        df["libro"] = "CP " + df["libro_codice_penale"].astype(str)
+        df["libro"] = "CP Book " + df["libro_codice_penale"].astype(str)
 
     print(f"✅ Loaded Codice Penale: {len(df)} articles")
     print(
-        f"   Libri: {df['libro'].unique().tolist() if 'libro' in df.columns else 'N/A'}"
+        f"   Books: {df['libro'].unique().tolist() if 'libro' in df.columns else 'N/A'}"
     )
     return df
 
@@ -54,7 +54,7 @@ def load_codice_civile() -> pd.DataFrame:
 
     Returns DataFrame with columns:
     - article_id, article_title, article_text, article_references
-    - libro: libro di appartenenza con prefisso (CC Libro I, II, etc.)
+    - libro: book it belongs to with a prefix (CC Book I, II, etc.)
     - source: 'codice_civile'
     """
     csv_path = settings.statutes_dir / "codice_civile_normattiva.csv"
@@ -66,11 +66,11 @@ def load_codice_civile() -> pd.DataFrame:
 
     # Normalizza nome colonna libro e aggiungi prefisso CC
     if "libro_codice_civile" in df.columns:
-        df["libro"] = "CC " + df["libro_codice_civile"].astype(str)
+        df["libro"] = "CC Book " + df["libro_codice_civile"].astype(str)
 
     print(f"✅ Loaded Codice Civile: {len(df)} articles")
     print(
-        f"   Libri: {df['libro'].unique().tolist() if 'libro' in df.columns else 'N/A'}"
+        f"   Books: {df['libro'].unique().tolist() if 'libro' in df.columns else 'N/A'}"
     )
     return df
 
@@ -81,7 +81,7 @@ def load_codice_amministrativo() -> pd.DataFrame:
 
     Returns DataFrame with columns normalized to the statute schema:
     - numero, titolo, contenuto
-    - libro: empty string (this code has no libri)
+    - libro: empty string (this code has no books)
     - source: 'codice_amministrativo'
     """
     csv_path = settings.statutes_dir / "codice_amministrativo_normattiva.csv"
@@ -336,7 +336,7 @@ def load_statutes() -> pd.DataFrame:
 
 
 def main():
-    """Test del data loader."""
+    """Data loader test."""
     print("=" * 60)
     print("LexCausa Data Loader - Test")
     print("=" * 60)
@@ -353,15 +353,15 @@ def main():
     _ = load_embeddings("amministrativo_normattiva")
 
     # Load itacasehold con metadata
-    print("\n⚖️ Loading Itacasehold con metadata...")
+    print("\n⚖️ Loading Itacasehold with metadata...")
     try:
         meta = load_itacasehold_metadata()
-        print(f"   Metadata: {len(meta)} chunks")
+        print(f"   Metadata: {len(meta)} precedents")
     except FileNotFoundError as e:
         print(f"   ⚠️ {e}")
 
     print("\n" + "=" * 60)
-    print("✅ Data loader test completato!")
+    print("✅ Data loader test complete!")
     print("=" * 60)
 
 

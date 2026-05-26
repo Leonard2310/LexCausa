@@ -26,14 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy import stats
-
 
 # ---------------------------------------------------------------------------
 # Costanti
@@ -135,7 +133,9 @@ def analyze(csv_path: Path) -> dict:
     mask_abstain = (df[COL["contra_A"]] == 0) | (df[COL["contra_B"]] == 0)
     abstentions = df[mask_abstain].copy()
     results["n_abstentions"] = int(mask_abstain.sum())
-    results["abstentions"] = abstentions[["claim_id", "replicate"]].to_dict(orient="records")
+    results["abstentions"] = abstentions[["claim_id", "replicate"]].to_dict(
+        orient="records"
+    )
 
     # Dataset pulito
     clean = df[~mask_abstain].copy()
@@ -155,13 +155,28 @@ def analyze(csv_path: Path) -> dict:
 
     # --- 1. Statistiche descrittive ---
     results["descriptive"] = {
-        "contra_A": {"mean": float(np.mean(contra_a)), "std": float(np.std(contra_a, ddof=1))},
-        "contra_B": {"mean": float(np.mean(contra_b)), "std": float(np.std(contra_b, ddof=1))},
-        "delta_contra": {"mean": float(np.mean(delta)), "std": float(np.std(delta, ddof=1))},
+        "contra_A": {
+            "mean": float(np.mean(contra_a)),
+            "std": float(np.std(contra_a, ddof=1)),
+        },
+        "contra_B": {
+            "mean": float(np.mean(contra_b)),
+            "std": float(np.std(contra_b, ddof=1)),
+        },
+        "delta_contra": {
+            "mean": float(np.mean(delta)),
+            "std": float(np.std(delta, ddof=1)),
+        },
         "pro_A": {"mean": float(np.mean(pro_a)), "std": float(np.std(pro_a, ddof=1))},
         "pro_B": {"mean": float(np.mean(pro_b)), "std": float(np.std(pro_b, ddof=1))},
-        "final_A": {"mean": float(np.mean(final_a)), "std": float(np.std(final_a, ddof=1))},
-        "final_B": {"mean": float(np.mean(final_b)), "std": float(np.std(final_b, ddof=1))},
+        "final_A": {
+            "mean": float(np.mean(final_a)),
+            "std": float(np.std(final_a, ddof=1)),
+        },
+        "final_B": {
+            "mean": float(np.mean(final_b)),
+            "std": float(np.std(final_b, ddof=1)),
+        },
     }
 
     # --- 2. Paired t-test ---
@@ -224,7 +239,12 @@ def analyze(csv_path: Path) -> dict:
 
     # --- 7. Metriche strutturali ---
     structural = {}
-    for short_name in ["contra_links", "counter_chain_steps", "counter_density", "selected_attacks_n"]:
+    for short_name in [
+        "contra_links",
+        "counter_chain_steps",
+        "counter_density",
+        "selected_attacks_n",
+    ]:
         col_a_key = f"{short_name}_A"
         col_b_key = f"{short_name}_B"
         col_a = COL.get(col_a_key)
@@ -232,9 +252,16 @@ def analyze(csv_path: Path) -> dict:
         if col_a and col_b and col_a in clean.columns and col_b in clean.columns:
             ma = float(clean[col_a].mean())
             mb = float(clean[col_b].mean())
-            structural[short_name] = {"A": round(ma, 2), "B": round(mb, 2), "delta": round(mb - ma, 2)}
+            structural[short_name] = {
+                "A": round(ma, 2),
+                "B": round(mb, 2),
+                "delta": round(mb - ma, 2),
+            }
         elif col_b and col_b in clean.columns:
-            structural[short_name] = {"A": 0.0, "B": round(float(clean[col_b].mean()), 2)}
+            structural[short_name] = {
+                "A": 0.0,
+                "B": round(float(clean[col_b].mean()), 2),
+            }
     results["structural"] = structural
 
     # --- 8. Consistenza intra-claim ---
@@ -250,9 +277,19 @@ def analyze(csv_path: Path) -> dict:
             "mean_delta": round(float(np.mean(cb - ca)), 3),
         }
     # Classificazione
-    all_for_b = [c for c, v in claim_consistency.items() if v["B_wins"] == v["n_reps_clean"]]
-    majority_b = [c for c, v in claim_consistency.items() if 0 < v["B_wins"] < v["n_reps_clean"] and v["B_wins"] > v["n_reps_clean"] / 2]
-    majority_a = [c for c, v in claim_consistency.items() if v["B_wins"] < v["n_reps_clean"] / 2 and v["B_wins"] > 0]
+    all_for_b = [
+        c for c, v in claim_consistency.items() if v["B_wins"] == v["n_reps_clean"]
+    ]
+    majority_b = [
+        c
+        for c, v in claim_consistency.items()
+        if 0 < v["B_wins"] < v["n_reps_clean"] and v["B_wins"] > v["n_reps_clean"] / 2
+    ]
+    majority_a = [
+        c
+        for c, v in claim_consistency.items()
+        if v["B_wins"] < v["n_reps_clean"] / 2 and v["B_wins"] > 0
+    ]
     all_for_a = [c for c, v in claim_consistency.items() if v["B_wins"] == 0]
     results["consistency"] = {
         "all_B": sorted(all_for_b),
@@ -269,13 +306,17 @@ def analyze(csv_path: Path) -> dict:
     flips = clean[clean["verdict_A"] != clean["verdict_B"]].copy()
     flip_list = []
     for _, row in flips.iterrows():
-        flip_list.append({
-            "claim_id": row["claim_id"],
-            "replicate": int(row["replicate"]),
-            "verdict_A": row["verdict_A"],
-            "verdict_B": row["verdict_B"],
-            "delta_final": round(float(row[COL["final_B"]] - row[COL["final_A"]]), 3),
-        })
+        flip_list.append(
+            {
+                "claim_id": row["claim_id"],
+                "replicate": int(row["replicate"]),
+                "verdict_A": row["verdict_A"],
+                "verdict_B": row["verdict_B"],
+                "delta_final": round(
+                    float(row[COL["final_B"]] - row[COL["final_A"]]), 3
+                ),
+            }
+        )
     results["verdict_flips"] = {
         "n_flips": len(flip_list),
         "pct": round(100 * len(flip_list) / n, 1),
@@ -309,12 +350,14 @@ def analyze(csv_path: Path) -> dict:
             for rc in repair_cols:
                 val = row.get(rc)
                 if pd.notna(val) and float(val) > 0:
-                    repairs.append({
-                        "claim_id": row["claim_id"],
-                        "replicate": int(row["replicate"]),
-                        "column": rc,
-                        "fail_rate": round(float(val), 3),
-                    })
+                    repairs.append(
+                        {
+                            "claim_id": row["claim_id"],
+                            "replicate": int(row["replicate"]),
+                            "column": rc,
+                            "fail_rate": round(float(val), 3),
+                        }
+                    )
         results["repair_failures"] = repairs
 
     return results
@@ -331,16 +374,23 @@ def print_results(r: dict) -> None:
     print("=" * 70)
 
     # Overview
-    print(f"\nDataset: {r['n_total']} coppie totali, {r['n_abstentions']} astensioni → {r['n_clean']} pulite")
+    print(
+        f"\nDataset: {r['n_total']} coppie totali, {r['n_abstentions']} astensioni → {r['n_clean']} pulite"
+    )
     if r["abstentions"]:
-        print("  Astensioni:", ", ".join(f"{a['claim_id']}-R{a['replicate']}" for a in r["abstentions"]))
+        print(
+            "  Astensioni:",
+            ", ".join(f"{a['claim_id']}-R{a['replicate']}" for a in r["abstentions"]),
+        )
 
     # Descrittive
     d = r["descriptive"]
-    print(f"\n--- Statistiche descrittive (n = {r['n_clean']}) ---")
+    print("\n--- Statistiche descrittive (n = {}) ---".format(r["n_clean"]))
     print(f"  contra_A:  {d['contra_A']['mean']:.3f} ± {d['contra_A']['std']:.3f}")
     print(f"  contra_B:  {d['contra_B']['mean']:.3f} ± {d['contra_B']['std']:.3f}")
-    print(f"  Δ_contra:  {d['delta_contra']['mean']:+.3f} ± {d['delta_contra']['std']:.3f}")
+    print(
+        f"  Δ_contra:  {d['delta_contra']['mean']:+.3f} ± {d['delta_contra']['std']:.3f}"
+    )
     print(f"  pro_A:     {d['pro_A']['mean']:.3f} ± {d['pro_A']['std']:.3f}")
     print(f"  pro_B:     {d['pro_B']['mean']:.3f} ± {d['pro_B']['std']:.3f}")
     print(f"  final_A:   {d['final_A']['mean']:.3f} ± {d['final_A']['std']:.3f}")
@@ -348,43 +398,51 @@ def print_results(r: dict) -> None:
 
     # t-test
     t = r["ttest"]
-    print(f"\n--- Paired t-test ---")
+    print("\n--- Paired t-test ---")
     print(f"  t({t['df']}) = {t['t_statistic']:.2f}")
     print(f"  p (bilaterale) = {t['p_two_tailed']:.6f}")
     print(f"  p (unilaterale) = {t['p_one_tailed']:.6f}")
 
     # Sign test
     s = r["sign_test"]
-    print(f"\n--- Sign test (unilaterale, H1: B > A) ---")
+    print("\n--- Sign test (unilaterale, H1: B > A) ---")
     print(f"  B > A in {s['B_wins']}/{s['n_compared']} coppie ({s['B_pct']} %)")
     print(f"  p = {s['p_value']:.6f}")
 
     # Cohen's d
-    print(f"\n--- Cohen's d (paired) ---")
+    print("\n--- Cohen's d (paired) ---")
     print(f"  d = {r['cohens_d']}")
 
     # Per dominio
-    print(f"\n--- Breakdown per dominio ---")
-    print(f"  {'Dominio':<16} {'n':>4} {'B>A':>5} {'B%':>7} {'Δ_mean':>8} {'d':>6} {'p_sign':>8}")
+    print("\n--- Breakdown per dominio ---")
+    print(
+        f"  {'Dominio':<16} {'n':>4} {'B>A':>5} {'B%':>7} {'Δ_mean':>8} {'d':>6} {'p_sign':>8}"
+    )
     for dom in sorted(r["per_domain"]):
         v = r["per_domain"][dom]
-        print(f"  {dom:<16} {v['n']:>4} {v['B_wins']:>5} {v['B_pct']:>6.1f}% {v['mean_delta']:>+8.3f} {v['cohens_d']:>6.2f} {v['sign_p']:>8.4f}")
+        print(
+            f"  {dom:<16} {v['n']:>4} {v['B_wins']:>5} {v['B_pct']:>6.1f}% {v['mean_delta']:>+8.3f} {v['cohens_d']:>6.2f} {v['sign_p']:>8.4f}"
+        )
 
     # Sotto-metriche
     if r.get("sub_metrics"):
-        print(f"\n--- Sotto-metriche ---")
+        print("\n--- Sotto-metriche ---")
         for k, v in r["sub_metrics"].items():
-            print(f"  {k:<28} A={v['A']:.3f}  B={v['B']:.3f}  Δ={v['delta']:+.3f}  ({v['delta_pct']:+.1f}%)")
+            print(
+                f"  {k:<28} A={v['A']:.3f}  B={v['B']:.3f}  Δ={v['delta']:+.3f}  ({v['delta_pct']:+.1f}%)"
+            )
 
     # Strutturali
     if r.get("structural"):
-        print(f"\n--- Metriche strutturali ---")
+        print("\n--- Metriche strutturali ---")
         for k, v in r["structural"].items():
-            print(f"  {k:<28} A={v.get('A', 0):.2f}  B={v['B']:.2f}  Δ={v.get('delta', v['B']):+.2f}")
+            print(
+                f"  {k:<28} A={v.get('A', 0):.2f}  B={v['B']:.2f}  Δ={v.get('delta', v['B']):+.2f}"
+            )
 
     # Consistenza
     c = r["consistency"]
-    print(f"\n--- Consistenza intra-claim ---")
+    print("\n--- Consistenza intra-claim ---")
     print(f"  Tutte per B ({len(c['all_B'])}):       {', '.join(c['all_B'])}")
     print(f"  Maggioranza B ({len(c['majority_B'])}):  {', '.join(c['majority_B'])}")
     print(f"  Maggioranza A ({len(c['majority_A'])}):  {', '.join(c['majority_A'])}")
@@ -392,21 +450,23 @@ def print_results(r: dict) -> None:
 
     # Verdict flips
     vf = r["verdict_flips"]
-    print(f"\n--- Verdict flip ---")
+    print("\n--- Verdict flip ---")
     print(f"  {vf['n_flips']} flip su {r['n_clean']} coppie ({vf['pct']} %)")
     print(f"  → uncertain: {vf['to_uncertain']},  → plausible: {vf['to_plausible']}")
     for f in vf["details"]:
-        print(f"    {f['claim_id']}-R{f['replicate']}: {f['verdict_A']} → {f['verdict_B']}  (Δ_final = {f['delta_final']:+.3f})")
+        print(
+            f"    {f['claim_id']}-R{f['replicate']}: {f['verdict_A']} → {f['verdict_B']}  (Δ_final = {f['delta_final']:+.3f})"
+        )
 
     # Isolamento PRO
     pi = r["pro_isolation"]
-    print(f"\n--- Isolamento PRO ---")
+    print("\n--- Isolamento PRO ---")
     print(f"  mean |Δ_pro| = {pi['mean_abs_delta']:.6f}")
     print(f"  max  |Δ_pro| = {pi['max_abs_delta']:.6f}")
 
     # Gate
     if r.get("gate_distribution"):
-        print(f"\n--- Gate distribution ---")
+        print("\n--- Gate distribution ---")
         for setup, dist in r["gate_distribution"].items():
             print(f"  Setup {setup}: {dict(dist)}")
 
@@ -417,9 +477,18 @@ def print_results(r: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Analisi statistica DoE A/B per LexCausa")
-    parser.add_argument("--csv", type=Path, default=DEFAULT_CSV, help="Path al file run_summary.csv")
-    parser.add_argument("--out", type=Path, default=None, help="Se specificato, salva i risultati in JSON")
+    parser = argparse.ArgumentParser(
+        description="Analisi statistica DoE A/B per LexCausa"
+    )
+    parser.add_argument(
+        "--csv", type=Path, default=DEFAULT_CSV, help="Path al file run_summary.csv"
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Se specificato, salva i risultati in JSON",
+    )
     args = parser.parse_args()
 
     if not args.csv.exists():

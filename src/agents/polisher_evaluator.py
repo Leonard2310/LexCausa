@@ -161,7 +161,7 @@ class PolisherEvaluator(
     def run(
         self,
         claim: str,
-        domain: str = "ENTRAMBI",
+        domain: str = "BOTH",
         reasoner_output: dict | None = None,
         counter_reasoner_output: dict | None = None,
         **kwargs: Any,
@@ -186,7 +186,7 @@ class PolisherEvaluator(
             "evaluation_status",
             {
                 "stage": "start",
-                "message": "Avvio verifica consistenza su knowledge base",
+                "message": "Starting knowledge base consistency check",
             },
         )
 
@@ -258,7 +258,7 @@ class PolisherEvaluator(
             "evaluation_status",
             {
                 "stage": "kb_reasoner_done",
-                "message": "Controllo KB della catena principale completato",
+                "message": "Main chain KB check completed",
             },
         )
         _emit(
@@ -284,7 +284,7 @@ class PolisherEvaluator(
             "evaluation_status",
             {
                 "stage": "kb_counter_done",
-                "message": "Controllo KB della catena contraria completato",
+                "message": "Counter chain KB check completed",
             },
         )
         _emit(
@@ -321,16 +321,16 @@ class PolisherEvaluator(
             counter_reasoner_output["abstained"] = True
             counter_reasoner_output["abstention_reason"] = counter_gate.get(
                 "reason",
-                "Il Counter-Reasoner non ha abbastanza materiale per argomentare contro.",
+                "The Counter-Reasoner does not have enough material to argue against.",
             )
-            self._log("⚠️ Counter gate attivato: Counter-Reasoner marcato come astenuto")
+            self._log("⚠️ Counter gate activated: Counter-Reasoner marked as abstained")
         _emit(
             "evaluation_partial",
             {"consistency_report": {"counter_reasoner_gate": counter_gate}},
         )
         _emit(
             "evaluation_status",
-            {"stage": "gate_done", "message": "Controllo opposizione completato"},
+            {"stage": "gate_done", "message": "Opposition check completed"},
         )
 
         # ----- Repair chains if needed -----
@@ -339,7 +339,7 @@ class PolisherEvaluator(
             "evaluation_status",
             {
                 "stage": "repair_start",
-                "message": "Verifica riparazioni citazioni e catene in corso",
+                "message": "Citation and chain repair check in progress",
             },
         )
 
@@ -358,7 +358,7 @@ class PolisherEvaluator(
         if counter_gate.get("abstain"):
             repaired_counter_chain = counter_raw
             self._log(
-                "⛔ Counter chain repair skipped: counter marcato come astenuto dal gate"
+                "⛔ Counter chain repair skipped: counter marked as abstained by gate"
             )
         elif (
             counter_report.repaired_citations > 0
@@ -390,7 +390,7 @@ class PolisherEvaluator(
         if counter_gate.get("abstain"):
             repaired_counter_aspic = {}
             self._log(
-                "⛔ Counter ASPIC repair skipped: nessun materiale contro da consolidare"
+                "⛔ Counter ASPIC repair skipped: no counter material to consolidate"
             )
         else:
             repaired_counter_aspic = self._repair_aspic_ir(
@@ -418,7 +418,7 @@ class PolisherEvaluator(
         )
         _emit(
             "evaluation_status",
-            {"stage": "repair_done", "message": "Riparazione catene/ASPIC completata"},
+            {"stage": "repair_done", "message": "Chain/ASPIC repair completed"},
         )
 
         # Dialectical tree bundle
@@ -445,9 +445,7 @@ class PolisherEvaluator(
         )
         if counter_gate.get("abstain"):
             aqa_counter_ir = {}
-            self._log(
-                "⛔ Counter escluso da AQA: gate di opposizione ha marcato astensione"
-            )
+            self._log("⛔ Counter excluded from AQA: opposition gate marked abstention")
         else:
             aqa_counter_ir = (
                 repaired_counter_aspic
@@ -488,14 +486,14 @@ class PolisherEvaluator(
             "evaluation_status",
             {
                 "stage": "aqa_done",
-                "message": "Analisi attacchi e punteggio AQA completati",
+                "message": "Attack analysis and AQA scoring completed",
             },
         )
 
         self._log("Evaluation complete")
         _emit(
             "evaluation_status",
-            {"stage": "done", "message": "Valutazione completata"},
+            {"stage": "done", "message": "Evaluation completed"},
         )
 
         return EvaluationResult(
@@ -522,7 +520,7 @@ class PolisherEvaluator(
         """Remove placeholder/meta steps that are not legal reasoning content."""
         placeholder_prefixes = (
             "precedents:",
-            "catena di ragionamento non disponibile",
+            "reasoning chain not available",
         )
         steps: list[str] = []
         for step in chain or []:
@@ -562,11 +560,11 @@ class PolisherEvaluator(
                     "abstain": True,
                     "label": "ALREADY_ABSTAINED",
                     "reason": counter_abstention_reason
-                    or "Counter-Reasoner già astenuto prima del controllo del Polisher.",
+                    or "Counter-Reasoner already abstained before Polisher check.",
                 }
             )
             self._log(
-                "ℹ️ Counter gate: salto verifica opposizione (counter già astenuto)"
+                "ℹ️ Counter gate: skipping opposition check (counter already abstained)"
             )
             return gate
 
@@ -590,12 +588,12 @@ class PolisherEvaluator(
                     "abstain": True,
                     "label": "INSUFFICIENT_MATERIAL",
                     "reason": (
-                        "Il Counter-Reasoner non ha abbastanza materiale per "
-                        "argomentare contro in modo autonomo e consistente."
+                        "The Counter-Reasoner does not have enough material to "
+                        "argue against independently and consistently."
                     ),
                 }
             )
-            self._log("⚠️ Counter gate: materiale contro insufficiente")
+            self._log("⚠️ Counter gate: insufficient counter material")
             return gate
 
         if not reasoner_steps:
@@ -603,10 +601,10 @@ class PolisherEvaluator(
                 {
                     "abstain": False,
                     "label": "SKIPPED_NO_REASONER_CHAIN",
-                    "reason": "Verifica opposizione non eseguita: chain del Reasoner assente.",
+                    "reason": "Opposition check not performed: Reasoner chain missing.",
                 }
             )
-            self._log("⚠️ Counter gate: impossibile confrontare, chain reasoner assente")
+            self._log("⚠️ Counter gate: cannot compare, reasoner chain missing")
             return gate
 
         prompt = render_prompt(
@@ -631,8 +629,8 @@ class PolisherEvaluator(
                     "abstain": True,
                     "label": "CHECK_FAILED",
                     "reason": (
-                        "Il Counter-Reasoner non ha abbastanza materiale verificabile "
-                        "per argomentare contro."
+                        "The Counter-Reasoner does not have enough verifiable material "
+                        "to argue against."
                     ),
                 }
             )
@@ -641,11 +639,11 @@ class PolisherEvaluator(
         # Accept both full opposition and materially limitative opposition.
         if re.search(r"\bOPPOSING_LIMITATIVE\b", verdict):
             gate["label"] = "OPPOSING_LIMITATIVE"
-            self._log("✅ Counter gate: opposizione limitativa confermata")
+            self._log("✅ Counter gate: limitative opposition confirmed")
             return gate
         if re.search(r"\bOPPOSING(?:_STRONG)?\b", verdict):
             gate["label"] = "OPPOSING_STRONG"
-            self._log("✅ Counter gate: opposizione confermata")
+            self._log("✅ Counter gate: opposition confirmed")
             return gate
 
         label = "UNCLEAR"
@@ -659,12 +657,12 @@ class PolisherEvaluator(
                 "abstain": True,
                 "label": label,
                 "reason": (
-                    "Il Counter-Reasoner non ha abbastanza materiale per "
-                    "argomentare contro in modo effettivamente opposto al Reasoner."
+                    "The Counter-Reasoner does not have enough material to "
+                    "argue against in a way that is effectively opposite to the Reasoner."
                 ),
             }
         )
         self._log(
-            f"⚠️ Counter gate: opposizione non sufficiente (label={label}) -> astensione"
+            f"⚠️ Counter gate: opposition not sufficient (label={label}) -> abstention"
         )
         return gate

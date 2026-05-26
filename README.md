@@ -3,15 +3,15 @@
 <p align="center">
    <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python">
    <img src="https://img.shields.io/badge/Neo4j-Knowledge_Graph-4581C3?logo=neo4j&logoColor=white" alt="Neo4j">
-   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" alt="React">
+   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
    <img src="https://img.shields.io/badge/LLM-Groq_Cloud-F55036?logo=lightning&logoColor=white" alt="Groq">
    <img src="https://img.shields.io/badge/Framework-LangChain-1C3C3C?logo=langchain&logoColor=white" alt="LangChain">
    <img src="https://img.shields.io/badge/ASPIC+-Argumentation-8B5CF6" alt="ASPIC+">
-   <img src="https://img.shields.io/badge/License-AGPL--3.0-yellow" alt="License">
-   <img src="https://img.shields.io/badge/Version-0.10.0-brightgreen" alt="Version">
+   <img src="https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey" alt="License">
+   <img src="https://img.shields.io/badge/Version-1.0.0-brightgreen" alt="Version">
 </p>
 
-> ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering.
+> ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering at the University of Naples Federico II.
 
 **LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (Groq Cloud), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.
 
@@ -21,7 +21,7 @@
 
 - **Legal Claim Classification**: Automatic claim classification and routing for Civil, Penal, and Administrative law via LLM
 - **Domain Router**: Lightweight pre-routing agent that classifies claims as CIVILE, PENALE, AMMINISTRATIVO, or ENTRAMBI
-- **Hybrid Statute Retrieval**: Hybrid search on 4200+ Normattiva statutes using Legal-BERT embeddings + Neo4j fulltext (rank fusion), with strict source/libro pre-filtering
+- **Hybrid Statute Retrieval**: Hybrid search on 4200+ Normattiva statutes using Legal-BERT embeddings + Neo4j fulltext (rank fusion), with strict source/book pre-filtering
 - **Citation Graph Expansion (Neo4j CITES)**: Retrieval expands seed statutes with cited statutes via `(:Statute)-[:CITES]->(:Statute)` before LLM relevance/applicability filters
 - **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
 - **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
@@ -53,6 +53,7 @@
 - **DoE A/B Workflow**: Dedicated DoE tab with one shared Reasoner run and two Counter/Evaluator setups (baseline vs. treatment), live A/B switching in the UI, consolidated DoE log/report persistence, and automatic delta analysis
 - **DoE Batch Runner**: Automated multi-claim batch execution (`run_doe_batch.py`) with resume capability (`--resume`), checkpoint recovery (`--start-from`), selective runs (`--only`), dry-run mode, abstention classification, and stability metrics
 - **DoE Statistical Analysis**: Post-hoc analysis script (`scripts/analyze_doe_results.py`) computing paired t-tests, sign tests, Cohen's d, domain breakdowns, verdict flips, error analysis, and intra-claim consistency from batch CSV results
+- **Multi-DoE Framework**: Multi-dimensional ablation framework (`scripts/run_multi_doe.py` + `scripts/analyze_multi_doe.py`) supporting RQ1 model efficacy (reasoning vs non-reasoning models, paired t-test, Cohen's d), RQ2 citation faithfulness (valid citations / total, bootstrap CI, sign test), RQ3 planning ablation (enable_planning toggle on both Reasoner and Counter-Reasoner, token/quality deltas), and token cost analysis; runs via the frontend Multi-DoE tab or as a standalone CLI; containerized via Dockerfile + compose.yml for HPC deployment
 - **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
 - **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
 - **Centralized Configuration**: All parameters (150+ settings: models, retries, AQA weights, search, truncation, attack params, coverage, abstention, per-role fallback, domain-specific weights, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
@@ -60,7 +61,7 @@
 - **Per-Claim Pipeline Logging**: Every pipeline run is logged to `logs/<timestamp>_<slug>.log` for full auditability
 - **DoE and PDF Artifacts**: DoE runs can persist a consolidated A/B log + JSON report, and exported PDFs are saved automatically under `logs/pdf_exports/<pipeline|doe>/` in addition to browser download
 - **Pre-Retrieval Claim Context Memory (SQLite)**: Optional cache of final applicable statutes and precedents per claim (reusable across Search/Reasoner/Counter/Pipeline runs and warmable via script)
-- **React Frontend**: Modern four-tab interface (Search, Reasoning, Full Pipeline, DoE) with ASPIC+ Metagraph visualization, attack details, PDF export, and A/B comparison controls on Vite + React 18
+- **React Frontend**: Modern five-tab interface (Search, Reasoning, Full Pipeline, DoE A/B, Multi-DoE) with ASPIC+ Metagraph visualization, attack details, PDF export, and A/B comparison controls on Vite + React 19
 - **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation (including retry attempts), refinement phase control events (`reasoner_refinement_started/completed`) with live chain reset/replace behavior in the frontend, plus SSE endpoints for full pipeline, standalone Counter-Reasoner, and standalone Evaluator
 
 
@@ -74,7 +75,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                       Frontend (React + Vite)                           │
-│ Search │ Reasoning │ Full Pipeline │ DoE (A/B) │ ⚙️ Settings Panel      │
+│ Search │ Reasoning │ Full Pipeline │ DoE (A/B) │ Multi-DoE │ ⚙️ Settings │
 │      + ASPIC+ Metagraph SVG + Attack Details + PDF Export               │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -85,7 +86,9 @@
 │  GET  /health              → Health check with API version              │
 │  GET  /api/settings        → Defaults & available models                │
 │  POST /api/chat            → LegalSearchPipeline (unified retrieval)    │
+│  POST /api/chat/stream     → Search SSE live streaming                  │
 │  POST /api/reason          → Reasoner (iterative chain generation)      │
+│  POST /api/reason/stream   → Reasoner SSE live streaming                │
 │  POST /api/counter_reason  → Counter-Reasoner (iterative counter-chain) │
 │  POST /api/counter_reason/stream → Counter-Reasoner SSE                 │
 │  POST /api/pipeline        → Full Pipeline (Router→Reasoner→Counter→AQA)│
@@ -93,7 +96,11 @@
 │  POST /api/pipeline/stop   → Stop active SSE pipeline run               │
 │  POST /api/evaluate        → Polisher-Evaluator (standalone evaluation) │
 │  POST /api/evaluate/stream → Polisher-Evaluator SSE                     │
+│  GET  /api/stats           → Runtime usage stats (calls + tokens)       │
+│  POST /api/stats/reset     → Reset runtime usage stats                  │
 │  POST /api/doe/log         → Consolidated DoE log/report persistence    │
+│  POST /api/doe/advanced/run        → Launch Multi-DoE batch          │
+│  GET  /api/doe/advanced/status/<id>→ Poll Multi-DoE run status       │
 │  POST /api/pdf/export      → Persist exported PDF artifacts             │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -181,9 +188,21 @@ poetry install --no-root
 poetry install --no-root
 ```
 
+Or use the project helper target (backend + frontend dependencies):
+
+```bash
+make setup
+```
+
 ### 3. Configure Environment
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (starting from `.env.example`):
+
+```bash
+cp .env.example .env
+```
+
+Then fill in your values:
 
 ```env
 # Neo4j Configuration
@@ -197,11 +216,22 @@ GROQ_API_KEY_V2=your_second_key_here
 ...
 GROQ_API_KEY_VN=your_third_key_here
 
+# Notebook benchmark (Groq vs SCOPE)
+GROQ_API_KEY=your_groq_api_key_for_notebook
+SCOPE_API_KEY=your_scope_api_key
+SCOPE_ENDPOINT=https://your-scope-endpoint/v1/chat/completions
+SCOPE_EXTRA_HEADERS_JSON={}
+SCOPE_HPC_USER=<USERNAME>
+SCOPE_HPC_HOST=<HPC_HOST>
+SCOPE_HPC_REMOTE_WORKDIR=/ibiscostorage/<USERNAME>/lexcausa_bench
+
 # API Server
 API_HOST=0.0.0.0
 API_PORT=8000
 DEBUG=true
 ```
+
+Notebooks use the same `.env` file as the backend. In VS Code, select the same Poetry interpreter for the notebook kernel.
 
 ### 4. Start Neo4j Database
 
@@ -235,6 +265,20 @@ npm install
 
 ### 7. Run the Application
 
+Recommended one-command startup:
+
+```bash
+make dev
+```
+
+Stop local stack:
+
+```bash
+make dev-stop
+```
+
+Manual alternative (two terminals):
+
 ```bash
 # Terminal 1: Start the API server
 poetry run python src/api_server.py
@@ -245,6 +289,27 @@ cd src/frontend && npm run dev
 
 The frontend will be available at `http://localhost:5173` and the API at `http://localhost:8000`.
 
+### Runtime Usage Stats
+
+The backend now tracks runtime counters for:
+- API calls by endpoint
+- LLM calls by provider/model/source
+- Prompt/completion/total token usage (when provider metadata is available)
+
+Query current stats:
+
+```bash
+curl http://localhost:8000/api/stats
+```
+
+Reset counters:
+
+```bash
+curl -X POST http://localhost:8000/api/stats/reset
+```
+
+Snapshots are persisted under `logs/usage_stats/` (`latest.json` plus per-session files).
+
 ## 📁 Project Structure
 
 ```
@@ -253,8 +318,8 @@ LexCausa/
 │   ├── config.py                  # Centralized configuration (150+ Pydantic Settings)
 │   ├── api_server.py              # Flask API server (DoE, SSE, PDF export endpoints)
 │   ├── agents/                    # LLM agents with explicit orchestration
-│   │   ├── base.py               # Base agent class + progressive search + filters
-│   │   ├── router.py             # Domain router (CIVILE/PENALE/ENTRAMBI)
+│   │   ├── base.py               # Base agent class + progressive search + filters 
+│   │   ├── router.py             # Domain router (CIVIL/PENAL/BOTH)
 │   │   ├── reasoner.py           # Iterative reasoning agent (ASPIC+)
 │   │   ├── counter_reasoner.py   # Iterative counter-argumentation agent (ASPIC+)
 │   │   ├── polisher_evaluator.py # Mixin compositor (Consistency+Scoring+NLP+AQA)
@@ -276,6 +341,7 @@ LexCausa/
 │   │   ├── claim_classifier.py   # LLM claim classification
 │   │   ├── claim_context_memory.py # SQLite pre-retrieval claim context cache
 │   │   ├── pipeline_control.py   # Cooperative cancellation primitives/exceptions
+│   │   ├── usage_stats.py        # Runtime API/LLM usage stats collector
 │   │   └── legal_search.py       # Hybrid legal search pipeline (vector + fulltext fusion)
 │   ├── db/                        # Database management
 │   │   ├── db_orchestrator.py    # Full DB lifecycle (clean/schema/load/verify)
@@ -284,26 +350,33 @@ LexCausa/
 │   │   ├── embeddings/           # Pre-computed embeddings (.npy)
 │   │   ├── precedents/           # ITA-CaseHold precedents (parquet)
 │   │   └── statutes/              # Civil + Penal + Administrative CSVs (`*_normattiva.csv`)
-│   └── frontend/                  # React frontend (Vite + React 18)
+│   └── frontend/                  # React frontend (Vite + React 19)
 │       └── src/
 │           ├── App.jsx            # Main app with Search/Reasoning/Pipeline/DoE tabs
 │           ├── AspicMetagraph.jsx # ASPIC+ meta-graph SVG visualization
 │           └── AttackTextDetails.jsx # Cross-attack detail panel
 ├── scripts/                       # Utility scripts
 │   ├── analyze_doe_results.py    # Statistical analysis of DoE A/B batch results
+│   ├── analyze_multi_doe.py   # Statistical analysis for Multi-DoE (RQ1/RQ2/RQ3)
+│   ├── run_multi_doe.py       # Multi-DoE CLI orchestrator
+│   ├── start_backend_doe_mode.sh # Docker startup helper for DoE runs
 │   ├── capture_api_chat_retrieval_memory.py  # Claim context memory warmup
 │   ├── start_public_demo.sh      # Cloudflare tunnel public demo launcher
 │   ├── tune_aqa_real_plus_synth.py  # AQA tuning (real + synthetic)
 │   ├── tune_aqa_with_gold_dataset.py  # AQA tuning (gold dataset)
 │   └── tune_retrieval_claims.py  # Supervised retrieval tuning
 ├── experiments/                   # DoE experiments
-│   └── doe/
-│       ├── doe_settings.json     # DoE configuration
-│       └── scripts/
-│           └── run_doe_batch.py   # Automated DoE batch runner (resume, checkpoint, dry-run)
+│   ├── doe/
+│   │   ├── doe_settings.json     # DoE A/B configuration
+│   │   └── scripts/
+│   │       └── run_doe_batch.py   # Automated DoE A/B batch runner
+│   └── multi_doe/
+│       └── README.md             # Multi-DoE documentation and quick start
 ├── notebooks/                     # Normattiva extractors + embeddings notebooks
 ├── logs/                          # Pipeline/DoE logs, reports, AQA artifacts, exported PDFs
-├── compose.yml                    # Docker Compose for Neo4j
+├── Dockerfile                     # Multi-stage image for containerized DoE runs
+├── .dockerignore                  # Docker build context exclusions
+├── compose.yml                    # Docker Compose (Neo4j + Flask API)
 ├── pyproject.toml                 # Poetry configuration
 └── README.md
 ```
@@ -329,12 +402,11 @@ These variables **must** be set in the `.env` file:
 ### Optional — LLM & Server
 
 These can be overridden in `.env` or via the frontend Settings panel:
-
 - Groq client behavior (retry/backoff, key rotation, model-down cache TTL)
 - LLM generation knobs (temperature, max tokens)
 - API runtime settings (host/port/debug)
 
-Model catalog and aliases (`groq_llama_scout_17b`, `groq_llama_maverick_17b`, `gpt_oss_120b`, `gpt_oss_20b`, `qwen_qwen3_32b`, `groq_llama_3_3_70b_versatile`) are code-defined in `src/config.py`.
+Model catalog and aliases (`gpt_oss_120b`, `gpt_oss_20b`, `qwen_qwen3_32b`, `groq_llama_3_3_70b_versatile`) are code-defined in `src/config.py`.
 
 ### Optional — Embedding & Search
 
@@ -347,7 +419,7 @@ Configurable areas:
 - Citation expansion tuning (`SEARCH_CITES_ENABLED`, per-seed limit, max added, score decay, multi-seed bonus)
 - Progressive search thresholds/steps for expansion rounds
 
-Pre-retrieval claim context memory (SQLite):
+Pre-retrieval claim context memory (SQLite): 
 
 - Optional per-claim cache for the **final applicable** statutes and precedents produced by `prepare_claim_context(...)`
 - Reused by `/api/chat`, `/api/reason`, `/api/counter_reason`, and full pipeline endpoints when enabled
@@ -355,7 +427,7 @@ Pre-retrieval claim context memory (SQLite):
 - Can be pre-populated in batch using `scripts/capture_api_chat_retrieval_memory.py --claim-context-memory`
 
 Debug support:
-
+ 
 - Existing backend/pipeline logs print, for each retrieved statute:
   `vector_rank_score`, `fulltext_rank_score`, `fusion_score`, `keyword_bonus`, `priority_multiplier`.
 
@@ -363,7 +435,7 @@ Debug support:
 
 The script `scripts/tune_retrieval_claims.py` supports supervised tuning using
 gold labels in `claims_gold_labels.json`.
-
+ 
 Query-term extraction for the fulltext branch is LLM-only (no salient fallback).
 
 Metrics used:
@@ -372,7 +444,7 @@ Metrics used:
 - `nDCG@10`
 
 Run examples:
-
+ 
 ```bash
 # supervised (default if claims_gold_labels.json is present)
 poetry run python scripts/tune_retrieval_claims.py --top-k 30
@@ -485,67 +557,6 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 
 ## 🧪 Agent & Pipeline Development Status
 
-### ✅ Completed
-- [x] Neo4j Knowledge Base with Civil/Penal/Administrative statutes
-- [x] Normattiva-based statute pipeline (`*_normattiva.csv` + `*_normattiva_embeddings.npy`)
-- [x] Hybrid statute retrieval: exact cosine search (source/libro pre-filtered) + fulltext rank fusion
-- [x] Neo4j `CITES` graph: citation edges built from statute references and used in pre-filter retrieval expansion
-- [x] Claim classification and book routing via LLM
-- [x] Domain Router Agent (CIVILE / PENALE / ENTRAMBI)
-- [x] Unified, thread-safe, configurable LegalSearchPipeline (allow-list, soft-filtering)
-- [x] Progressive search with adaptive expansion when post-filtering yields too few results
-- [x] Pre-retrieval LLM filtering for statutes and precedents (default-YES soft filter)
-- [x] Shared context retrieval for both Reasoner and CounterReasoner
-- [x] Reasoner Agent: plan-then-execute generation (ASPIC+) with 3-10 planned steps and anti-repetition validation
-- [x] Counter-Reasoner Agent: plan-then-execute counter-generation (ASPIC+) with multi-attack selection, per-step attack assignment, attack blacklist, and feasibility filtering for more stable counter plans
-- [x] CounterReasoner second-pass targeted retrieval with improved filtering discipline and attack-coverage-based activation
-- [x] Taxonomy anchor filtering with claim-aware applicability (soft core / hard accessory) for Reasoner and CounterReasoner
-- [x] BaseAgent caching for legal context extraction and statute applicability decisions (reduces duplicate LLM calls and improves consistency)
-- [x] Explicit precedent citation by full title in Reasoner and Counter-Reasoner prompts
-- [x] Repetition detection in reasoning steps (Jaccard similarity, threshold 0.70)
-- [x] Polisher-Evaluator Agent: modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin)
-- [x] Consistency Checker: KB verification for statutes and precedents, core/peripheral classification, LLM-constrained repair with verbatim quote validation, citation drop
-- [x] AQA (Argument Quality Assessment): Cogency + NormSupport + Semantics scoring with configurable weights
-- [x] Cross-attack computation: domain-aware rules, severity categorization, NLI contradiction detection via LLM, 6 attack types (contradiction, exception, derogation, extinction, factual_impediment, general_opposition) with per-type damage multipliers
-- [x] Precedent influence scoring: recency, bindingness (cassazione/appello/tribunale), stance confidence, semantic similarity
-- [x] Verdict generation (plausible / implausible / uncertain) with winning_side and confidence mapping
-- [x] ASPIC+ Metagraph SVG visualization: interactive PRO/CONTRA graph with attack arrows, chain flow, and detail panel
-- [x] Attack Text Details: expandable panel with full attacker/target text, type, multiplier, NLI label, overlap, damage
-- [x] Resilient Groq Client: retry + dynamic API key discovery (V1…V99) + model fallback + model-down cache with TTL
-- [x] Smart error classification: model-down (503) vs. rate-limit (429) vs. transient errors
-- [x] Cooperative cancellation across API, agents, and pipeline services + `/api/pipeline/stop` endpoint for interrupting active SSE runs
-- [x] NLI contradiction detection via LLM (replaces local DeBERTa model)
-- [x] ASPIC+ IR formatting for Reasoner and Counter-Reasoner
-- [x] Prescriptive prompts and structured output for all agents
-- [x] Centralized configuration via Pydantic Settings (150+ parameters including truncation, attack, chain, coverage, abstention, per-role fallback, domain-specific weights)
-- [x] Frontend Settings Panel: per-step model selection, temperature, max tokens, search params, AQA weights, chain min/max steps, attack parameters
-- [x] Per-claim pipeline logging (`logs/` directory)
-- [x] Optional pre-retrieval claim context memory (SQLite) with frontend toggles and script-based warmup
-- [x] Reasoner provisional causality bootstrap (plan draft → provisional classification → taxonomy anchors → enriched KB before step generation)
-- [x] Reasoner post-hoc anchor refinement fallback with streaming control events and frontend live reset/replace of the support chain
-- [x] React frontend (Vite) with four tabs + ASPIC+ Metagraph + Attack Details + settings panel
-- [x] DoE A/B workflow with shared Reasoner, baseline/treatment Counter setups, consolidated log/report persistence, and comparative frontend analysis
-- [x] SSE endpoints for standalone Counter-Reasoner and standalone Evaluator
-- [x] Full PDF export for Pipeline/DoE results, including automatic artifact persistence under `logs/pdf_exports/`
-- [x] Precedent ingestion and fulltext search (ITA-CaseHold)
-- [x] Centralized data loading module (`data_loader.py`) with path resolution via Settings
-- [x] Improving precedent utilization in reasoning chains (better citation coverage, richer contextual integration)
-- [x] Supervised Tuning Domain-specific retrieval parameters (metodology weights, overlap multipliers and counts)
-- [x] Supervised Tuning attack evaluation parameters (damage multipliers, strength ratios, severity thresholds) for more balanced verdicts
-- [x] Centralized Prompt Registry (`prompt_registry.py`) with 100+ typed `PromptKey` enum entries covering all agent prompts
-- [x] Attack coverage scoring (AQA bonus for counter-argumentation breadth across weak-point axes)
-- [x] Counter-Reasoner abstention gate with label classification (OPPOSING_STRONG, OPPOSING_LIMITATIVE, AGREEING, UNCLEAR)
-- [x] Reasoner plausibility locking for DoE A/B isolation
-- [x] Per-role model fallback chains (separate Reasoner / Counter-Reasoner fallback aliases and temperatures)
-- [x] Attack precondition evaluation with taxonomy-aware LLM verification and caching
-- [x] Counter-Reasoner second-pass targeted retrieval for insufficient opposing statutes
-- [x] Counter step expansion for multi-attack steps
-- [x] Retrieval fail-fast scope (thread-local context manager for fast filter fallback)
-- [x] DoE batch runner with resume, checkpoint recovery, selective runs, dry-run, abstention tracking, and stability metrics
-- [x] DoE statistical analysis script (paired t-test, sign test, Cohen's d, domain breakdowns, verdict flips, error analysis)
-- [x] Domain-specific hybrid search weights (per-domain vector/fulltext weight pairs and keyword bonus thresholds)
-- [x] ASPIC+ repair and AQA report artifact persistence under `logs/aspic_repairs/` and `logs/aqa_reports/`
-
 
 ### 🚧 In Progress
 - [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
@@ -562,13 +573,11 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 
 ## 📄 License
 
-**Open Source**: This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).  
+This project is licensed under the **Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License (CC BY-NC-ND 4.0)**.  
 See the [LICENSE](LICENSE) file for details.
 
-### Commercial licensing
-
-A commercial license is available for organizations that want to use LexCausa in proprietary and/or commercial products **without** AGPL-3.0 obligations.  
-See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for details and contacts.
+**You are free to** share and redistribute the material for non-commercial purposes, with attribution.  
+**You may not** use it for commercial purposes, nor distribute modified versions.
 
 
 ## 📚 References
@@ -578,13 +587,16 @@ See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for details and contacts.
 
 ## 👤 Authors
 
-**Leonardo Catello**  
-Master's Thesis in Computer Engineering  
+**Leonardo Catello** — [@Leonard2310](https://github.com/Leonard2310)  
 Email: leonardo.catello@hotmail.com
 
-**Salvatore Maione**  
-Master's Thesis in Computer Engineering  
+**Salvatore Maione** — [@salvatore22maione](https://github.com/salvatore22maione)  
 Email: salvatore22maione@gmail.com
+
+### Supervisors
+
+**Prof. Roberto Pietrantuono** — [@rpietrantuono](https://github.com/rpietrantuono)  
+**PhD Cristian Mascia** — [@CristianMascia](https://github.com/CristianMascia)
 
 
 ## 🧾 Citation
@@ -593,4 +605,4 @@ If you use LexCausa in academic work, please cite the repository.
 See [CITATION.cff](CITATION.cff).
 ---
 
-*This project is part of a Master's thesis and is not intended for production legal use.*
+*This project is part of a Master's thesis at the University of Naples Federico II and is not intended for production legal use.*

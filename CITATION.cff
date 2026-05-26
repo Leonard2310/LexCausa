@@ -9,7 +9,14 @@ authors:
   - family-names: "Maione"
     given-names: "Salvatore"
     email: "salvatore22maione@gmail.com"
-license: "AGPL-3.0"
+contact:
+  - family-names: "Pietrantuono"
+    given-names: "Roberto"
+    email: "roberto.pietrantuono@unina.it"
+  - family-names: "Mascia"
+    given-names: "Cristian"
+    email: "cristian.mascia@unina.it"
+license: "CC-BY-NC-ND-4.0"
 repository-code: "https://github.com/Leonard2310/LexCausa"
 keywords:
   - "legal reasoning"

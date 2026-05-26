@@ -247,21 +247,6 @@ def _response_text_safe(resp: requests.Response) -> str:
         return ""
 
 
-def _looks_like_maverick_down_message(text: str) -> bool:
-    raw = (text or "").lower()
-    if "maverick" not in raw and "llama-4-maverick" not in raw:
-        return False
-    return any(
-        marker in raw
-        for marker in (
-            "over capacity",
-            "currently unavailable",
-            "model not available",
-            "marked as down",
-        )
-    )
-
-
 def _wipe_claim_context_memory_db() -> int:
     db_path = PROJECT_ROOT / "cache" / "claim_context_cache.sqlite"
     if not db_path.exists():
@@ -353,18 +338,7 @@ def main() -> int:
         "--retrieval-model-order-aliases",
         nargs="+",
         default=None,
-        help="Override retrieval model alias order for /api/chat request settings (e.g. groq_llama_maverick_17b).",
-    )
-    parser.add_argument(
-        "--maverick-only",
-        action="store_true",
-        help="Shortcut for --retrieval-model-order-aliases groq_llama_maverick_17b",
-    )
-    parser.add_argument(
-        "--maverick-down-wait-seconds",
-        type=float,
-        default=300.0,
-        help="When --maverick-only and Maverick is down/over-capacity, wait this many seconds before retrying the same claim.",
+        help="Override retrieval model alias order for /api/chat request settings (e.g. qwen_qwen3_32b).",
     )
     parser.add_argument(
         "--wipe-claim-context-memory",
@@ -375,9 +349,6 @@ def main() -> int:
 
     if args.overwrite_claim_context_memory:
         args.claim_context_memory = True
-
-    if args.maverick_only:
-        args.retrieval_model_order_aliases = ["groq_llama_maverick_17b"]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -427,10 +398,6 @@ def main() -> int:
         settings_payload["retrieval_model_order_aliases"] = list(
             args.retrieval_model_order_aliases
         )
-    if args.maverick_only:
-        # Enforce fail-fast on retrieval-side LLM filtering errors so cache is never
-        # populated with degraded fallback decisions when Maverick is down.
-        settings_payload["retrieval_strict_llm_errors"] = True
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     manifest_path = OUTPUT_DIR / f"{ts}_manifest.json"
@@ -450,11 +417,8 @@ def main() -> int:
             "claim_context_memory_enabled": bool(args.claim_context_memory),
             "claim_context_memory_overwrite": bool(args.overwrite_claim_context_memory),
             "cache_only": bool(args.cache_only),
-            "maverick_only": bool(args.maverick_only),
-            "maverick_down_wait_seconds": float(args.maverick_down_wait_seconds),
             "wipe_claim_context_memory": bool(args.wipe_claim_context_memory),
             "include_non_covered": bool(args.include_non_covered),
-            "retrieval_strict_llm_errors": bool(args.maverick_only),
         },
         "counts": {"selected_claims": len(claims)},
         "results": [],
@@ -517,7 +481,6 @@ def main() -> int:
             "status": "error",
         }
         try:
-            model_down_waits = 0
             while True:
                 resp = _call_api_chat(
                     base_url=args.base_url,
@@ -533,22 +496,9 @@ def main() -> int:
                 )
                 if resp.status_code == 200:
                     break
-                body_text = _response_text_safe(resp)
-                if args.maverick_only and _looks_like_maverick_down_message(body_text):
-                    model_down_waits += 1
-                    wait_s = float(args.maverick_down_wait_seconds)
-                    print(
-                        f"    Maverick down/over-capacity detected (HTTP {resp.status_code}); "
-                        f"waiting {wait_s:.0f}s then retrying claim...",
-                        flush=True,
-                    )
-                    time.sleep(wait_s)
-                    continue
                 break
             elapsed = round(time.time() - started, 3)
             record["elapsed_s"] = elapsed
-            if model_down_waits:
-                record["maverick_down_waits"] = model_down_waits
             record["http_status"] = resp.status_code
 
             if resp.status_code != 200:

@@ -1,28 +1,28 @@
-# DoE LexCausa (A/B tassonomia causale)
+# LexCausa DoE (Causal Taxonomy A/B Test)
 
-Questa cartella contiene tutto il necessario per eseguire un Design of Experiments
-paired e bloccato per dominio:
+This folder contains everything needed to run a paired and domain-blocked
+Design of Experiments:
 
 - `A`: `enable_causality=false`
 - `B`: `enable_causality=true`
 
-## Struttura
+## Structure
 
-- `doe_settings.template.json`: template di configurazione run (endpoint, timeout, settings fissi).
-- `scripts/generate_run_plan.py`: genera la matrice sperimentale (`run_plan.csv`) da `claims.md`.
-- `scripts/run_doe.py`: esegue i run contro `POST /api/pipeline` e salva i JSON raw.
-- `scripts/extract_metrics.py`: estrae metriche e delta paired.
-- `scripts/analyze_doe.py`: analisi statistica base (sign test, McNemar exact, CI bootstrap).
+- `doe_settings.template.json`: run configuration template (endpoint, timeout, fixed settings).
+- `scripts/generate_run_plan.py`: generates the experimental matrix (`run_plan.csv`) from `claims.md`.
+- `scripts/run_doe.py`: executes runs against `POST /api/pipeline` and saves the raw JSON.
+- `scripts/extract_metrics.py`: extracts metrics and paired deltas.
+- `scripts/analyze_doe.py`: basic statistical analysis (sign test, McNemar exact, CI bootstrap).
 
-## Prerequisiti
+## Prerequisites
 
-1. Backend avviato (`python src/api_server.py`) su `http://127.0.0.1:8000`.
-2. Variabili API key valide nel backend.
-3. Ambiente Python con dipendenze progetto installate.
+1. Backend started (`python src/api_server.py`) on `http://127.0.0.1:8000`.
+2. Valid API key variables in the backend.
+3. Python environment with project dependencies installed.
 
-## Workflow rapido
+## Quick Workflow
 
-### 1) Copia e personalizza la config
+### 1) Copy and customize the config
 
 ```powershell
 Copy-Item experiments/doe/doe_settings.template.json experiments/doe/doe_settings.json

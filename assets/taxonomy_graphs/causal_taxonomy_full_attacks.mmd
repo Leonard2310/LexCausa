@@ -1,0 +1,292 @@
+graph LR
+  TAX["Causal Taxonomy Attacks"]
+
+  D_PEN["penale"]
+  TAX --> D_PEN
+  D_CIV["civile"]
+  TAX --> D_CIV
+  D_AMM["amministrativo"]
+  TAX --> D_AMM
+  D_MIX["entrambi"]
+  TAX --> D_MIX
+
+  CT_1["PEN_FACTUAL\nCore:1 Acc:2\nPool:9"]
+  D_PEN --> CT_1
+  A_1_1["but_for_fails: Il test controfattuale fallisce: l'evento si sarebbe verificato comunque."]
+  CT_1 --> A_1_1
+  A_1_2["no_covering_law_or_low_support: Manca una legge di copertura o il supporto probabilistico del nesso è insufficiente."]
+  CT_1 --> A_1_2
+  A_1_3["alternative_causal_path: Esiste un percorso causale alternativo plausibile."]
+  CT_1 --> A_1_3
+  A_1_4["duty_to_act_missing_for_omission: Per l'omissione manca l'obbligo giuridico di impedire l'evento."]
+  CT_1 --> A_1_4
+  A_1_5["abnormal_or_atypical_chain: La catena causale è atipica/anomala e interrompe l'imputabilità."]
+  CT_1 --> A_1_5
+  A_1_6["foreseeability_threshold_not_met_with_certainty: La soglia di prevedibilità può non risultare raggiunta con sufficien..."]
+  CT_1 --> A_1_6
+  A_1_7["emergency_context_reduces_blameworthiness: Il contesto di urgenza può ridurre rimproverabilità e grado della colpa."]
+  CT_1 --> A_1_7
+  A_1_8["aggravating_circumstances_not_integrated: Le circostanze aggravanti possono non risultare concretamente integrate."]
+  CT_1 --> A_1_8
+  A_1_9["sanction_must_consider_article_133_balance: Il trattamento sanzionatorio va bilanciato secondo i criteri di cui all'a..."]
+  CT_1 --> A_1_9
+
+  CT_2["PEN_INTERVENING\nCore:1 Acc:4\nPool:4"]
+  D_PEN --> CT_2
+  A_2_1["sole_sufficient_cause: Una causa sopravvenuta da sola sufficiente interrompe il nesso."]
+  CT_2 --> A_2_1
+  A_2_2["intervening_cause_breaks_chain: Un fattore sopravvenuto autonomo spezza la catena causale."]
+  CT_2 --> A_2_2
+  A_2_3["abnormal_or_atypical_chain: La catena causale è atipica/anomala e interrompe l'imputabilità."]
+  CT_2 --> A_2_3
+  A_2_4["force_majeure_filter: Caso fortuito o forza maggiore escludono l'imputabilità."]
+  CT_2 --> A_2_4
+
+  CT_3["CIV_REMOTENESS\nCore:2 Acc:3\nPool:5"]
+  D_CIV --> CT_3
+  A_3_1["damage_is_indirect: Il danno è indiretto o mediato rispetto al fatto base."]
+  CT_3 --> A_3_1
+  A_3_2["damage_not_foreseeable: Il danno non era prevedibile ex ante (es. art. 1225 c.c.)."]
+  CT_3 --> A_3_2
+  A_3_3["creditor_contributed: Il creditore ha concorso a causare evento o danno."]
+  CT_3 --> A_3_3
+  A_3_4["creditor_failed_to_mitigate: Il creditore non ha mitigato il danno evitabile (art. 1227 c.c.)."]
+  CT_3 --> A_3_4
+  A_3_5["quantification_uncertain: La quantificazione del danno è incerta o speculativa."]
+  CT_3 --> A_3_5
+
+  CT_4["AMM_PROCEDURAL_LEGITIMACY\nCore:3 Acc:4\nPool:5"]
+  D_AMM --> CT_4
+  A_4_1["competence_or_procedure_regular: L'amministrazione era competente e il procedimento è regolare."]
+  CT_4 --> A_4_1
+  A_4_2["motivation_is_sufficient: La motivazione del provvedimento è sufficiente e coerente."]
+  CT_4 --> A_4_2
+  A_4_3["participation_not_essential_or_not_denied: Le garanzie partecipative sono rispettate, oppure la loro omissione non è ..."]
+  CT_4 --> A_4_3
+  A_4_4["silence_rule_not_applicable: La disciplina su termini/silenzio non è applicabile al caso concreto."]
+  CT_4 --> A_4_4
+  A_4_5["vizio_non_invalidante_21_octies: L'eventuale vizio procedimentale non è invalidante ex art. 21-octies L. 241/1990."]
+  CT_4 --> A_4_5
+
+  CT_5["IMPUTATION_FILTER\nCore:1 Acc:3\nPool:3"]
+  D_PEN --> CT_5
+  A_5_1["event_was_avoidable: L'evento era evitabile con l'ordinaria diligenza."]
+  CT_5 --> A_5_1
+  A_5_2["event_was_foreseeable: L'evento era prevedibile; non è fortuito."]
+  CT_5 --> A_5_2
+  A_5_3["risk_was_assumed_or_controllable: Il rischio era assunto o controllabile, quindi non fortuito."]
+  CT_5 --> A_5_3
+
+  CT_6["CIV_CONTRACT_REMEDIES\nCore:2 Acc:6\nPool:5"]
+  D_CIV --> CT_6
+  A_6_1["breach_not_grave_or_not_essential: La gravita dell'inadempimento puo essere contestata, oppure gli effetti del termin..."]
+  CT_6 --> A_6_1
+  A_6_2["exceptio_non_rite_adimpleti: La sospensione della controparte può essere sproporzionata ex eccezione di inadempimento."]
+  CT_6 --> A_6_2
+  A_6_3["caparra_limits_remedies: La caparra può assorbire o limitare la cumulabilità con danni ulteriori."]
+  CT_6 --> A_6_3
+  A_6_4["penalty_excessive_or_exclusive: La clausola penale può essere ridotta equitativamente e limitare ulteriori pretese."]
+  CT_6 --> A_6_4
+  A_6_5["further_damage_not_proven_or_not_direct: I danni ulteriori non sono provati come conseguenze immediate e dirette."]
+  CT_6 --> A_6_5
+
+  CT_7["CIV_SALE_DEFECTS\nCore:2 Acc:2\nPool:5"]
+  D_CIV --> CT_7
+  A_7_1["defects_not_proven_or_not_hidden: I vizi non sono sufficientemente provati o non hanno natura rilevante/occulta."]
+  CT_7 --> A_7_1
+  A_7_2["notice_or_limitation_bar_for_vices: Decadenza o prescrizione possono precludere i rimedi per vizi."]
+  CT_7 --> A_7_2
+  A_7_3["misuse_or_external_cause_of_defect: Il malfunzionamento può dipendere da uso/manutenzione e non solo da vizio intrins..."]
+  CT_7 --> A_7_3
+  A_7_4["remedy_reduction_preferred_over_resolution: La riduzione del prezzo può essere rimedio proporzionato rispetto alla ri..."]
+  CT_7 --> A_7_4
+  A_7_5["consequential_damage_not_proven: Le perdite consequenziali sono incerte, indirette o non adeguatamente documentate."]
+  CT_7 --> A_7_5
+
+  CT_8["CIV_CUSTODY_DAMAGE\nCore:2 Acc:2\nPool:5"]
+  D_CIV --> CT_8
+  A_8_1["custodianship_or_control_not_proven: La custodia o il controllo della fonte di danno non risultano chiaramente provati."]
+  CT_8 --> A_8_1
+  A_8_2["fortuitous_external_factor: Un fattore esterno fortuito può ridurre o escludere la responsabilità oggettiva."]
+  CT_8 --> A_8_2
+  A_8_3["contributory_fault_of_victim: Il concorso del danneggiato può ridurre il risarcimento dovuto."]
+  CT_8 --> A_8_3
+  A_8_4["causal_link_between_thing_and_damage_uncertain: Il nesso causale tra cosa/animale e danno non è sufficientemente dimo..."]
+  CT_8 --> A_8_4
+  A_8_5["internal_recourse_separate_from_external_liability: Il riparto interno tra obbligati è distinto dalla responsabilità ..."]
+  CT_8 --> A_8_5
+
+  CT_9["PEN_PROPERTY_QUALIFICATION\nCore:2 Acc:4\nPool:5"]
+  D_PEN --> CT_9
+  A_9_1["legal_qualification_more_specific_or_alternative: Può risultare più coerente una diversa o più specifica qualificazio..."]
+  CT_9 --> A_9_1
+  A_9_2["subjective_element_not_fully_proven: L'elemento soggettivo non risulta pienamente supportato dagli elementi disponibili."]
+  CT_9 --> A_9_2
+  A_9_3["restitution_or_reparation_reduces_penalty_impact: Restituzione o riparazione successiva incidono sul trattamento sanz..."]
+  CT_9 --> A_9_3
+  A_9_4["aggravating_elements_not_fully_proven: Le circostanze aggravanti non risultano integralmente provate."]
+  CT_9 --> A_9_4
+  A_9_5["intent_to_profit_or_unjust_gain_not_proven: L'intento di profitto/ingiusto vantaggio non è sufficientemente dimostrato."]
+  CT_9 --> A_9_5
+
+  CT_10["PEN_RIGHTS_BALANCING\nCore:2 Acc:3\nPool:5"]
+  D_PEN --> CT_10
+  A_10_1["exercise_of_right_or_justification_possible: È configurabile un profilo di esercizio del diritto/scriminante da bilan..."]
+  CT_10 --> A_10_1
+  A_10_2["factual_matrix_supports_lesser_offence: La matrice fattuale può sostenere una qualificazione meno grave del fatto."]
+  CT_10 --> A_10_2
+  A_10_3["publicity_or_diffusion_element_not_proven: L'elemento della diffusione pubblica può essere meno intenso di quanto ded..."]
+  CT_10 --> A_10_3
+  A_10_4["truth_interest_continence_balance: Verità, interesse pubblico e continenza possono giustificare la manifestazione."]
+  CT_10 --> A_10_4
+  A_10_5["private_self_help_limits_need_precise_assessment: I limiti dell'autotutela privata impongono una verifica rigorosa de..."]
+  CT_10 --> A_10_5
+
+  CT_11["PEN_COLPA_GRADATION\nCore:2 Acc:6\nPool:5"]
+  D_PEN --> CT_11
+  A_11_1["emergency_context_reduces_blameworthiness: Il contesto di urgenza può ridurre rimproverabilità e grado della colpa."]
+  CT_11 --> A_11_1
+  A_11_2["foreseeability_threshold_not_met_with_certainty: La soglia di prevedibilità può non risultare raggiunta con sufficien..."]
+  CT_11 --> A_11_2
+  A_11_3["cooperative_fault_not_individualized: La cooperazione colposa non risulta adeguatamente individualizzata per ciascun ..."]
+  CT_11 --> A_11_3
+  A_11_4["aggravating_circumstances_not_integrated: Le circostanze aggravanti possono non risultare concretamente integrate."]
+  CT_11 --> A_11_4
+  A_11_5["sanction_must_consider_article_133_balance: Il trattamento sanzionatorio va bilanciato secondo i criteri di cui all'a..."]
+  CT_11 --> A_11_5
+
+  CT_12["AMM_AUTOTUTELA_BALANCE\nCore:2 Acc:3\nPool:5"]
+  D_AMM --> CT_12
+  A_12_1["current_public_interest_not_specific: L'interesse pubblico attuale in autotutela è generico o non specificamente moti..."]
+  CT_12 --> A_12_1
+  A_12_2["legitimate_reliance_not_balanced: L'affidamento legittimo del privato non risulta adeguatamente bilanciato."]
+  CT_12 --> A_12_2
+  A_12_3["participation_in_autotutela_inadequate: Le garanzie partecipative nella fase di autotutela sono risultate insufficienti."]
+  CT_12 --> A_12_3
+  A_12_4["revocation_requires_indemnity_assessment: La revoca richiede adeguata valutazione dell'eventuale indennizzo."]
+  CT_12 --> A_12_4
+  A_12_5["annulment_timing_unreasonable: La tempistica dell'annullamento appare irragionevole rispetto a certezza e affidamento."]
+  CT_12 --> A_12_5
+
+  CT_13["AMM_DELAY_REMEDIES\nCore:2 Acc:2\nPool:5"]
+  D_AMM --> CT_13
+  A_13_1["delay_not_attributable_to_authority: Il ritardo procedimentale può non essere integralmente imputabile all'amministra..."]
+  CT_13 --> A_13_1
+  A_13_2["causal_damage_from_delay_not_proven: Il danno causalmente derivante dal ritardo non risulta sufficientemente provato."]
+  CT_13 --> A_13_2
+  A_13_3["substitute_power_not_activated: Il potere sostitutivo non è stato attivato prima di imputare piena responsabilità."]
+  CT_13 --> A_13_3
+  A_13_4["silent_regime_specific_not_triggered: La specifica disciplina del silenzio può non risultare attivata nel caso concreto."]
+  CT_13 --> A_13_4
+  A_13_5["compensation_requires_strict_proof: Il risarcimento da ritardo richiede prova rigorosa di colpa, danno e nesso causale."]
+  CT_13 --> A_13_5
+
+  CT_14["MIXED_PEN_CIV_CONCURRENCE\nCore:3 Acc:2\nPool:5"]
+  D_MIX --> CT_14
+  A_14_1["criminal_and_civil_tracks_are_distinct: Il binario penale e quello civile restano distinti per presupposti ed effetti."]
+  CT_14 --> A_14_1
+  A_14_2["criminal_threshold_not_equal_civil_threshold: La soglia probatoria penale non coincide con quella della responsabilit..."]
+  CT_14 --> A_14_2
+  A_14_3["civil_remedy_requires_autonomous_proof: I rimedi civili richiedono prova autonoma, oltre la mera allegazione penale."]
+  CT_14 --> A_14_3
+  A_14_4["damages_scope_limited_to_proven_items: Il danno va limitato alle voci concretamente provate e causalmente collegate."]
+  CT_14 --> A_14_4
+  A_14_5["no_automatic_prejudice_from_criminal_allegation: La mera allegazione penale non determina automaticamente pregiudizio..."]
+  CT_14 --> A_14_5
+
+  classDef pen fill:#fde68a,stroke:#b45309,color:#111827;
+  classDef civ fill:#bfdbfe,stroke:#1d4ed8,color:#111827;
+  classDef amm fill:#bbf7d0,stroke:#15803d,color:#111827;
+  classDef mix fill:#fbcfe8,stroke:#be185d,color:#111827;
+  classDef atk fill:#f3f4f6,stroke:#4b5563,color:#111827;
+
+  class D_PEN pen;
+  class D_CIV civ;
+  class D_AMM amm;
+  class D_MIX mix;
+
+  class CT_1 pen;
+  class CT_2 pen;
+  class CT_3 civ;
+  class CT_4 amm;
+  class CT_5 pen;
+  class CT_6 civ;
+  class CT_7 civ;
+  class CT_8 civ;
+  class CT_9 pen;
+  class CT_10 pen;
+  class CT_11 pen;
+  class CT_12 amm;
+  class CT_13 amm;
+  class CT_14 mix;
+  class A_1_1 atk;
+  class A_1_2 atk;
+  class A_1_3 atk;
+  class A_1_4 atk;
+  class A_1_5 atk;
+  class A_1_6 atk;
+  class A_1_7 atk;
+  class A_1_8 atk;
+  class A_1_9 atk;
+  class A_2_1 atk;
+  class A_2_2 atk;
+  class A_2_3 atk;
+  class A_2_4 atk;
+  class A_3_1 atk;
+  class A_3_2 atk;
+  class A_3_3 atk;
+  class A_3_4 atk;
+  class A_3_5 atk;
+  class A_4_1 atk;
+  class A_4_2 atk;
+  class A_4_3 atk;
+  class A_4_4 atk;
+  class A_4_5 atk;
+  class A_5_1 atk;
+  class A_5_2 atk;
+  class A_5_3 atk;
+  class A_6_1 atk;
+  class A_6_2 atk;
+  class A_6_3 atk;
+  class A_6_4 atk;
+  class A_6_5 atk;
+  class A_7_1 atk;
+  class A_7_2 atk;
+  class A_7_3 atk;
+  class A_7_4 atk;
+  class A_7_5 atk;
+  class A_8_1 atk;
+  class A_8_2 atk;
+  class A_8_3 atk;
+  class A_8_4 atk;
+  class A_8_5 atk;
+  class A_9_1 atk;
+  class A_9_2 atk;
+  class A_9_3 atk;
+  class A_9_4 atk;
+  class A_9_5 atk;
+  class A_10_1 atk;
+  class A_10_2 atk;
+  class A_10_3 atk;
+  class A_10_4 atk;
+  class A_10_5 atk;
+  class A_11_1 atk;
+  class A_11_2 atk;
+  class A_11_3 atk;
+  class A_11_4 atk;
+  class A_11_5 atk;
+  class A_12_1 atk;
+  class A_12_2 atk;
+  class A_12_3 atk;
+  class A_12_4 atk;
+  class A_12_5 atk;
+  class A_13_1 atk;
+  class A_13_2 atk;
+  class A_13_3 atk;
+  class A_13_4 atk;
+  class A_13_5 atk;
+  class A_14_1 atk;
+  class A_14_2 atk;
+  class A_14_3 atk;
+  class A_14_4 atk;
+  class A_14_5 atk;

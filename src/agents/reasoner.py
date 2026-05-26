@@ -28,11 +28,15 @@ from .citation_utils import (
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_statute_by_article_tool
-from .tools.prompt_registry import render_prompt
+from .tools.prompt_registry import get_response_language, render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
+from services.groq_client import (  # noqa: E402
+    RequestTooLargeError,
+    shrink_max_tokens_progressive,
+)
 from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 
@@ -95,6 +99,39 @@ class Reasoner(BaseAgent):
         super().__init__(config)
         self._max_plan_retries = 3
         self._max_step_rewrites = 2
+        # Keep planner/executor control calls compact to avoid oversized requests.
+        self._planner_max_tokens_cap = int(settings.reasoner_planner_max_tokens_cap)
+        self._planner_min_tokens = int(settings.reasoner_planner_min_tokens)
+        self._support_step_max_tokens_cap = int(
+            settings.reasoner_support_step_max_tokens_cap
+        )
+        self._support_step_min_tokens = int(settings.reasoner_support_step_min_tokens)
+        self._causality_classifier_max_tokens_cap = int(
+            settings.reasoner_causality_classifier_max_tokens_cap
+        )
+        self._conclusion_max_tokens_cap = int(
+            settings.reasoner_conclusion_max_tokens_cap
+        )
+
+    def _bounded_max_tokens(self, cap: int) -> int:
+        """Cap per-call max tokens against the active agent configuration."""
+        base_max_tokens = int(
+            getattr(self.config, "max_tokens", settings.llm_max_tokens)
+            or settings.llm_max_tokens
+        )
+        if base_max_tokens <= 0:
+            base_max_tokens = settings.llm_max_tokens
+        return max(1, min(base_max_tokens, int(cap)))
+
+    @staticmethod
+    def _is_request_too_large_error(exc: Exception) -> bool:
+        """Detect provider-side oversized-request failures."""
+        if isinstance(exc, RequestTooLargeError):
+            return True
+        message = str(exc or "").lower()
+        if "error code: 429" in message or "rate limit reached" in message:
+            return False
+        return "request too large" in message
 
     def _resilient_model_order(self) -> list[str] | None:
         """Reasoner fallback chain from settings (selected model first)."""
@@ -110,6 +147,7 @@ class Reasoner(BaseAgent):
         pre_retrieved_statutes: list[dict],
         pre_retrieved_precedents: list[dict],
         enable_causality: bool = True,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> ReasonerOutput:
         """
@@ -188,7 +226,8 @@ class Reasoner(BaseAgent):
 
         # Provisional plan-based causality bootstrap (before expensive step generation):
         # plan draft -> provisional causality bundle -> taxonomy anchors -> final planner/executor.
-        if enable_causality:
+        # When enable_planning=False (ablation), skip the bootstrap — no planner LLM call is made.
+        if enable_causality and enable_planning:
             try:
                 bootstrap_allowed_statutes = [
                     f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
@@ -373,6 +412,7 @@ class Reasoner(BaseAgent):
                     knowledge_base=knowledge_base,
                     allowed_statutes=allowed_statutes,
                     allowed_precedents=allowed_precedents,
+                    enable_planning=enable_planning,
                     stream_callback=stream_callback,
                 )
             except Exception as gen_exc:
@@ -480,6 +520,7 @@ class Reasoner(BaseAgent):
                                     principle_tests=principle_tests,
                                     reasoning_chain=reasoning_chain,
                                     raw_output=raw_output,
+                                    enable_planning=enable_planning,
                                     stream_callback=stream_callback,
                                 )
                             )
@@ -938,13 +979,13 @@ class Reasoner(BaseAgent):
         chain_text = "\n".join(reasoning_chain) or raw_response or ""
         mentions = extract_article_mentions(chain_text, require_code=True)
 
-        # Estrai gli articoli citati dalla catena di ragionamento
+        # Extract articles cited in the reasoning chain
         cited_articles = self._extract_cited_articles(chain_text)
         articles_text = (
-            ", ".join(cited_articles) if cited_articles else "Nessun articolo citato"
+            ", ".join(cited_articles) if cited_articles else "No statutes cited"
         )
 
-        self._log(f"🔬 Articoli citati nella catena di ragionamento: {articles_text}")
+        self._log(f"🔬 Statutes cited in reasoning chain: {articles_text}")
 
         heuristic_id = self._heuristic_causal_type_from_mentions(
             mentions=mentions,
@@ -986,7 +1027,12 @@ class Reasoner(BaseAgent):
             chain_text=chain_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._bounded_max_tokens(
+                    self._causality_classifier_max_tokens_cap
+                ),
+            )
             content = (resp.content or "").strip()
 
             # Parse causal_type_id from LLM response
@@ -1184,6 +1230,7 @@ class Reasoner(BaseAgent):
         principle_tests: list[dict],
         reasoning_chain: list[str],
         raw_output: str,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> dict | None:
         """One-shot refinement when post-hoc core anchors are missing from the Reasoner KB."""
@@ -1322,6 +1369,7 @@ class Reasoner(BaseAgent):
                 knowledge_base=knowledge_base,
                 allowed_statutes=allowed_statutes,
                 allowed_precedents=allowed_precedents,
+                enable_planning=enable_planning,
                 stream_callback=stream_callback,
             )
         except Exception as exc:
@@ -1386,9 +1434,15 @@ class Reasoner(BaseAgent):
         knowledge_base: str,
         allowed_statutes: list[str],
         allowed_precedents: list[str],
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, list[str]]:
-        """Generate the reasoning chain with plan -> execute -> residual replan workflow."""
+        """Generate the reasoning chain with plan -> execute -> residual replan workflow.
+
+        When enable_planning=False (DoE ablation), the planner LLM call is skipped and
+        generic synthetic plan steps are used so the executor still runs step-by-step
+        but without structured plan guidance.
+        """
         max_steps = settings.chain_max_steps
         min_steps = settings.chain_min_steps
         statutes_list = (
@@ -1414,28 +1468,43 @@ class Reasoner(BaseAgent):
             remaining_max = max(1, max_steps - len(steps))
             planner_mode = "RESUME" if steps else "FULL"
 
-            plan = self._generate_reasoning_plan(
-                claim=claim,
-                routing_decision=routing_decision,
-                anchor_text=anchor_text,
-                principle_text=principle_text,
-                knowledge_base=knowledge_base,
-                statutes_list=statutes_list,
-                precedents_list=precedents_list,
-                min_steps=remaining_min,
-                max_steps=remaining_max,
-                planner_mode=planner_mode,
-                resume_from_step=len(steps) + 1,
-                existing_summaries=step_summaries,
-            )
-            plan = self._coerce_plan_to_allowed_norms(
-                plan=plan,
-                allowed_statutes=allowed_statutes,
-            )
-            plan = self._prune_plan_against_existing_history(
-                plan=plan,
-                previous_summaries=step_summaries,
-            )
+            if enable_planning:
+                plan = self._generate_reasoning_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    anchor_text=anchor_text,
+                    principle_text=principle_text,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    precedents_list=precedents_list,
+                    min_steps=remaining_min,
+                    max_steps=remaining_max,
+                    planner_mode=planner_mode,
+                    resume_from_step=len(steps) + 1,
+                    existing_summaries=step_summaries,
+                )
+                plan = self._coerce_plan_to_allowed_norms(
+                    plan=plan,
+                    allowed_statutes=allowed_statutes,
+                )
+                plan = self._prune_plan_against_existing_history(
+                    plan=plan,
+                    previous_summaries=step_summaries,
+                )
+            else:
+                # Planning ablation: skip planner LLM call, use trivial synthetic steps.
+                # The executor still runs step-by-step but without structured plan guidance.
+                plan = [
+                    {
+                        "goal": "",
+                        "focus": "",
+                        "expected_norm": "",
+                        "step_type": "ARGUMENT",
+                        "citation_requirement": "optional",
+                        "summary": f"Step {len(steps) + i + 1}",
+                    }
+                    for i in range(remaining_max)
+                ]
 
             if not plan:
                 stalled_rounds += 1
@@ -1448,8 +1517,8 @@ class Reasoner(BaseAgent):
                 continue
 
             self._log(
-                f"🧭 Reasoning plan generated: {len(plan)} step(s) "
-                f"[round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
+                f"🧭 Reasoning plan {'(synthetic, no-planning ablation)' if not enable_planning else 'generated'}: "
+                f"{len(plan)} step(s) [round={plan_round}, mode={planner_mode}, completed={len(steps)}]"
             )
 
             steps_before_round = len(steps)
@@ -1554,25 +1623,35 @@ class Reasoner(BaseAgent):
             if existing_summaries
             else "- none"
         )
-        prompt = render_prompt(
-            "reasoner.generate_plan",
-            claim=claim,
-            routing_domain=routing_decision.domain,
-            anchor_text=anchor_text,
-            principle_text=principle_text,
-            statutes_list=statutes_list,
-            precedents_list=precedents_list,
-            knowledge_base=knowledge_base,
-            min_steps=min_steps,
-            max_steps=max_steps,
-            planner_mode=planner_mode,
-            resume_from_step=resume_from_step,
-            existing_steps=existing_steps_text,
-        )
         last_error = "planner failed"
+        planner_max_tokens = self._bounded_max_tokens(self._planner_max_tokens_cap)
+        planner_use_json_mode = True
         for attempt in range(1, self._max_plan_retries + 1):
+            attempt_prompt = render_prompt(
+                "reasoner.generate_plan",
+                claim=claim,
+                routing_domain=routing_decision.domain,
+                anchor_text=anchor_text,
+                principle_text=principle_text,
+                statutes_list=statutes_list,
+                precedents_list=precedents_list,
+                knowledge_base=knowledge_base,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                planner_mode=planner_mode,
+                resume_from_step=resume_from_step,
+                existing_steps=existing_steps_text,
+            )
+            invoke_kwargs: dict[str, object] = {
+                "max_tokens": planner_max_tokens,
+            }
+            if planner_use_json_mode:
+                invoke_kwargs["response_format"] = {"type": "json_object"}
             try:
-                resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=attempt_prompt)],
+                    **invoke_kwargs,
+                )
                 raw = (resp.content or "").strip()
                 plan = self._parse_reasoning_plan(
                     raw=raw,
@@ -1584,11 +1663,45 @@ class Reasoner(BaseAgent):
                 last_error = "parsed empty plan"
             except Exception as e:
                 last_error = str(e)
+                if self._is_response_format_error(last_error) and planner_use_json_mode:
+                    planner_use_json_mode = False
+                    self._log(
+                        "⚠️ Planner JSON mode not accepted by provider/model; retrying without response_format",
+                        "warning",
+                    )
+                if (
+                    self._is_request_too_large_error(e)
+                    and planner_max_tokens > self._planner_min_tokens
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        planner_max_tokens,
+                        self._planner_min_tokens,
+                    )
+                    if reduced < planner_max_tokens:
+                        self._log(
+                            "⚠️ Planner request too large; reducing "
+                            f"max_tokens {planner_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        planner_max_tokens = reduced
             self._log(
                 f"⚠️ Planner attempt {attempt}/{self._max_plan_retries} failed: {last_error}",
                 "warning",
             )
         raise RuntimeError(f"Support planner failed: {last_error}")
+
+    @staticmethod
+    def _is_response_format_error(error_text: str) -> bool:
+        """Detect provider/model rejections related to JSON response_format usage."""
+        text = str(error_text or "").lower()
+        markers = (
+            "response_format",
+            "json schema",
+            "json_object",
+            "unsupported",
+            "invalid request",
+        )
+        return any(marker in text for marker in markers)
 
     def _parse_reasoning_plan(
         self,
@@ -1597,12 +1710,13 @@ class Reasoner(BaseAgent):
         max_steps: int,
     ) -> list[dict[str, str]]:
         """Parse planner JSON and enforce plan quality constraints."""
-        payload_text = raw.strip()
-        if not payload_text.startswith("{"):
-            match = re.search(r"\{[\s\S]*\}", payload_text)
-            if match:
-                payload_text = match.group(0)
-        data = json.loads(payload_text)
+        payload_text = str(raw or "").strip()
+        try:
+            data = json.loads(payload_text)
+        except Exception as exc:
+            raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("planner output is not a JSON object")
         steps_raw = data.get("steps")
         if not isinstance(steps_raw, list):
             raise ValueError("planner output missing 'steps' array")
@@ -1858,6 +1972,7 @@ class Reasoner(BaseAgent):
         """Execute one planned support step with validation + retries."""
         last_candidate = ""
         last_reason = "invalid output"
+        step_max_tokens = self._bounded_max_tokens(self._support_step_max_tokens_cap)
         for attempt in range(1, self._max_step_rewrites + 2):
             prompt = (
                 self._build_support_step_prompt_from_plan(
@@ -1909,12 +2024,28 @@ class Reasoner(BaseAgent):
                         if stream_callback
                         else None
                     ),
+                    max_tokens=step_max_tokens,
                 )
                 candidate = self._parse_step_text((resp.content or "").strip())
             except PipelineCancelled:
                 raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
+                if (
+                    self._is_request_too_large_error(exc)
+                    and step_max_tokens > self._support_step_min_tokens
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        step_max_tokens,
+                        self._support_step_min_tokens,
+                    )
+                    if reduced < step_max_tokens:
+                        self._log(
+                            "⚠️ Step request too large; reducing "
+                            f"max_tokens {step_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        step_max_tokens = reduced
                 self._log(
                     f"⚠️ Step {plan_index} generation failed (attempt {attempt}): {exc}",
                     "warning",
@@ -2249,6 +2380,7 @@ class Reasoner(BaseAgent):
                     if stream_callback
                     else None
                 ),
+                max_tokens=self._bounded_max_tokens(self._conclusion_max_tokens_cap),
             )
             conclusion = (resp.content or "").strip()
             # Clean up any echoed prefix
@@ -2322,20 +2454,39 @@ class Reasoner(BaseAgent):
                 conclusion_text = ""
 
         if not conclusion_text:
-            norms_list = ", ".join(norms) if norms else "le norme applicabili"
-            conclusion_text = (
-                f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
-                f"dipende dall'applicazione delle norme richiamate ({norms_list}) "
-                f"ai fatti esposti nella catena di ragionamento."
+            if get_response_language() == "en":
+                norms_list = ", ".join(norms) if norms else "the applicable norms"
+                conclusion_text = (
+                    f"Based on the legal analysis conducted, the assessment of the claim "
+                    f"depends on the application of the cited norms ({norms_list}) "
+                    f"to the facts set out in the reasoning chain."
+                )
+            else:
+                norms_list = ", ".join(norms) if norms else "le norme applicabili"
+                conclusion_text = (
+                    f"Sulla base dell'analisi giuridica svolta, la valutazione del claim "
+                    f"dipende dall'applicazione delle norme richiamate ({norms_list}) "
+                    f"ai fatti esposti nella catena di ragionamento."
+                )
+
+        if get_response_language() == "en":
+            causal_link_text = (
+                "The connection between the cited norms and the legal question raised by the claim "
+                "emerges from the reasoning chain below, where each step builds logically on the "
+                "previous one to support the final legal assessment."
+            )
+        else:
+            causal_link_text = (
+                "La connessione tra le norme citate e la questione giuridica posta dal claim "
+                "emerge dalla catena di ragionamento sottostante, dove ciascun passo "
+                "costruisce logicamente sul precedente per motivare la valutazione "
+                "giuridica finale."
             )
 
         raw = (
             f"**Premessa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale**: La connessione tra le norme citate e la questione giuridica posta dal claim "
-            f"emerge dalla catena di ragionamento sottostante, dove ciascun passo "
-            f"costruisce logicamente sul precedente per motivare la valutazione "
-            f"giuridica finale.\n\n"
+            f"**Nesso Causale**: {causal_link_text}\n\n"
             f"**Conclusione**: {conclusion_text}\n\n"
             f"{chain_section}"
         )

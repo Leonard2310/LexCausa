@@ -30,11 +30,15 @@ from .citation_utils import (
 from .router import RoutingDecision
 from .tools import config_loader
 from .tools.neo4j_tools import get_legal_search_pipeline, get_statute_by_article_tool
-from .tools.prompt_registry import render_prompt
+from .tools.prompt_registry import get_response_language, render_prompt
 from .tools.taxonomy_tools import get_causality_theory_tool
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
+from services.groq_client import (  # noqa: E402
+    RequestTooLargeError,
+    shrink_max_tokens_progressive,
+)
 from services.pipeline_control import PipelineCancelled  # noqa: E402
 
 
@@ -130,6 +134,12 @@ class CounterReasoner(BaseAgent):
         )
         self._max_plan_retries = 3
         self._max_step_rewrites = 3
+        self._planner_max_tokens_cap = int(settings.counter_planner_max_tokens_cap)
+        self._planner_min_tokens = int(settings.counter_planner_min_tokens)
+        self._support_step_max_tokens_cap = int(
+            settings.counter_support_step_max_tokens_cap
+        )
+        self._support_step_min_tokens = int(settings.counter_support_step_min_tokens)
         self._new_facts_check_cache: Dict[tuple[str, str], tuple[bool, str]] = {}
         self._counter_fact_lock_cache: Dict[tuple[str, str], tuple[bool, str]] = {}
         self._target_map_cache: Dict[tuple[str, str], dict] = {}
@@ -143,6 +153,82 @@ class CounterReasoner(BaseAgent):
             tuple[str, str, str, str, str], tuple[bool, str]
         ] = {}
         self._hard_failure_threshold = 3
+
+    def _bounded_max_tokens(self, cap: int) -> int:
+        """Cap per-call max tokens against the active agent configuration."""
+        base_max_tokens = int(
+            getattr(self.config, "max_tokens", settings.llm_max_tokens)
+            or settings.llm_max_tokens
+        )
+        if base_max_tokens <= 0:
+            base_max_tokens = settings.llm_max_tokens
+        return max(1, min(base_max_tokens, int(cap)))
+
+    @staticmethod
+    def _is_request_too_large_error(exc: Exception) -> bool:
+        """Detect provider-side oversized-request failures."""
+        if isinstance(exc, RequestTooLargeError):
+            return True
+        message = str(exc or "").lower()
+        if "error code: 429" in message or "rate limit reached" in message:
+            return False
+        return "request too large" in message
+
+    @staticmethod
+    def _extract_json_object_payload(raw_text: str) -> str:
+        """Best-effort extraction of a JSON object payload from model text."""
+        payload = (
+            str(raw_text or "")
+            .strip()
+            .replace("```json", "")
+            .replace("```", "")
+            .strip()
+        )
+        if not payload.startswith("{"):
+            match = re.search(r"\{[\s\S]*\}", payload)
+            if match:
+                payload = match.group(0)
+        return payload
+
+    def _invoke_json_object(
+        self,
+        *,
+        prompt: str,
+        max_tokens: int,
+        log_label: str,
+    ) -> Dict[str, object]:
+        """Invoke LLM expecting a JSON object, with response_format fallback."""
+        use_json_mode = True
+        last_exc: Optional[Exception] = None
+        for _ in range(2):
+            invoke_kwargs: Dict[str, object] = {
+                "max_tokens": max(1, int(max_tokens)),
+            }
+            if use_json_mode:
+                invoke_kwargs["response_format"] = {"type": "json_object"}
+            try:
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=prompt)],
+                    **invoke_kwargs,
+                )
+                raw = self._extract_json_object_payload(resp.content or "")
+                parsed = json.loads(raw)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON payload is not an object")
+                return parsed
+            except Exception as exc:
+                last_exc = exc
+                if use_json_mode and self._is_response_format_error(str(exc)):
+                    use_json_mode = False
+                    self._log(
+                        f"⚠️ {log_label} JSON mode not accepted; retrying without response_format",
+                        "warning",
+                    )
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"{log_label} JSON invocation failed")
 
     def _known_attack_ids(self) -> List[str]:
         """Return all known attack IDs from taxonomy metadata."""
@@ -245,7 +331,10 @@ class CounterReasoner(BaseAgent):
             precondition=condition,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._ancillary_max_tokens(),
+            )
             answer = (resp.content or "").strip().upper()
             if "UNSATISFIED" in answer:
                 status = "UNSATISFIED"
@@ -353,7 +442,10 @@ class CounterReasoner(BaseAgent):
             attack_desc=attack_desc,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._ancillary_max_tokens(),
+            )
             answer = (resp.content or "").strip().upper()
             if "MISMATCH" in answer:
                 compatible = False
@@ -472,13 +564,11 @@ class CounterReasoner(BaseAgent):
         status_map: Dict[str, str] = {aid: "SAFE" for aid in ordered_ids}
         desc_map: Dict[str, str] = {}
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            raw = (resp.content or "").strip()
-            if not raw.startswith("{"):
-                m = re.search(r"\{[\s\S]*\}", raw)
-                if m:
-                    raw = m.group(0)
-            parsed = json.loads(raw)
+            parsed = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Counter attack safety preprocessing",
+            )
             rows = parsed.get("attacks", []) if isinstance(parsed, dict) else []
             if isinstance(rows, list):
                 for row in rows:
@@ -598,13 +688,11 @@ class CounterReasoner(BaseAgent):
             "priority_targets": [],
         }
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            raw = (resp.content or "").strip()
-            if not raw.startswith("{"):
-                m = re.search(r"\{[\s\S]*\}", raw)
-                if m:
-                    raw = m.group(0)
-            parsed = json.loads(raw)
+            parsed = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Counter target-map extraction",
+            )
             if not isinstance(parsed, dict):
                 parsed = {}
             for k in ("allowed_targets", "forbidden_assumptions", "priority_targets"):
@@ -675,13 +763,11 @@ class CounterReasoner(BaseAgent):
             reasoner_conclusion=conclusion_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            raw = (resp.content or "").strip()
-            if not raw.startswith("{"):
-                m = re.search(r"\{[\s\S]*\}", raw)
-                if m:
-                    raw = m.group(0)
-            parsed = json.loads(raw)
+            parsed = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Counter conclusion decomposition",
+            )
             if not isinstance(parsed, dict):
                 parsed = {}
 
@@ -936,17 +1022,14 @@ class CounterReasoner(BaseAgent):
         )
         attacks_raw: List[dict] = []
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            payload = (
-                (resp.content or "")
-                .strip()
-                .replace("```json", "")
-                .replace("```", "")
-                .strip()
+            parsed = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Open attack generation",
             )
-            parsed = json.loads(payload)
-            if isinstance(parsed, dict) and isinstance(parsed.get("attacks"), list):
-                attacks_raw = [a for a in parsed["attacks"] if isinstance(a, dict)]
+            attacks_field = parsed.get("attacks", [])
+            if isinstance(attacks_field, list):
+                attacks_raw = [a for a in attacks_field if isinstance(a, dict)]
         except Exception as exc:
             self._log(f"⚠️ Open attack generation failed: {exc}", "warning")
 
@@ -1032,8 +1115,12 @@ class CounterReasoner(BaseAgent):
             options_text=options_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            answer = (resp.content or "").strip()
+            parsed = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Counter attack selection",
+            )
+            answer = json.dumps(parsed, ensure_ascii=False)
             attack_ids = self._clean_attack_choices(
                 raw=answer,
                 pool=pool,
@@ -1264,6 +1351,7 @@ class CounterReasoner(BaseAgent):
         pre_retrieved_precedents: List[dict],
         reasoner_conclusion: str,
         enable_causality: bool = True,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> CounterReasonerOutput:
         """
@@ -1491,6 +1579,7 @@ class CounterReasoner(BaseAgent):
                         attack_blacklist=attack_blacklist,
                         allow_open_attacks=allow_open_attacks,
                         taxonomy_mode_active=use_taxonomy_mode,
+                        enable_planning=enable_planning,
                         stream_callback=stream_callback,
                     )
                 )
@@ -1735,12 +1824,13 @@ class CounterReasoner(BaseAgent):
         )
 
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            raw = (resp.content or "").strip().replace("```json", "").replace("```", "")
-            data = json.loads(raw)
-            covered_raw = (
-                data.get("covered_attack_ids", []) if isinstance(data, dict) else []
+            data = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Counter coverage estimation",
             )
+            covered_raw_obj = data.get("covered_attack_ids", [])
+            covered_raw = covered_raw_obj if isinstance(covered_raw_obj, list) else []
             covered_ids = [
                 str(x).strip()
                 for x in covered_raw
@@ -1981,9 +2071,15 @@ class CounterReasoner(BaseAgent):
         attack_blacklist: Optional[set[str]] = None,
         allow_open_attacks: bool = True,
         taxonomy_mode_active: bool = False,
+        enable_planning: bool = True,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> tuple[str, List[str], List[List[str]]]:
-        """Generate counter-reasoning chain with plan -> execute -> residual replan workflow."""
+        """Generate counter-reasoning chain with plan -> execute -> residual replan workflow.
+
+        When enable_planning=False (DoE ablation), the planner LLM call is skipped and
+        generic synthetic plan steps are used so the executor still runs step-by-step
+        but without structured plan guidance.
+        """
         max_steps = settings.chain_max_steps
         min_steps = settings.chain_min_steps
         statutes_list = (
@@ -2171,38 +2267,53 @@ class CounterReasoner(BaseAgent):
             remaining_min = max(1, min_steps - planned_steps_count)
             remaining_max = max(1, max_steps - planned_steps_count)
             planner_mode = "RESUME" if planned_steps_count else "FULL"
-            plan = self._generate_counter_plan(
-                claim=claim,
-                routing_decision=routing_decision,
-                selected_attack_ids=selected_attack_ids,
-                attack_catalog=attack_catalog,
-                reasoner_conclusion=reasoner_conclusion,
-                knowledge_base=knowledge_base,
-                statutes_list=statutes_list,
-                precedents_list=precedents_list,
-                target_map_text=target_map_text,
-                conclusion_points_text=conclusion_points_text,
-                min_steps=remaining_min,
-                max_steps=remaining_max,
-                planner_mode=planner_mode,
-                resume_from_step=planned_steps_count + 1,
-                existing_summaries=step_summaries,
-            )
-            plan = self._coerce_counter_plan_to_allowed_norms(
-                plan=plan,
-                allowed_statutes=available_statutes,
-            )
-            plan = self._prune_counter_plan_against_existing_history(
-                plan=plan,
-                previous_summaries=step_summaries,
-            )
-            plan = self._filter_counter_plan_by_feasibility(
-                claim=claim,
-                reasoner_conclusion=reasoner_conclusion,
-                target_map=target_map,
-                plan=plan,
-                previous_summaries=step_summaries,
-            )
+            if enable_planning:
+                plan = self._generate_counter_plan(
+                    claim=claim,
+                    routing_decision=routing_decision,
+                    selected_attack_ids=selected_attack_ids,
+                    attack_catalog=attack_catalog,
+                    reasoner_conclusion=reasoner_conclusion,
+                    knowledge_base=knowledge_base,
+                    statutes_list=statutes_list,
+                    precedents_list=precedents_list,
+                    target_map_text=target_map_text,
+                    conclusion_points_text=conclusion_points_text,
+                    min_steps=remaining_min,
+                    max_steps=remaining_max,
+                    planner_mode=planner_mode,
+                    resume_from_step=planned_steps_count + 1,
+                    existing_summaries=step_summaries,
+                )
+                plan = self._coerce_counter_plan_to_allowed_norms(
+                    plan=plan,
+                    allowed_statutes=available_statutes,
+                )
+                plan = self._prune_counter_plan_against_existing_history(
+                    plan=plan,
+                    previous_summaries=step_summaries,
+                )
+                plan = self._filter_counter_plan_by_feasibility(
+                    claim=claim,
+                    reasoner_conclusion=reasoner_conclusion,
+                    target_map=target_map,
+                    plan=plan,
+                    previous_summaries=step_summaries,
+                )
+            else:
+                # Planning ablation: skip planner LLM call, use trivial synthetic steps.
+                plan = [
+                    {
+                        "goal": "",
+                        "focus": "",
+                        "expected_norm": "",
+                        "step_type": "ATTACK",
+                        "citation_requirement": "optional",
+                        "summary": f"Counter-step {planned_steps_count + i + 1}",
+                    }
+                    for i in range(remaining_max)
+                ]
+
             if not plan:
                 stalled_rounds += 1
                 self._log(
@@ -2212,7 +2323,7 @@ class CounterReasoner(BaseAgent):
                 if stalled_rounds >= 2:
                     break
                 continue
-            if len(plan) < remaining_min:
+            if enable_planning and len(plan) < remaining_min:
                 stalled_rounds += 1
                 self._log(
                     "Warning: counter planner returned too few feasible steps after pruning; replanning",
@@ -2223,8 +2334,8 @@ class CounterReasoner(BaseAgent):
                 continue
 
             self._log(
-                f"Counter plan generated: {len(plan)} step(s) "
-                f"[round={plan_round}, mode={planner_mode}, completed={planned_steps_count}]"
+                f"Counter plan {'(synthetic, no-planning ablation)' if not enable_planning else 'generated'}: "
+                f"{len(plan)} step(s) [round={plan_round}, mode={planner_mode}, completed={planned_steps_count}]"
             )
 
             planned_before_round = planned_steps_count
@@ -2580,13 +2691,11 @@ class CounterReasoner(BaseAgent):
         )
 
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            raw = (resp.content or "").strip()
-            if not raw.startswith("{"):
-                match = re.search(r"\{[\s\S]*\}", raw)
-                if match:
-                    raw = match.group(0)
-            data = json.loads(raw)
+            data = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._bounded_max_tokens(self._support_step_max_tokens_cap),
+                log_label="Counter step expansion",
+            )
         except Exception as exc:
             self._log(
                 f"Counter-step expansion skipped (parser/invoke error): {exc}",
@@ -2695,29 +2804,39 @@ class CounterReasoner(BaseAgent):
             if existing_summaries
             else "- none"
         )
-        prompt = render_prompt(
-            "counter_reasoner.generate_plan",
-            claim=claim,
-            reasoner_block=reasoner_block,
-            claim_facts=claim_facts,
-            routing_domain=routing_decision.domain,
-            selected_attack_ids=", ".join(selected_attack_ids),
-            attack_catalog=attack_catalog,
-            statutes_list=statutes_list,
-            precedents_list=precedents_list,
-            knowledge_base=knowledge_base,
-            target_map=target_map_text,
-            conclusion_points=conclusion_points_text,
-            min_steps=min_steps,
-            max_steps=max_steps,
-            planner_mode=planner_mode,
-            resume_from_step=resume_from_step,
-            existing_steps=existing_steps_text,
-        )
         last_error = "planner failed"
+        planner_max_tokens = self._bounded_max_tokens(self._planner_max_tokens_cap)
+        planner_use_json_mode = True
         for attempt in range(1, self._max_plan_retries + 1):
+            attempt_prompt = render_prompt(
+                "counter_reasoner.generate_plan",
+                claim=claim,
+                reasoner_block=reasoner_block,
+                claim_facts=claim_facts,
+                routing_domain=routing_decision.domain,
+                selected_attack_ids=", ".join(selected_attack_ids),
+                attack_catalog=attack_catalog,
+                statutes_list=statutes_list,
+                precedents_list=precedents_list,
+                knowledge_base=knowledge_base,
+                target_map=target_map_text,
+                conclusion_points=conclusion_points_text,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                planner_mode=planner_mode,
+                resume_from_step=resume_from_step,
+                existing_steps=existing_steps_text,
+            )
+            invoke_kwargs: Dict[str, object] = {
+                "max_tokens": planner_max_tokens,
+            }
+            if planner_use_json_mode:
+                invoke_kwargs["response_format"] = {"type": "json_object"}
             try:
-                resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+                resp = self._resilient_llm_invoke(
+                    [HumanMessage(content=attempt_prompt)],
+                    **invoke_kwargs,
+                )
                 raw = (resp.content or "").strip()
                 plan = self._parse_counter_plan(
                     raw=raw,
@@ -2730,6 +2849,27 @@ class CounterReasoner(BaseAgent):
                 last_error = "parsed empty plan"
             except Exception as e:
                 last_error = str(e)
+                if self._is_response_format_error(last_error) and planner_use_json_mode:
+                    planner_use_json_mode = False
+                    self._log(
+                        "⚠️ Counter planner JSON mode not accepted; retrying without response_format",
+                        "warning",
+                    )
+                if (
+                    self._is_request_too_large_error(e)
+                    and planner_max_tokens > self._planner_min_tokens
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        planner_max_tokens,
+                        self._planner_min_tokens,
+                    )
+                    if reduced < planner_max_tokens:
+                        self._log(
+                            "⚠️ Counter planner request too large; reducing "
+                            f"max_tokens {planner_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        planner_max_tokens = reduced
             self._log(
                 f"⚠️ Counter planner attempt {attempt}/{self._max_plan_retries} failed: {last_error}",
                 "warning",
@@ -2744,16 +2884,16 @@ class CounterReasoner(BaseAgent):
         allowed_attack_ids: List[str],
     ) -> List[Dict[str, str]]:
         """Parse planner JSON and enforce plan quality constraints."""
-        payload_text = raw.strip()
-        if not payload_text.startswith("{"):
-            match = re.search(r"\{[\s\S]*\}", payload_text)
-            if match:
-                payload_text = match.group(0)
-        data = json.loads(payload_text)
+        payload_text = str(raw or "").strip()
+        try:
+            data = json.loads(payload_text)
+        except Exception as exc:
+            raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("planner output is not a JSON object")
         steps_raw = data.get("steps")
         if not isinstance(steps_raw, list):
             raise ValueError("planner output missing 'steps' array")
-
         cleaned: List[Dict[str, str]] = []
         for idx, item in enumerate(steps_raw, start=1):
             if not isinstance(item, dict):
@@ -2810,6 +2950,18 @@ class CounterReasoner(BaseAgent):
         if len(set(novelty_keys)) != len(novelty_keys):
             raise ValueError("counter planner produced duplicate novelty_key values")
         return cleaned
+
+    @staticmethod
+    def _is_response_format_error(error_text: str) -> bool:
+        text = str(error_text or "").lower()
+        markers = (
+            "response_format",
+            "json schema",
+            "json_object",
+            "unsupported",
+            "invalid request",
+        )
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _extract_allowed_counter_article_ids(allowed_statutes: List[dict]) -> set[str]:
@@ -2981,7 +3133,10 @@ class CounterReasoner(BaseAgent):
         )
         result: tuple[bool, str] = (True, "")
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._ancillary_max_tokens(),
+            )
             answer = (resp.content or "").strip().upper()
             if "OFF_TARGET" in answer:
                 result = (False, "plan step off target map")
@@ -3048,13 +3203,11 @@ class CounterReasoner(BaseAgent):
         )
 
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
-            raw = (resp.content or "").strip()
-            if not raw.startswith("{"):
-                m = re.search(r"\{[\s\S]*\}", raw)
-                if m:
-                    raw = m.group(0)
-            data = json.loads(raw)
+            data = self._invoke_json_object(
+                prompt=prompt,
+                max_tokens=self._ancillary_max_tokens(),
+                log_label="Counter plan-step rewrite",
+            )
             if not isinstance(data, dict):
                 return None
 
@@ -3360,6 +3513,7 @@ class CounterReasoner(BaseAgent):
         )
         last_candidate = ""
         last_reason = "invalid output"
+        step_max_tokens = self._bounded_max_tokens(self._support_step_max_tokens_cap)
         hard_failure_count = 0
         last_used_attacks = [active_attack_ids[0]] if active_attack_ids else []
         rewrite_attacks_used_format = (
@@ -3394,6 +3548,7 @@ class CounterReasoner(BaseAgent):
                         if stream_callback
                         else None
                     ),
+                    max_tokens=step_max_tokens,
                 )
                 candidate, used_attacks = self._parse_counter_step_payload(
                     response=(resp.content or "").strip(),
@@ -3405,6 +3560,21 @@ class CounterReasoner(BaseAgent):
                 raise
             except Exception as exc:
                 last_reason = f"generation error: {exc}"
+                if (
+                    self._is_request_too_large_error(exc)
+                    and step_max_tokens > self._support_step_min_tokens
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        step_max_tokens,
+                        self._support_step_min_tokens,
+                    )
+                    if reduced < step_max_tokens:
+                        self._log(
+                            "⚠️ Counter step request too large; reducing "
+                            f"max_tokens {step_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        step_max_tokens = reduced
                 if self._is_hard_attack_failure(last_reason):
                     hard_failure_count += 1
                     if hard_failure_count >= self._hard_failure_threshold:
@@ -3690,7 +3860,10 @@ class CounterReasoner(BaseAgent):
             candidate_step=step_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._ancillary_max_tokens(),
+            )
             answer = (resp.content or "").strip().upper()
             if "DIRECT_CONTRADICTION" in answer or (
                 "CONTRADICT" in answer and "INTERPRET" not in answer
@@ -3736,7 +3909,10 @@ class CounterReasoner(BaseAgent):
             candidate_step=step_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._ancillary_max_tokens(),
+            )
             answer = (resp.content or "").strip().upper()
             if "ADDS_FACTS" in answer:
                 result = (
@@ -4085,7 +4261,7 @@ class CounterReasoner(BaseAgent):
         for step in reversed(steps):
             first_sentence = self._first_sentence_legal_safe(step)
             first_sentence = re.sub(
-                r"^(?:pertanto|quindi|dunque|in\s+conclusione)\s*,?\s*",
+                r"^(?:pertanto|quindi|dunque|in\s+conclusione|therefore|thus|hence|in\s+conclusion)\s*,?\s*",
                 "",
                 first_sentence,
                 flags=re.IGNORECASE,
@@ -4093,6 +4269,8 @@ class CounterReasoner(BaseAgent):
             first_sentence = first_sentence.rstrip(" .")
             if first_sentence:
                 return first_sentence
+        if get_response_language() == "en":
+            return "the cited norms and alleged facts do not unambiguously support the primary legal thesis"
         return (
             "le norme richiamate e i fatti allegati non giustificano "
             "in modo univoco la tesi principale"
@@ -4124,30 +4302,51 @@ class CounterReasoner(BaseAgent):
                 if attack_id
             )
         )
+        lang = get_response_language()
+        attack_locale = lang if lang in ("it", "en") else "en"
+        _default_attack_desc = (
+            "the cited norms do not unambiguously support the main thesis"
+            if lang == "en"
+            else _DEFAULT_ATTACK_DESCRIPTION_IT
+        )
         attack_desc_list = [
             self._attack_description(
                 attack_id,
-                locale="it",
-                default=_DEFAULT_ATTACK_DESCRIPTION_IT,
+                locale=attack_locale,
+                default=_default_attack_desc,
             )
             for attack_id in unique_attacks
         ]
         if not attack_desc_list:
-            attack_desc_list = [_DEFAULT_ATTACK_DESCRIPTION_IT]
-        attack_desc_it = "; ".join(attack_desc_list[:3])
+            attack_desc_list = [_default_attack_desc]
+        attack_desc_str = "; ".join(d.rstrip(". ") for d in attack_desc_list[:3])
 
-        conclusion_text = (
-            "Pertanto, la tesi giuridica principale deve essere contestata o "
-            f"ridimensionata poiché {conclusion_ground}."
-        )
+        if lang == "en":
+            conclusion_text = (
+                "Therefore, the primary legal thesis must be contested or "
+                f"limited because {conclusion_ground}."
+            )
+            causal_link_text = (
+                f"The legal analysis shows that {attack_desc_str}. "
+                "The argumentative chain highlights how the norms applicable to the case "
+                "allow for an alternative or limiting reconstruction relative to the primary thesis."
+            )
+        else:
+            conclusion_text = (
+                "Pertanto, la tesi giuridica principale deve essere contestata o "
+                f"ridimensionata poiché {conclusion_ground}."
+            )
+            causal_link_text = (
+                f"L'analisi giuridica dimostra che {attack_desc_str}. "
+                "La catena argomentativa evidenzia come "
+                "le norme applicabili al caso consentano una ricostruzione alternativa "
+                "o limitativa rispetto alla tesi principale."
+            )
 
         raw = (
             f"**Premessa Alternativa**: {premise_text}\n\n"
             f"**Norma**:\n{norms_text}\n\n"
-            f"**Nesso Causale Alternativo**: L'analisi giuridica dimostra che "
-            f"{attack_desc_it}. La catena argomentativa evidenzia come "
-            f"le norme applicabili al caso consentano una ricostruzione alternativa "
-            f"o limitativa rispetto alla tesi principale.\n\n"
+            f"**Nesso Causale Alternativo**: {causal_link_text}\n\n"
             f"**Conclusione Contraria**: {conclusion_text}\n\n"
             f"{chain_section}"
         )
@@ -4165,7 +4364,7 @@ class CounterReasoner(BaseAgent):
 
             if "premessa" in lower_section:
                 if current_arg:
-                    # Crea CounterArgument con valori di default per campi mancanti
+                    # Create CounterArgument with defaults for missing fields
                     arguments.append(
                         CounterArgument(
                             premise=current_arg.get("premise", ""),

@@ -60,7 +60,6 @@ class Settings(BaseSettings):
     # Model catalog is code-owned (not env-driven).
     MODEL_ALIAS_MAP: ClassVar[dict[str, str]] = {
         "groq_llama_scout_17b": "meta-llama/llama-4-scout-17b-16e-instruct",
-        "groq_llama_maverick_17b": "meta-llama/llama-4-maverick-17b-128e-instruct",
         "gpt_oss_120b": "openai/gpt-oss-120b",
         "gpt_oss_20b": "openai/gpt-oss-20b",
         "groq_llama_3_3_70b_versatile": "llama-3.3-70b-versatile",
@@ -69,14 +68,16 @@ class Settings(BaseSettings):
     # Used by retrieval-side components (claim classifier, keyword extraction,
     # legal-context extraction, relevance/applicability filters, precedents keywording).
     RETRIEVAL_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
-        "groq_llama_maverick_17b",
         "groq_llama_scout_17b",
+        "qwen_qwen3_32b",
+        "groq_llama_3_3_70b_versatile",
         "gpt_oss_20b",
     ]
     # Used by the rest of the pipeline helpers (router, evaluator/polisher).
     PIPELINE_MODEL_ORDER_ALIASES: ClassVar[list[str]] = [
-        "groq_llama_maverick_17b",
         "groq_llama_scout_17b",
+        "qwen_qwen3_32b",
+        "groq_llama_3_3_70b_versatile",
         "gpt_oss_20b",
     ]
     REASONER_DEFAULT_MODEL_ALIAS: ClassVar[str] = "gpt_oss_120b"
@@ -84,8 +85,8 @@ class Settings(BaseSettings):
     reasoner_model_fallback_aliases: list[str] = Field(
         default_factory=lambda: [
             "gpt_oss_120b",
-            "groq_llama_maverick_17b",
-            "groq_llama_scout_17b",
+            "qwen_qwen3_32b",
+            "groq_llama_3_3_70b_versatile",
         ],
         alias="REASONER_MODEL_FALLBACK_ALIASES",
         description="Ordered model aliases used as resilient fallback chain for Reasoner.",
@@ -93,8 +94,8 @@ class Settings(BaseSettings):
     counter_model_fallback_aliases: list[str] = Field(
         default_factory=lambda: [
             "gpt_oss_120b",
-            "groq_llama_maverick_17b",
-            "groq_llama_scout_17b",
+            "qwen_qwen3_32b",
+            "groq_llama_3_3_70b_versatile",
         ],
         alias="COUNTER_MODEL_FALLBACK_ALIASES",
         description="Ordered model aliases used as resilient fallback chain for Counter-Reasoner.",
@@ -128,7 +129,7 @@ class Settings(BaseSettings):
         alias="COUNTER_DEFAULT_TEMPERATURE",
         description="Default UI temperature for the Counter-Reasoner agent.",
     )
-    llm_max_tokens: int = Field(default=8192, alias="LLM_MAX_TOKENS")
+    llm_max_tokens: int = Field(default=7168, alias="LLM_MAX_TOKENS")
 
     # =========================================================================
     # Embedding Model Configuration
@@ -446,12 +447,12 @@ class Settings(BaseSettings):
 
     aqa_attack_type_multipliers: dict = Field(
         default_factory=lambda: {
-            "contradiction": 2.0,  # Contraddizione logica totale
-            "exception": 1.7,  # Limita fortemente applicabilità
-            "derogation": 2.0,  # Invalida direttamente la norma citata
-            "extinction": 2.3,  # Estingue completamente l'argomento
-            "factual_impediment": 1.2,  # Impedimento fattuale serio
-            "general_opposition": 1.05,  # Opposizione generica ma rilevante
+            "contradiction": 2.0,  # Total logical contradiction
+            "exception": 1.7,  # Strongly limits applicability
+            "derogation": 2.0,  # Directly invalidates the cited norm
+            "extinction": 2.3,  # Completely extinguishes the argument
+            "factual_impediment": 1.2,  # Serious factual impediment
+            "general_opposition": 1.05,  # Generic but relevant opposition
         },
         alias="AQA_ATTACK_TYPE_MULTIPLIERS",
         description="Damage multipliers by attack type.",
@@ -709,6 +710,85 @@ class Settings(BaseSettings):
         default=3,
         alias="CHAIN_MIN_STEPS",
         description="Minimum reasoning steps before the LLM is allowed to conclude.",
+    )
+
+    # =========================================================================
+    # Planning Ablation Flags (DoE Control)
+    # =========================================================================
+    enable_planning_reasoner: bool = Field(
+        default=True,
+        alias="ENABLE_PLANNING_REASONER",
+        description="Enable planning phase in Reasoner agent (for ablation studies).",
+    )
+    enable_planning_counter: bool = Field(
+        default=True,
+        alias="ENABLE_PLANNING_COUNTER",
+        description="Enable planning phase in Counter-Reasoner agent (for ablation studies).",
+    )
+    response_language: str = Field(
+        default="it",
+        alias="RESPONSE_LANGUAGE",
+        description=(
+            "Output language for LLM reasoning content. "
+            "'it' = Italian (default); 'en' = English. "
+            "Internal classification prompts (consistency, NLI) are unaffected."
+        ),
+    )
+
+    ancillary_max_tokens_cap: int = Field(
+        default=320,
+        alias="ANCILLARY_MAX_TOKENS_CAP",
+        description="Max tokens for short ancillary validation checks (fact-lock, NLI, alignment, no-new-facts).",
+    )
+    reasoner_planner_max_tokens_cap: int = Field(
+        default=1200,
+        alias="REASONER_PLANNER_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Reasoner planner generation.",
+    )
+    reasoner_planner_min_tokens: int = Field(
+        default=192,
+        alias="REASONER_PLANNER_MIN_TOKENS",
+        description="Minimum floor for Reasoner planner max_tokens shrink policy.",
+    )
+    reasoner_support_step_max_tokens_cap: int = Field(
+        default=1400,
+        alias="REASONER_SUPPORT_STEP_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Reasoner support-step generation.",
+    )
+    reasoner_support_step_min_tokens: int = Field(
+        default=256,
+        alias="REASONER_SUPPORT_STEP_MIN_TOKENS",
+        description="Minimum floor for Reasoner support-step max_tokens shrink policy.",
+    )
+    reasoner_causality_classifier_max_tokens_cap: int = Field(
+        default=256,
+        alias="REASONER_CAUSALITY_CLASSIFIER_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for post-hoc causality classification.",
+    )
+    reasoner_conclusion_max_tokens_cap: int = Field(
+        default=512,
+        alias="REASONER_CONCLUSION_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Reasoner conclusion generation.",
+    )
+    counter_planner_max_tokens_cap: int = Field(
+        default=1200,
+        alias="COUNTER_PLANNER_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Counter planner generation.",
+    )
+    counter_planner_min_tokens: int = Field(
+        default=192,
+        alias="COUNTER_PLANNER_MIN_TOKENS",
+        description="Minimum floor for Counter planner max_tokens shrink policy.",
+    )
+    counter_support_step_max_tokens_cap: int = Field(
+        default=1400,
+        alias="COUNTER_SUPPORT_STEP_MAX_TOKENS_CAP",
+        description="Per-call max_tokens cap for Counter step generation.",
+    )
+    counter_support_step_min_tokens: int = Field(
+        default=256,
+        alias="COUNTER_SUPPORT_STEP_MIN_TOKENS",
+        description="Minimum floor for Counter support-step max_tokens shrink policy.",
     )
     counter_second_pass_enabled: bool = Field(
         default=True,
@@ -1034,6 +1114,37 @@ class Settings(BaseSettings):
         if default_attack not in valid_attack_types:
             default_attack = "general_opposition"
         object.__setattr__(self, "aqa_default_attack_type", default_attack)
+
+        ancillary_cap = max(1, int(self.ancillary_max_tokens_cap))
+        object.__setattr__(self, "ancillary_max_tokens_cap", ancillary_cap)
+
+        r_plan_min = max(1, int(self.reasoner_planner_min_tokens))
+        r_plan_cap = max(r_plan_min, int(self.reasoner_planner_max_tokens_cap))
+        r_step_min = max(1, int(self.reasoner_support_step_min_tokens))
+        r_step_cap = max(r_step_min, int(self.reasoner_support_step_max_tokens_cap))
+        object.__setattr__(self, "reasoner_planner_min_tokens", r_plan_min)
+        object.__setattr__(self, "reasoner_planner_max_tokens_cap", r_plan_cap)
+        object.__setattr__(self, "reasoner_support_step_min_tokens", r_step_min)
+        object.__setattr__(self, "reasoner_support_step_max_tokens_cap", r_step_cap)
+        object.__setattr__(
+            self,
+            "reasoner_causality_classifier_max_tokens_cap",
+            max(1, int(self.reasoner_causality_classifier_max_tokens_cap)),
+        )
+        object.__setattr__(
+            self,
+            "reasoner_conclusion_max_tokens_cap",
+            max(1, int(self.reasoner_conclusion_max_tokens_cap)),
+        )
+
+        c_plan_min = max(1, int(self.counter_planner_min_tokens))
+        c_plan_cap = max(c_plan_min, int(self.counter_planner_max_tokens_cap))
+        c_step_min = max(1, int(self.counter_support_step_min_tokens))
+        c_step_cap = max(c_step_min, int(self.counter_support_step_max_tokens_cap))
+        object.__setattr__(self, "counter_planner_min_tokens", c_plan_min)
+        object.__setattr__(self, "counter_planner_max_tokens_cap", c_plan_cap)
+        object.__setattr__(self, "counter_support_step_min_tokens", c_step_min)
+        object.__setattr__(self, "counter_support_step_max_tokens_cap", c_step_cap)
 
         object.__setattr__(
             self,

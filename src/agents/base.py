@@ -26,9 +26,11 @@ from .tools.prompt_registry import render_prompt
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import settings  # noqa: E402
 from services.groq_client import (  # noqa: E402
+    RequestTooLargeError,
     get_chat_groq,
     resilient_chat_call,
     resilient_chat_stream,
+    shrink_max_tokens_progressive,
 )
 
 _retrieval_llm_fail_fast_state = threading.local()
@@ -122,7 +124,28 @@ class BaseAgent(ABC):
         self._statute_applicability_cache: dict[
             tuple[str, str, str, str, str, str], bool
         ] = {}
+        self._ancillary_max_tokens_cap = int(settings.ancillary_max_tokens_cap)
         self._cancel_checker = None
+
+    def _ancillary_max_tokens(self) -> int:
+        """Bound max tokens for short guard/validation LLM checks."""
+        base_max_tokens = int(
+            getattr(self.config, "max_tokens", settings.llm_max_tokens)
+            or settings.llm_max_tokens
+        )
+        if base_max_tokens <= 0:
+            base_max_tokens = settings.llm_max_tokens
+        return max(1, min(base_max_tokens, int(self._ancillary_max_tokens_cap)))
+
+    @staticmethod
+    def _is_request_too_large_error(exc: Exception) -> bool:
+        """Detect provider-side oversized-request failures (strictly separate from 429)."""
+        if isinstance(exc, RequestTooLargeError):
+            return True
+        message = str(exc or "").lower()
+        if "error code: 429" in message or "rate limit reached" in message:
+            return False
+        return "request too large" in message
 
     def set_cancel_checker(self, cancel_checker) -> None:
         """Inject optional cooperative cancellation checker."""
@@ -166,13 +189,16 @@ class BaseAgent(ABC):
         stream_callback = kwargs.pop("stream_callback", None)
         model_order = self._resilient_model_order()
         retrieval_temp = 0.0
-        max_tokens = getattr(self.config, "max_tokens", settings.llm_max_tokens)
+        max_tokens_override = kwargs.pop("max_tokens", None)
+        if max_tokens_override is None:
+            max_tokens_override = self._ancillary_max_tokens()
+        retrieval_max_tokens = max(1, int(max_tokens_override))
 
         def _llm_factory(api_key: str, model: str):
             return get_chat_groq(
                 model=model,
                 temperature=retrieval_temp,
-                max_tokens=max_tokens,
+                max_tokens=retrieval_max_tokens,
                 api_key=api_key or None,
             )
 
@@ -329,7 +355,10 @@ class BaseAgent(ABC):
             candidate_step=step_text,
         )
         try:
-            resp = self._resilient_llm_invoke([HumanMessage(content=prompt)])
+            resp = self._resilient_llm_invoke(
+                [HumanMessage(content=prompt)],
+                max_tokens=self._ancillary_max_tokens(),
+            )
             answer = (resp.content or "").strip().upper()
             if "CONTRADICT" in answer:
                 result = (False, "contradicts explicit claim fact")
@@ -384,7 +413,8 @@ class BaseAgent(ABC):
                 [
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_prompt),
-                ]
+                ],
+                max_tokens=self._ancillary_max_tokens(),
             )
             answer = (resp.content or "").strip().upper()
             if "CONTRADICTION" in answer:
@@ -624,22 +654,56 @@ class BaseAgent(ABC):
             return shared_cached
 
         prompt = render_prompt("base.extract_legal_context", claim=claim)
+        current_max_tokens = self._ancillary_max_tokens()
+        min_tokens_floor = max(64, current_max_tokens // 2)
+        max_attempts = 3
 
-        try:
-            response = self._resilient_retrieval_llm_invoke(
-                [HumanMessage(content=prompt)]
-            )
-            context = (response.content or "").strip().replace("\n", " ")
-            context = re.sub(r"\s+", " ", context)
-            if context:
-                self._legal_context_cache[claim_key] = context[:200]
-                self._shared_legal_context_cache[claim_key] = context[:200]
-                self._log(f"🧭 Legal context extracted: {context[:120]}")
-                return context[:200]
-        except Exception as e:
-            self._log(f"⚠️ Legal context extraction failed: {e}", "warning")
-            if _retrieval_llm_fail_fast_enabled():
-                raise RuntimeError(f"Retrieval legal-context LLM failure: {e}") from e
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self._resilient_retrieval_llm_invoke(
+                    [HumanMessage(content=prompt)],
+                    max_tokens=current_max_tokens,
+                )
+                context = (response.content or "").strip().replace("\n", " ")
+                context = re.sub(r"\s+", " ", context)
+                if context:
+                    self._legal_context_cache[claim_key] = context[:200]
+                    self._shared_legal_context_cache[claim_key] = context[:200]
+                    if attempt > 1:
+                        self._log(
+                            "✅ Legal context extraction recovered after shrink "
+                            f"(attempt {attempt}, max_tokens={current_max_tokens})"
+                        )
+                    self._log(f"🧭 Legal context extracted: {context[:120]}")
+                    return context[:200]
+            except Exception as e:
+                self._log(
+                    "⚠️ Legal context extraction failed "
+                    f"(attempt {attempt}/{max_attempts}, max_tokens={current_max_tokens}): {e}",
+                    "warning",
+                )
+                if (
+                    self._is_request_too_large_error(e)
+                    and current_max_tokens > min_tokens_floor
+                    and attempt < max_attempts
+                ):
+                    reduced = shrink_max_tokens_progressive(
+                        current_max_tokens,
+                        min_tokens_floor,
+                    )
+                    if reduced < current_max_tokens:
+                        self._log(
+                            "⚠️ Legal context request too large; reducing "
+                            f"max_tokens {current_max_tokens} -> {reduced}",
+                            "warning",
+                        )
+                        current_max_tokens = reduced
+                        continue
+                if _retrieval_llm_fail_fast_enabled():
+                    raise RuntimeError(
+                        f"Retrieval legal-context LLM failure: {e}"
+                    ) from e
+                break
 
         fallback = "General legal dispute context"
         self._legal_context_cache[claim_key] = fallback
@@ -705,21 +769,56 @@ class BaseAgent(ABC):
                     taxonomy_role_block=taxonomy_role_block,
                 )
 
-                try:
-                    response = self._resilient_retrieval_llm_invoke(
-                        [HumanMessage(content=prompt)]
-                    )
-                    answer = (response.content or "").strip().upper()
-                except Exception as e:
-                    self._log(
-                        f"⚠️ Applicability check failed for {article_number}: {e}",
-                        "warning",
-                    )
-                    if _retrieval_llm_fail_fast_enabled():
-                        raise RuntimeError(
-                            f"Retrieval applicability LLM failure for article {article_number}: {e}"
-                        ) from e
-                    answer = "YES"  # safe default: keep on error
+                answer = "YES"
+                current_max_tokens = self._ancillary_max_tokens()
+                min_tokens_floor = max(64, current_max_tokens // 2)
+                max_attempts = 3
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        response = self._resilient_retrieval_llm_invoke(
+                            [HumanMessage(content=prompt)],
+                            max_tokens=current_max_tokens,
+                        )
+                        answer = (response.content or "").strip().upper()
+                        if attempt > 1:
+                            self._log(
+                                "✅ Applicability check recovered for "
+                                f"{article_number} after shrink "
+                                f"(attempt {attempt}, max_tokens={current_max_tokens})"
+                            )
+                        break
+                    except Exception as e:
+                        self._log(
+                            "⚠️ Applicability check failed for "
+                            f"{article_number} (attempt {attempt}/{max_attempts}, "
+                            f"max_tokens={current_max_tokens}): {e}",
+                            "warning",
+                        )
+                        if (
+                            self._is_request_too_large_error(e)
+                            and current_max_tokens > min_tokens_floor
+                            and attempt < max_attempts
+                        ):
+                            reduced = shrink_max_tokens_progressive(
+                                current_max_tokens,
+                                min_tokens_floor,
+                            )
+                            if reduced < current_max_tokens:
+                                self._log(
+                                    "⚠️ Applicability request too large for "
+                                    f"{article_number}; reducing max_tokens "
+                                    f"{current_max_tokens} -> {reduced}",
+                                    "warning",
+                                )
+                                current_max_tokens = reduced
+                                continue
+                        if _retrieval_llm_fail_fast_enabled():
+                            raise RuntimeError(
+                                "Retrieval applicability LLM failure for article "
+                                f"{article_number}: {e}"
+                            ) from e
+                        answer = "YES"  # safe default: keep on error
+                        break
 
                 first_token = answer.split()[0] if answer else ""
                 token = re.sub(r"^[^A-Z]+|[^A-Z]+$", "", first_token)

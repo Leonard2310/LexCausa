@@ -4,7 +4,7 @@ Legal Search Pipeline for LexCausa.
 Complete pipeline that:
 1. Classifies a legal claim using Groq Cloud LLM
 2. Generates embedding for the claim using Legal-BERT
-3. Performs vector search in Neo4j filtered by relevant libri/source
+3. Performs vector search in Neo4j filtered by relevant books/sources
 4. Returns the most relevant articles from Italian law codes
 """
 
@@ -29,11 +29,11 @@ from config import settings  # noqa: E402
 
 def source_human_label(source: str) -> str:
     source_map = {
-        "codice_civile": "Codice Civile",
-        "codice_penale": "Codice Penale",
-        "codice_amministrativo": "Codice Amministrativo (L. 241/1990)",
+        "codice_civile": "Civil Code",
+        "codice_penale": "Penal Code",
+        "codice_amministrativo": "Administrative Code (L. 241/1990)",
     }
-    return source_map.get(source, source or "Codice")
+    return source_map.get(source, source or "Code")
 
 
 @dataclass
@@ -43,7 +43,7 @@ class ArticleResult:
     statute_id: str
     articolo: str
     titolo: str
-    testo: str
+    text: str
     libro: str
     source: str
     score: float
@@ -56,8 +56,8 @@ class ArticleResult:
             f"  Score: {self.score:.4f}",
         ]
         if self.libro:
-            lines.insert(1, f"  Libro: {self.libro}")
-        lines.append(f"  Testo: {self.testo[:200]}...")
+            lines.insert(1, f"  Book: {self.libro}")
+        lines.append(f"  Text: {self.text[:200]}...")
         return "\n".join(lines)
 
 
@@ -78,7 +78,7 @@ class SearchResult:
             "",
             f"📝 Claim: {self.claim}",
             "",
-            "📊 Classification (Top 3 libri):",
+            "📊 Classification (Top 3 Books):",
         ]
 
         for i, (cat, desc) in enumerate(
@@ -185,17 +185,17 @@ class LegalSearchPipeline:
     def vector_search(
         self,
         embedding: list[float],
-        libri_filters: list[tuple[str, str]],
+        book_filters: list[tuple[str, str]],
         top_k: int = settings.search_top_k_default,
         query_text: Optional[str] = None,
     ) -> list[ArticleResult]:
         """
-        Perform hybrid retrieval (vector + fulltext) filtered by source/libro.
+        Perform hybrid retrieval (vector + fulltext) filtered by source/book.
 
         Args:
             embedding: Query embedding vector.
-            libri_filters: List of (source, libro) tuples to filter by.
-            top_k: Number of results per libro.
+            book_filters: List of (source, book) tuples to filter by.
+            top_k: Number of results per book.
             query_text: Optional query text for fulltext branch.
 
         Returns:
@@ -210,12 +210,12 @@ class LegalSearchPipeline:
             fulltext_query_text = " ".join(sorted(query_terms))
 
         with self.driver.session() as session:
-            for filter_rank, (source, libro) in enumerate(libri_filters, start=1):
+            for filter_rank, (source, book) in enumerate(book_filters, start=1):
                 if not source or source == "unknown":
                     continue
 
-                # For codici without libri (e.g. amministrativo), force source-only.
-                libro_filter = (libro or "").strip()
+                # For codes without books (e.g. administrative), force source-only.
+                libro_filter = (book or "").strip()
                 if source == "codice_amministrativo":
                     libro_filter = ""
 
@@ -457,7 +457,7 @@ class LegalSearchPipeline:
             ArticleResult(
                 statute_id=record["id"],
                 articolo=record["articolo"],
-                titolo=record["titolo"],
+                titolo=record["titolo"] or "",
                 testo=record["testo"] or "",
                 libro=record["libro"] or "",
                 source=record["source"],
@@ -526,7 +526,7 @@ class LegalSearchPipeline:
             ArticleResult(
                 statute_id=record["id"],
                 articolo=record["articolo"],
-                titolo=record["titolo"],
+                titolo=record["titolo"] or "",
                 testo=record["testo"] or "",
                 libro=record["libro"] or "",
                 source=record["source"],
@@ -563,7 +563,7 @@ class LegalSearchPipeline:
                     statute_id=item.statute_id,
                     articolo=item.articolo,
                     titolo=item.titolo,
-                    testo=item.testo,
+                    text=item.testo,
                     libro=item.libro,
                     source=item.source,
                     score=final_score,
@@ -596,7 +596,7 @@ class LegalSearchPipeline:
                     statute_id=item.statute_id,
                     articolo=item.articolo,
                     titolo=item.titolo,
-                    testo=item.testo,
+                    text=item.testo,
                     libro=item.libro,
                     source=item.source,
                     score=final_score,
@@ -654,7 +654,7 @@ class LegalSearchPipeline:
                     statute_id=base_item.statute_id,
                     articolo=base_item.articolo,
                     titolo=base_item.titolo,
-                    testo=base_item.testo,
+                    text=base_item.testo,
                     libro=base_item.libro,
                     source=base_item.source,
                     score=score,
@@ -778,7 +778,7 @@ class LegalSearchPipeline:
         ]
 
         def _call(client, model):
-            completion = client.chat.completions.create(
+            return client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=0.0,
@@ -786,13 +786,13 @@ class LegalSearchPipeline:
                 top_p=1,
                 stream=False,
             )
-            return (completion.choices[0].message.content or "").strip()
 
         try:
-            llm_text = resilient_groq_call(
+            completion = resilient_groq_call(
                 _call,
                 model_order=settings.retrieval_model_fallback_order,
             )
+            llm_text = (completion.choices[0].message.content or "").strip()
         except Exception as exc:
             print(f"⚠️ [Retrieval] LLM keyword extraction failed: {exc}")
             return set()
@@ -900,15 +900,15 @@ class LegalSearchPipeline:
     def build_search_filters(
         self,
         classification: ClassificationResult,
-        use_top_n_libri: int = settings.search_use_top_n_libri,
+        use_top_n_books: int = settings.search_use_top_n_libri,
     ) -> list[tuple[str, str]]:
         """
         Convert classifier output to vector-search filters.
 
-        For codici with no libri (e.g. amministrativo), `libro` is empty and
+        For codes with no books (e.g. administrative), `book` is empty and
         vector search runs at source-level only.
         """
-        selected = classification.libro_mappings[:use_top_n_libri]
+        selected = classification.libro_mappings[:use_top_n_books]
         filters: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
 
@@ -937,7 +937,7 @@ class LegalSearchPipeline:
         self,
         claim: str,
         top_k: int = settings.search_top_k_default,
-        use_top_n_libri: int = settings.search_use_top_n_libri,
+        use_top_n_books: int = settings.search_use_top_n_libri,
     ) -> SearchResult:
         """
         Complete search pipeline for a legal claim.
@@ -945,13 +945,13 @@ class LegalSearchPipeline:
         Args:
             claim: The legal claim text.
             top_k: Number of articles to return.
-            use_top_n_libri: Number of top classified libri to search in.
+            use_top_n_books: Number of top classified books to search in.
 
         Returns:
             SearchResult with classification and relevant articles.
         """
         # Step 1: Classify the claim
-        print(f"🔄 Classifying claim... (top_k={top_k}, libri_top_n={use_top_n_libri})")
+        print(f"🔄 Classifying claim... (top_k={top_k}, books_top_n={use_top_n_books})")
         classification = self.classifier.classify(claim)
         print(f"   ✅ Classified into: {classification.categories}")
 
@@ -960,12 +960,12 @@ class LegalSearchPipeline:
         embedding = self.embed_text(claim)
         print(f"   ✅ Embedding generated (dim: {len(embedding)})")
 
-        # Step 3: Hybrid retrieval (vector + fulltext) filtered by libri/source.
+        # Step 3: Hybrid retrieval (vector + fulltext) filtered by books/source.
         print("🔄 Searching in Neo4j (hybrid retrieval)...")
-        libri_filters = self.build_search_filters(classification, use_top_n_libri)
+        book_filters = self.build_search_filters(classification, use_top_n_books)
         articles = self.vector_search(
             embedding,
-            libri_filters,
+            book_filters,
             top_k,
             query_text=claim,
         )
@@ -1013,7 +1013,7 @@ def main():
             result = pipeline.search(
                 claim,
                 top_k=settings.search_top_k_default,
-                use_top_n_libri=settings.search_use_top_n_libri,
+                use_top_n_books=settings.search_use_top_n_libri,
             )
             print()
             print(result)

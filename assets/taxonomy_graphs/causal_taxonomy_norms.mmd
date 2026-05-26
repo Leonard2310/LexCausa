@@ -1,0 +1,269 @@
+graph LR
+  TAX["Causal Taxonomy Norms"]
+
+  D_PEN["penale"]
+  TAX --> D_PEN
+  D_CIV["civile"]
+  TAX --> D_CIV
+  D_AMM["amministrativo"]
+  TAX --> D_AMM
+  D_MIX["entrambi"]
+  TAX --> D_MIX
+
+  TH_1["PEN_FACTUAL\nCore:1 Acc:2"]
+  D_PEN --> TH_1
+  CG_1["Core Norms"]
+  TH_1 --> CG_1
+  AG_1["Norme Accessorie"]
+  TH_1 --> AG_1
+  NC_1_1["Art. 40 c.p."]
+  CG_1 --> NC_1_1
+  NA_1_1["Art. 41 c.p."]
+  AG_1 --> NA_1_1
+  NA_1_2["Art. 43 c.p."]
+  AG_1 --> NA_1_2
+
+  TH_2["PEN_INTERVENING\nCore:1 Acc:4"]
+  D_PEN --> TH_2
+  CG_2["Core Norms"]
+  TH_2 --> CG_2
+  AG_2["Norme Accessorie"]
+  TH_2 --> AG_2
+  NC_2_1["Art. 41 c.p."]
+  CG_2 --> NC_2_1
+  NA_2_1["Art. 40 c.p."]
+  AG_2 --> NA_2_1
+  NA_2_2["Art. 43 c.p."]
+  AG_2 --> NA_2_2
+  NA_2_3["Art. 45 c.p."]
+  AG_2 --> NA_2_3
+  NA_2_4["Art. 90 c.p."]
+  AG_2 --> NA_2_4
+
+  TH_3["CIV_REMOTENESS\nCore:2 Acc:3"]
+  D_CIV --> TH_3
+  CG_3["Core Norms"]
+  TH_3 --> CG_3
+  AG_3["Norme Accessorie"]
+  TH_3 --> AG_3
+  NC_3_1["Art. 1223 c.c."]
+  CG_3 --> NC_3_1
+  NC_3_2["Art. 2056 c.c."]
+  CG_3 --> NC_3_2
+  NA_3_1["Art. 1225 c.c."]
+  AG_3 --> NA_3_1
+  NA_3_2["Art. 1226 c.c."]
+  AG_3 --> NA_3_2
+  NA_3_3["Art. 1227 c.c."]
+  AG_3 --> NA_3_3
+
+  TH_4["AMM_PROCEDURAL_LEGITIMACY\nCore:3 Acc:4"]
+  D_AMM --> TH_4
+  CG_4["Core Norms"]
+  TH_4 --> CG_4
+  AG_4["Norme Accessorie"]
+  TH_4 --> AG_4
+  NC_4_1["Art. 1 L. 241/1990"]
+  CG_4 --> NC_4_1
+  NC_4_2["Art. 2 L. 241/1990"]
+  CG_4 --> NC_4_2
+  NC_4_3["Art. 3 L. 241/1990"]
+  CG_4 --> NC_4_3
+  NA_4_1["Art. 7 L. 241/1990"]
+  AG_4 --> NA_4_1
+  NA_4_2["Art. 10-bis L. 241/1990"]
+  AG_4 --> NA_4_2
+  NA_4_3["Art. 21-octies L. 241/1990"]
+  AG_4 --> NA_4_3
+  NA_4_4["Art. 22 L. 241/1990"]
+  AG_4 --> NA_4_4
+
+  TH_5["IMPUTATION_FILTER\nCore:1 Acc:3"]
+  D_PEN --> TH_5
+  CG_5["Core Norms"]
+  TH_5 --> CG_5
+  AG_5["Norme Accessorie"]
+  TH_5 --> AG_5
+  NC_5_1["Art. 45 c.p."]
+  CG_5 --> NC_5_1
+  NA_5_1["Art. 41 c.p."]
+  AG_5 --> NA_5_1
+  NA_5_2["Art. 54 c.p."]
+  AG_5 --> NA_5_2
+  NA_5_3["Art. 90 c.p."]
+  AG_5 --> NA_5_3
+
+  TH_6["CIV_CONTRACT_REMEDIES\nCore:2 Acc:6"]
+  D_CIV --> TH_6
+  CG_6["Core Norms"]
+  TH_6 --> CG_6
+  AG_6["Norme Accessorie"]
+  TH_6 --> AG_6
+  NC_6_1["Art. 1218 c.c."]
+  CG_6 --> NC_6_1
+  NC_6_2["Art. 1453 c.c."]
+  CG_6 --> NC_6_2
+  NA_6_1["Art. 1455 c.c."]
+  AG_6 --> NA_6_1
+  NA_6_2["Art. 1457 c.c."]
+  AG_6 --> NA_6_2
+  NA_6_3["Art. 1460 c.c."]
+  AG_6 --> NA_6_3
+  NA_6_4["Art. 1385 c.c."]
+  AG_6 --> NA_6_4
+  NA_6_5["Art. 1382 c.c."]
+  AG_6 --> NA_6_5
+  NA_6_6["Art. 1384 c.c."]
+  AG_6 --> NA_6_6
+
+  TH_7["CIV_SALE_DEFECTS\nCore:2 Acc:2"]
+  D_CIV --> TH_7
+  CG_7["Core Norms"]
+  TH_7 --> CG_7
+  AG_7["Norme Accessorie"]
+  TH_7 --> AG_7
+  NC_7_1["Art. 1490 c.c."]
+  CG_7 --> NC_7_1
+  NC_7_2["Art. 1492 c.c."]
+  CG_7 --> NC_7_2
+  NA_7_1["Art. 1494 c.c."]
+  AG_7 --> NA_7_1
+  NA_7_2["Art. 1495 c.c."]
+  AG_7 --> NA_7_2
+
+  TH_8["CIV_CUSTODY_DAMAGE\nCore:2 Acc:2"]
+  D_CIV --> TH_8
+  CG_8["Core Norms"]
+  TH_8 --> CG_8
+  AG_8["Norme Accessorie"]
+  TH_8 --> AG_8
+  NC_8_1["Art. 2051 c.c."]
+  CG_8 --> NC_8_1
+  NC_8_2["Art. 2052 c.c."]
+  CG_8 --> NC_8_2
+  NA_8_1["Art. 1227 c.c."]
+  AG_8 --> NA_8_1
+  NA_8_2["Art. 2056 c.c."]
+  AG_8 --> NA_8_2
+
+  TH_9["PEN_PROPERTY_QUALIFICATION\nCore:2 Acc:4"]
+  D_PEN --> TH_9
+  CG_9["Core Norms"]
+  TH_9 --> CG_9
+  AG_9["Norme Accessorie"]
+  TH_9 --> AG_9
+  NC_9_1["Art. 646 c.p."]
+  CG_9 --> NC_9_1
+  NC_9_2["Art. 640 c.p."]
+  CG_9 --> NC_9_2
+  NA_9_1["Art. 624 c.p."]
+  AG_9 --> NA_9_1
+  NA_9_2["Art. 624-bis c.p."]
+  AG_9 --> NA_9_2
+  NA_9_3["Art. 625 c.p."]
+  AG_9 --> NA_9_3
+  NA_9_4["Art. 133 c.p."]
+  AG_9 --> NA_9_4
+
+  TH_10["PEN_RIGHTS_BALANCING\nCore:2 Acc:3"]
+  D_PEN --> TH_10
+  CG_10["Core Norms"]
+  TH_10 --> CG_10
+  AG_10["Norme Accessorie"]
+  TH_10 --> AG_10
+  NC_10_1["Art. 51 c.p."]
+  CG_10 --> NC_10_1
+  NC_10_2["Art. 595 c.p."]
+  CG_10 --> NC_10_2
+  NA_10_1["Art. 610 c.p."]
+  AG_10 --> NA_10_1
+  NA_10_2["Art. 392 c.p."]
+  AG_10 --> NA_10_2
+  NA_10_3["Art. 393 c.p."]
+  AG_10 --> NA_10_3
+
+  TH_11["PEN_COLPA_GRADATION\nCore:2 Acc:6"]
+  D_PEN --> TH_11
+  CG_11["Core Norms"]
+  TH_11 --> CG_11
+  AG_11["Norme Accessorie"]
+  TH_11 --> AG_11
+  NC_11_1["Art. 42 c.p."]
+  CG_11 --> NC_11_1
+  NC_11_2["Art. 43 c.p."]
+  CG_11 --> NC_11_2
+  NA_11_1["Art. 61 c.p."]
+  AG_11 --> NA_11_1
+  NA_11_2["Art. 62-bis c.p."]
+  AG_11 --> NA_11_2
+  NA_11_3["Art. 133 c.p."]
+  AG_11 --> NA_11_3
+  NA_11_4["Art. 90 c.p."]
+  AG_11 --> NA_11_4
+  NA_11_5["Art. 54 c.p."]
+  AG_11 --> NA_11_5
+  NA_11_6["Art. 113 c.p."]
+  AG_11 --> NA_11_6
+
+  TH_12["AMM_AUTOTUTELA_BALANCE\nCore:2 Acc:3"]
+  D_AMM --> TH_12
+  CG_12["Core Norms"]
+  TH_12 --> CG_12
+  AG_12["Norme Accessorie"]
+  TH_12 --> AG_12
+  NC_12_1["Art. 21-novies L. 241/1990"]
+  CG_12 --> NC_12_1
+  NC_12_2["Art. 21-quinquies L. 241/1990"]
+  CG_12 --> NC_12_2
+  NA_12_1["Art. 1 L. 241/1990"]
+  AG_12 --> NA_12_1
+  NA_12_2["Art. 3 L. 241/1990"]
+  AG_12 --> NA_12_2
+  NA_12_3["Art. 7 L. 241/1990"]
+  AG_12 --> NA_12_3
+
+  TH_13["AMM_DELAY_REMEDIES\nCore:2 Acc:2"]
+  D_AMM --> TH_13
+  CG_13["Core Norms"]
+  TH_13 --> CG_13
+  AG_13["Norme Accessorie"]
+  TH_13 --> AG_13
+  NC_13_1["Art. 2 L. 241/1990"]
+  CG_13 --> NC_13_1
+  NC_13_2["Art. 2-bis L. 241/1990"]
+  CG_13 --> NC_13_2
+  NA_13_1["Art. 1 L. 241/1990"]
+  AG_13 --> NA_13_1
+  NA_13_2["Art. 3 L. 241/1990"]
+  AG_13 --> NA_13_2
+
+  TH_14["MIXED_PEN_CIV_CONCURRENCE\nCore:3 Acc:2"]
+  D_MIX --> TH_14
+  CG_14["Core Norms"]
+  TH_14 --> CG_14
+  AG_14["Norme Accessorie"]
+  TH_14 --> AG_14
+  NC_14_1["Art. 185 c.p."]
+  CG_14 --> NC_14_1
+  NC_14_2["Art. 1218 c.c."]
+  CG_14 --> NC_14_2
+  NC_14_3["Art. 2043 c.c."]
+  CG_14 --> NC_14_3
+  NA_14_1["Art. 1223 c.c."]
+  AG_14 --> NA_14_1
+  NA_14_2["Art. 1453 c.c."]
+  AG_14 --> NA_14_2
+
+  classDef pen fill:#fde68a,stroke:#b45309,color:#111827;
+  classDef civ fill:#bfdbfe,stroke:#1d4ed8,color:#111827;
+  classDef amm fill:#bbf7d0,stroke:#15803d,color:#111827;
+  classDef mix fill:#fbcfe8,stroke:#be185d,color:#111827;
+  classDef coregrp fill:#ffedd5,stroke:#c2410c,color:#111827;
+  classDef accgrp fill:#dcfce7,stroke:#15803d,color:#111827;
+  classDef norm fill:#f3f4f6,stroke:#4b5563,color:#111827;
+  class D_PEN,TH_1,TH_2,TH_5,TH_9,TH_10,TH_11 pen;
+  class D_CIV,TH_3,TH_6,TH_7,TH_8 civ;
+  class D_AMM,TH_4,TH_12,TH_13 amm;
+  class D_MIX,TH_14 mix;
+  class CG_1,CG_2,CG_3,CG_4,CG_5,CG_6,CG_7,CG_8,CG_9,CG_10,CG_11,CG_12,CG_13,CG_14 coregrp;
+  class AG_1,AG_2,AG_3,AG_4,AG_5,AG_6,AG_7,AG_8,AG_9,AG_10,AG_11,AG_12,AG_13,AG_14 accgrp;

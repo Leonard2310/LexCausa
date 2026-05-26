@@ -6,7 +6,7 @@ Agent tecnico usato esclusivamente in fase di retrieval per:
 - filtro rilevanza norme/precedenti
 - filtro applicabilità norme
 
-Non esegue ragionamento principale/counter.
+Does not execute main/counter reasoning.
 """
 
 from config import settings

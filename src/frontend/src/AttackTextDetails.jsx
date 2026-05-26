@@ -57,8 +57,8 @@ export default function AttackTextDetails({ aqaReport }) {
   const roleLabel = (role) => {
     if (!role) return '?';
     const r = role.toLowerCase();
-    if (r === 'support' || r === 'pro') return 'TESI';
-    if (r === 'counter' || r === 'contra') return 'CONTROTESI';
+    if (r === 'support' || r === 'pro') return 'THESIS';
+    if (r === 'counter' || r === 'contra') return 'COUNTER-THESIS';
     return role.toUpperCase();
   };
 
@@ -114,21 +114,21 @@ export default function AttackTextDetails({ aqaReport }) {
                     <span className={`atk-role-tag ${roleClass(atk.attackerRole)}`}>
                       {attackerRole}
                     </span>
-                    Attaccante — {atk.attackerLinkId}
+                    Attacker - {atk.attackerLinkId}
                   </div>
                   {atk.attacker ? (
                     <>
                       <div className="attack-text-segment">
-                        <span className="segment-label">Premessa:</span>
+                        <span className="segment-label">Premise:</span>
                         <p>{atk.attacker.premise_text || '—'}</p>
                       </div>
                       <div className="attack-text-segment">
-                        <span className="segment-label">Conclusione:</span>
+                        <span className="segment-label">Conclusion:</span>
                         <p>{atk.attacker.conclusion_text || '—'}</p>
                       </div>
                     </>
                   ) : (
-                    <p className="attack-text-missing">Testo del link non disponibile</p>
+                    <p className="attack-text-missing">Link text not available</p>
                   )}
                 </div>
 
@@ -138,25 +138,25 @@ export default function AttackTextDetails({ aqaReport }) {
                     <span className={`atk-role-tag ${roleClass(atk.target.role)}`}>
                       {targetRole}
                     </span>
-                    Bersaglio — {atk.target.link_id}
+                    Target - {atk.target.link_id}
                   </div>
                   <div className="attack-text-segment">
-                    <span className="segment-label">Premessa:</span>
+                    <span className="segment-label">Premise:</span>
                     <p>{atk.target.premise_text || '—'}</p>
                   </div>
                   <div className="attack-text-segment">
-                    <span className="segment-label">Conclusione:</span>
+                    <span className="segment-label">Conclusion:</span>
                     <p>{atk.target.conclusion_text || '—'}</p>
                   </div>
                 </div>
 
                 {/* Metadata row */}
                 <div className="attack-text-meta-row">
-                  <span>Tipo: <strong>{atk.attackType}</strong></span>
-                  <span>Moltiplicatore: <strong>×{atk.typeMultiplier.toFixed(1)}</strong></span>
+                  <span>Type: <strong>{atk.attackType}</strong></span>
+                  <span>Multiplier: <strong>×{atk.typeMultiplier.toFixed(1)}</strong></span>
                   <span>NLI: <strong>{atk.nliLabel || '—'}</strong>{atk.nliBypass ? ' (bypass)' : ''}</span>
                   <span>Overlap: <strong>{(atk.overlap * 100).toFixed(1)}%</strong></span>
-                  <span>Danno: <strong>{atk.attackValue.toFixed(4)}</strong></span>
+                  <span>Damage: <strong>{atk.attackValue.toFixed(4)}</strong></span>
                 </div>
               </div>
             )}

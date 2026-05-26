@@ -22,8 +22,35 @@ from langchain_groq import ChatGroq
 
 from config import settings
 from services.pipeline_control import PipelineCancelled
+from services.usage_stats import extract_token_usage, get_usage_stats
 
 logger = logging.getLogger("lexcausa.groq_client")
+_usage_stats = get_usage_stats()
+
+
+def _record_llm_stats(
+    *,
+    provider: str,
+    model: str,
+    source: str,
+    usage_payload=None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+) -> None:
+    """Best-effort stats update that never breaks runtime calls."""
+    try:
+        _usage_stats.record_llm_call(
+            provider=provider,
+            model=model,
+            source=source,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            usage=usage_payload,
+        )
+    except Exception as exc:
+        logger.debug("Usage stats update failed: %s", exc)
 
 
 class AllKeysRateLimitedError(Exception):
@@ -48,6 +75,20 @@ class RequestTooLargeError(Exception):
             f"Request too large for model '{model}'. Reduce prompt size or max_tokens. "
             f"Provider detail: {detail}"
         )
+
+
+def shrink_max_tokens_progressive(current_tokens: int, min_tokens: int) -> int:
+    """Reduce max_tokens by 10% with a hard floor and at least 1-token decrement.
+
+    This helper centralizes oversized-request token reduction policy so callers
+    can apply the same behavior consistently.
+    """
+    current = max(1, int(current_tokens))
+    floor = max(1, int(min_tokens))
+    if current <= floor:
+        return floor
+    decrement = max(1, current // 10)
+    return max(floor, current - decrement)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,11 +191,13 @@ def _is_request_too_large(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status == 413:
         return True
+    # Keep 429/rate-limit semantics separate from oversized 413 handling.
+    if status == 429 or _is_rate_limit(exc):
+        return False
     return any(
         marker in exc_str
         for marker in (
             "request too large",
-            "tokens per minute",
             "please reduce your message size",
         )
     )
@@ -218,7 +261,7 @@ def _resilient_loop(
 
     def _check_cancel() -> None:
         if cancel_checker is not None and cancel_checker():
-            raise PipelineCancelled("Esecuzione interrotta manualmente.")
+            raise PipelineCancelled("Execution manually stopped.")
 
     def _sleep_with_cancel(delay_s: float) -> None:
         remaining = max(0.0, float(delay_s))
@@ -300,8 +343,10 @@ def _resilient_loop(
                         raise
 
                     if _is_request_too_large(exc):
-                        logger.error(
-                            "❌ [%s] Request too large for model %s: %s",
+                        # Keep this at debug level to avoid duplicate user-facing
+                        # logs (provider + caller) for the same oversized error.
+                        logger.debug(
+                            "[%s] Request too large for model %s: %s",
                             label,
                             model,
                             exc,
@@ -442,7 +487,18 @@ def resilient_groq_call(
 
     def _execute(key: str, model: str):
         client = Groq(api_key=key)
-        return call_fn(client, model)
+        result = call_fn(client, model)
+        prompt_tokens, completion_tokens, total_tokens = extract_token_usage(result)
+        _record_llm_stats(
+            provider="groq",
+            model=model,
+            source="groq_sdk_call",
+            usage_payload=result,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        return result
 
     return _resilient_loop(
         _execute,
@@ -517,7 +573,18 @@ def resilient_chat_call(
                 temperature=getattr(ref_llm, "temperature", settings.llm_temperature),
                 max_tokens=getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
             )
-        return llm.invoke(messages, **invoke_kwargs)
+        result = llm.invoke(messages, **invoke_kwargs)
+        prompt_tokens, completion_tokens, total_tokens = extract_token_usage(result)
+        _record_llm_stats(
+            provider="groq",
+            model=model,
+            source="chat_groq_invoke",
+            usage_payload=result,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        return result
 
     return _resilient_loop(
         _execute,
@@ -581,16 +648,40 @@ def resilient_chat_stream(
             )
 
         pieces: list[str] = []
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+        total_tokens: int | None = None
+
         for chunk in llm.stream(messages, **stream_kwargs):
             if cancel_checker is not None and cancel_checker():
-                raise PipelineCancelled("Esecuzione interrotta manualmente.")
+                raise PipelineCancelled("Execution manually stopped.")
+
+            chunk_prompt, chunk_completion, chunk_total = extract_token_usage(chunk)
+            if chunk_prompt is not None:
+                prompt_tokens = chunk_prompt
+            if chunk_completion is not None:
+                completion_tokens = chunk_completion
+            if chunk_total is not None:
+                total_tokens = chunk_total
+
             text = _chunk_to_text(chunk)
             if not text:
                 continue
             pieces.append(text)
             if on_token is not None:
                 on_token(text)
-        return AIMessage(content="".join(pieces))
+
+        result = AIMessage(content="".join(pieces))
+        _record_llm_stats(
+            provider="groq",
+            model=model,
+            source="chat_groq_stream",
+            usage_payload=result,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        return result
 
     return _resilient_loop(
         _execute,

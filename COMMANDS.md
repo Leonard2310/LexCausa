@@ -42,6 +42,16 @@ poetry run python src/db/db_orchestrator.py --check
 
 ## 2. App Runtime (Backend + Frontend)
 
+### One-command local startup (recommended)
+```bash
+make dev
+```
+
+### Stop local dev stack started by Makefile
+```bash
+make dev-stop
+```
+
 ### Start Flask API backend
 ```bash
 poetry run python src/api_server.py
@@ -273,7 +283,7 @@ curl -X POST http://127.0.0.1:8000/api/doe/log \
     "reasoner_shared": {},
     "baseline": {
       "label": "A (Baseline)",
-      "description": "Counter tassonomia ON (norms)",
+      "description": "Counter taxonomy ON (norms)",
       "settings": {},
       "status": "done",
       "duration_ms": 1000,
@@ -285,7 +295,7 @@ curl -X POST http://127.0.0.1:8000/api/doe/log \
     },
     "treatment": {
       "label": "B (Treatment)",
-      "description": "Counter tassonomia ON (identity + attacks + norms)",
+      "description": "Counter taxonomy ON (identity + attacks + norms)",
       "settings": {},
       "status": "done",
       "duration_ms": 900,
@@ -306,7 +316,7 @@ curl -X POST http://127.0.0.1:8000/api/doe/log \
 curl -X POST http://127.0.0.1:8000/api/pdf/export \
   -F "pdf=@/absolute/path/to/report.pdf" \
   -F "claim=Put your claim here" \
-  -F "prefix=doe_automatico" \
+  -F "prefix=doe_automatic" \
   -F "export_context=doe" \
   -F "client_filename=lexcausa_doe_report.pdf"
 ```
@@ -328,7 +338,7 @@ curl -X POST http://127.0.0.1:8000/api/pipeline \
       "counter_model": "gpt_oss_120b",
       "reasoner_temperature": 0.0,
       "counter_temperature": 0.3,
-      "llm_max_tokens": 8192,
+      "llm_max_tokens": 7168,
       "search_min_kept_statutes": 8,
       "search_use_top_n_libri": 3,
       "chain_min_steps": 3,

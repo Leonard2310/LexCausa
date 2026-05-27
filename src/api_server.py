@@ -1098,9 +1098,22 @@ def get_router():
     return router_agent
 
 
-def get_polisher_evaluator():
-    """Lazy load of the Polisher-Evaluator agent."""
+def get_polisher_evaluator(model_name: str | None = None):
+    """Lazy load of the Polisher-Evaluator agent.
+
+    When *model_name* is provided a fresh (non-cached) instance is returned so
+    DoE runs can pin the evaluator to a specific model independently of the
+    singleton used by regular interactive requests.
+    """
     global polisher_evaluator
+    if model_name:
+        return PolisherEvaluator(
+            config=AgentConfig(
+                model_name=model_name,
+                temperature=PIPELINE_AUX_LLM_TEMPERATURE,
+                max_tokens=settings.llm_max_tokens,
+            )
+        )
     if polisher_evaluator is None:
         print("🔧 Initializing Polisher-Evaluator...")
         polisher_evaluator = PolisherEvaluator(
@@ -2366,6 +2379,7 @@ def _run_full_pipeline(
     # Per-step model selection (alias resolved via settings model map)
     fe_reasoner_model = fe_settings.get("reasoner_model")
     fe_counter_model = fe_settings.get("counter_model")
+    fe_evaluator_model = fe_settings.get("evaluator_model")
     # AQA weights
     fe_aqa_alpha = fe_settings.get("aqa_alpha")
     fe_aqa_beta = fe_settings.get("aqa_beta")
@@ -2764,7 +2778,7 @@ def _run_full_pipeline(
         status_callback("Final verification and evaluation in progress...")
 
         _check_cancel()
-        pe = get_polisher_evaluator()
+        pe = get_polisher_evaluator(model_name=fe_evaluator_model)
         pe.set_cancel_checker(_is_cancel_requested)
 
         # Apply AQA weight overrides if provided by frontend
@@ -2898,6 +2912,10 @@ def _run_full_pipeline(
         ),
     }
     token_stats_payload["total_completion_tokens"] = sum(token_stats_payload.values())
+    _final_snap = _usage_stats.get_snapshot()
+    token_stats_payload["max_prompt_tokens_per_call"] = int(
+        _final_snap.get("llm", {}).get("tokens", {}).get("max_prompt_per_call", 0)
+    )
 
     return {
         "claim": claim,
@@ -3146,6 +3164,7 @@ def _run_evaluate_only(
     _check_cancel()
     _emit_phase("final_evaluation", "active", 10, "Starting consistency check")
 
+    fe_evaluator_model = fe_settings.get("evaluator_model")
     fe_aqa_alpha = fe_settings.get("aqa_alpha")
     fe_aqa_beta = fe_settings.get("aqa_beta")
     fe_aqa_gamma = fe_settings.get("aqa_gamma")
@@ -3182,7 +3201,7 @@ def _run_evaluate_only(
     if fe_aqa_strength_ratio_by_type is not None:
         settings.aqa_strength_ratio_by_type = fe_aqa_strength_ratio_by_type
 
-    pe = get_polisher_evaluator()
+    pe = get_polisher_evaluator(model_name=fe_evaluator_model)
     pe.set_cancel_checker(lambda: cancel_event is not None and cancel_event.is_set())
     result = pe.run(
         claim=claim,

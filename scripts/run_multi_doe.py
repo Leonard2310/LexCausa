@@ -348,6 +348,9 @@ class MultiDoE:
             token_stats.get("reasoning_completion_tokens", 0)
         )
         metrics["counter_tokens"] = int(token_stats.get("counter_completion_tokens", 0))
+        metrics["max_prompt_tokens_per_call"] = int(
+            token_stats.get("max_prompt_tokens_per_call", 0)
+        )
 
         # Reasoning chain structure
         reasoner = response.get("reasoner", {})

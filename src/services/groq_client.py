@@ -12,6 +12,7 @@ Error-handling strategy:
 """
 
 import logging
+import re
 import threading
 import time
 from typing import Callable, Optional
@@ -23,6 +24,14 @@ from langchain_groq import ChatGroq
 from config import settings
 from services.pipeline_control import PipelineCancelled
 from services.usage_stats import extract_token_usage, get_usage_stats
+
+# Strip <think>…</think> blocks emitted by reasoning models (DeepSeek-R1, etc.)
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    return _THINK_RE.sub("", text).lstrip()
+
 
 logger = logging.getLogger("lexcausa.groq_client")
 _usage_stats = get_usage_stats()
@@ -520,19 +529,23 @@ def get_chat_groq(
     max_tokens: Optional[int] = None,
     api_key: Optional[str] = None,
     **kwargs,
-) -> ChatGroq:
-    """
-    Create a ChatGroq instance with the current API key.
+):
+    """Create a chat LLM instance.
 
-    Args:
-        model: Model name; defaults to first runtime model in settings.groq_models.
-        temperature: LLM temperature; defaults to settings.llm_temperature.
-        max_tokens: Max tokens; defaults to settings.llm_max_tokens.
-        api_key: Explicit key override.
-
-    Returns:
-        ChatGroq instance.
+    Returns ChatGroq (Groq Cloud) when llm_backend='groq', or ChatVLLMOffline
+    when llm_backend='local'. All existing callers (evaluation, tools, agents)
+    get the correct backend automatically without any code changes.
     """
+    if settings.llm_backend == "local":
+        from services.vllm_client import ChatVLLMOffline
+
+        return ChatVLLMOffline(
+            model=model or settings.groq_models[0],
+            temperature=(
+                temperature if temperature is not None else settings.llm_temperature
+            ),
+            max_tokens=max_tokens or settings.llm_max_tokens,
+        )
     key = api_key or _current_key()
     return ChatGroq(
         api_key=key,
@@ -561,6 +574,12 @@ def resilient_chat_call(
     - Rate limit          → rotate API key
     - Transient error     → backoff + retry
     """
+    from langchain_core.language_models.chat_models import BaseChatModel as _Base
+
+    # Fast path: non-Groq backends (e.g. vLLM) — call directly, no retry loop.
+    if isinstance(llm_or_factory, _Base) and not isinstance(llm_or_factory, ChatGroq):
+        return llm_or_factory.invoke(messages, **invoke_kwargs)
+
     ref_llm = llm_or_factory  # used to read temperature / max_tokens
 
     def _execute(key: str, model: str):
@@ -573,7 +592,17 @@ def resilient_chat_call(
                 temperature=getattr(ref_llm, "temperature", settings.llm_temperature),
                 max_tokens=getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
             )
-        result = llm.invoke(messages, **invoke_kwargs)
+        raw = llm.invoke(messages, **invoke_kwargs)
+        raw_content = raw.content if isinstance(raw.content, str) else str(raw.content)
+        stripped = _strip_thinking(raw_content)
+        result = (
+            AIMessage(
+                content=stripped,
+                response_metadata=getattr(raw, "response_metadata", {}),
+            )
+            if stripped != raw_content
+            else raw
+        )
         prompt_tokens, completion_tokens, total_tokens = extract_token_usage(result)
         _record_llm_stats(
             provider="groq",
@@ -634,6 +663,19 @@ def resilient_chat_stream(
 
     Emits token chunks via ``on_token`` and returns an AIMessage with full text.
     """
+    from langchain_core.language_models.chat_models import BaseChatModel as _Base
+
+    # Fast path: non-Groq backends — stream directly, no retry loop.
+    if isinstance(llm_or_factory, _Base) and not isinstance(llm_or_factory, ChatGroq):
+        pieces: list[str] = []
+        for chunk in llm_or_factory.stream(messages, **stream_kwargs):
+            text = _chunk_to_text(chunk)
+            if text:
+                pieces.append(text)
+                if on_token is not None:
+                    on_token(text)
+        return AIMessage(content="".join(pieces))
+
     ref_llm = llm_or_factory  # used to read temperature / max_tokens
 
     def _execute(key: str, model: str):
@@ -671,7 +713,7 @@ def resilient_chat_stream(
             if on_token is not None:
                 on_token(text)
 
-        result = AIMessage(content="".join(pieces))
+        result = AIMessage(content=_strip_thinking("".join(pieces)))
         _record_llm_stats(
             provider="groq",
             model=model,

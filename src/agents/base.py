@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_groq import ChatGroq
 
 from .tools.prompt_registry import render_prompt
 
@@ -32,6 +31,7 @@ from services.groq_client import (  # noqa: E402
     resilient_chat_stream,
     shrink_max_tokens_progressive,
 )
+from services.vllm_client import ChatVLLMOffline  # noqa: E402
 
 _retrieval_llm_fail_fast_state = threading.local()
 
@@ -67,7 +67,7 @@ class AgentConfig:
     neo4j_password: str = field(default_factory=lambda: settings.neo4j_password)
 
     def __post_init__(self):
-        if not self.groq_api_key:
+        if settings.llm_backend != "local" and not self.groq_api_key:
             raise ValueError("GROQ_API_KEY not found in environment")
 
 
@@ -117,7 +117,7 @@ class BaseAgent(ABC):
             config: Agent configuration. Uses defaults if not provided.
         """
         self.config = config or AgentConfig()
-        self._llm: Optional[ChatGroq] = None
+        self._llm: Any = None  # ChatGroq (Groq Cloud) or ChatVLLMOffline (local)
         self._fact_lock_check_cache: dict[tuple[str, str], tuple[bool, str]] = {}
         self._nli_relation_cache: dict[tuple[str, str], str] = {}
         self._legal_context_cache: dict[str, str] = {}
@@ -152,20 +152,33 @@ class BaseAgent(ABC):
         self._cancel_checker = cancel_checker
 
     @property
-    def llm(self) -> ChatGroq:
-        """Lazy initialization of LLM with resilient key management."""
+    def llm(self):
+        """Lazy initialization of LLM — ChatVLLMOffline (local) or ChatGroq (cloud)."""
         if self._llm is None:
-            self._llm = get_chat_groq(
-                model=self.config.model_name,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
-                api_key=self.config.groq_api_key or None,
-            )
+            if settings.llm_backend == "local":
+                self._llm = ChatVLLMOffline(
+                    model=self.config.model_name,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens or settings.llm_max_tokens,
+                )
+            else:
+                self._llm = get_chat_groq(
+                    model=self.config.model_name,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                )
         return self._llm
 
     def _resilient_llm_invoke(self, messages, **kwargs):
-        """Invoke LLM with automatic retry, key rotation, and model fallback."""
+        """Invoke LLM with retry; vLLM uses direct invoke (no key rotation needed)."""
         stream_callback = kwargs.pop("stream_callback", None)
+        if settings.llm_backend == "local":
+            # ChatVLLMOffline._stream yields the full result as one chunk.
+            # For streaming UX, emit the full text via the callback after generation.
+            result = self.llm.invoke(messages, **kwargs)
+            if stream_callback is not None:
+                stream_callback(result.content)
+            return result
         model_order = self._resilient_model_order()
         if stream_callback is not None:
             return resilient_chat_stream(
@@ -187,12 +200,24 @@ class BaseAgent(ABC):
     def _resilient_retrieval_llm_invoke(self, messages, **kwargs):
         """Invoke LLM for retrieval-side filtering with dedicated deterministic temperature."""
         stream_callback = kwargs.pop("stream_callback", None)
-        model_order = self._resilient_model_order()
         retrieval_temp = 0.0
         max_tokens_override = kwargs.pop("max_tokens", None)
         if max_tokens_override is None:
             max_tokens_override = self._ancillary_max_tokens()
         retrieval_max_tokens = max(1, int(max_tokens_override))
+
+        if settings.llm_backend == "local":
+            retrieval_llm = ChatVLLMOffline(
+                model=self.config.model_name,
+                temperature=retrieval_temp,
+                max_tokens=retrieval_max_tokens,
+            )
+            result = retrieval_llm.invoke(messages, **kwargs)
+            if stream_callback is not None:
+                stream_callback(result.content)
+            return result
+
+        model_order = self._resilient_model_order()
 
         def _llm_factory(api_key: str, model: str):
             return get_chat_groq(

@@ -194,6 +194,7 @@ class UsageStats:
                     "prompt": 0,
                     "completion": 0,
                     "total": 0,
+                    "max_prompt_per_call": 0,
                 },
             },
         }
@@ -276,6 +277,9 @@ class UsageStats:
             token_stats = llm_stats.get("tokens", {})
             if prompt is not None:
                 token_stats["prompt"] = int(token_stats.get("prompt", 0)) + prompt
+                token_stats["max_prompt_per_call"] = max(
+                    int(token_stats.get("max_prompt_per_call", 0)), prompt
+                )
             if completion is not None:
                 token_stats["completion"] = (
                     int(token_stats.get("completion", 0)) + completion

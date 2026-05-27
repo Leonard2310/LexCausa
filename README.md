@@ -8,7 +8,7 @@
    <img src="https://img.shields.io/badge/Framework-LangChain-1C3C3C?logo=langchain&logoColor=white" alt="LangChain">
    <img src="https://img.shields.io/badge/ASPIC+-Argumentation-8B5CF6" alt="ASPIC+">
    <img src="https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey" alt="License">
-   <img src="https://img.shields.io/badge/Version-1.1.0-brightgreen" alt="Version">
+   <img src="https://img.shields.io/badge/Version-1.1.1-brightgreen" alt="Version">
 </p>
 
 > ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering at the University of Naples Federico II.

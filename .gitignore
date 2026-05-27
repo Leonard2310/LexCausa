@@ -61,7 +61,6 @@ cache/claim_context_cache.sqlite-shm
 
 # Poetry
 poetry.toml
-poetry.lock
 
 # Docker / artifacts
 *.pid

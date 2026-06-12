@@ -1,10 +1,14 @@
-"""vLLM offline inference client for LexCausa (Ibisco/HPC mode).
+"""Generic vLLM offline inference client.
 
-Drop-in replacement for ChatGroq. Models are loaded once into a global
-registry via load_models(); ChatVLLMOffline instances look them up by alias.
+Drop-in replacement for any LangChain chat model. Models are loaded once
+into a global registry via load_models(); ChatVLLMOffline instances look
+them up by alias at call time.
 
-GPU/hardware parameters are read from environment variables so the HPC
-operator can configure them without touching this code:
+Configuration (call before load_models()):
+    set_alias_map({"my_alias": "org/model-id", ...})
+    set_reasoning_aliases({"my_alias"})   # aliases that emit <think>…</think>
+
+GPU/hardware parameters are read from environment variables:
     VLLM_TENSOR_PARALLEL_SIZE   (default: 1)
     VLLM_GPU_MEMORY_UTILIZATION (default: 0.90)
     VLLM_HF_CACHE_DIR           (default: not set)
@@ -31,38 +35,43 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Alias → HuggingFace model ID (mirrors Groq aliases used in DoE config)
+# Project-specific configuration (set via set_alias_map / set_reasoning_aliases)
 # ──────────────────────────────────────────────────────────────────────────────
 
-VLLM_ALIAS_MAP: dict[str, str] = {
-    # Reasoning models (produce <think>…</think> tokens — stripped automatically)
-    "deepseek_r1": "deepseek-ai/DeepSeek-R1",
-    "gpt_oss_120b": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
-    # Non-reasoning models
-    "qwen_25_72b": "Qwen/Qwen2.5-72B-Instruct",
-    "groq_llama_3_3_70b_versatile": "meta-llama/Llama-3.3-70B-Instruct",
-    "groq_llama_scout_17b": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
-}
+_alias_map: dict[str, str] = {}
+_reasoning_aliases: frozenset[str] = frozenset()
+_config_lock = threading.Lock()
 
-# Aliases whose output contains <think>…</think> reasoning tokens to strip
-_REASONING_ALIASES: frozenset[str] = frozenset({"deepseek_r1", "gpt_oss_120b"})
+
+def set_alias_map(mapping: dict[str, str]) -> None:
+    """Register alias → HuggingFace model ID mapping.
+
+    Call before load_models(). If an alias is not in the map, it is used
+    as-is (i.e. treated as a direct HuggingFace model ID).
+    """
+    global _alias_map
+    with _config_lock:
+        _alias_map = dict(mapping)
+
+
+def set_reasoning_aliases(aliases: set[str] | frozenset[str]) -> None:
+    """Register aliases whose output contains <think>…</think> tokens to strip."""
+    global _reasoning_aliases
+    with _config_lock:
+        _reasoning_aliases = frozenset(aliases)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Global model registry
 # ──────────────────────────────────────────────────────────────────────────────
 
-_registry: dict[str, Any] = {}  # alias -> vllm.LLM instance
+_registry: dict[str, Any] = {}
 _registry_lock = threading.Lock()
-_default_alias: Optional[str] = None  # fallback for unknown aliases
+_default_alias: Optional[str] = None
 
 
 def set_default_model(alias: str) -> None:
-    """Set the model used for all pipeline phases except Reasoner/Counter.
-
-    Call this after load_models() to pin the "utility" model (retrieval,
-    filtering, AQA, consistency checker) independently from the DoE variable.
-    When not set, unknown aliases fall back to the first model in the registry.
-    """
+    """Pin the fallback model for aliases not present in the registry."""
     global _default_alias
     _default_alias = alias
 
@@ -71,13 +80,11 @@ def load_models(aliases: list[str]) -> None:
     """Load vLLM LLM instances into the global registry.
 
     Hardware parameters are resolved from environment variables (see module
-    docstring). Call once at process startup; already-loaded aliases are skipped.
+    docstring). Already-loaded aliases are skipped.
     """
     if not _VLLM_AVAILABLE:
-        raise RuntimeError(
-            "vLLM is not installed. On Ibisco: conda install vllm "
-            "or pip install vllm"
-        )
+        raise RuntimeError("vLLM is not installed. Run: pip install vllm")
+
     tensor_parallel_size = int(os.environ.get("VLLM_TENSOR_PARALLEL_SIZE", "1"))
     gpu_memory_utilization = float(
         os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.90")
@@ -87,11 +94,14 @@ def load_models(aliases: list[str]) -> None:
     _max_len_str = os.environ.get("VLLM_MAX_MODEL_LEN")
     max_model_len = int(_max_len_str) if _max_len_str else None
 
+    with _config_lock:
+        current_map = dict(_alias_map)
+
     with _registry_lock:
         for alias in aliases:
             if alias in _registry:
                 continue
-            hf_model = VLLM_ALIAS_MAP.get(alias, alias)
+            hf_model = current_map.get(alias, alias)
             kwargs: dict[str, Any] = {
                 "model": hf_model,
                 "tensor_parallel_size": tensor_parallel_size,
@@ -116,11 +126,7 @@ def get_loaded_aliases() -> list[str]:
 
 
 def unload_model(alias: str) -> None:
-    """Remove a model from the registry and free GPU memory.
-
-    Deletes the vLLM LLM object and calls torch.cuda.empty_cache() to
-    ensure VRAM is reclaimed before loading the next model.
-    """
+    """Remove a model from the registry and free GPU memory."""
     global _default_alias
     with _registry_lock:
         if alias not in _registry:
@@ -129,8 +135,6 @@ def unload_model(alias: str) -> None:
         if _default_alias == alias:
             _default_alias = None
 
-    # Explicit GC + CUDA cache flush so the next load_models() call has
-    # the full VRAM budget available.
     import gc
 
     gc.collect()
@@ -144,17 +148,7 @@ def unload_model(alias: str) -> None:
 
 
 def _get_llm(alias: str) -> Any:
-    """Return the LLM for *alias*.
-
-    Resolution order:
-    1. Exact alias match in registry
-    2. Explicit default set via set_default_model()
-    3. First model in registry (implicit fallback)
-
-    This means all pipeline phases that use Groq aliases not present in the
-    registry (retrieval filters, AQA, etc.) automatically route to the default/
-    fixed model without any code changes to those components.
-    """
+    """Return the LLM for *alias* with fallback to default or first loaded."""
     with _registry_lock:
         if alias in _registry:
             return _registry[alias]
@@ -196,7 +190,7 @@ def _messages_to_prompt(messages: Sequence[BaseMessage], llm: Any) -> str:
 
 
 def _strip_thinking(text: str) -> str:
-    """Strip <think>…</think> reasoning blocks (DeepSeek R1 output)."""
+    """Strip <think>…</think> reasoning blocks (e.g. DeepSeek R1 output)."""
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
@@ -235,7 +229,9 @@ class ChatVLLMOffline(BaseChatModel):
         outputs = llm.generate([prompt], sampling)
         text: str = outputs[0].outputs[0].text
 
-        if any(k in self.model for k in _REASONING_ALIASES):
+        with _config_lock:
+            is_reasoning = self.model in _reasoning_aliases
+        if is_reasoning:
             text = _strip_thinking(text)
 
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
@@ -246,7 +242,6 @@ class ChatVLLMOffline(BaseChatModel):
         stop: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Iterator[ChatGeneration]:
-        # vLLM offline generates synchronously; yield the full result as one chunk.
         result = self._generate(messages, stop=stop, **kwargs)
         yield result.generations[0]
 

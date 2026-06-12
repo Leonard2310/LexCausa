@@ -779,14 +779,17 @@ class Settings(BaseSettings):
 
     # Ibisco alias → HuggingFace model ID mapping (code-owned, not env-driven)
     VLLM_ALIAS_MAP: ClassVar[dict[str, str]] = {
-        # Reasoning models (produce <think>…</think> tokens)
         "deepseek_r1": "deepseek-ai/DeepSeek-R1",
         "gpt_oss_120b": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
-        # Non-reasoning models
         "qwen_25_72b": "Qwen/Qwen2.5-72B-Instruct",
         "groq_llama_3_3_70b_versatile": "meta-llama/Llama-3.3-70B-Instruct",
         "groq_llama_scout_17b": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
     }
+
+    # Aliases that produce <think>…</think> reasoning tokens (stripped before use)
+    VLLM_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
+        {"deepseek_r1", "gpt_oss_120b"}
+    )
 
     ancillary_max_tokens_cap: int = Field(
         default=320,

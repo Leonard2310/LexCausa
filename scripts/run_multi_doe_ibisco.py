@@ -312,7 +312,17 @@ def main() -> None:
 
     # ── Import pipeline (after env vars are set) ──────────────────────────────
     from api_server import _run_full_pipeline  # noqa: E402
-    from services.vllm_client import load_models, set_default_model, unload_model
+    from config import settings
+    from services.vllm_client import (
+        load_models,
+        set_alias_map,
+        set_default_model,
+        set_reasoning_aliases,
+        unload_model,
+    )
+
+    set_alias_map(settings.VLLM_ALIAS_MAP)
+    set_reasoning_aliases(settings.VLLM_REASONING_ALIASES)
 
     # ── Load claims ───────────────────────────────────────────────────────────
     claims = _load_claims(Path(args.claims_file))
@@ -350,11 +360,15 @@ def main() -> None:
     )
     print(f"   Output: {out_dir}")
 
-    # Load fixed/support model once upfront (stays loaded for the entire run).
+    # Load fixed/support and evaluator models once upfront (stay loaded for the entire run).
+    persistent_models = {m for m in (fixed_model, evaluator_model) if m}
+    if persistent_models:
+        load_models(list(persistent_models))
     if fixed_model:
-        load_models([fixed_model])
         set_default_model(fixed_model)
         print(f"✅ Fixed model '{fixed_model}' loaded as default for support phases")
+    if evaluator_model and evaluator_model != fixed_model:
+        print(f"✅ Evaluator model '{evaluator_model}' loaded (persistent)")
 
     # ── Execute runs ──────────────────────────────────────────────────────────
     all_metrics: list[dict] = []
@@ -371,10 +385,10 @@ def main() -> None:
         # Load both models for this pair if they changed.
         if pair != current_pair:
             models_to_load = list({r_model, c_model})
-            # Unload models not needed in the new pair
+            # Unload models not needed in the new pair (never unload persistent models)
             if current_pair:
                 for m in set(current_pair) - set(models_to_load):
-                    if m != fixed_model:
+                    if m not in persistent_models:
                         print(f"\n[vLLM] Unloading '{m}'…")
                         unload_model(m)
             load_models(models_to_load)

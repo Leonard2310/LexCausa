@@ -8,12 +8,12 @@ Configuration (call before load_models()):
     set_alias_map({"my_alias": "org/model-id", ...})
     set_reasoning_aliases({"my_alias"})   # aliases that emit <think>…</think>
 
-GPU/hardware parameters are read from environment variables:
-    VLLM_TENSOR_PARALLEL_SIZE   (default: 1)
-    VLLM_GPU_MEMORY_UTILIZATION (default: 0.90)
-    VLLM_HF_CACHE_DIR           (default: not set)
-    VLLM_QUANTIZATION           (default: not set)
-    VLLM_MAX_MODEL_LEN          (default: not set)
+Optional GPU/hardware overrides via environment variables (vLLM defaults apply if unset):
+    VLLM_TENSOR_PARALLEL_SIZE
+    VLLM_GPU_MEMORY_UTILIZATION
+    VLLM_HF_CACHE_DIR
+    VLLM_QUANTIZATION
+    VLLM_MAX_MODEL_LEN
 """
 
 from __future__ import annotations
@@ -85,15 +85,6 @@ def load_models(aliases: list[str]) -> None:
     if not _VLLM_AVAILABLE:
         raise RuntimeError("vLLM is not installed. Run: pip install vllm")
 
-    tensor_parallel_size = int(os.environ.get("VLLM_TENSOR_PARALLEL_SIZE", "1"))
-    gpu_memory_utilization = float(
-        os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.90")
-    )
-    hf_cache_dir = os.environ.get("VLLM_HF_CACHE_DIR")
-    quantization = os.environ.get("VLLM_QUANTIZATION")
-    _max_len_str = os.environ.get("VLLM_MAX_MODEL_LEN")
-    max_model_len = int(_max_len_str) if _max_len_str else None
-
     with _config_lock:
         current_map = dict(_alias_map)
 
@@ -102,18 +93,22 @@ def load_models(aliases: list[str]) -> None:
             if alias in _registry:
                 continue
             hf_model = current_map.get(alias, alias)
-            kwargs: dict[str, Any] = {
-                "model": hf_model,
-                "tensor_parallel_size": tensor_parallel_size,
-                "trust_remote_code": True,
-                "gpu_memory_utilization": gpu_memory_utilization,
-            }
-            if hf_cache_dir:
-                kwargs["download_dir"] = hf_cache_dir
-            if quantization:
-                kwargs["quantization"] = quantization
-            if max_model_len:
-                kwargs["max_model_len"] = max_model_len
+            kwargs: dict[str, Any] = {"model": hf_model, "trust_remote_code": True}
+            _tp = os.environ.get("VLLM_TENSOR_PARALLEL_SIZE")
+            if _tp:
+                kwargs["tensor_parallel_size"] = int(_tp)
+            _gmu = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION")
+            if _gmu:
+                kwargs["gpu_memory_utilization"] = float(_gmu)
+            _cache = os.environ.get("VLLM_HF_CACHE_DIR")
+            if _cache:
+                kwargs["download_dir"] = _cache
+            _quant = os.environ.get("VLLM_QUANTIZATION")
+            if _quant:
+                kwargs["quantization"] = _quant
+            _mml = os.environ.get("VLLM_MAX_MODEL_LEN")
+            if _mml:
+                kwargs["max_model_len"] = int(_mml)
 
             print(f"[vLLM] Loading {alias} → {hf_model} …")
             _registry[alias] = LLM(**kwargs)  # type: ignore[misc]

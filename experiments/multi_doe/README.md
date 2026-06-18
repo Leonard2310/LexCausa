@@ -8,25 +8,25 @@ This framework supports comprehensive evaluation of LexCausa across multiple dim
 
 ### Research Questions
 
-**RQ1: Model Efficacy**
-- Compare reasoning vs non-reasoning models (e.g., gpt_oss_120b vs groq_llama_scout_17b)
-- Metrics: AQA verdict plausibility, reasoning chain length, coherence
-- Analysis: paired t-test, Cohen's d effect size
+**RQ1: Model-Class Efficacy**
+- Compare native-reasoning vs instruction-tuned models (e.g., deepseek_r1/gpt_oss_120b vs groq_llama_3_3_70b_versatile/qwen_25_72b)
+- Metrics: AQA net plausibility, reasoning chain length
+- Analysis: paired t-test by claim, Cohen's d effect size
 
-**RQ2: Citation Faithfulness (Accuracy)**
-- Measure accuracy of cited statutes against Neo4j knowledge base
-- Metrics: citation accuracy %, citation repair rate, confidence intervals (bootstrap)
-- Analysis: sign test for model comparison
+**RQ2: Dialectical Pairing**
+- Measure cross-model Reasoner×Counter interaction effects beyond each role's marginal contribution
+- Metrics: AQA net plausibility per pairing
+- Analysis: Reasoner×Counter interaction term of the factorial ANOVA (eta-squared)
 
-**RQ3: Planning Ablation**
-- Measure impact of planning phase on reasoning quality
+**RQ3: Architectural Efficacy and Stability**
+- Impact of Plan-then-Execute vs single-call (planning ablation), citation faithfulness, and token cost
 - Compare: planning ON (both Reasoner + Counter) vs planning OFF
-- Metrics: token output delta, reasoning steps, quality improvement rate
-- Analysis: sign test, percentage deltas
+- Metrics: citation accuracy %, citation repair rate, token/quality deltas, inter-replica variance
+- Analysis: planning main effect (ANOVA), bootstrap confidence intervals, percentage deltas
 
 **Auxiliary: Token Cost Analysis**
 - Token efficiency per model and condition
-- Cost per verdict at current API pricing
+- Token cost per verdict (completion + reasoning tokens)
 - Efficiency frontier comparison
 
 ## Architecture
@@ -139,7 +139,7 @@ experiments/multi_doe/analysis/20260225/
 - `aqa_plausibility`: final score [0,1]
 - `aqa_pro`, `aqa_contra`: component scores
 
-### Citation Faithfulness (RQ2)
+### Citation Faithfulness (RQ3)
 - `citation_total`: total citations in counter argument
 - `citation_repaired`: citations fixed by consistency checker
 - `citation_valid`: citations verified against Neo4j KB
@@ -205,11 +205,11 @@ payload = {
 
 ## Analysis Output Format
 
-### RQ1: Model Efficacy
+### Model-Class Efficacy (RQ1)
 
 ```json
 {
-  "rq1_model_efficacy": {
+  "model_class_efficacy": {
     "aqa_plausibility": {
       "gpt_oss_120b_mean": 0.72,
       "gpt_oss_120b_std": 0.15,
@@ -228,11 +228,11 @@ payload = {
 }
 ```
 
-### RQ2: Citation Faithfulness
+### Citation Faithfulness (RQ3)
 
 ```json
 {
-  "rq2_citation_faithfulness": {
+  "citation_faithfulness": {
     "gpt_oss_120b": {
       "accuracy_mean": 0.87,
       "accuracy_std": 0.08,
@@ -249,11 +249,11 @@ payload = {
 }
 ```
 
-### RQ3: Planning Ablation
+### Planning Ablation (RQ3)
 
 ```json
 {
-  "rq3_planning_ablation": {
+  "planning_ablation": {
     "token_delta": {
       "absolute": 470,
       "percentage": 23.7,

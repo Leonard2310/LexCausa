@@ -1,165 +1,165 @@
 graph LR
   TAX["Causal Taxonomy Theory Attacks"]
 
-  D_PEN["penale"]
+  D_PEN["Penal"]
   TAX --> D_PEN
-  D_CIV["civile"]
+  D_CIV["Civil"]
   TAX --> D_CIV
-  D_AMM["amministrativo"]
+  D_AMM["Administrative"]
   TAX --> D_AMM
-  D_MIX["entrambi"]
+  D_MIX["Mixed"]
   TAX --> D_MIX
 
   TH_1["T_CONDIZIONALISTICA\nDefAtt:5"]
   D_PEN --> TH_1
-  A_1_1["but_for_fails: Il test controfattuale fallisce: l'evento si sarebbe verificato comunque."]
+  A_1_1["but_for_fails: Counterfactual fails: the event would have occurred anyway."]
   TH_1 --> A_1_1
-  A_1_2["abnormal_or_atypical_chain: La catena causale è atipica/anomala e interrompe l'imputabilità."]
+  A_1_2["abnormal_or_atypical_chain: The causal chain is abnormal/atypical and breaks imputability."]
   TH_1 --> A_1_2
-  A_1_3["foreseeability_threshold_not_met_with_certainty: La soglia di prevedibilità può non risultare raggiunta con sufficiente certezza."]
+  A_1_3["foreseeability_threshold_not_met_with_certainty: Foreseeability threshold may not be reached with sufficient certainty."]
   TH_1 --> A_1_3
-  A_1_4["emergency_context_reduces_blameworthiness: Il contesto di urgenza può ridurre rimproverabilità e grado della colpa."]
+  A_1_4["emergency_context_reduces_blameworthiness: Emergency context may reduce reproachability and degree of fault."]
   TH_1 --> A_1_4
-  A_1_5["aggravating_circumstances_not_integrated: Le circostanze aggravanti possono non risultare concretamente integrate."]
+  A_1_5["aggravating_circumstances_not_integrated: Aggravating circumstances may not be concretely integrated."]
   TH_1 --> A_1_5
 
   TH_2["T_SCI_PROB\nDefAtt:3"]
   D_PEN --> TH_2
-  A_2_1["no_covering_law_or_low_support: Manca una legge di copertura o il supporto probabilistico del nesso è insufficiente."]
+  A_2_1["no_covering_law_or_low_support: Missing covering law or insufficient support for probabilistic counterfactual."]
   TH_2 --> A_2_1
-  A_2_2["but_for_fails: Il test controfattuale fallisce: l'evento si sarebbe verificato comunque."]
+  A_2_2["but_for_fails: Counterfactual fails: the event would have occurred anyway."]
   TH_2 --> A_2_2
-  A_2_3["foreseeability_threshold_not_met_with_certainty: La soglia di prevedibilità può non risultare raggiunta con sufficiente certezza."]
+  A_2_3["foreseeability_threshold_not_met_with_certainty: Foreseeability threshold may not be reached with sufficient certainty."]
   TH_2 --> A_2_3
 
   TH_3["T_REGOLARITA\nDefAtt:2"]
   D_PEN --> TH_3
-  A_3_1["abnormal_or_atypical_chain: La catena causale è atipica/anomala e interrompe l'imputabilità."]
+  A_3_1["abnormal_or_atypical_chain: The causal chain is abnormal/atypical and breaks imputability."]
   TH_3 --> A_3_1
-  A_3_2["damage_is_indirect: Il danno è indiretto o mediato rispetto al fatto base."]
+  A_3_2["damage_is_indirect: The damage is indirect or mediated relative to the base fact."]
   TH_3 --> A_3_2
 
   TH_4["T_INTERRUPTION_41_2\nDefAtt:2"]
   D_PEN --> TH_4
-  A_4_1["sole_sufficient_cause: Una causa sopravvenuta da sola sufficiente interrompe il nesso."]
+  A_4_1["sole_sufficient_cause: A supervening cause alone was sufficient and breaks the link."]
   TH_4 --> A_4_1
-  A_4_2["intervening_cause_breaks_chain: Un fattore sopravvenuto autonomo spezza la catena causale."]
+  A_4_2["intervening_cause_breaks_chain: An intervening autonomous factor breaks the chain."]
   TH_4 --> A_4_2
 
   TH_5["T_CIV_FILTERS\nDefAtt:5"]
   D_CIV --> TH_5
-  A_5_1["damage_is_indirect: Il danno è indiretto o mediato rispetto al fatto base."]
+  A_5_1["damage_is_indirect: The damage is indirect or mediated relative to the base fact."]
   TH_5 --> A_5_1
-  A_5_2["damage_not_foreseeable: Il danno non era prevedibile ex ante (es. art. 1225 c.c.)."]
+  A_5_2["damage_not_foreseeable: The damage was not foreseeable ex ante (e.g., art. 1225 c.c.)."]
   TH_5 --> A_5_2
-  A_5_3["creditor_contributed: Il creditore ha concorso a causare evento o danno."]
+  A_5_3["creditor_contributed: The creditor contributed to causing the event/damage."]
   TH_5 --> A_5_3
-  A_5_4["creditor_failed_to_mitigate: Il creditore non ha mitigato il danno evitabile (art. 1227 c.c.)."]
+  A_5_4["creditor_failed_to_mitigate: The creditor failed to mitigate avoidable damage (art. 1227 c.c.)."]
   TH_5 --> A_5_4
-  A_5_5["quantification_uncertain: La quantificazione del danno è incerta o speculativa."]
+  A_5_5["quantification_uncertain: Damage quantification is uncertain or speculative."]
   TH_5 --> A_5_5
 
   TH_6["T_AMM_GARANZIE\nDefAtt:5"]
   D_AMM --> TH_6
-  A_6_1["competence_or_procedure_regular: L'amministrazione era competente e il procedimento è regolare."]
+  A_6_1["competence_or_procedure_regular: The authority was competent and the procedure was regular."]
   TH_6 --> A_6_1
-  A_6_2["motivation_is_sufficient: La motivazione del provvedimento è sufficiente e coerente."]
+  A_6_2["motivation_is_sufficient: The administrative act has sufficient and coherent motivation."]
   TH_6 --> A_6_2
-  A_6_3["participation_not_essential_or_not_denied: Le garanzie partecipative sono rispettate, oppure la loro omissione non è decisiva."]
+  A_6_3["participation_not_essential_or_not_denied: Participatory guarantees were respected, or their omission was not decisive."]
   TH_6 --> A_6_3
-  A_6_4["silence_rule_not_applicable: La disciplina su termini/silenzio non è applicabile al caso concreto."]
+  A_6_4["silence_rule_not_applicable: The legal regime on procedural deadlines/silence is not applicable in this case."]
   TH_6 --> A_6_4
-  A_6_5["vizio_non_invalidante_21_octies: L'eventuale vizio procedimentale non è invalidante ex art. 21-octies L. 241/1990."]
+  A_6_5["vizio_non_invalidante_21_octies: Any procedural defect is non-invalidating under art. 21-octies L. 241/1990."]
   TH_6 --> A_6_5
 
   TH_7["T_FORTUITO\nDefAtt:3"]
   D_PEN --> TH_7
-  A_7_1["event_was_avoidable: L'evento era evitabile con l'ordinaria diligenza."]
+  A_7_1["event_was_avoidable: The event was avoidable with ordinary diligence."]
   TH_7 --> A_7_1
-  A_7_2["event_was_foreseeable: L'evento era prevedibile; non è fortuito."]
+  A_7_2["event_was_foreseeable: The event was foreseeable; it is not fortuitous."]
   TH_7 --> A_7_2
-  A_7_3["risk_was_assumed_or_controllable: Il rischio era assunto o controllabile, quindi non fortuito."]
+  A_7_3["risk_was_assumed_or_controllable: The risk was assumed or controllable, so not fortuitous."]
   TH_7 --> A_7_3
 
   TH_8["T_CIV_REMEDIES\nDefAtt:3"]
   D_CIV --> TH_8
-  A_8_1["breach_not_grave_or_not_essential: La gravit? dell'inadempimento pu? essere contestata, oppure gli effetti del termine essenziale possono essere limitati dalla condotta successiva, senza negare i fatti pacifici."]
+  A_8_1["breach_not_grave_or_not_essential: Breach seriousness may be contested, or essential-term effects may be limited by subsequent conduct, without denying fixed facts."]
   TH_8 --> A_8_1
-  A_8_2["exceptio_non_rite_adimpleti: La sospensione della controparte può essere sproporzionata ex eccezione di inadempimento."]
+  A_8_2["exceptio_non_rite_adimpleti: Counterparty suspension may be disproportionate under reciprocal-performance rules."]
   TH_8 --> A_8_2
-  A_8_3["penalty_excessive_or_exclusive: La clausola penale può essere ridotta equitativamente e limitare ulteriori pretese."]
+  A_8_3["penalty_excessive_or_exclusive: Penalty may be equitably reduced and can limit additional compensation."]
   TH_8 --> A_8_3
 
   TH_9["T_CIV_GARANZIA_VIZI\nDefAtt:3"]
   D_CIV --> TH_9
-  A_9_1["defects_not_proven_or_not_hidden: I vizi non sono sufficientemente provati o non hanno natura rilevante/occulta."]
+  A_9_1["defects_not_proven_or_not_hidden: Defects are not sufficiently proven or were not hidden/relevant defects."]
   TH_9 --> A_9_1
-  A_9_2["notice_or_limitation_bar_for_vices: Decadenza o prescrizione possono precludere i rimedi per vizi."]
+  A_9_2["notice_or_limitation_bar_for_vices: Notice timing or limitation terms may bar vices remedies."]
   TH_9 --> A_9_2
-  A_9_3["remedy_reduction_preferred_over_resolution: La riduzione del prezzo può essere rimedio proporzionato rispetto alla risoluzione."]
+  A_9_3["remedy_reduction_preferred_over_resolution: Price reduction may be more proportionate than contract termination."]
   TH_9 --> A_9_3
 
   TH_10["T_CIV_CUSTODIA\nDefAtt:3"]
   D_CIV --> TH_10
-  A_10_1["custodianship_or_control_not_proven: La custodia o il controllo della fonte di danno non risultano chiaramente provati."]
+  A_10_1["custodianship_or_control_not_proven: Custody/control over the damage source is not clearly established."]
   TH_10 --> A_10_1
-  A_10_2["fortuitous_external_factor: Un fattore esterno fortuito può ridurre o escludere la responsabilità oggettiva."]
+  A_10_2["fortuitous_external_factor: An external fortuitous factor may reduce or exclude objective liability."]
   TH_10 --> A_10_2
-  A_10_3["contributory_fault_of_victim: Il concorso del danneggiato può ridurre il risarcimento dovuto."]
+  A_10_3["contributory_fault_of_victim: Victim contribution may reduce recoverable damages."]
   TH_10 --> A_10_3
 
   TH_11["T_PEN_PATRIMONIALI\nDefAtt:3"]
   D_PEN --> TH_11
-  A_11_1["legal_qualification_more_specific_or_alternative: Può risultare più coerente una diversa o più specifica qualificazione del fatto-reato."]
+  A_11_1["legal_qualification_more_specific_or_alternative: A different or more specific offence qualification may be more coherent."]
   TH_11 --> A_11_1
-  A_11_2["subjective_element_not_fully_proven: L'elemento soggettivo non risulta pienamente supportato dagli elementi disponibili."]
+  A_11_2["subjective_element_not_fully_proven: Intent/culpability threshold is not fully supported by available elements."]
   TH_11 --> A_11_2
-  A_11_3["intent_to_profit_or_unjust_gain_not_proven: L'intento di profitto/ingiusto vantaggio non è sufficientemente dimostrato."]
+  A_11_3["intent_to_profit_or_unjust_gain_not_proven: Intent to profit/unjust gain is not sufficiently demonstrated."]
   TH_11 --> A_11_3
 
   TH_12["T_PEN_DIRITTI_BILANCIAMENTO\nDefAtt:3"]
   D_PEN --> TH_12
-  A_12_1["exercise_of_right_or_justification_possible: È configurabile un profilo di esercizio del diritto/scriminante da bilanciare."]
+  A_12_1["exercise_of_right_or_justification_possible: Possible exercise-of-right/justification profile requires careful balancing."]
   TH_12 --> A_12_1
-  A_12_2["truth_interest_continence_balance: Verità, interesse pubblico e continenza possono giustificare la manifestazione."]
+  A_12_2["truth_interest_continence_balance: Truth, public interest, and continence criteria may justify expression."]
   TH_12 --> A_12_2
-  A_12_3["factual_matrix_supports_lesser_offence: La matrice fattuale può sostenere una qualificazione meno grave del fatto."]
+  A_12_3["factual_matrix_supports_lesser_offence: Fact pattern may support a less severe offence qualification."]
   TH_12 --> A_12_3
 
   TH_13["T_PEN_COLPA_GRADAZIONE\nDefAtt:3"]
   D_PEN --> TH_13
-  A_13_1["emergency_context_reduces_blameworthiness: Il contesto di urgenza può ridurre rimproverabilità e grado della colpa."]
+  A_13_1["emergency_context_reduces_blameworthiness: Emergency context may reduce reproachability and degree of fault."]
   TH_13 --> A_13_1
-  A_13_2["foreseeability_threshold_not_met_with_certainty: La soglia di prevedibilità può non risultare raggiunta con sufficiente certezza."]
+  A_13_2["foreseeability_threshold_not_met_with_certainty: Foreseeability threshold may not be reached with sufficient certainty."]
   TH_13 --> A_13_2
-  A_13_3["cooperative_fault_not_individualized: La cooperazione colposa non risulta adeguatamente individualizzata per ciascun agente."]
+  A_13_3["cooperative_fault_not_individualized: Individual contribution in cooperative negligence is not sufficiently individualized."]
   TH_13 --> A_13_3
 
   TH_14["T_AMM_AUTOTUTELA\nDefAtt:3"]
   D_AMM --> TH_14
-  A_14_1["current_public_interest_not_specific: L'interesse pubblico attuale in autotutela è generico o non specificamente motivato."]
+  A_14_1["current_public_interest_not_specific: Current public interest for autotutela is generic or not specifically motivated."]
   TH_14 --> A_14_1
-  A_14_2["legitimate_reliance_not_balanced: L'affidamento legittimo del privato non risulta adeguatamente bilanciato."]
+  A_14_2["legitimate_reliance_not_balanced: Legitimate private reliance has not been adequately balanced."]
   TH_14 --> A_14_2
-  A_14_3["revocation_requires_indemnity_assessment: La revoca richiede adeguata valutazione dell'eventuale indennizzo."]
+  A_14_3["revocation_requires_indemnity_assessment: Revocation requires proper assessment of possible indemnity."]
   TH_14 --> A_14_3
 
   TH_15["T_AMM_RITARDO\nDefAtt:3"]
   D_AMM --> TH_15
-  A_15_1["delay_not_attributable_to_authority: Il ritardo procedimentale può non essere integralmente imputabile all'amministrazione."]
+  A_15_1["delay_not_attributable_to_authority: Procedural delay may not be fully attributable to administrative fault."]
   TH_15 --> A_15_1
-  A_15_2["causal_damage_from_delay_not_proven: Il danno causalmente derivante dal ritardo non risulta sufficientemente provato."]
+  A_15_2["causal_damage_from_delay_not_proven: Causal damage from delay is not sufficiently proven/documented."]
   TH_15 --> A_15_2
-  A_15_3["compensation_requires_strict_proof: Il risarcimento da ritardo richiede prova rigorosa di colpa, danno e nesso causale."]
+  A_15_3["compensation_requires_strict_proof: Compensation for delay requires strict proof of fault, damage, and causal nexus."]
   TH_15 --> A_15_3
 
   TH_16["T_MIXED_CONCORSO_TUTELE\nDefAtt:3"]
   D_MIX --> TH_16
-  A_16_1["criminal_and_civil_tracks_are_distinct: Il binario penale e quello civile restano distinti per presupposti ed effetti."]
+  A_16_1["criminal_and_civil_tracks_are_distinct: Criminal and civil tracks remain distinct in standards and effects."]
   TH_16 --> A_16_1
-  A_16_2["criminal_threshold_not_equal_civil_threshold: La soglia probatoria penale non coincide con quella della responsabilità civile."]
+  A_16_2["criminal_threshold_not_equal_civil_threshold: Criminal proof threshold does not coincide with civil liability threshold."]
   TH_16 --> A_16_2
-  A_16_3["civil_remedy_requires_autonomous_proof: I rimedi civili richiedono prova autonoma, oltre la mera allegazione penale."]
+  A_16_3["civil_remedy_requires_autonomous_proof: Civil remedies require autonomous proof beyond criminal allegation alone."]
   TH_16 --> A_16_3
 
   classDef pen fill:#fde68a,stroke:#b45309,color:#111827;

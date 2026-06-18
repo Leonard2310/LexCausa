@@ -55,7 +55,11 @@ def set_alias_map(mapping: dict[str, str]) -> None:
 
 
 def set_reasoning_aliases(aliases: set[str] | frozenset[str]) -> None:
-    """Register aliases whose output contains <think>…</think> tokens to strip."""
+    """Register aliases whose output embeds chain-of-thought to strip.
+
+    Supports both DeepSeek-R1 ``<think>…</think>`` blocks and OpenAI harmony
+    (gpt-oss) ``analysis``/``final`` channels; see _strip_reasoning.
+    """
     global _reasoning_aliases
     with _config_lock:
         _reasoning_aliases = frozenset(aliases)
@@ -184,9 +188,39 @@ def _messages_to_prompt(messages: Sequence[BaseMessage], llm: Any) -> str:
         return "\n".join(parts)
 
 
-def _strip_thinking(text: str) -> str:
-    """Strip <think>…</think> reasoning blocks (e.g. DeepSeek R1 output)."""
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+# DeepSeek-R1 style: reasoning wrapped in plain-text <think>…</think> tags.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+# OpenAI harmony (gpt-oss): output is split into channels; reasoning goes to the
+# "analysis" channel and the user-facing answer to "final". The answer is the
+# content of the last "final" channel. Channel markers are special tokens, so
+# the model must be decoded with skip_special_tokens=False for them to survive.
+_HARMONY_FINAL_RE = re.compile(
+    r"<\|channel\|>\s*final\s*<\|message\|>(.*?)(?:<\|return\|>|<\|end\|>|<\|start\|>|\Z)",
+    re.DOTALL,
+)
+# Leftover control tokens of either family: ASCII <|...|> and full-width <｜...｜>.
+_CONTROL_TOKEN_RE = re.compile(r"<[|｜][^|｜]*[|｜]>")
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove chain-of-thought from reasoning-model output.
+
+    Handles two formats transparently:
+      * DeepSeek-R1 style: ``<think>…</think>`` blocks (plain text).
+      * OpenAI harmony (gpt-oss): ``analysis``/``final`` channels — the answer is
+        the content of the last ``final`` channel. Requires decoding with
+        ``skip_special_tokens=False`` so the channel markers are present.
+
+    If no ``final`` channel is found (e.g. generation truncated mid-analysis),
+    the text is returned with reasoning tags and control tokens stripped as a
+    best-effort fallback.
+    """
+    final = _HARMONY_FINAL_RE.findall(text)
+    if final:
+        text = final[-1]
+    text = _THINK_RE.sub("", text)
+    text = _CONTROL_TOKEN_RE.sub("", text)
+    return text.strip()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -215,19 +249,24 @@ class ChatVLLMOffline(BaseChatModel):
         llm = _get_llm(self.model)
         prompt = _messages_to_prompt(messages, llm)
 
+        with _config_lock:
+            is_reasoning = self.model in _reasoning_aliases
+
         sampling = SamplingParams(  # type: ignore[misc]
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             stop=stop or [],
             seed=self.seed,
+            # Reasoning models (esp. gpt-oss harmony) encode channel/answer
+            # boundaries as special tokens; keep them so _strip_reasoning can
+            # isolate the final answer from the chain-of-thought.
+            skip_special_tokens=not is_reasoning,
         )
         outputs = llm.generate([prompt], sampling)
         text: str = outputs[0].outputs[0].text
 
-        with _config_lock:
-            is_reasoning = self.model in _reasoning_aliases
         if is_reasoning:
-            text = _strip_thinking(text)
+            text = _strip_reasoning(text)
 
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=text))])
 

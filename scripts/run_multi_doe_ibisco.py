@@ -127,7 +127,7 @@ def _load_claims(claims_file: Path) -> list[dict]:
         "CIVILI": "CIVILE",
         "PENALI": "PENALE",
         "AMMINISTRATIVI": "AMMINISTRATIVO",
-        "MISTO": "MISTO",
+        "MIXED": "MISTO",
     }
     claims: list[dict] = []
     current_domain = "MISTO"

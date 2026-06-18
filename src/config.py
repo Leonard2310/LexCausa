@@ -746,44 +746,13 @@ class Settings(BaseSettings):
         alias="LLM_BACKEND",
         description="'groq' for Groq Cloud (default); 'local' for vLLM offline inference.",
     )
-    local_llm_hf_cache_dir: str | None = Field(
-        default=None,
-        alias="LOCAL_LLM_HF_CACHE_DIR",
-        description="HuggingFace model cache directory on the HPC storage.",
-    )
-    local_llm_tensor_parallel_size: int = Field(
-        default=1,
-        alias="LOCAL_LLM_TENSOR_PARALLEL_SIZE",
-        description="Number of GPUs for tensor parallelism (vLLM).",
-    )
-    local_llm_quantization: str | None = Field(
-        default=None,
-        alias="LOCAL_LLM_QUANTIZATION",
-        description="vLLM quantization method: 'awq', 'gptq', or None.",
-    )
-    local_llm_max_model_len: int | None = Field(
-        default=None,
-        alias="LOCAL_LLM_MAX_MODEL_LEN",
-        description="Override maximum context length for vLLM (None = model default).",
-    )
-    local_llm_gpu_memory_utilization: float = Field(
-        default=0.90,
-        alias="LOCAL_LLM_GPU_MEMORY_UTILIZATION",
-        description="Fraction of GPU memory vLLM may use (0.0–1.0).",
-    )
-    local_llm_preload_models: list[str] = Field(
-        default_factory=list,
-        alias="LOCAL_LLM_PRELOAD_MODELS",
-        description="Comma-separated list of model aliases to preload at Flask startup.",
-    )
-
     # Ibisco alias → HuggingFace model ID mapping (code-owned, not env-driven)
     VLLM_ALIAS_MAP: ClassVar[dict[str, str]] = {
         "deepseek_r1": "deepseek-ai/DeepSeek-R1",
-        "gpt_oss_120b": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+        "gpt_oss_120b": "openai/gpt-oss-120b",
         "qwen_25_72b": "Qwen/Qwen2.5-72B-Instruct",
         "groq_llama_3_3_70b_versatile": "meta-llama/Llama-3.3-70B-Instruct",
-        "groq_llama_scout_17b": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+        "llama_4_maverick_17b": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
     }
 
     # Aliases that produce <think>…</think> reasoning tokens (stripped before use)

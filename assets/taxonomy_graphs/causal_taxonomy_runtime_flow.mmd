@@ -1,32 +1,32 @@
-flowchart LR
-  subgraph IN["1) Ingresso e routing iniziale"]
-    API["/api/chat\nRequest utente + claim"] --> RR["resolve_routing_decision()\nDecide causal_type iniziale"]
-    RR --> VID["validate_ids(...)\nControlla che causal_type_id esista"]
-    RR --> AR["anchor_norms_for() + principle_tests_for()\nCarica ancore normative e test di principio"]
-    RR --> ROUTER["Router.route(claim)\nFallback se hint assente o incompleto"]
+flowchart TB
+  subgraph IN["1) Entry and initial routing"]
+    API["/api/chat\nUser request + claim"] --> RR["resolve_routing_decision()\nInitial causal_type decision"]
+    RR --> VID["validate_ids(...)\nChecks causal_type_id exists"]
+    RR --> AR["anchor_norms_for() + principle_tests_for()\nLoads anchor norms and principle tests"]
+    RR --> ROUTER["Router.route(claim)\nFallback if hint absent or incomplete"]
     ROUTER --> RC["RoutingDecision\ncausal_type_id"]
     VID --> RC
     AR --> RC
   end
 
-  subgraph RE["2) Reasoning (tesi principale)"]
-    RC --> REAS["Reasoner\nCostruisce risposta e struttura argomentativa"]
-    REAS --> GCT["tool retrieval tassonomia\nRecupera mappature tassonomiche"]
-    GCT --> FILT["norme_core_rilevanti / norme_accessorie_rilevanti\nFiltra norme principali vs accessorie"]
-    REAS --> PV["posthoc validate_ids(...)\nValida causal_type_id/theory_id estratti dal Reasoner"]
+  subgraph RE["2) Reasoning (main thesis)"]
+    RC --> REAS["Reasoner\nBuilds answer and argumentative structure"]
+    REAS --> GCT["taxonomy retrieval tool\nFetches taxonomic mappings"]
+    GCT --> FILT["norme_core_rilevanti / norme_accessorie_rilevanti\nFilters core vs accessory norms"]
+    REAS --> PV["post-hoc validate_ids(...)\nValidates causal_type_id/theory_id from Reasoner"]
   end
 
-  subgraph CR["3) Counter-Reasoning (obiezioni)"]
-    PV --> COUNTER["CounterReasoner\nGenera obiezioni e contro-tesi"]
-    COUNTER --> POOL["counter_attack_pool_for(causal_type_id)\nPool base di attacchi per causal type"]
-    PV --> TPOOL["theory_counter_attacks(theory_id)\nLayer opzionale da teoria"]
-    POOL --> MERGE["merge_attack_sources\nBase causal type + teoria"]
+  subgraph CR["3) Counter-Reasoning (objections)"]
+    PV --> COUNTER["CounterReasoner\nGenerates objections and antithesis"]
+    COUNTER --> POOL["counter_attack_pool_for(causal_type_id)\nBase attack pool per causal type"]
+    PV --> TPOOL["theory_counter_attacks(theory_id)\nOptional theory layer"]
+    POOL --> MERGE["merge_attack_sources\nBase causal type + theory"]
     TPOOL --> MERGE
-    MERGE --> SEL["_select_attacks()\nCompatibilita + deduplica + selezione LLM"]
+    MERGE --> SEL["_select_attacks()\nCompatibility + dedup + LLM selection"]
   end
 
-  subgraph CFGS["4) Config condivisa"]
-    CFG["config_taxonomy.json\nFonte unica di tassonomia, mapping e attacchi"]
+  subgraph CFGS["4) Shared config"]
+    CFG["config_taxonomy.json\nSingle source of taxonomy, mapping and attacks"]
   end
 
   CFG --> RR

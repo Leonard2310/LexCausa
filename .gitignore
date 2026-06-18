@@ -71,6 +71,7 @@ celerybeat.pid
 src/data/embeddings/
 src/data/old/
 claims.md
+claims_no_covered.md
 new
 old_claims.md
 claims_gold_labels.json
@@ -91,4 +92,5 @@ notebooks/notebooks/.scope_hpc_tmp/
 
 # Taxonomy visualization render artifacts (generated from Mermaid sources)
 assets/taxonomy_graphs/*.svg
+assets/taxonomy_graphs/*.pdf
 

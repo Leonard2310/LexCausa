@@ -1,0 +1,13 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart LR
+  COD["Codice"]
+  LIB["Libro"]
+  ST["Statute\narticle text\n+ vector embedding + full-text"]
+  PR["Precedent\nholding text + full-text"]
+  ST -->|belongs to| LIB
+  LIB -->|belongs to| COD
+  ST -->|CITES| ST
+  classDef a fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef b fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  class COD,LIB,ST a;
+  class PR b;

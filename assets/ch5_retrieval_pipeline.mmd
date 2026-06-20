@@ -1,0 +1,22 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+  CLAIM["Claim\n(routed to domain)"]
+  subgraph HS["Hybrid search"]
+    VEC["Vector search\nLegal-BERT embeddings"]
+    FT["Full-text search\nLLM-extracted keywords"]
+  end
+  RF["Domain-aware rank fusion\n+ lexical adjustment"]
+  EXP["CITES graph expansion"]
+  FILT["Relevance + applicability LLM filters\n(progressive expansion if too few)"]
+  CTX["Shared evidential context\nstatutes + precedents"]
+  CLAIM --> HS
+  HS --> RF
+  RF --> EXP
+  EXP --> FILT
+  FILT --> CTX
+  classDef io fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  classDef s fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef f fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  class CLAIM,CTX io;
+  class VEC,FT s;
+  class RF,EXP,FILT f;

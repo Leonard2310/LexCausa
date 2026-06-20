@@ -524,3 +524,70 @@ tail -f logs/<timestamp>_<claim_slug>.log
 ```bash
 tail -f logs/<timestamp>_<claim_slug>_doe.log
 ```
+
+## 12. Multi-DoE full-factorial Reasoner×Counter (Ibisco / vLLM offline) — THESIS RUN
+
+This is the thesis experiment
+Scripts:
+`scripts/run_multi_doe_ibisco.py` (run) + `scripts/analyze_multi_doe.py` (analysis).
+Design: **4 Reasoner × 4 Counter × 2 planning(on/off) × causality(ON) × 22 claims × 10 replicas = 7,040 runs.**
+
+### Pre-flight (once)
+```bash
+docker compose up -d
+poetry run python src/db/db_orchestrator.py --check     # KB loaded (statutes + precedents)
+huggingface-cli scan-cache                              # confirm the 5 models are cached
+```
+
+### Environment (models already downloaded → offline, no HF token)
+```bash
+export VLLM_HF_CACHE_DIR=/path/to/hf_cache     # passed to vLLM download_dir
+# or, if it is the standard HF cache:           export HF_HOME=/path/to/hf_cache
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+# GPU (adapt to the node):
+export VLLM_TENSOR_PARALLEL_SIZE=<num_gpus>     # e.g. 2 or 4
+export VLLM_GPU_MEMORY_UTILIZATION=0.90
+export VLLM_MAX_MODEL_LEN=30000                 # ~30k tokens (thesis budget); do NOT set VLLM_QUANTIZATION
+# Neo4j (if not already in a .env):
+export NEO4J_URI=bolt://localhost:7687
+export NEO4J_USER=neo4j
+export NEO4J_PASSWORD=<password>
+# Notes: the script forces LLM_BACKEND=local. HF_TOKEN is only needed to *download* the
+# gated meta-llama/* models (Llama-3.3-70B, Llama-4-Maverick); skip it if they are cached.
+```
+
+### Run the DoE (7,040 runs)
+```bash
+python scripts/run_multi_doe_ibisco.py \
+  --fixed-model llama_4_maverick_17b \
+  --evaluator-model llama_4_maverick_17b \
+  --reasoner-models deepseek_r1,gpt_oss_120b,groq_llama_3_3_70b_versatile,qwen_25_72b \
+  --counter-models  deepseek_r1,gpt_oss_120b,groq_llama_3_3_70b_versatile,qwen_25_72b \
+  --planning-ablations on,off \
+  --causality-ablations on \
+  --replicates 10 --seed 42 \
+  --out experiments/multi_doe/runs/ibisco_$(date +%Y%m%d_%H%M%S)
+```
+At startup the script prints `Run matrix: N runs` — it **must be 7040** (14080 means you wrongly
+passed `--causality-ablations on,off`). `metrics.csv` is written incrementally in `--out/`.
+
+### Analyze (manual; works on a partial metrics.csv too)
+```bash
+poetry run python scripts/analyze_multi_doe.py \
+  --run-dir experiments/multi_doe/runs/ibisco_<ts> \
+  --output  experiments/multi_doe/analysis/ibisco_<ts>
+poetry add matplotlib    # optional: enables the win/tie/loss heatmaps in analysis/.../heatmaps/
+```
+Produces `doe_analysis.json`: factorial ANOVA (+eta^2), Friedman (blocked by the 22 claims) +
+Dunn/Holm with win/tie/loss matrices, Wilcoxon signed-rank (reasoning-vs-instruction and planning),
+bootstrap CI; the 3 AQA dimensions analyzed separately.
+
+### Critical notes
+- **`--fixed-model llama_4_maverick_17b` is required** (else retrieval/AQA/evaluator use the first
+  loaded reasoner model, not Maverick → wrong design).
+- **`--causality-ablations on` (NOT `on,off`)**: the thesis holds causality enabled (1 level). The
+  example in the script docstring showing `on,off` is misleading.
+- `total_tokens` = completion (output) tokens. Reasoning aliases = `{deepseek_r1, gpt_oss_120b}`
+  (CoT stripped before scoring). Hyperparameters are pinned in the payload (Reasoner temp 0.0,
+  Counter 0.3, `llm_max_tokens` 7168, AQA alpha/beta/gamma = 0.3/0.4/0.3, verdict thresholds ±0.2).

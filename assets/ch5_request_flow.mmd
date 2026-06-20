@@ -1,0 +1,27 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+  BR["Browser\n(React / Vite)"]
+  BATCH["Batch runner\n(experiments, headless)"]
+  API["Flask REST API"]
+  PIPE["LegalSearchPipeline\n(thread-safe singleton)"]
+  CLF["ClaimClassifier\ndomain routing"]
+  RET["Neo4j hybrid retrieval\n+ LLM filters"]
+  REAS["Reasoner"]
+  CNT["Counter-Reasoner"]
+  POL["Polisher-Evaluator"]
+  OUT["Structured result\n(inspectable package)"]
+  BR --> API
+  API --> PIPE
+  BATCH --> PIPE
+  PIPE --> CLF
+  CLF --> RET
+  RET --> REAS
+  REAS --> CNT
+  CNT --> POL
+  POL --> OUT
+  classDef io fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  classDef core fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef ag fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  class BR,BATCH,OUT io;
+  class API,PIPE,CLF,RET core;
+  class REAS,CNT,POL ag;

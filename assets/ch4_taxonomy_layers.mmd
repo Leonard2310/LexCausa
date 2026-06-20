@@ -1,0 +1,27 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+  subgraph L1["Layer 1 · Classification"]
+    CT["Causal types (14)\ndispute patterns across\npenal / civil / admin / mixed"]
+  end
+  subgraph L2["Layer 2 · Interpretation"]
+    TH["Theories (16)\nreference legal lens\n(type → theory mapping)"]
+  end
+  subgraph L3["Layer 3 · Operational grounding"]
+    AN["Anchor norms\ncore vs accessory"]
+    PT["Principle tests\nhow to assess relevance"]
+  end
+  subgraph L4["Layer 4 · Refutation"]
+    CA["Counter-attack catalog (66)\nlegally typed objections"]
+  end
+  CT --> TH
+  TH --> AN
+  TH --> PT
+  TH --> CA
+  classDef a fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef b fill:#E1D5E7,stroke:#9673A6,color:#111827;
+  classDef c fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  classDef d fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  class CT a;
+  class TH b;
+  class AN,PT c;
+  class CA d;

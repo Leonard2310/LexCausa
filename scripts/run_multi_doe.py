@@ -313,13 +313,15 @@ class MultiDoE:
         metrics["aqa_plausibility"] = float(net_plaus.get("final", 0.0))
         metrics["aqa_pro"] = float(net_plaus.get("pro", 0.0))
         metrics["aqa_contra"] = float(net_plaus.get("contra", 0.0))
-        # AQA dimensional sub-scores
-        scores = aqa_report.get("scores", {})
-        metrics["aqa_cogency"] = float(scores.get("cogency", 0.0))
-        metrics["aqa_norm_support"] = float(scores.get("norm_support", 0.0))
-        metrics["aqa_semantics"] = float(scores.get("semantics", 0.0))
+        # AQA dimensional sub-scores (PRO chain averages; contra attack coverage)
+        chain_scores = aqa_report.get("chain_scores", {})
+        pro_scores = chain_scores.get("pro", {})
+        contra_scores = chain_scores.get("contra", {})
+        metrics["aqa_cogency"] = float(pro_scores.get("cogency_avg", 0.0))
+        metrics["aqa_norm_support"] = float(pro_scores.get("norm_support_avg", 0.0))
+        metrics["aqa_semantics"] = float(pro_scores.get("semantics_avg", 0.0))
         metrics["aqa_attack_coverage"] = float(
-            aqa_report.get("attack_coverage_score", 0.0)
+            contra_scores.get("attack_coverage_score", 0.0)
         )
 
         # Citation faithfulness metrics (RQ2 — both Reasoner and Counter-Reasoner)

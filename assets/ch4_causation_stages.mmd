@@ -1,0 +1,19 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+  C["Causal claim\n(conduct → harm)"]
+  subgraph S1["Stage 1 · Factual causation (material)"]
+    BF["but-for test\nnecessity"]
+    NESS["NESS\nnecessary element of a\nsufficient set (overdetermination)"]
+  end
+  subgraph S2["Stage 2 · Legal causation (proximate, normative)"]
+    FS["foreseeability\nof the outcome"]
+    NA["no novus actus interveniens\nautonomous, unforeseeable break"]
+  end
+  OUT["Outcome legally attributable\nto the conduct"]
+  C --> S1
+  S1 -->|factual cause established| S2
+  S2 -->|chain intact and foreseeable| OUT
+  classDef io fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  classDef s fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  class C,OUT io;
+  class BF,NESS,FS,NA s;

@@ -1,0 +1,18 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart LR
+  subgraph PRO["Thesis (pro)"]
+    A1["A1 · but-for condition\nsatisfied (Art. 40)"]
+    A2["A2 · event imputable\nto the conduct"]
+    A1 --> A2
+  end
+  subgraph CON["Antithesis (contra)"]
+    B1["B1 · autonomous supervening\ncause (Art. 41)"]
+    B2["B2 · chain broken;\nno imputation"]
+    B1 --> B2
+  end
+  B1 -.->|undercuts inference| A2
+  B2 -.->|rebuts conclusion| A2
+  classDef pro fill:#bbf7d0,stroke:#15803d,color:#111827;
+  classDef con fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  class A1,A2 pro;
+  class B1,B2 con;

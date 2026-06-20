@@ -3,21 +3,34 @@
 Multi-DoE Analysis: statistical tests and reporting for the full-factorial
 Reasoner x Counter-Reasoner DoE (Ibisco metrics format).
 
-Implements the minimal test suite of the thesis (see Appendix "Statistical
-Methods"):
-- Factorial ANOVA: Reasoner, Counter, and planning main effects + the
-  Reasoner x Counter interaction, with the eta-squared importance index. The
-  Reasoner x Counter interaction is the thesis RQ2 (dialectical pairing).
-- Model-class efficacy (RQ1): reasoning vs instruction-tuned, via a paired
-  t-test by claim and Cohen's d.
-- Citation faithfulness (RQ3): bootstrap confidence intervals.
-- Planning ablation (RQ3): token / quality deltas; planning main effect in ANOVA.
-- Auxiliary: token-cost efficiency.
+Statistical methodology (see Appendix "Statistical Methods"; follows the
+sampling-based testing procedure of DeepSample, Guerriero et al., ICSE 2024):
+
+- Factorial ANOVA (kept): Reasoner, Counter, and planning main effects + the
+  Reasoner x Counter interaction (RQ2), with the eta-squared importance index.
+  Homoscedasticity is checked with Levene's test (normality via QQ plots).
+- Friedman + Dunn/Holm (RQ1): for each multi-level factor (the 4 Reasoner and
+  the 4 Counter models), the Friedman omnibus test blocked by the 22 claims;
+  when it rejects, Dunn's post-hoc on the rank sums with Holm-Bonferroni
+  correction, summarized as win/tie/loss matrices (rendered as heatmaps).
+- Wilcoxon signed-rank: for the two-level contrasts blocked by claim, i.e. the
+  model-class contrast (reasoning vs instruction-tuned, RQ1) and the planning
+  ablation (Plan-then-Execute on/off, RQ3).
+- Bootstrap CI for citation fidelity (a proportion).
+
+The three AQA dimensions (Cogency, NormSupport, Semantics) are analyzed
+separately when present, in addition to the aggregate net plausibility. Every
+response is read on efficacy (quality) and efficiency (token cost).
+
+NO paired t-test, Cohen's d, Kruskal-Wallis, or Mann-Whitney (removed: the data
+is blocked by claim, so Friedman/Wilcoxon are the correct paired tests).
 
 Expects metrics.csv (Ibisco format) with columns including: reasoner_model,
 counter_model, planning_reasoner, planning_counter, claim_id, aqa_plausibility,
 citation_accuracy, citation_total, citation_repaired, total_tokens,
 reasoning_tokens, counter_tokens, reasoning_steps, aqa_verdict, status, domain.
+The AQA component columns (aqa_cogency, aqa_norm_support, aqa_semantics) are
+analyzed if the run script exports them.
 
 Usage:
     python scripts/analyze_multi_doe.py \\
@@ -34,8 +47,21 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+ALPHA = 0.05
+
 # Model aliases whose class is native reasoning (vs instruction-tuned).
 REASONING_MODELS = {"deepseek_r1", "gpt_oss_120b"}
+
+# Response variables. Quality (higher is better) and cost (lower is better).
+# AQA components are analyzed only if exported by the run script.
+QUALITY_RESPONSES = [
+    "aqa_plausibility",
+    "aqa_cogency",
+    "aqa_norm_support",
+    "aqa_semantics",
+    "citation_accuracy",
+]
+COST_RESPONSES = ["total_tokens"]
 
 
 def _model_class(alias: str) -> str:
@@ -67,20 +93,44 @@ class AdvancedDoEAnalyzer:
             df["reasoner_class"] = df["reasoner_model"].apply(_model_class)
         self.df = df
 
-        print(f"✅ Loaded {len(self.results_df)} runs " f"({len(self.df)} completed)")
+        print(f"✅ Loaded {len(self.results_df)} runs ({len(self.df)} completed)")
+
+    def _responses(self) -> list[tuple[str, bool]]:
+        """Response variables present in the data, with their direction
+        (True = higher is better)."""
+        out: list[tuple[str, bool]] = []
+        for r in QUALITY_RESPONSES:
+            if r in self.df.columns:
+                out.append((r, True))
+        for r in COST_RESPONSES:
+            if r in self.df.columns:
+                out.append((r, False))
+        return out
 
     def analyze(self) -> dict:
         """Run the full analysis."""
+        responses = self._responses()
         return {
             "summary": self._summary_stats(),
-            "anova": {
-                "aqa_plausibility": self._factorial_anova("aqa_plausibility"),
-                "citation_accuracy": self._factorial_anova("citation_accuracy"),
+            "anova": {name: self._factorial_anova(name) for name, _ in responses},
+            "pairwise_friedman": {
+                factor: {
+                    name: self._pairwise_comparison(factor, name, hb)
+                    for name, hb in responses
+                }
+                for factor in ("reasoner_model", "counter_model")
             },
-            "model_class_efficacy": self._model_class_efficacy(),
+            "model_class_contrast": {
+                name: self._wilcoxon_two_level("reasoner_class", "reasoning", name, hb)
+                for name, hb in responses
+            },
+            "planning_wilcoxon": {
+                name: self._wilcoxon_two_level("planning", True, name, hb)
+                for name, hb in responses
+            },
             "citation_faithfulness": self._citation_faithfulness(),
-            "planning_ablation": self._planning_ablation(),
             "token_cost_analysis": self._token_cost_analysis(),
+            "model_class_summary": self._model_class_summary(),
         }
 
     # ------------------------------------------------------------------ #
@@ -105,10 +155,11 @@ class AdvancedDoEAnalyzer:
                 self.df.get("counter_model", pd.Series()).unique().tolist()
             ),
             "domains": sorted(self.df.get("domain", pd.Series()).unique().tolist()),
+            "responses_analyzed": [name for name, _ in self._responses()],
         }
 
     # ------------------------------------------------------------------ #
-    # Factorial ANOVA (primary analysis)
+    # Factorial ANOVA (parametric view; RQ2 interaction)
     # ------------------------------------------------------------------ #
     def _factorial_anova(self, response: str) -> dict:
         """Factorial ANOVA on `response`.
@@ -194,10 +245,10 @@ class AdvancedDoEAnalyzer:
 
     @staticmethod
     def _anova_assumptions(d: pd.DataFrame, response: str) -> dict:
-        """Check the parametric-ANOVA assumption of homoscedasticity (Levene's
-        test across the Reasoner x Counter cells) and, when it fails, compute the
-        non-parametric Kruskal-Wallis fallback on each main factor. Residual
-        normality is assessed separately by the analyst (quantile-quantile plot).
+        """Levene's homoscedasticity test across the Reasoner x Counter cells.
+        Residual normality is assessed separately by the analyst (QQ plot). When
+        the assumptions are doubtful, the distribution-free Friedman/Wilcoxon
+        analysis (which does not depend on them) is the robust companion.
         """
         cells = [
             g[response].to_numpy(dtype=float)
@@ -207,117 +258,166 @@ class AdvancedDoEAnalyzer:
         if len(cells) < 2:
             return {}
         lev_stat, lev_p = stats.levene(*cells)
-        homoscedastic = bool(lev_p > 0.05)
-        out: dict[str, Any] = {
+        return {
             "homoscedasticity_levene": {
                 "statistic": float(lev_stat),
                 "p_value": float(lev_p),
-                "homoscedastic": homoscedastic,
+                "homoscedastic": bool(lev_p > ALPHA),
             }
         }
-        if not homoscedastic:
-
-            def _kruskal(col: str) -> Any:
-                groups = [
-                    g[response].to_numpy(dtype=float)
-                    for _, g in d.groupby(col)
-                    if len(g) > 0
-                ]
-                if len(groups) < 2:
-                    return None
-                h_stat, h_p = stats.kruskal(*groups)
-                return {"H": float(h_stat), "p_value": float(h_p)}
-
-            fallback: dict[str, Any] = {
-                "note": (
-                    "Levene rejected equal variance; the parametric F-test is "
-                    "replaced by Kruskal-Wallis on each multi-level factor and by "
-                    "the Mann-Whitney U (Wilcoxon rank-sum) test on the two-level "
-                    "planning factor."
-                ),
-                "reasoner": _kruskal("reasoner_model"),
-                "counter": _kruskal("counter_model"),
-            }
-            if "planning" in d.columns and d["planning"].nunique() == 2:
-                groups = [
-                    g[response].to_numpy(dtype=float)
-                    for _, g in d.groupby("planning")
-                    if len(g) > 0
-                ]
-                if len(groups) == 2:
-                    u_stat, u_p = stats.mannwhitneyu(
-                        groups[0], groups[1], alternative="two-sided"
-                    )
-                    fallback["planning"] = {
-                        "U": float(u_stat),
-                        "p_value": float(u_p),
-                    }
-            out["non_parametric_fallback"] = fallback
-        return out
 
     # ------------------------------------------------------------------ #
-    # Model-class efficacy (RQ1): reasoning vs instruction-tuned
+    # Friedman + Dunn/Holm pairwise comparison (RQ1, multi-level factors)
     # ------------------------------------------------------------------ #
-    def _model_class_efficacy(self) -> dict:
-        """Model-class efficacy (RQ1): native-reasoning vs instruction-tuned.
-
-        Paired t-test by claim on AQA plausibility (each claim is evaluated under
-        both classes) plus Cohen's d effect size.
-        """
+    def _block_matrix(self, factor: str, response: str) -> dict[str, np.ndarray] | None:
+        """Build the claim-blocked data for a factor: dict level -> array of
+        per-claim mean values. The 22 claims are the paired blocks; the mean is
+        taken over the marginalized factors and replicas. Only claims present for
+        every level are kept (complete blocks, as Friedman requires)."""
         df = self.df
-        if df.empty or "reasoner_class" not in df.columns:
-            return {"error": "No reasoner_class column / no data"}
-        if df["reasoner_class"].nunique() < 2:
-            return {"error": "Both model classes are required for the contrast"}
+        if not {factor, "claim_id", response}.issubset(df.columns):
+            return None
+        piv = df.groupby(["claim_id", factor])[response].mean().unstack(factor)
+        piv = piv.dropna(axis=0, how="any")
+        if piv.shape[0] < 3 or piv.shape[1] < 2:
+            return None
+        return {str(level): piv[level].to_numpy(float) for level in piv.columns}
 
-        out: dict[str, Any] = {}
+    @staticmethod
+    def _holm(pvals: list[float]) -> np.ndarray:
+        """Holm-Bonferroni step-down adjusted p-values."""
+        p = np.asarray(pvals, float)
+        m = len(p)
+        order = np.argsort(p)
+        adj = np.empty(m)
+        running = 0.0
+        for rank, idx in enumerate(order):
+            running = max(running, (m - rank) * p[idx])
+            adj[idx] = min(running, 1.0)
+        return adj
 
-        reasoning = df[df["reasoner_class"] == "reasoning"]
-        instruct = df[df["reasoner_class"] == "instruction_tuned"]
-        if "claim_id" in df.columns:
-            r_by_claim = reasoning.groupby("claim_id")["aqa_plausibility"].mean()
-            i_by_claim = instruct.groupby("claim_id")["aqa_plausibility"].mean()
-            common = r_by_claim.index.intersection(i_by_claim.index)
-            sr = r_by_claim.loc[common].to_numpy()
-            si = i_by_claim.loc[common].to_numpy()
-        else:
-            sr = reasoning["aqa_plausibility"].to_numpy()
-            si = instruct["aqa_plausibility"].to_numpy()
+    def _dunn_holm(
+        self, blocks: dict[str, np.ndarray]
+    ) -> tuple[list[str], np.ndarray, np.ndarray]:
+        """Dunn's test on Friedman rank sums with Holm correction. Returns the
+        levels, the adjusted p-value matrix, and the mean-rank vector (lower mean
+        rank = lower metric value)."""
+        levels = list(blocks.keys())
+        k = len(levels)
+        M = np.column_stack([blocks[t] for t in levels])  # blocks x k
+        R = M.shape[0]
+        ranks = np.empty_like(M, float)
+        for r in range(R):
+            ranks[r] = pd.Series(M[r]).rank(method="average").to_numpy()
+        mean_rank = ranks.sum(axis=0) / R
+        se = np.sqrt(k * (k + 1) / (6.0 * R))
+        pmat = np.ones((k, k))
+        raw, pairs = [], []
+        for i in range(k):
+            for j in range(i + 1, k):
+                z = abs(mean_rank[i] - mean_rank[j]) / se
+                raw.append(2 * (1 - stats.norm.cdf(z)))
+                pairs.append((i, j))
+        adj = self._holm(raw)
+        for (i, j), pa in zip(pairs, adj):
+            pmat[i, j] = pmat[j, i] = float(pa)
+        return levels, pmat, mean_rank
 
-        if len(sr) > 1 and len(sr) == len(si):
-            t_stat, p_value = stats.ttest_rel(sr, si)
-            pooled_sd = np.sqrt(
-                (
-                    (len(sr) - 1) * sr.std(ddof=1) ** 2
-                    + (len(si) - 1) * si.std(ddof=1) ** 2
-                )
-                / (len(sr) + len(si) - 2)
-            )
-            cohens_d = (sr.mean() - si.mean()) / pooled_sd if pooled_sd > 0 else 0.0
-            out["aqa_plausibility_paired"] = {
-                "reasoning_mean": float(sr.mean()),
-                "instruction_tuned_mean": float(si.mean()),
-                "n_claims": int(len(sr)),
-                "test": "paired_t_by_claim",
-                "t_statistic": float(t_stat),
-                "p_value": float(p_value),
-                "cohens_d": float(cohens_d),
-                "significant": bool(p_value < 0.05),
-            }
+    def _pairwise_comparison(
+        self, factor: str, response: str, higher_better: bool
+    ) -> dict:
+        """Friedman omnibus over the levels of `factor` (blocked by claim); when
+        it rejects, Dunn post-hoc + Holm and a win/tie/loss matrix."""
+        blocks = self._block_matrix(factor, response)
+        if blocks is None:
+            return {"error": "insufficient complete blocks"}
+        levels = list(blocks.keys())
+        arrs = [blocks[t] for t in levels]
+        try:
+            chi2, p_omni = stats.friedmanchisquare(*arrs)
+        except ValueError as exc:
+            return {"error": f"friedman failed: {exc}"}
 
-        out["by_class"] = {
-            cls: {
-                "aqa_plausibility_mean": float(g["aqa_plausibility"].mean()),
-                "reasoning_steps_mean": (
-                    float(g["reasoning_steps"].mean())
-                    if "reasoning_steps" in g.columns
-                    else None
-                ),
-                "n": int(len(g)),
-            }
-            for cls, g in df.groupby("reasoner_class")
+        res: dict[str, Any] = {
+            "factor": factor,
+            "response": response,
+            "n_blocks": int(len(arrs[0])),
+            "levels": levels,
+            "level_means": {t: float(np.mean(blocks[t])) for t in levels},
+            "friedman": {
+                "chi2": float(chi2),
+                "p_value": float(p_omni),
+                "rejected": bool(p_omni < ALPHA),
+            },
         }
-        return out
+        if p_omni < ALPHA:
+            levs, pmat, mean_rank = self._dunn_holm(blocks)
+            k = len(levs)
+            w = np.zeros((k, k), int)
+            for i in range(k):
+                for j in range(k):
+                    if i == j or pmat[i, j] >= ALPHA:
+                        continue
+                    row_lower = mean_rank[i] < mean_rank[j]  # row has lower metric
+                    row_better = (not row_lower) if higher_better else row_lower
+                    w[i, j] = 1 if row_better else -1
+            res["dunn_holm"] = {
+                "mean_rank": {levs[i]: float(mean_rank[i]) for i in range(k)},
+                "p_matrix": pmat.round(4).tolist(),
+                "win_tie_loss": {"levels": levs, "matrix": w.tolist()},
+                "tally": {
+                    levs[i]: {
+                        "wins": int((w[i] == 1).sum()),
+                        "losses": int((w[i] == -1).sum()),
+                        "ties": int(k - 1 - (w[i] != 0).sum()),
+                    }
+                    for i in range(k)
+                },
+            }
+        return res
+
+    # ------------------------------------------------------------------ #
+    # Wilcoxon signed-rank for two-level contrasts (blocked by claim)
+    # ------------------------------------------------------------------ #
+    def _wilcoxon_two_level(
+        self, factor: str, positive_level: Any, response: str, higher_better: bool
+    ) -> dict:
+        """Wilcoxon signed-rank test on the per-claim differences between the two
+        levels of `factor` (e.g. reasoning vs instruction-tuned, planning on/off).
+        `positive_level` is the level reported as the first term of the difference."""
+        df = self.df
+        if not {factor, "claim_id", response}.issubset(df.columns):
+            return {"error": f"missing columns for {factor}"}
+        if df[factor].nunique() != 2:
+            return {"error": f"{factor} is not two-level"}
+        piv = df.groupby(["claim_id", factor])[response].mean().unstack(factor)
+        piv = piv.dropna(axis=0, how="any")
+        if piv.shape[0] < 3:
+            return {"error": "insufficient complete blocks"}
+        levels = list(piv.columns)
+        pos = positive_level if positive_level in levels else levels[0]
+        neg = [lv for lv in levels if lv != pos][0]
+        x = piv[pos].to_numpy(float)
+        y = piv[neg].to_numpy(float)
+        try:
+            stat, p = stats.wilcoxon(x, y)
+        except ValueError as exc:
+            return {"error": f"wilcoxon failed: {exc}"}
+        better = "tie"
+        if p < ALPHA:
+            pos_better = (float(x.mean()) > float(y.mean())) == higher_better
+            better = str(pos) if pos_better else str(neg)
+        return {
+            "factor": factor,
+            "response": response,
+            "n_claims": int(len(x)),
+            "levels": {"positive": str(pos), "negative": str(neg)},
+            "means": {str(pos): float(x.mean()), str(neg): float(y.mean())},
+            "statistic": float(stat),
+            "p_value": float(p),
+            "significant": bool(p < ALPHA),
+            "better": better,
+        }
 
     # ------------------------------------------------------------------ #
     # Citation faithfulness (RQ3): bootstrap CIs
@@ -350,47 +450,6 @@ class AdvancedDoEAnalyzer:
         return out
 
     # ------------------------------------------------------------------ #
-    # Planning ablation (RQ3)
-    # ------------------------------------------------------------------ #
-    def _planning_ablation(self) -> dict:
-        df = self.df
-        if df.empty or "planning" not in df.columns:
-            return {"error": "No planning column / no data"}
-
-        on = df[df["planning"]]
-        off = df[~df["planning"]]
-        if on.empty or off.empty:
-            return {"error": "Planning ablation conditions not found"}
-
-        def _cell(g: pd.DataFrame) -> dict:
-            return {
-                "mean_tokens": float(g["total_tokens"].mean()),
-                "median_tokens": float(g["total_tokens"].median()),
-                "mean_reasoning_steps": float(g["reasoning_steps"].mean()),
-                "mean_aqa_plausibility": float(g["aqa_plausibility"].mean()),
-            }
-
-        token_delta = float(on["total_tokens"].mean() - off["total_tokens"].mean())
-        off_tokens = float(off["total_tokens"].mean())
-        return {
-            "planning_on": _cell(on),
-            "planning_off": _cell(off),
-            "token_delta": {
-                "absolute": token_delta,
-                "percentage": (
-                    float(token_delta / off_tokens * 100) if off_tokens else 0.0
-                ),
-                "planning_on_cheaper": token_delta < 0,
-            },
-            "reasoning_steps_delta": float(
-                on["reasoning_steps"].mean() - off["reasoning_steps"].mean()
-            ),
-            "quality_delta": float(
-                on["aqa_plausibility"].mean() - off["aqa_plausibility"].mean()
-            ),
-        }
-
-    # ------------------------------------------------------------------ #
     # Token cost
     # ------------------------------------------------------------------ #
     def _token_cost_analysis(self) -> dict:
@@ -418,6 +477,25 @@ class AdvancedDoEAnalyzer:
             out[str(key)] = block
         return out
 
+    def _model_class_summary(self) -> dict:
+        """Descriptive means by model class (the formal contrast is the Wilcoxon
+        test in `model_class_contrast`)."""
+        df = self.df
+        if df.empty or "reasoner_class" not in df.columns:
+            return {}
+        return {
+            cls: {
+                "aqa_plausibility_mean": float(g["aqa_plausibility"].mean()),
+                "reasoning_steps_mean": (
+                    float(g["reasoning_steps"].mean())
+                    if "reasoning_steps" in g.columns
+                    else None
+                ),
+                "n": int(len(g)),
+            }
+            for cls, g in df.groupby("reasoner_class")
+        }
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
@@ -436,12 +514,53 @@ class AdvancedDoEAnalyzer:
         upper = float(np.percentile(means, (1 + ci) / 2 * 100))
         return lower, upper
 
+    def _plot_heatmaps(self, analysis: dict) -> None:
+        """Render the win/tie/loss matrices as DeepSample-style heatmaps
+        (white = row better, black = row worse, gray = n.s.). Skipped silently if
+        matplotlib is unavailable."""
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            from matplotlib.colors import BoundaryNorm, ListedColormap
+        except Exception:
+            return
+        hdir = self.output_dir / "heatmaps"
+        hdir.mkdir(exist_ok=True)
+        cmap = ListedColormap(["#1a1a1a", "#bdbdbd", "#ffffff"])
+        norm = BoundaryNorm([-1.5, -0.5, 0.5, 1.5], cmap.N)
+        for factor, by_response in analysis.get("pairwise_friedman", {}).items():
+            for response, res in by_response.items():
+                wtl = res.get("dunn_holm", {}).get("win_tie_loss")
+                if not wtl:
+                    continue
+                levels = wtl["levels"]
+                w = np.asarray(wtl["matrix"], int)
+                k = len(levels)
+                fig, ax = plt.subplots(figsize=(0.7 * k + 1.5, 0.7 * k + 1.5))
+                ax.imshow(w, cmap=cmap, norm=norm, aspect="equal")
+                ax.set_xticks(range(k))
+                ax.set_yticks(range(k))
+                ax.set_xticklabels(levels, rotation=45, ha="right", fontsize=7)
+                ax.set_yticklabels(levels, fontsize=7)
+                for x in range(k + 1):
+                    ax.axhline(x - 0.5, color="gray", lw=0.3)
+                    ax.axvline(x - 0.5, color="gray", lw=0.3)
+                ax.set_title(f"{factor} - {response}", fontsize=8)
+                fig.tight_layout()
+                fname = hdir / f"wtl_{factor}_{response}.pdf"
+                fig.savefig(fname, bbox_inches="tight")
+                plt.close(fig)
+        print(f"📈 Heatmaps saved to {hdir}")
+
     def save_report(self, analysis: dict) -> None:
-        """Save the analysis as JSON and print a short summary."""
+        """Save the analysis as JSON, render heatmaps, and print a short summary."""
         report_path = self.output_dir / "doe_analysis.json"
         with open(report_path, "w") as f:
             json.dump(analysis, f, indent=2, default=str)
         print(f"\n📊 Analysis report saved to {report_path}")
+        self._plot_heatmaps(analysis)
 
         print("\n" + "=" * 70)
         print("📊 ANALYSIS SUMMARY")
@@ -457,12 +576,27 @@ class AdvancedDoEAnalyzer:
                     f"eta^2={e['eta_squared']:.1%}"
                 )
 
-        rq1 = analysis.get("model_class_efficacy", {}).get("aqa_plausibility_paired")
-        if rq1:
-            print("\n🎯 RQ1 (reasoning vs instruction-tuned, paired by claim):")
-            print(f"   reasoning mean:        {rq1['reasoning_mean']:.3f}")
-            print(f"   instruction-tuned mean: {rq1['instruction_tuned_mean']:.3f}")
-            print(f"   p={rq1['p_value']:.2e}  d={rq1['cohens_d']:.2f}")
+        fr = (
+            analysis.get("pairwise_friedman", {})
+            .get("reasoner_model", {})
+            .get("aqa_plausibility", {})
+        )
+        if "friedman" in fr:
+            print("\n🎯 RQ1 Reasoner models (Friedman, blocked by claim, AQA):")
+            print(
+                f"   chi2={fr['friedman']['chi2']:.2f} "
+                f"p={fr['friedman']['p_value']:.2e} "
+                f"rejected={fr['friedman']['rejected']}"
+            )
+            for lv, t in fr.get("dunn_holm", {}).get("tally", {}).items():
+                print(f"   {lv:28s} W/T/L = {t['wins']}/{t['ties']}/{t['losses']}")
+
+        mc = analysis.get("model_class_contrast", {}).get("aqa_plausibility", {})
+        if "p_value" in mc:
+            print(
+                "\n🎯 RQ1 reasoning vs instruction-tuned (Wilcoxon signed-rank, AQA):"
+            )
+            print(f"   p={mc['p_value']:.2e}  better={mc['better']}")
 
 
 def main():

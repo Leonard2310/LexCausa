@@ -1,0 +1,15 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+  P1["Premise (fact)\nthe conduct is a but-for\ncondition of the event"]
+  P2["Premise (norm)\nArt. 40 c.p. — causal requirement"]
+  R["Defeasible rule R1\nfactual + normative premises\n→ conclusion"]
+  CC["Conclusion\nthe event is causally\nimputable to the conduct"]
+  P1 --> R
+  P2 --> R
+  R --> CC
+  classDef p fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef r fill:#E1D5E7,stroke:#9673A6,color:#111827;
+  classDef c fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  class P1,P2 p;
+  class R r;
+  class CC c;

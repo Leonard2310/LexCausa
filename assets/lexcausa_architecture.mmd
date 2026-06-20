@@ -1,0 +1,27 @@
+%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+flowchart TB
+  CLAIM["Legal claim"]
+  KG["Knowledge Graph — Neo4j\nStatutes · Precedents ·\nCausal Taxonomy"]
+  subgraph AG["Multi-Agent Reasoning — Plan-then-Execute"]
+    REAS["Reasoner\nanchor norms +\nprinciple tests\n→ PRO chain (ASPIC+)"]
+    POL["Polisher-Evaluator\nconsistency +\ncitation repair\nAQA: Cogency ·\nNormSupport · Semantics\ncross-attack scoring"]
+    CNT["Counter-Reasoner\ntaxonomy-driven attacks\nindependent of the\nReasoner\n→ CONTRA chain (ASPIC+)"]
+    REAS --> POL
+    CNT --> POL
+  end
+  LLM["LLM backends\nGroq · vLLM (Ibisco)"]
+  OUT["ASPIC+ dialectical\nmeta-graph\n(PRO vs CONTRA +\ncross-attacks)\n+ plausibility verdict"]
+  CLAIM --> KG
+  KG -->|retrieved context| AG
+  POL --> OUT
+  LLM -.->|inference| AG
+  classDef io fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  classDef kg fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef ag fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  classDef pol fill:#E1D5E7,stroke:#9673A6,color:#111827;
+  classDef llm fill:#F5F5F5,stroke:#666666,color:#111827;
+  class CLAIM,OUT io;
+  class KG kg;
+  class REAS,CNT ag;
+  class POL pol;
+  class LLM llm;

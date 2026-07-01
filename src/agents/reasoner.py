@@ -1756,10 +1756,13 @@ class Reasoner(BaseAgent):
                 }
             )
 
-        if len(cleaned) < min_steps or len(cleaned) > max_steps:
-            raise ValueError(
-                f"invalid plan length {len(cleaned)} (expected {min_steps}-{max_steps})"
-            )
+        if not cleaned:
+            raise ValueError(f"invalid plan length 0 (expected 1-{max_steps})")
+        if len(cleaned) > max_steps:
+            # Accept short plans (>= 1): the residual-replanning loop in
+            # _generate_chain_iteratively tops the chain up to chain_min_steps.
+            # Only enforce the upper bound here by truncating over-long plans.
+            cleaned = cleaned[:max_steps]
         novelty_keys = [step.get("novelty_key", "") for step in cleaned]
         if len(set(novelty_keys)) != len(novelty_keys):
             raise ValueError("planner produced duplicate novelty_key values")

@@ -29,6 +29,14 @@ _env_file = _project_root / ".env"
 # Load .env file
 load_dotenv(_env_file)
 
+# Default to fully offline Hugging Face loading: all models (Legal-BERT, all-mpnet,
+# the DeBERTa scorers) are pre-cached locally and on the HPC node, so the pipeline
+# must never depend on reaching huggingface.co at runtime. Shell env and .env take
+# precedence (setdefault); export HF_HUB_OFFLINE=0 / TRANSFORMERS_OFFLINE=0 to
+# temporarily allow downloads, e.g. when adding a new model.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 
 class Settings(BaseSettings):
     """
@@ -147,7 +155,7 @@ class Settings(BaseSettings):
     # =========================================================================
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8000, alias="API_PORT")
-    debug: bool = Field(default=True, alias="DEBUG")
+    debug: bool = Field(default=False, alias="DEBUG")
 
     # =========================================================================
     # Search & Retrieval Defaults

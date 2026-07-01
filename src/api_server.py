@@ -28,6 +28,13 @@ from flask_cors import CORS
 
 warnings.filterwarnings("ignore")
 
+# Force fully offline Hugging Face loading BEFORE any model library is imported.
+# All models (Legal-BERT, all-mpnet, the DeBERTa scorers) are pre-cached, so the
+# pipeline must never reach huggingface.co at runtime. setdefault lets an explicit
+# env override still win (export HF_HUB_OFFLINE=0 to allow downloads).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 # Setup paths
 src_path = os.path.dirname(os.path.abspath(__file__))
 if os.path.basename(src_path) == "src":
@@ -579,7 +586,7 @@ def _articles_to_dicts(articles) -> list[dict]:
             "statute_id": art.statute_id,
             "articolo": art.articolo,
             "titolo": art.titolo,
-            "testo": art.testo,
+            "testo": art.text,
             "libro": art.libro,
             "source": art.source,
             "score": float(getattr(art, "score", 0.0)),
@@ -633,7 +640,7 @@ def _article_with_retrieval_debug(art) -> dict:
         "libro": art.libro,
         "articolo": art.articolo,
         "titolo": art.titolo,
-        "testo": art.testo,
+        "testo": art.text,
         "score": float(art.score),
         "vector_rank_score": float(breakdown.get("vector_rank_score", 0.0)),
         "fulltext_rank_score": float(breakdown.get("fulltext_rank_score", 0.0)),
@@ -3617,7 +3624,7 @@ def format_search_result(result) -> str:
                 lines.append(f"**Book:** {art.libro}\n")
             else:
                 lines.append("**Book:** N/A (code without books)\n")
-            preview = art.testo[:300] + "..." if len(art.testo) > 300 else art.testo
+            preview = art.text[:300] + "..." if len(art.text) > 300 else art.text
             lines.append(f"{preview}\n")
 
     return "\n".join(lines)

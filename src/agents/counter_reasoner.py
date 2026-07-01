@@ -1773,7 +1773,7 @@ class CounterReasoner(BaseAgent):
             "statute_id": article.statute_id,
             "articolo": article.articolo,
             "titolo": article.titolo,
-            "testo": article.testo,
+            "testo": article.text,
             "libro": article.libro,
             "source": article.source,
         }

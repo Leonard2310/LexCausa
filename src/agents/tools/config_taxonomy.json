@@ -40,61 +40,61 @@
         "id": "CC_PRE",
         "description": "Civil Code, Provisions on the law in general",
         "codice": "codice_civile",
-        "libro": "CC Preliminary Provisions"
+        "libro": "CC Fuori range"
       },
       {
         "id": "CC_L1",
         "description": "Civil Code, Book I: Persons and family",
         "codice": "codice_civile",
-        "libro": "CC Book I"
+        "libro": "CC Libro I"
       },
       {
         "id": "CC_L2",
         "description": "Civil Code, Book II: Successions",
         "codice": "codice_civile",
-        "libro": "CC Book II"
+        "libro": "CC Libro II"
       },
       {
         "id": "CC_L3",
         "description": "Civil Code, Book III: Property and real rights",
         "codice": "codice_civile",
-        "libro": "CC Book III"
+        "libro": "CC Libro III"
       },
       {
         "id": "CC_L4",
         "description": "Civil Code, Book IV: Obligations and contracts",
         "codice": "codice_civile",
-        "libro": "CC Book IV"
+        "libro": "CC Libro IV"
       },
       {
         "id": "CC_L5",
         "description": "Civil Code, Book V: Labor, business and companies",
         "codice": "codice_civile",
-        "libro": "CC Book V"
+        "libro": "CC Libro V"
       },
       {
         "id": "CC_L6",
         "description": "Civil Code, Book VI: Protection of rights",
         "codice": "codice_civile",
-        "libro": "CC Book VI"
+        "libro": "CC Libro VI"
       },
       {
         "id": "CP_L1",
         "description": "Penal Code, Book I: Crimes in general",
         "codice": "codice_penale",
-        "libro": "CP Book I"
+        "libro": "CP Libro I"
       },
       {
         "id": "CP_L2",
         "description": "Penal Code, Book II: Felonies in particular",
         "codice": "codice_penale",
-        "libro": "CP Book II"
+        "libro": "CP Libro II"
       },
       {
         "id": "CP_L3",
         "description": "Penal Code, Book III: Misdemeanors",
         "codice": "codice_penale",
-        "libro": "CP Book III"
+        "libro": "CP Libro III"
       },
       {
         "id": "AMM_L241",

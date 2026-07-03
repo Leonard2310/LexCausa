@@ -169,6 +169,22 @@ class BaseAgent(ABC):
                 )
         return self._llm
 
+    def _low_reasoning_effort_kwargs(self) -> dict:
+        """Request minimal reasoning on structured/utility JSON calls.
+
+        Native-reasoning models (gpt-oss, DeepSeek-R1) spend their completion
+        budget on chain-of-thought before emitting the answer. On short JSON
+        utility calls (planners, attack-selection, target maps, gates) this
+        reasoning is wasted and often truncates the JSON, causing the
+        ``max completion tokens reached`` failures and their retries. For those
+        calls we ask the model for ``low`` reasoning effort. Non-reasoning
+        models ignore the flag, so it is only emitted when it applies.
+        """
+        model = (self.config.model_name or "").lower()
+        if "gpt-oss" in model or "gpt_oss" in model or "deepseek" in model:
+            return {"reasoning_effort": "low"}
+        return {}
+
     def _resilient_llm_invoke(self, messages, **kwargs):
         """Invoke LLM with retry; vLLM uses direct invoke (no key rotation needed)."""
         stream_callback = kwargs.pop("stream_callback", None)

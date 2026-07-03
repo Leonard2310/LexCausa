@@ -1,15 +1,45 @@
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 flowchart TB
-  P1["Premise (fact)\nthe conduct is a but-for\ncondition of the event"]
-  P2["Premise (norm)\nArt. 40 c.p. — causal requirement"]
-  R["Defeasible rule R1\nfactual + normative premises\n→ conclusion"]
-  CC["Conclusion\nthe event is causally\nimputable to the conduct"]
-  P1 --> R
-  P2 --> R
-  R --> CC
+  subgraph ARG["One argument = one reasoning step (S1 of claim C1)"]
+    FP["`**Factual premises** (from the claim)
+output ≈ 320 units/h
+vs guaranteed 500 ± 2%
+11 stoppages in 5 weeks`"]
+    NP["`**Normative premises** (cited sources)
+Art. 1490 c.c. — warranty
+for defects of the sold item`"]
+    R["`**Defeasible inference rule**
+one per step — no strict rules`"]
+    C["`**Conclusion**
+a material defect is established`"]
+    FP --> R
+    NP --> R
+    R --> C
+  end
+  UM["`**undermining**
+attacks a premise`"]
+  UC["`**undercutting**
+attacks the inference`"]
+  RB["`**rebutting**
+attacks the conclusion`"]
+  PR["`**stance-aware precedent**
+supports or attacks
+depending on the side citing it`"]
+  NEXT["`premises of the
+next step (S2)`"]
+  UM -.-> FP
+  UC -.-> R
+  RB -.-> C
+  PR -.-> C
+  C -->|chains into| NEXT
   classDef p fill:#B0E3E6,stroke:#0E8088,color:#111827;
   classDef r fill:#E1D5E7,stroke:#9673A6,color:#111827;
   classDef c fill:#FFE6CC,stroke:#D79B00,color:#111827;
-  class P1,P2 p;
+  classDef atk fill:#FFFFFF,stroke:#B85450,color:#B85450;
+  classDef prec fill:#F5F5F5,stroke:#666666,color:#111827;
+  classDef nxt fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  class FP,NP p;
   class R r;
-  class CC c;
+  class C c;
+  class UM,UC,RB atk;
+  class PR prec;
+  class NEXT nxt;

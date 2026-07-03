@@ -1,16 +1,34 @@
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
 flowchart TB
-  CLAIM["Legal claim"]
-  KG["Knowledge Graph — Neo4j\nStatutes · Precedents ·\nCausal Taxonomy"]
+  CLAIM["`**Legal claim**`"]
+  KG["`**Knowledge Graph — Neo4j**
+Statutes · Precedents ·
+Causal Taxonomy`"]
   subgraph AG["Multi-Agent Reasoning — Plan-then-Execute"]
-    REAS["Reasoner\nanchor norms +\nprinciple tests\n→ PRO chain (ASPIC+)"]
-    POL["Polisher-Evaluator\nconsistency +\ncitation repair\nAQA: Cogency ·\nNormSupport · Semantics\ncross-attack scoring"]
-    CNT["Counter-Reasoner\ntaxonomy-driven attacks\nindependent of the\nReasoner\n→ CONTRA chain (ASPIC+)"]
+    REAS["`**Reasoner**
+anchor norms +
+principle tests
+→ PRO chain (ASPIC+)`"]
+    CNT["`**Counter-Reasoner**
+taxonomy-driven attacks
+independent of the
+Reasoner
+→ CONTRA chain (ASPIC+)`"]
+    POL["`**Polisher-Evaluator**
+consistency +
+citation repair
+AQA: Cogency ·
+NormSupport · Semantics
+cross-attack scoring`"]
     REAS --> POL
     CNT --> POL
   end
-  LLM["LLM backends\nGroq · vLLM (Ibisco)"]
-  OUT["ASPIC+ dialectical\nmeta-graph\n(PRO vs CONTRA +\ncross-attacks)\n+ plausibility verdict"]
+  LLM["`**LLM backends**
+Groq · vLLM (Ibisco)`"]
+  OUT["`**ASPIC+ dialectical
+meta-graph**
+(PRO vs CONTRA +
+cross-attacks)
++ plausibility verdict`"]
   CLAIM --> KG
   KG -->|retrieved context| AG
   POL --> OUT

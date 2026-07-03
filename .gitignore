@@ -71,6 +71,8 @@ celerybeat.pid
 src/data/embeddings/
 src/data/old/
 claims.md
+claims_pilot.md
+claims_calib.md
 claims_no_covered.md
 new
 old_claims.md

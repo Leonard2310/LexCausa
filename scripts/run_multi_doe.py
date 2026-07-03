@@ -8,16 +8,24 @@ Supports multi-dimensional ablation studies:
 - RQ3: Planning Ablation (impact of planning on reasoning quality)
 - Auxiliary: Token Cost Analysis
 
-Usage:
+Usage (full 4x4 cross-pairing, one worker):
     python scripts/run_multi_doe.py \\
         --claims-file claims.md \\
-        --models gpt_oss_120b,groq_llama_scout_17b \\
-        --domains CIVILE,PENALE,AMMINISTRATIVO \\
+        --reasoner-models gpt_oss_120b,gpt_oss_20b,groq_llama_3_3_70b_versatile,llama_3_1_8b_instant \\
+        --counter-models  gpt_oss_120b,gpt_oss_20b,groq_llama_3_3_70b_versatile,llama_3_1_8b_instant \\
         --planning-ablations on,off \\
         --replicates 10 \\
-        --docker \\
-        --out experiments/multi_doe/runs/$(date +%Y%m%d_%H%M%S) \\
-        --seed 42
+        --out experiments/multi_doe/runs/$(date +%Y%m%d_%H%M%S)
+
+Parallel workers (each against its own API server instance):
+    API_PORT=8001 poetry run python -m src.api_server &   # worker 1 backend
+    python scripts/run_multi_doe.py ... \\
+        --api-url http://localhost:8001 \\
+        --shard-index 0 --shard-count 4 \\
+        --out experiments/multi_doe/runs/batch_shard0
+
+Reduced design (planning ablation only on self-play cells):
+    ... --planning-ablations on,off --planning-off-selfplay-only
 """
 
 import argparse
@@ -32,9 +40,6 @@ from typing import Optional
 import pandas as pd
 import requests
 
-# API endpoint
-API_BASE = "http://localhost:8000/api"
-
 
 class MultiDoE:
     """Multi-DoE orchestration for LexCausa."""
@@ -42,7 +47,8 @@ class MultiDoE:
     def __init__(
         self,
         claims_file: str,
-        models: list[str],
+        reasoner_models: list[str],
+        counter_models: list[str],
         domains: list[str],
         planning_ablations: list[tuple[bool, bool]],
         replicates: int,
@@ -51,16 +57,35 @@ class MultiDoE:
         seed: Optional[int] = None,
         causality_ablations: Optional[list[bool]] = None,
         causality_models: Optional[list[str]] = None,
+        api_url: str = "http://localhost:8000",
+        shard_index: int = 0,
+        shard_count: int = 1,
+        max_statutes: int = 100,
+        max_precedents: int = 5,
+        planning_off_selfplay_only: bool = False,
+        pairing: str = "cross",
+        min_kept: int | None = None,
     ):
         """Initialize DoE framework.
 
+        reasoner_models / counter_models: the two independent model axes.
+            The matrix is their full Cartesian product (self-play = diagonal).
         causality_ablations: which causality conditions to test (e.g. [True, False]).
             Defaults to [True] (always on — no ablation).
-        causality_models: models for which causality ablation is applied.
+        causality_models: Reasoner models for which causality ablation is applied.
             Defaults to ["gpt_oss_120b"]. Other models always run with causality=True.
+        api_url: base URL of the backend worker (one API server per worker).
+        shard_index / shard_count: deterministic partition of the run matrix so
+            that N parallel workers each execute a disjoint slice.
+        max_statutes / max_precedents: retrieval breadth passed to the pipeline
+            (defaults match the thesis design: 100 / 5; the free-tier pilot used 8 / 3).
+        planning_off_selfplay_only: if True, the planning=off condition is run
+            only on self-play cells (reasoner == counter), a fractional design
+            that preserves RQ3 while cutting the off-diagonal planning runs.
         """
         self.claims_file = Path(claims_file)
-        self.models = models
+        self.reasoner_models = reasoner_models
+        self.counter_models = counter_models
         self.domains = domains
         self.planning_ablations = planning_ablations  # [(True, True), (False, False)]
         self.causality_ablations = (
@@ -71,6 +96,14 @@ class MultiDoE:
         self.output_dir = Path(output_dir)
         self.use_docker = use_docker
         self.seed = seed or 42
+        self.api_base = api_url.rstrip("/") + "/api"
+        self.shard_index = shard_index
+        self.shard_count = max(1, shard_count)
+        self.max_statutes = max_statutes
+        self.max_precedents = max_precedents
+        self.planning_off_selfplay_only = planning_off_selfplay_only
+        self.pairing = pairing
+        self.min_kept = min_kept
 
         # Create output directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -150,7 +183,11 @@ class MultiDoE:
         return claims
 
     def generate_run_matrix(self) -> pd.DataFrame:
-        """Generate Cartesian product of all experimental conditions."""
+        """Generate Cartesian product of all experimental conditions.
+
+        The build order is fully deterministic given the same inputs, so N
+        parallel workers building the same matrix can shard it by position.
+        """
         matrix = []
 
         for claim in self.claims:
@@ -158,46 +195,67 @@ class MultiDoE:
             if self.domains and claim["domain"] not in self.domains:
                 continue
 
-            for model in self.models:
-                # Causality ablation only for designated models (e.g. OSS120b)
-                causality_conditions = (
-                    self.causality_ablations
-                    if model in self.causality_models
-                    else [True]
-                )
+            for r_model in self.reasoner_models:
+                for c_model in self.counter_models:
+                    if self.pairing == "self" and r_model != c_model:
+                        continue
+                    # Causality ablation only for designated Reasoner models
+                    causality_conditions = (
+                        self.causality_ablations
+                        if r_model in self.causality_models
+                        else [True]
+                    )
 
-                for plan_r, plan_c in self.planning_ablations:
-                    for causality_on in causality_conditions:
-                        for rep in range(self.replicates):
-                            matrix.append(
-                                {
-                                    "run_id": str(uuid.uuid4().hex[:12]),
-                                    "claim_id": claim["id"],
-                                    "claim_text": claim["text"],
-                                    "domain": claim["domain"],
-                                    "model": model,
-                                    "planning_reasoner": plan_r,
-                                    "planning_counter": plan_c,
-                                    "causality_enabled": causality_on,
-                                    "replicate": rep,
-                                    "status": "pending",
-                                    "error": "",
-                                    "started_at": None,
-                                    "completed_at": None,
-                                    "duration_sec": 0,
-                                }
-                            )
+                    for plan_r, plan_c in self.planning_ablations:
+                        # Fractional design: planning=off only on the diagonal
+                        if (
+                            self.planning_off_selfplay_only
+                            and not plan_r
+                            and r_model != c_model
+                        ):
+                            continue
+                        for causality_on in causality_conditions:
+                            for rep in range(self.replicates):
+                                matrix.append(
+                                    {
+                                        "run_id": str(uuid.uuid4().hex[:12]),
+                                        "claim_id": claim["id"],
+                                        "claim_text": claim["text"],
+                                        "domain": claim["domain"],
+                                        "reasoner_model": r_model,
+                                        "counter_model": c_model,
+                                        "planning_reasoner": plan_r,
+                                        "planning_counter": plan_c,
+                                        "causality_enabled": causality_on,
+                                        "replicate": rep,
+                                        "status": "pending",
+                                        "error": "",
+                                        "started_at": None,
+                                        "completed_at": None,
+                                        "duration_sec": 0,
+                                    }
+                                )
 
         df = pd.DataFrame(matrix)
         causality_ablation_active = len(self.causality_ablations) > 1
-        print(f"📊 Generated {len(df)} experimental runs")
+        print(f"📊 Generated {len(df)} experimental runs (before sharding)")
         print(f"   - Claims: {len(self.claims)}")
-        print(f"   - Models: {len(self.models)}")
+        print(
+            f"   - Reasoner x Counter: {len(self.reasoner_models)} x {len(self.counter_models)}"
+        )
         print(f"   - Planning ablations: {len(self.planning_ablations)}")
+        if self.planning_off_selfplay_only:
+            print("   - Planning=off restricted to self-play cells")
         print(
             f"   - Causality ablation: {'on/off for ' + str(self.causality_models) if causality_ablation_active else 'always on'}"
         )
         print(f"   - Replicates: {self.replicates}")
+
+        if self.shard_count > 1:
+            df = df.iloc[self.shard_index :: self.shard_count].reset_index(drop=True)
+            print(
+                f"   - Shard {self.shard_index + 1}/{self.shard_count}: {len(df)} runs for this worker"
+            )
 
         return df
 
@@ -215,7 +273,7 @@ class MultiDoE:
             run_id = row["run_id"]
             print(
                 f"\n[{idx+1}/{total}] Running: {row['claim_id']} | "
-                f"Model: {row['model']} | "
+                f"R: {row['reasoner_model']} | C: {row['counter_model']} | "
                 f"Planning: R={row['planning_reasoner']},C={row['planning_counter']} | "
                 f"Causality: {row['causality_enabled']} | "
                 f"Rep: {row['replicate']}"
@@ -249,7 +307,9 @@ class MultiDoE:
                     {
                         "run_id": run_id,
                         "claim_id": row["claim_id"],
-                        "model": row["model"],
+                        "domain": row["domain"],
+                        "reasoner_model": row["reasoner_model"],
+                        "counter_model": row["counter_model"],
                         "planning_reasoner": row["planning_reasoner"],
                         "planning_counter": row["planning_counter"],
                         "causality_enabled": bool(row.get("causality_enabled", True)),
@@ -266,13 +326,23 @@ class MultiDoE:
         payload = {
             "claim": row["claim_text"],
             "include_precedents": True,
-            "max_statutes": 100,
-            "max_precedents": 5,
+            "max_statutes": self.max_statutes,
+            "max_precedents": self.max_precedents,
+            # Retrieval is model-independent, so the shared evidential context is
+            # computed once per claim and reused across every model cell: this
+            # both cuts the (many) retrieval/filter LLM calls and guarantees an
+            # identical input to the generation, isolating the model variable.
+            "claim_context_memory_enabled": True,
             "settings": {
-                "reasoner_model": row["model"],
-                "counter_model": row["model"],
+                "reasoner_model": row["reasoner_model"],
+                "counter_model": row["counter_model"],
                 "reasoner_temperature": 0.0,
                 "counter_temperature": 0.3,
+                **(
+                    {"search_min_kept_statutes": int(self.min_kept)}
+                    if self.min_kept
+                    else {}
+                ),
                 "llm_max_tokens": 7168,
                 "enable_planning_reasoner": row["planning_reasoner"],
                 "enable_planning_counter": row["planning_counter"],
@@ -282,9 +352,10 @@ class MultiDoE:
         }
 
         response = requests.post(
-            f"{API_BASE}/pipeline",
+            f"{self.api_base}/pipeline",
             json=payload,
-            timeout=1800,  # 30 min timeout
+            timeout=3600,  # 60 min: thinking models (esp. planning-off, single
+            # giant generation) can exceed 30 min including evaluator scoring.
         )
 
         if response.status_code != 200:
@@ -299,7 +370,8 @@ class MultiDoE:
         metrics = {
             "claim_id": row["claim_id"],
             "domain": row["domain"],
-            "model": row["model"],
+            "reasoner_model": row["reasoner_model"],
+            "counter_model": row["counter_model"],
             "planning_reasoner": row["planning_reasoner"],
             "planning_counter": row["planning_counter"],
             "causality_enabled": bool(row.get("causality_enabled", True)),
@@ -342,10 +414,18 @@ class MultiDoE:
         metrics["reasoner_citation_accuracy"] = metrics[
             "reasoner_citation_valid"
         ] / max(1, metrics["reasoner_citation_total"])
+        # Overall fidelity: grounding faithfulness of *all* citations (Reasoner +
+        # Counter) against the KG. This is the single "fidelity" figure reported
+        # in the thesis; per-side accuracies above remain for RQ2 breakdowns.
+        _fid_total = metrics["citation_total"] + metrics["reasoner_citation_total"]
+        _fid_valid = metrics["citation_valid"] + metrics["reasoner_citation_valid"]
+        metrics["fidelity"] = _fid_valid / max(1, _fid_total)
 
-        # Planning / causality impact metrics (RQ3)
+        # Planning / causality impact metrics (RQ3) + per-phase token accounting
         token_stats = response.get("_token_stats", {})
         metrics["total_tokens"] = int(token_stats.get("total_completion_tokens", 0))
+        metrics["total_prompt_tokens"] = int(token_stats.get("total_prompt_tokens", 0))
+        metrics["total_all_tokens"] = int(token_stats.get("total_tokens", 0))
         metrics["reasoning_tokens"] = int(
             token_stats.get("reasoning_completion_tokens", 0)
         )
@@ -353,6 +433,12 @@ class MultiDoE:
         metrics["max_prompt_tokens_per_call"] = int(
             token_stats.get("max_prompt_tokens_per_call", 0)
         )
+        # Flatten the per-phase prompt/completion breakdown into columns.
+        by_phase = token_stats.get("by_phase", {}) or {}
+        for _phase, _pt in by_phase.items():
+            if isinstance(_pt, dict):
+                metrics[f"tok_{_phase}_prompt"] = int(_pt.get("prompt", 0))
+                metrics[f"tok_{_phase}_completion"] = int(_pt.get("completion", 0))
 
         # Reasoning chain structure
         reasoner = response.get("reasoner", {})
@@ -362,6 +448,13 @@ class MultiDoE:
         counter = response.get("counter_reasoner", {})
         metrics["counter_steps"] = len(counter.get("reasoning_chain", []))
         metrics["counter_attacks_count"] = len(counter.get("selected_attack_ids", []))
+        # Counter abstention (RQ2): when the Counter produces no valid antithesis
+        # it abstains, and the AQA scores the thesis unopposed (contra=0). Recording
+        # this makes the abstention rate a first-class, per-cell DoE outcome.
+        metrics["counter_abstained"] = bool(counter.get("abstained", False))
+        metrics["abstention_reason"] = str(counter.get("abstention_reason", "") or "")[
+            :200
+        ]
 
         return metrics
 
@@ -398,7 +491,7 @@ class MultiDoE:
         # Wait for health check
         for _ in range(60):
             try:
-                response = requests.get(f"{API_BASE}/health", timeout=5)
+                response = requests.get(f"{self.api_base}/health", timeout=5)
                 if response.status_code == 200:
                     print("✅ Backend health check passed")
                     return
@@ -476,8 +569,27 @@ Examples:
     )
     parser.add_argument(
         "--models",
-        default="gpt_oss_120b,groq_llama_scout_17b",
-        help="Comma-separated list of models to test",
+        default=None,
+        help=(
+            "Comma-separated model list used for BOTH axes (full cross-pairing). "
+            "Overridden by --reasoner-models / --counter-models."
+        ),
+    )
+    parser.add_argument(
+        "--reasoner-models",
+        default=None,
+        help="Comma-separated Reasoner model axis (defaults to --models)",
+    )
+    parser.add_argument(
+        "--counter-models",
+        default=None,
+        help="Comma-separated Counter-Reasoner model axis (defaults to --models)",
+    )
+    parser.add_argument(
+        "--pairing",
+        default="cross",
+        choices=["cross", "self"],
+        help="cross = full Reasoner x Counter grid; self = diagonal only (self-play)",
     )
     parser.add_argument(
         "--domains",
@@ -523,11 +635,73 @@ Examples:
         default=42,
         help="Random seed for reproducibility",
     )
+    parser.add_argument(
+        "--api-url",
+        default="http://localhost:8000",
+        help="Base URL of the backend API server for this worker",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Index of this worker's shard (0-based)",
+    )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="Total number of parallel workers sharding the same matrix",
+    )
+    parser.add_argument(
+        "--max-statutes",
+        type=int,
+        default=100,
+        help="Retrieval breadth: candidate statutes (thesis design: 100; free-tier pilot used 8)",
+    )
+    parser.add_argument(
+        "--max-precedents",
+        type=int,
+        default=5,
+        help="Retrieval breadth: max precedents (thesis design: 5; free-tier pilot used 3)",
+    )
+    parser.add_argument(
+        "--min-kept",
+        type=int,
+        default=None,
+        help="Floor on statutes kept after filtering (search_min_kept_statutes); "
+        "controls the effective KB size injected into generation (e.g. 8)",
+    )
+    parser.add_argument(
+        "--planning-off-selfplay-only",
+        action="store_true",
+        help="Run the planning=off condition only on self-play cells (fractional design for RQ3)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build and save the run matrix without executing anything",
+    )
 
     args = parser.parse_args()
 
     # Parse arguments
-    models = [m.strip() for m in args.models.split(",")]
+    base_models = (
+        [m.strip() for m in args.models.split(",") if m.strip()]
+        if args.models
+        else None
+    )
+    reasoner_models = (
+        [m.strip() for m in args.reasoner_models.split(",") if m.strip()]
+        if args.reasoner_models
+        else base_models
+    )
+    counter_models = (
+        [m.strip() for m in args.counter_models.split(",") if m.strip()]
+        if args.counter_models
+        else base_models
+    )
+    if not reasoner_models or not counter_models:
+        parser.error("Provide --models or both --reasoner-models and --counter-models")
     domains = [d.strip().upper() for d in args.domains.split(",")]
     planning_ablations = (
         [(True, True), (False, False)]
@@ -544,7 +718,8 @@ Examples:
     # Run DoE
     doe = MultiDoE(
         claims_file=args.claims_file,
-        models=models,
+        reasoner_models=reasoner_models,
+        counter_models=counter_models,
         domains=domains,
         planning_ablations=planning_ablations,
         replicates=args.replicates,
@@ -553,7 +728,21 @@ Examples:
         seed=args.seed,
         causality_ablations=causality_ablations,
         causality_models=causality_models,
+        api_url=args.api_url,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+        max_statutes=args.max_statutes,
+        max_precedents=args.max_precedents,
+        planning_off_selfplay_only=args.planning_off_selfplay_only,
+        pairing=args.pairing,
+        min_kept=args.min_kept,
     )
+
+    if args.dry_run:
+        matrix_df = doe.generate_run_matrix()
+        matrix_df.to_csv(doe.output_dir / "run_matrix.csv", index=False)
+        print(f"\n(dry-run) Matrix saved to {doe.output_dir / 'run_matrix.csv'}")
+        return
 
     doe.run()
 

@@ -203,6 +203,7 @@ class CounterReasoner(BaseAgent):
         for _ in range(2):
             invoke_kwargs: Dict[str, object] = {
                 "max_tokens": max(1, int(max_tokens)),
+                **self._low_reasoning_effort_kwargs(),
             }
             if use_json_mode:
                 invoke_kwargs["response_format"] = {"type": "json_object"}
@@ -1937,7 +1938,7 @@ class CounterReasoner(BaseAgent):
                 embedding = pipe.embed_text(query_text)
                 articles = pipe.vector_search(
                     embedding=embedding,
-                    libri_filters=filters,
+                    book_filters=filters,
                     top_k=max(1, settings.counter_second_pass_top_k),
                     query_text=query_text,
                 )

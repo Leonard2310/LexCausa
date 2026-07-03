@@ -82,6 +82,15 @@ class AdvancedDoEAnalyzer:
 
         self.results_df = pd.read_csv(metrics_path)
 
+        # Normalize the cloud single-axis format (one `model` used in both roles)
+        # to the Ibisco Reasoner x Counter format expected by the analysis below.
+        if (
+            "reasoner_model" not in self.results_df.columns
+            and "model" in self.results_df.columns
+        ):
+            self.results_df["reasoner_model"] = self.results_df["model"]
+            self.results_df["counter_model"] = self.results_df["model"]
+
         df = self.results_df
         if "status" in df.columns:
             df = df[df["status"] == "completed"]

@@ -138,6 +138,56 @@ def _is_model_cached_down(model: str) -> bool:
         return True
 
 
+def _llm_keys() -> list[str]:
+    """API key(s) for the active backend (Groq Cloud or OpenRouter)."""
+    if settings.llm_backend == "openrouter":
+        keys = settings.openrouter_api_keys
+        if not keys:
+            raise ValueError(
+                "No OpenRouter API key configured. Set OPENROUTER_API_KEY in .env "
+                "(required for LLM_BACKEND=openrouter)."
+            )
+        return keys
+    return settings.groq_api_keys
+
+
+def _build_chat_llm(key: str, model: str, temperature, max_tokens):
+    """Construct a ChatGroq bound to the active backend.
+
+    For OpenRouter, the same ChatGroq is pointed at the OpenRouter base URL and
+    carries the provider-pin / reasoning flags via extra_body; the model id is
+    sanitized to a valid OpenRouter slug (aux calls fall back to the aux model).
+    """
+    if settings.llm_backend == "openrouter":
+        from services.openrouter_client import ChatOpenRouter
+
+        return ChatOpenRouter(
+            model=settings.resolve_openrouter_slug(model),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=key,
+        )
+    return ChatGroq(
+        api_key=key,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
+def _build_sdk_client(key: str):
+    """Raw SDK client for the active backend.
+
+    OpenRouter uses the OpenAI SDK (the Groq SDK hardcodes an incompatible
+    ``/openai/v1/chat/completions`` path); every call is provider-pinned.
+    """
+    if settings.llm_backend == "openrouter":
+        from services.openrouter_client import get_openrouter_sdk_client
+
+        return get_openrouter_sdk_client(key)
+    return Groq(api_key=key)
+
+
 def _rotate_key() -> tuple[str, int]:
     """
     Rotate to the next available API key (thread-safe).
@@ -146,10 +196,10 @@ def _rotate_key() -> tuple[str, int]:
         (new_api_key, new_index)
     """
     global _current_key_index
-    keys = settings.groq_api_keys
+    keys = _llm_keys()
     if not keys:
         raise ValueError(
-            "No Groq API keys configured. Set GROQ_API_KEY_V1 (and optionally V2, V3, …) in .env"
+            "No API keys configured. Set GROQ_API_KEY_V1 (or OPENROUTER_API_KEY) in .env"
         )
     with _key_lock:
         _current_key_index = (_current_key_index + 1) % len(keys)
@@ -158,10 +208,10 @@ def _rotate_key() -> tuple[str, int]:
 
 def _current_key() -> str:
     """Get the current API key."""
-    keys = settings.groq_api_keys
+    keys = _llm_keys()
     if not keys:
         raise ValueError(
-            "No Groq API keys configured. Set GROQ_API_KEY_V1 (and optionally V2, V3, …) in .env"
+            "No API keys configured. Set GROQ_API_KEY_V1 (or OPENROUTER_API_KEY) in .env"
         )
     with _key_lock:
         idx = _current_key_index % len(keys)
@@ -292,14 +342,14 @@ def _resilient_loop(
         models = []
     if not models:
         models = list(settings.groq_models)  # copy so we can iterate safely
-    keys = settings.groq_api_keys
+    keys = _llm_keys()
     n_keys = len(keys)
     base_delay = settings.groq_retry_base_delay
 
     if not keys:
         raise ValueError(
-            "No Groq API keys configured. "
-            "Set GROQ_API_KEY_V1 (and optionally V2, V3, …) in .env"
+            "No API keys configured. "
+            "Set GROQ_API_KEY_V1 (or OPENROUTER_API_KEY for LLM_BACKEND=openrouter) in .env"
         )
 
     logger.info(
@@ -474,7 +524,7 @@ def get_groq_client(api_key: Optional[str] = None) -> Groq:
         groq.Groq instance.
     """
     key = api_key or _current_key()
-    return Groq(api_key=key)
+    return _build_sdk_client(key)
 
 
 def resilient_groq_call(
@@ -495,11 +545,16 @@ def resilient_groq_call(
     """
 
     def _execute(key: str, model: str):
-        client = Groq(api_key=key)
+        if settings.llm_backend == "openrouter":
+            model = settings.resolve_openrouter_slug(model)
+            provider_label = "openrouter"
+        else:
+            provider_label = "groq"
+        client = _build_sdk_client(key)
         result = call_fn(client, model)
         prompt_tokens, completion_tokens, total_tokens = extract_token_usage(result)
         _record_llm_stats(
-            provider="groq",
+            provider=provider_label,
             model=model,
             source="groq_sdk_call",
             usage_payload=result,
@@ -546,6 +601,14 @@ def get_chat_groq(
             ),
             max_tokens=max_tokens or settings.llm_max_tokens,
         )
+    if settings.llm_backend == "openrouter":
+        key = api_key or _current_key()
+        return _build_chat_llm(
+            key,
+            model or settings.groq_models[0],
+            temperature if temperature is not None else settings.llm_temperature,
+            max_tokens or settings.llm_max_tokens,
+        )
     key = api_key or _current_key()
     return ChatGroq(
         api_key=key,
@@ -586,11 +649,11 @@ def resilient_chat_call(
         if callable(ref_llm) and not isinstance(ref_llm, ChatGroq):
             llm = ref_llm(key, model)
         else:
-            llm = ChatGroq(
-                api_key=key,
-                model=model,
-                temperature=getattr(ref_llm, "temperature", settings.llm_temperature),
-                max_tokens=getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
+            llm = _build_chat_llm(
+                key,
+                model,
+                getattr(ref_llm, "temperature", settings.llm_temperature),
+                getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
             )
         raw = llm.invoke(messages, **invoke_kwargs)
         raw_content = raw.content if isinstance(raw.content, str) else str(raw.content)
@@ -605,7 +668,7 @@ def resilient_chat_call(
         )
         prompt_tokens, completion_tokens, total_tokens = extract_token_usage(result)
         _record_llm_stats(
-            provider="groq",
+            provider="openrouter" if settings.llm_backend == "openrouter" else "groq",
             model=model,
             source="chat_groq_invoke",
             usage_payload=result,
@@ -682,11 +745,11 @@ def resilient_chat_stream(
         if callable(ref_llm) and not isinstance(ref_llm, ChatGroq):
             llm = ref_llm(key, model)
         else:
-            llm = ChatGroq(
-                api_key=key,
-                model=model,
-                temperature=getattr(ref_llm, "temperature", settings.llm_temperature),
-                max_tokens=getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
+            llm = _build_chat_llm(
+                key,
+                model,
+                getattr(ref_llm, "temperature", settings.llm_temperature),
+                getattr(ref_llm, "max_tokens", settings.llm_max_tokens),
             )
 
         pieces: list[str] = []
@@ -715,7 +778,7 @@ def resilient_chat_stream(
 
         result = AIMessage(content=_strip_thinking("".join(pieces)))
         _record_llm_stats(
-            provider="groq",
+            provider="openrouter" if settings.llm_backend == "openrouter" else "groq",
             model=model,
             source="chat_groq_stream",
             usage_payload=result,

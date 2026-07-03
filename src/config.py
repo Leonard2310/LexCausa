@@ -768,6 +768,63 @@ class Settings(BaseSettings):
         {"deepseek_r1", "gpt_oss_120b"}
     )
 
+    # =========================================================================
+    # OpenRouter backend (OpenAI-compatible, paid API, provider-pinned).
+    # Reuses the Groq/ChatGroq clients pointed at the OpenRouter base URL.
+    # Select with LLM_BACKEND=openrouter.
+    # =========================================================================
+    OPENROUTER_ALIAS_MAP: ClassVar[dict[str, str]] = {
+        "qwen3_30b_instruct": "qwen/qwen3-30b-a3b-instruct-2507",
+        "qwen3_30b_thinking": "qwen/qwen3-30b-a3b-thinking-2507",
+        "llama_4_scout": "meta-llama/llama-4-scout",
+    }
+    # Aliases whose OpenRouter model returns reasoning; OpenRouter keeps the
+    # chain-of-thought in a separate `reasoning` field, so `content` is already
+    # the clean final answer (no <think> stripping needed).
+    OPENROUTER_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
+        {"qwen3_30b_thinking"}
+    )
+    openrouter_api_key: str = Field(
+        default="",
+        alias="OPENROUTER_API_KEY",
+        description="API key for the OpenRouter backend (llm_backend='openrouter').",
+    )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        alias="OPENROUTER_BASE_URL",
+        description="OpenRouter OpenAI-compatible endpoint.",
+    )
+    openrouter_provider_only: list[str] = Field(
+        default_factory=lambda: ["alibaba", "deepinfra"],
+        alias="OPENROUTER_PROVIDER_ONLY",
+        description="OpenRouter provider preference order: Alibaba first (R/C Qwen), "
+        "then DeepInfra (cheapest for models Alibaba does not serve, e.g. Scout).",
+    )
+    openrouter_allow_fallbacks: bool = Field(
+        default=True,
+        alias="OPENROUTER_ALLOW_FALLBACKS",
+        description="Allow OpenRouter to fall back to other providers when the preferred "
+        "one (e.g. Alibaba) does not serve a model (e.g. Scout). Set false for strict single-provider.",
+    )
+    openrouter_aux_model: str = Field(
+        default="qwen/qwen3-30b-a3b-instruct-2507",
+        alias="OPENROUTER_AUX_MODEL",
+        description="Fixed OpenRouter slug for retrieval/classifier/evaluator calls.",
+    )
+    openrouter_reasoning_effort: str = Field(
+        default="",
+        alias="OPENROUTER_REASONING_EFFORT",
+        description="Reasoning effort for thinking models: '', 'low', 'medium' or 'high'. "
+        "Empty = provider default. 'low' cuts thinking tokens/latency but can regress "
+        "the Counter toward abstention; verify quality before a full DoE.",
+    )
+    openrouter_reasoning_max_tokens: int = Field(
+        default=0,
+        alias="OPENROUTER_REASONING_MAX_TOKENS",
+        description="Hard cap on reasoning tokens for thinking models (0 = unset). "
+        "More portable than 'effort' across OpenRouter providers (e.g. Alibaba Qwen).",
+    )
+
     ancillary_max_tokens_cap: int = Field(
         default=320,
         alias="ANCILLARY_MAX_TOKENS_CAP",
@@ -1256,7 +1313,78 @@ class Settings(BaseSettings):
     @property
     def model_alias_map(self) -> dict[str, str]:
         """Centralized alias -> provider model mapping."""
+        if self.llm_backend == "openrouter":
+            # OpenRouter slugs take precedence, but keep the base map so aux
+            # aliases still resolve (then get sanitized to the aux slug).
+            return {**self.MODEL_ALIAS_MAP, **self.OPENROUTER_ALIAS_MAP}
         return dict(self.MODEL_ALIAS_MAP)
+
+    # ── OpenRouter helpers ────────────────────────────────────────────────
+    @property
+    def openrouter_api_keys(self) -> list[str]:
+        """OpenRouter API key(s). Single key by default; list for the resilient loop."""
+        return [self.openrouter_api_key] if self.openrouter_api_key else []
+
+    def openrouter_reasoning_slugs(self) -> set[str]:
+        """OpenRouter slugs that emit reasoning (thinking models)."""
+        return {
+            self.OPENROUTER_ALIAS_MAP[a]
+            for a in self.OPENROUTER_REASONING_ALIASES
+            if a in self.OPENROUTER_ALIAS_MAP
+        }
+
+    @property
+    def openrouter_aux_slug(self) -> str:
+        """Aux model as an OpenRouter slug (OPENROUTER_AUX_MODEL may be an alias or a raw slug)."""
+        return self.OPENROUTER_ALIAS_MAP.get(
+            self.openrouter_aux_model, self.openrouter_aux_model
+        )
+
+    def openrouter_known_slugs(self) -> set[str]:
+        """OpenRouter slugs we accept as-is (R/C models + fixed aux model)."""
+        slugs = set(self.OPENROUTER_ALIAS_MAP.values())
+        if self.openrouter_aux_slug:
+            slugs.add(self.openrouter_aux_slug)
+        return slugs
+
+    def resolve_openrouter_slug(self, model: str | None) -> str:
+        """Sanitize an incoming model id to a valid OpenRouter slug.
+
+        R/C models already resolve to Qwen slugs (kept as-is); anything else
+        (aux/retrieval/evaluator ids that resolve to Groq/HF ids) falls back
+        to the fixed auxiliary OpenRouter model.
+        """
+        m = (model or "").strip()
+        return m if m in self.openrouter_known_slugs() else self.openrouter_aux_slug
+
+    def openrouter_extra_body(self, slug: str) -> dict:
+        """Provider preference + reasoning flag injected into the OpenRouter request body.
+
+        Uses ``order`` (preference) rather than ``only`` (hard restriction): the
+        configured provider (e.g. Alibaba) is tried first for every model, and a
+        model that provider does not serve (e.g. Llama-4-Scout) falls back to its
+        own providers instead of 404-ing. Set OPENROUTER_ALLOW_FALLBACKS=false to
+        forbid fallback (strict single provider, but then unsupported models fail).
+        """
+        body: dict = {}
+        pref = list(self.openrouter_provider_only or [])
+        if pref:
+            body["provider"] = {
+                "order": pref,
+                "allow_fallbacks": bool(self.openrouter_allow_fallbacks),
+            }
+        if slug in self.openrouter_reasoning_slugs():
+            reasoning: dict = {"exclude": False}
+            # OpenRouter treats `effort` and `max_tokens` as mutually exclusive;
+            # prefer the explicit token cap (more portable across providers).
+            if self.openrouter_reasoning_max_tokens > 0:
+                reasoning["max_tokens"] = int(self.openrouter_reasoning_max_tokens)
+            else:
+                effort = (self.openrouter_reasoning_effort or "").strip().lower()
+                if effort in ("low", "medium", "high"):
+                    reasoning["effort"] = effort
+            body["reasoning"] = reasoning
+        return body
 
     @property
     def available_model_aliases(self) -> list[str]:

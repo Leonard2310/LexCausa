@@ -263,6 +263,11 @@ def _extract_metrics(run_id: str, row: dict, response: dict, duration: float) ->
     metrics["reasoner_citation_accuracy"] = metrics["reasoner_citation_valid"] / max(
         1, metrics["reasoner_citation_total"]
     )
+    # Overall fidelity: grounding faithfulness of *all* citations (Reasoner +
+    # Counter) against the KG — the single "fidelity" figure reported in the thesis.
+    _fid_total = metrics["citation_total"] + metrics["reasoner_citation_total"]
+    _fid_valid = metrics["citation_valid"] + metrics["reasoner_citation_valid"]
+    metrics["fidelity"] = _fid_valid / max(1, _fid_total)
 
     token_stats = response.get("_token_stats", {})
     metrics["total_tokens"] = int(token_stats.get("total_completion_tokens", 0))
@@ -277,6 +282,10 @@ def _extract_metrics(run_id: str, row: dict, response: dict, duration: float) ->
     counter = response.get("counter_reasoner", {})
     metrics["counter_steps"] = len(counter.get("reasoning_chain", []))
     metrics["counter_attacks_count"] = len(counter.get("selected_attack_ids", []))
+    # Counter abstention (RQ2): no valid antithesis -> AQA scores the thesis
+    # unopposed (contra=0). Recording it makes the abstention rate a per-cell outcome.
+    metrics["counter_abstained"] = bool(counter.get("abstained", False))
+    metrics["abstention_reason"] = str(counter.get("abstention_reason", "") or "")[:200]
 
     return metrics
 
@@ -413,6 +422,11 @@ def main() -> None:
             "include_precedents": True,
             "max_statutes": 100,
             "max_precedents": 5,
+            # Reuse the shared claim-context cache (SQLite): retrieval is
+            # model/backend-independent, so entries warmed on the cloud run HIT
+            # here too, cutting the per-claim retrieval + LLM-filter cost and
+            # guaranteeing an identical evidential context across model cells.
+            "claim_context_memory_enabled": True,
             "settings": {
                 "reasoner_model": r_model,
                 "counter_model": c_model,

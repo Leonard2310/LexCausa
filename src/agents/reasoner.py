@@ -1644,6 +1644,7 @@ class Reasoner(BaseAgent):
             )
             invoke_kwargs: dict[str, object] = {
                 "max_tokens": planner_max_tokens,
+                **self._low_reasoning_effort_kwargs(),
             }
             if planner_use_json_mode:
                 invoke_kwargs["response_format"] = {"type": "json_object"}

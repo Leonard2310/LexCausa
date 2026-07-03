@@ -1,27 +1,55 @@
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
-flowchart TB
+flowchart LR
   subgraph L1["Layer 1 · Classification"]
-    CT["Causal types (14)\ndispute patterns across\npenal / civil / admin / mixed"]
+    direction TB
+    T1["`**Causal types (14)**
+recurring dispute patterns
+6 penal · 4 civil
+3 admin · 1 mixed`"]
+    E1["`*C1:* **CIV_SALE_DEFECTS**
+warranty for defects
+in the sale of goods`"]
+    T1 -.-> E1
   end
   subgraph L2["Layer 2 · Interpretation"]
-    TH["Theories (16)\nreference legal lens\n(type → theory mapping)"]
+    direction TB
+    T2["`**Theories (16)**
+interpretive lens
+mapping: type →
+primary theory`"]
+    E2["`*C1:* **T_CIV_GARANZIA_VIZI**
+warranty-for-defects
+theory`"]
+    T2 -.-> E2
   end
-  subgraph L3["Layer 3 · Operational grounding"]
-    AN["Anchor norms\ncore vs accessory"]
-    PT["Principle tests\nhow to assess relevance"]
+  subgraph L3["Layer 3 · Grounding"]
+    direction TB
+    T3["`**Anchor norms**
+core / accessory
+**+ principle tests**`"]
+    E3["`*C1:* core 1490, 1492 c.c.
+acc. 1494, 1495 c.c.
+DEFECT_PROOF · TIMELINESS`"]
+    T3 -.-> E3
   end
   subgraph L4["Layer 4 · Refutation"]
-    CA["Counter-attack catalog (66)\nlegally typed objections"]
+    direction TB
+    T4["`**Counter-attack catalog (66)**
+candidate pool
+per causal type`"]
+    E4["`*C1:* 3 attacks selected
+defects_not_proven
+notice_or_limitation_bar
+consequential_damage`"]
+    T4 -.-> E4
   end
-  CT --> TH
-  TH --> AN
-  TH --> PT
-  TH --> CA
-  classDef a fill:#B0E3E6,stroke:#0E8088,color:#111827;
-  classDef b fill:#E1D5E7,stroke:#9673A6,color:#111827;
-  classDef c fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
-  classDef d fill:#FFE6CC,stroke:#D79B00,color:#111827;
-  class CT a;
-  class TH b;
-  class AN,PT c;
-  class CA d;
+  L1 --> L2 --> L3 --> L4
+  classDef l1 fill:#B0E3E6,stroke:#0E8088,color:#111827;
+  classDef l2 fill:#E1D5E7,stroke:#9673A6,color:#111827;
+  classDef l3 fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  classDef l4 fill:#FFE6CC,stroke:#D79B00,color:#111827;
+  classDef ex fill:#FFFBEB,stroke:#9CA3AF,color:#111827;
+  class T1 l1;
+  class T2 l2;
+  class T3 l3;
+  class T4 l4;
+  class E1,E2,E3,E4 ex;

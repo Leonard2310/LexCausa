@@ -2498,6 +2498,18 @@ def _run_full_pipeline(
             "counter_completion_tokens": 0,
             "evaluation_completion_tokens": 0,
         }
+        # Per-phase token accounting (prompt + completion), via usage snapshots.
+        # The pipeline-start snapshot lets us attribute everything before the
+        # Reasoner (routing + retrieval + LLM filtering) to the retrieval phase.
+        _snap_pipeline_start = _usage_stats.get_snapshot()
+
+        def _phase_tokens(before: dict, after: dict) -> dict:
+            bt = before.get("llm", {}).get("tokens", {})
+            at = after.get("llm", {}).get("tokens", {})
+            return {
+                "prompt": int(at.get("prompt", 0) - bt.get("prompt", 0)),
+                "completion": int(at.get("completion", 0) - bt.get("completion", 0)),
+            }
 
         _check_cancel()
         # Apply chain step overrides to global settings
@@ -2909,7 +2921,7 @@ def _run_full_pipeline(
     _emit_phase("final_evaluation", "done", 100, "Evaluation completed")
 
     # Compile token stats for DoE analysis
-    token_stats_payload = {
+    token_stats_payload: dict[str, Any] = {
         "reasoning_completion_tokens": token_stats.get(
             "reasoning_completion_tokens", 0
         ),
@@ -2922,6 +2934,21 @@ def _run_full_pipeline(
     _final_snap = _usage_stats.get_snapshot()
     token_stats_payload["max_prompt_tokens_per_call"] = int(
         _final_snap.get("llm", {}).get("tokens", {}).get("max_prompt_per_call", 0)
+    )
+    # Per-phase token breakdown (prompt = input, completion = output).
+    # "retrieval" absorbs routing + hybrid search + LLM relevance/applicability
+    # filtering (everything before the Reasoner). Useful to see where the cost
+    # concentrates, both in interactive runs and in the DoE metrics.
+    token_stats_payload["by_phase"] = {
+        "retrieval": _phase_tokens(_snap_pipeline_start, _snap_before_reasoner),
+        "reasoner": _phase_tokens(_snap_before_reasoner, _snap_after_reasoner),
+        "counter_reasoner": _phase_tokens(_snap_before_counter, _snap_after_counter),
+        "evaluator": _phase_tokens(_snap_before_eval, _snap_after_eval),
+    }
+    _run_totals = _phase_tokens(_snap_pipeline_start, _final_snap)
+    token_stats_payload["total_prompt_tokens"] = _run_totals["prompt"]
+    token_stats_payload["total_tokens"] = (
+        _run_totals["prompt"] + _run_totals["completion"]
     )
 
     return {

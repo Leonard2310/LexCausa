@@ -591,3 +591,67 @@ bootstrap CI; the 3 AQA dimensions analyzed separately.
 - `total_tokens` = completion (output) tokens. Reasoning aliases = `{deepseek_r1, gpt_oss_120b}`
   (CoT stripped before scoring). Hyperparameters are pinned in the payload (Reasoner temp 0.0,
   Counter 0.3, `llm_max_tokens` 7168, AQA alpha/beta/gamma = 0.3/0.4/0.3, verdict thresholds ±0.2).
+
+---
+
+## 13. Multi-DoE on OpenRouter (cloud, paid) — Qwen3-30B R×C
+
+Cloud alternative to section 12: runs `LLM_BACKEND=openrouter` against the live Flask API
+(`scripts/run_multi_doe.py`). Provider is pinned to Alibaba (fallback DeepInfra for models Alibaba
+does not serve, e.g. Scout aux). Models: `qwen3_30b_instruct` + `qwen3_30b_thinking` (R/C),
+`llama_4_scout` (aux/evaluator, on DeepInfra).
+
+### Clean restart with the new code (do this after any code/.env change)
+```bash
+# 0. one-time: persist the OpenAI SDK dependency (OpenRouter backend needs it)
+poetry add openai
+
+# 1. stop everything (backend, frontend, Neo4j)
+make dev-stop
+pkill -f "python.*src/api_server.py" 2>/dev/null || true   # belt-and-suspenders
+
+# 2. start Neo4j and wait until healthy (citation verification needs it UP)
+docker compose up -d neo4j
+until docker ps --format '{{.Names}} {{.Status}}' | grep -q 'lexcausa-neo4j.*healthy'; do sleep 2; done
+poetry run python src/db/db_orchestrator.py --check         # KB loaded
+
+# 3. start the backend on the OpenRouter backend, logging to a file
+LLM_BACKEND=openrouter poetry run python src/api_server.py > /tmp/lexcausa_or.log 2>&1 &
+until curl -sf http://127.0.0.1:8000/health >/dev/null; do sleep 1; done
+echo "backend up (LLM_BACKEND=openrouter)"
+```
+`.env` already sets `OPENROUTER_API_KEY`, `OPENROUTER_AUX_MODEL=llama_4_scout`,
+`OPENROUTER_REASONING_MAX_TOKENS=6000` (caps thinking tokens so planning-off does not exceed the
+60-min client timeout), `CHAIN_MIN_STEPS=2`.
+
+### Smoke test (1 claim, thinking×thinking, planning on+off) — verify before the full run
+```bash
+poetry run python scripts/run_multi_doe.py --claims-file claims_calib.md \
+  --reasoner-models qwen3_30b_thinking --counter-models qwen3_30b_thinking \
+  --pairing cross --planning-ablations on,off --replicates 1 \
+  --min-kept 8 --max-statutes 100 --max-precedents 5 \
+  --out experiments/multi_doe/runs/or_smoke_$(date +%Y%m%d_%H%M%S)
+```
+Check `metrics.csv`: `status=completed` on both, `counter_abstained=False`, `counter_steps>0`,
+`aqa_contra>0`, and `fidelity` populated. C=`qwen3_30b_instruct` legitimately abstains (weak in the
+Counter role) — that is a recorded outcome (`counter_abstained=True`), not a bug.
+
+### Full DoE (2 R × 2 C × 2 planning × causality(ON) × 12 claims × 5 reps = 480 runs)
+```bash
+poetry run python scripts/run_multi_doe.py --claims-file claims_calib.md \
+  --reasoner-models qwen3_30b_instruct,qwen3_30b_thinking \
+  --counter-models  qwen3_30b_instruct,qwen3_30b_thinking \
+  --pairing cross --planning-ablations on,off --replicates 5 \
+  --min-kept 8 --max-statutes 100 --max-precedents 5 \
+  --out experiments/multi_doe/runs/or_$(date +%Y%m%d_%H%M%S)
+```
+Budget ~$45-60. Thinking cells are slow (client timeout is 60 min); a full serial run spans hours.
+Monitor with `tail -f /tmp/lexcausa_or.log`. Analyze with `scripts/analyze_multi_doe.py` (section 12).
+
+### Reasoning-token control (thinking models only)
+```bash
+OPENROUTER_REASONING_MAX_TOKENS=6000   # explicit cap (preferred; portable across providers)
+OPENROUTER_REASONING_EFFORT=low        # alt.: low|medium|high (ignored if MAX_TOKENS>0)
+```
+Cutting reasoning too hard makes the thinking Counter regress toward instruct-style abstention;
+6000 is a safe middle ground. Both are mutually exclusive (the token cap wins).

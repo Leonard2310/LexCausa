@@ -19,9 +19,13 @@ flowchart TB
   REAS --> CNT
   CNT --> POL
   POL --> OUT
+  LOG["Run logs +\nper-run artifacts (JSON)"]
+  PIPE -.-> LOG
   classDef io fill:#FFE6CC,stroke:#D79B00,color:#111827;
   classDef core fill:#B0E3E6,stroke:#0E8088,color:#111827;
   classDef ag fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
+  classDef log fill:#F5F5F5,stroke:#666666,color:#111827;
   class BR,BATCH,OUT io;
   class API,PIPE,CLF,RET core;
   class REAS,CNT,POL ag;
+  class LOG log;

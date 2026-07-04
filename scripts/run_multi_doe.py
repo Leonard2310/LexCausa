@@ -152,7 +152,10 @@ class MultiDoE:
                     "id": current_claim_id,
                     "domain": current_domain,
                     "title": current_claim_title,
-                    "text": text[:300],  # Truncate for practical runs
+                    # Full claim text (matches run_multi_doe_ibisco.py): truncating
+                    # would cut the legal question mid-sentence and produce a
+                    # different claim-context cache key than the (full) warmed cache.
+                    "text": text,
                 }
             )
 

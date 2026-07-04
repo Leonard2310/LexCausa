@@ -1712,10 +1712,26 @@ class Reasoner(BaseAgent):
     ) -> list[dict[str, str]]:
         """Parse planner JSON and enforce plan quality constraints."""
         payload_text = str(raw or "").strip()
+        # Some models (e.g. Llama-3.3-70B) wrap the JSON in a ```json fence or add
+        # surrounding prose. Strip the fence and, failing that, fall back to the
+        # outermost {...} object before giving up (matches the counter/router path).
+        if payload_text.startswith("```"):
+            payload_text = payload_text.strip("`")
+            if payload_text[:4].lower() == "json":
+                payload_text = payload_text[4:]
+            payload_text = payload_text.strip()
         try:
             data = json.loads(payload_text)
         except Exception as exc:
-            raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+            start = payload_text.find("{")
+            end = payload_text.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    data = json.loads(payload_text[start : end + 1])
+                except Exception:
+                    raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+            else:
+                raise ValueError(f"invalid planner JSON payload: {exc}") from exc
         if not isinstance(data, dict):
             raise ValueError("planner output is not a JSON object")
         steps_raw = data.get("steps")

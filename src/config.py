@@ -777,12 +777,17 @@ class Settings(BaseSettings):
         "qwen3_30b_instruct": "qwen/qwen3-30b-a3b-instruct-2507",
         "qwen3_30b_thinking": "qwen/qwen3-30b-a3b-thinking-2507",
         "llama_4_scout": "meta-llama/llama-4-scout",
+        # DeepInfra-served pair (pin provider=deepinfra): Llama-3.3-70B has a
+        # single DeepInfra endpoint (deepinfra/turbo, fp8) so it is auto-selected;
+        # gpt-oss-120b defaults to the cheaper deepinfra/bf16.
+        "gpt_oss_120b": "openai/gpt-oss-120b",
+        "llama_3_3_70b": "meta-llama/llama-3.3-70b-instruct",
     }
     # Aliases whose OpenRouter model returns reasoning; OpenRouter keeps the
     # chain-of-thought in a separate `reasoning` field, so `content` is already
     # the clean final answer (no <think> stripping needed).
     OPENROUTER_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
-        {"qwen3_30b_thinking"}
+        {"qwen3_30b_thinking", "gpt_oss_120b"}
     )
     openrouter_api_key: str = Field(
         default="",

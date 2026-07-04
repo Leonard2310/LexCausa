@@ -831,14 +831,22 @@ class Settings(BaseSettings):
     )
 
     ancillary_max_tokens_cap: int = Field(
-        default=320,
+        default=1536,
         alias="ANCILLARY_MAX_TOKENS_CAP",
-        description="Max tokens for short ancillary validation checks (fact-lock, NLI, alignment, no-new-facts).",
+        description="Max tokens for short ancillary JSON calls (fact-lock, NLI, alignment, "
+        "target maps, decomposition, gates). Reasoning models spend their completion "
+        "budget on chain-of-thought before the JSON: at 320 the payload came back empty "
+        "(Groq: 400 json_validate_failed; OpenRouter: silently truncated). Stress-tested "
+        "on the real prompts (gpt-oss effort=low + llama70, DeepInfra): worst observed "
+        "total was 1183 tokens (decompose_conclusion) -> 1536 keeps ~30% headroom over "
+        "the worst case. Ceiling, not target: models stop at the closing brace.",
     )
     reasoner_planner_max_tokens_cap: int = Field(
-        default=1200,
+        default=1600,
         alias="REASONER_PLANNER_MAX_TOKENS_CAP",
-        description="Per-call max_tokens cap for Reasoner planner generation.",
+        description="Per-call max_tokens cap for Reasoner planner generation. Sized from "
+        "stress tests on the real plan prompt (gpt-oss effort=low): worst observed total "
+        "943 tokens (CoT + 10-step plan JSON); 1600 keeps comfortable headroom.",
     )
     reasoner_planner_min_tokens: int = Field(
         default=192,
@@ -866,9 +874,11 @@ class Settings(BaseSettings):
         description="Per-call max_tokens cap for Reasoner conclusion generation.",
     )
     counter_planner_max_tokens_cap: int = Field(
-        default=1200,
+        default=1600,
         alias="COUNTER_PLANNER_MAX_TOKENS_CAP",
-        description="Per-call max_tokens cap for Counter planner generation.",
+        description="Per-call max_tokens cap for Counter planner generation. Sized from "
+        "stress tests on the real plan prompt (gpt-oss effort=low): worst observed total "
+        "956 tokens (CoT spike 501 + plan JSON); 1600 keeps comfortable headroom.",
     )
     counter_planner_min_tokens: int = Field(
         default=192,

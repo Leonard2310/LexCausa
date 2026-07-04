@@ -1032,6 +1032,9 @@ class Reasoner(BaseAgent):
                 max_tokens=self._bounded_max_tokens(
                     self._causality_classifier_max_tokens_cap
                 ),
+                # Tiny classification output: without low effort a reasoning
+                # model's CoT alone exceeds the cap and content comes back empty.
+                **self._low_reasoning_effort_kwargs(),
             )
             content = (resp.content or "").strip()
 
@@ -2401,6 +2404,9 @@ class Reasoner(BaseAgent):
                     else None
                 ),
                 max_tokens=self._bounded_max_tokens(self._conclusion_max_tokens_cap),
+                # The conclusion summarizes an already-reasoned chain: low effort
+                # keeps a reasoning model's CoT from silently truncating the prose.
+                **self._low_reasoning_effort_kwargs(),
             )
             conclusion = (resp.content or "").strip()
             # Clean up any echoed prefix

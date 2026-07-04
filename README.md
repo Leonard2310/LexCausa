@@ -4,16 +4,16 @@
    <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python">
    <img src="https://img.shields.io/badge/Neo4j-Knowledge_Graph-4581C3?logo=neo4j&logoColor=white" alt="Neo4j">
    <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
-   <img src="https://img.shields.io/badge/LLM-Groq_Cloud-F55036?logo=lightning&logoColor=white" alt="Groq">
+   <img src="https://img.shields.io/badge/LLM-Groq_%7C_OpenRouter_%7C_vLLM-F55036?logo=lightning&logoColor=white" alt="LLM backends">
    <img src="https://img.shields.io/badge/Framework-LangChain-1C3C3C?logo=langchain&logoColor=white" alt="LangChain">
    <img src="https://img.shields.io/badge/ASPIC+-Argumentation-8B5CF6" alt="ASPIC+">
    <img src="https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey" alt="License">
-   <img src="https://img.shields.io/badge/Version-1.1.1-brightgreen" alt="Version">
+   <img src="https://img.shields.io/badge/Version-1.2.0-brightgreen" alt="Version">
 </p>
 
 > ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering at the University of Naples Federico II.
 
-**LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (Groq Cloud), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.
+**LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (via three interchangeable backends: Groq Cloud, OpenRouter, and in-process vLLM for HPC), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.
 
 
 
@@ -47,13 +47,14 @@
 - **Counter-Reasoner Second-Pass Retrieval**: Targeted additional retrieval triggered when statutes opposing the claim are insufficient, with configurable thresholds and limits
 - **Counter Step Expansion**: Optional multi-attack step expansion that spawns satellite steps when a single counter-step targets multiple attacks
 - **Retrieval Fail-Fast Scope**: Thread-local context manager (`retrieval_llm_fail_fast_scope`) for fast fallback in retrieval filters without full retry
-- **Resilient Groq Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient vs. request-too-large)
+- **Triple LLM Backend** (`LLM_BACKEND`): the same agents run unchanged on **Groq Cloud** (free tier, key rotation), **OpenRouter** (paid, OpenAI-SDK based, provider-pinned routing e.g. DeepInfra/Alibaba, per-call reasoning-effort control for reasoning models, reasoning-token caps for thinking models), or **in-process vLLM** (`local`, HPC/Ibisco, chain-of-thought stripping for DeepSeek `<think>` and gpt-oss harmony channels); backend-specific model alias maps (`MODEL_ALIAS_MAP` / `OPENROUTER_ALIAS_MAP` / `VLLM_ALIAS_MAP`) are code-owned in `src/config.py`
+- **Resilient LLM Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient vs. request-too-large); dispatches to the selected backend transparently
 - **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction, statute applicability decisions, attack preconditions, fact-lock checks, and plan target alignment, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
 - **Cancellation & Interruptibility**: Pipeline stop endpoint and cooperative cancellation propagation across API, agents, and long-running generation/retrieval loops
 - **DoE A/B Workflow**: Dedicated DoE tab with one shared Reasoner run and two Counter/Evaluator setups (baseline vs. treatment), live A/B switching in the UI, consolidated DoE log/report persistence, and automatic delta analysis
 - **DoE Batch Runner**: Automated multi-claim batch execution (`run_doe_batch.py`) with resume capability (`--resume`), checkpoint recovery (`--start-from`), selective runs (`--only`), dry-run mode, abstention classification, and stability metrics
 - **DoE Statistical Analysis**: Post-hoc analysis script (`scripts/analyze_doe_results.py`) computing paired t-tests, sign tests, Cohen's d, domain breakdowns, verdict flips, error analysis, and intra-claim consistency from batch CSV results
-- **Multi-DoE Framework**: Full-factorial Reasoner×Counter ablation framework (`scripts/run_multi_doe.py` / `scripts/run_multi_doe_ibisco.py` + `scripts/analyze_multi_doe.py`) supporting RQ1 model-class efficacy (native-reasoning vs instruction-tuned, paired t-test by claim, Cohen's d), RQ2 dialectical pairing (Reasoner×Counter interaction via factorial ANOVA with eta-squared), and RQ3 architectural efficacy (planning ablation token/quality deltas, citation faithfulness via bootstrap CI, token cost analysis); runs via the frontend Multi-DoE tab or as a standalone CLI; containerized via Dockerfile + compose.yml for HPC deployment
+- **Multi-DoE Framework**: Full-factorial Reasoner×Counter ablation framework (`scripts/run_multi_doe.py` for cloud backends / `scripts/run_multi_doe_ibisco.py` for vLLM HPC + `scripts/analyze_multi_doe.py`) supporting RQ1 model-class efficacy (native-reasoning vs instruction-tuned, paired t-test by claim, Cohen's d), RQ2 dialectical pairing (Reasoner×Counter interaction via factorial ANOVA with eta-squared), and RQ3 architectural efficacy (planning ablation token/quality deltas, citation faithfulness via bootstrap CI, token cost analysis); deterministic run-matrix **sharding** (`--shard-index/--shard-count`) for parallel or staged execution with trivial result merging; per-run metrics include AQA scores, **fidelity** (overall citation grounding), **counter abstention** (flag + reason), and per-phase token accounting; both runners reuse the claim-context SQLite cache so every model cell sees an identical evidential context; runs via the frontend Multi-DoE tab or as a standalone CLI; containerized via Dockerfile + compose.yml for HPC deployment
 - **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
 - **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
 - **Centralized Configuration**: All parameters (150+ settings: models, retries, AQA weights, search, truncation, attack params, coverage, abstention, per-role fallback, domain-specific weights, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
@@ -107,14 +108,14 @@
                     ┌─────────────┴─────────────┐
                     ▼                           ▼
 ┌──────────────────────────────┐  ┌──────────────────────────────────────┐
-│   Resilient Groq Client      │  │  LegalSearchPipeline                 │
-│   (groq_client.py)           │  │  (Singleton, thread-safe)            │
+│  Resilient LLM Client        │  │  LegalSearchPipeline                 │
+│  (groq_client.py dispatch)   │  │  (Singleton, thread-safe)            │
 ├──────────────────────────────┤  ├──────────────────────────────────────┤
-│  Dynamic key discovery (V1…N)│  │  ClaimClassifier → book routing      │
-│  Model fallback + down cache │  │  Hybrid retrieval (vector + fulltext)│
-│  Smart error classification  │  │  Progressive + CITES expansion       │
-│  Exponential backoff         │  │  Pre-retrieval LLM filtering         │
-│                              │  │  Shared Retrieved Context            │
+│  LLM_BACKEND selector:       │  │  ClaimClassifier → book routing      │
+│   groq │ openrouter │ local  │  │  Hybrid retrieval (vector + fulltext)│
+│  Key rotation + model fallbk │  │  Progressive + CITES expansion       │
+│  Smart error classification  │  │  Pre-retrieval LLM filtering         │
+│  Exponential backoff         │  │  Shared Retrieved Context            │
 └──────────────────────────────┘  └────────────────┬─────────────────────┘
                     │                              │
                     │         ┌────────────────────┘
@@ -151,7 +152,10 @@
 - **Docker**: For running Neo4j
 - **Node.js**: 18+ (for frontend)
 - **Poetry**: Python dependency management
-- **Groq API Key**: Free tier available at [console.groq.com](https://console.groq.com)
+- **LLM provider key** (one of):
+  - **Groq API Key** — free tier at [console.groq.com](https://console.groq.com) (default backend)
+  - **OpenRouter API Key** — paid, at [openrouter.ai](https://openrouter.ai) (`LLM_BACKEND=openrouter`)
+  - none — for in-process vLLM on HPC (`LLM_BACKEND=local`, models loaded from the HF cache)
 
 ### Supported Platforms
 - ✅ macOS (Apple Silicon M1/M2/M3)
@@ -210,28 +214,32 @@ NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_password_here
 
-# Groq Cloud API (up to 3 keys for rotation)
-GROQ_API_KEY_V1=your_groq_api_key_here
-GROQ_API_KEY_V2=your_second_key_here
-...
-GROQ_API_KEY_VN=your_third_key_here
-
-# Notebook benchmark (Groq vs SCOPE)
-GROQ_API_KEY=your_groq_api_key_for_notebook
-SCOPE_API_KEY=your_scope_api_key
-SCOPE_ENDPOINT=https://your-scope-endpoint/v1/chat/completions
-SCOPE_EXTRA_HEADERS_JSON={}
-SCOPE_HPC_USER=<USERNAME>
-SCOPE_HPC_HOST=<HPC_HOST>
-SCOPE_HPC_REMOTE_WORKDIR=/ibiscostorage/<USERNAME>/lexcausa_bench
-
 # API Server
 API_HOST=0.0.0.0
 API_PORT=8000
-DEBUG=true
+DEBUG=false
+
+# LLM backend: groq (default) | openrouter | local (vLLM/HPC).
+# Prefer selecting it per-command instead of pinning it here:
+#   LLM_BACKEND=openrouter poetry run python src/api_server.py
+
+# Groq Cloud (LLM_BACKEND=groq) — key rotation via V1..V99
+GROQ_API_KEY_V1=your_groq_api_key_here
+GROQ_API_KEY_V2=your_second_key_here
+
+# OpenRouter (LLM_BACKEND=openrouter) — paid, provider-pinned
+OPENROUTER_API_KEY=your_openrouter_key_here
+OPENROUTER_AUX_MODEL=llama_4_scout          # fixed aux (retrieval/classifier/evaluator)
+# OPENROUTER_PROVIDER_ONLY=["deepinfra"]    # JSON list: provider preference order
+# OPENROUTER_REASONING_MAX_TOKENS=6000      # cap thinking-model reasoning tokens
+
+# vLLM / HPC (LLM_BACKEND=local) — GPU params read at model load
+# VLLM_TENSOR_PARALLEL_SIZE=2
+# VLLM_GPU_MEMORY_UTILIZATION=0.90
+# VLLM_MAX_MODEL_LEN=30000
 ```
 
-Notebooks use the same `.env` file as the backend. In VS Code, select the same Poetry interpreter for the notebook kernel.
+See `.env.example` for the complete, commented template.
 
 ### 4. Start Neo4j Database
 
@@ -337,7 +345,9 @@ LexCausa/
 │   │       ├── config_loader.py  # Taxonomy config loader
 │   │       └── config_taxonomy.json
 │   ├── services/                  # Core services
-│   │   ├── groq_client.py        # Resilient Groq client (dynamic key discovery, rotation)
+│   │   ├── groq_client.py        # Resilient LLM client + backend dispatch (groq/openrouter/local)
+│   │   ├── openrouter_client.py  # OpenRouter backend (OpenAI SDK, provider-pinned, reasoning ctl)
+│   │   ├── vllm_client.py        # In-process vLLM backend (HPC/Ibisco, CoT stripping)
 │   │   ├── claim_classifier.py   # LLM claim classification
 │   │   ├── claim_context_memory.py # SQLite pre-retrieval claim context cache
 │   │   ├── pipeline_control.py   # Cooperative cancellation primitives/exceptions
@@ -358,7 +368,9 @@ LexCausa/
 ├── scripts/                       # Utility scripts
 │   ├── analyze_doe_results.py    # Statistical analysis of DoE A/B batch results
 │   ├── analyze_multi_doe.py   # Statistical analysis for Multi-DoE (RQ1/RQ2/RQ3)
-│   ├── run_multi_doe.py       # Multi-DoE CLI orchestrator
+│   ├── run_multi_doe.py       # Multi-DoE CLI orchestrator (cloud backends, sharding)
+│   ├── run_multi_doe_ibisco.py # Multi-DoE orchestrator for vLLM/HPC (in-process, LLM_BACKEND=local)
+│   ├── token_report.py        # Per-phase token report (single response or DoE run)
 │   ├── start_backend_doe_mode.sh # Docker startup helper for DoE runs
 │   ├── capture_api_chat_retrieval_memory.py  # Claim context memory warmup
 │   ├── start_public_demo.sh      # Cloudflare tunnel public demo launcher
@@ -377,6 +389,8 @@ LexCausa/
 ├── Dockerfile                     # Multi-stage image for containerized DoE runs
 ├── .dockerignore                  # Docker build context exclusions
 ├── compose.yml                    # Docker Compose (Neo4j + Flask API)
+├── COMMANDS.md                    # Copy-paste runbook (Neo4j, API, DoE per backend, logs)
+├── claims.md                      # 22-claim thesis dataset (6 civil, 6 penal, 4 mixed, 6 admin)
 ├── pyproject.toml                 # Poetry configuration
 └── README.md
 ```
@@ -391,22 +405,33 @@ To keep this README stable across tuning changes, defaults are intentionally **n
 
 These variables **must** be set in the `.env` file:
 
-| Variable | Description |
-|----------|-------------|
-| `NEO4J_URI` | Neo4j connection URI |
-| `NEO4J_USER` | Neo4j username |
-| `NEO4J_PASSWORD` | Neo4j password |
-| `GROQ_API_KEY_V1` | Primary Groq API key |
-| `GROQ_API_KEY_V2…VN` | Additional Groq API keys (dynamic discovery V1…V99) |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEO4J_URI` | Yes | Neo4j connection URI |
+| `NEO4J_USER` | Yes | Neo4j username |
+| `NEO4J_PASSWORD` | Yes | Neo4j password |
+| `GROQ_API_KEY_V1…VN` | backend `groq` | Groq API keys (dynamic discovery V1…V99) |
+| `OPENROUTER_API_KEY` | backend `openrouter` | OpenRouter API key |
+| `LLM_BACKEND` | No | `groq` (default) \| `openrouter` \| `local` (vLLM) — prefer setting it per-command |
+
+### LLM Backends
+
+The same agents run unchanged on three backends, selected via `LLM_BACKEND`:
+
+- **`groq`** (default): Groq Cloud free tier, key rotation, model fallback.
+- **`openrouter`**: OpenAI-SDK based client (`src/services/openrouter_client.py`), provider-pinned routing (`OPENROUTER_PROVIDER_ONLY`, JSON list, e.g. `["deepinfra"]`), fixed aux model for retrieval/classifier/evaluator (`OPENROUTER_AUX_MODEL`), reasoning-token cap for thinking models (`OPENROUTER_REASONING_MAX_TOKENS`) and per-call reasoning-effort forwarding for short JSON utility calls.
+- **`local`**: in-process vLLM (`src/services/vllm_client.py`) for HPC/Ibisco; GPU parameters from `VLLM_*` env vars; strips chain-of-thought (`<think>` for DeepSeek, harmony channels for gpt-oss) before use.
+
+Model catalogs are **backend-specific and code-owned** in `src/config.py`: `MODEL_ALIAS_MAP` (Groq), `OPENROUTER_ALIAS_MAP` (e.g. `gpt_oss_120b`, `llama_3_3_70b`, `qwen3_30b_instruct`, `qwen3_30b_thinking`, `llama_4_scout`), `VLLM_ALIAS_MAP` (HF ids). The same alias can resolve to different provider ids per backend.
+
+> For copy-paste runbooks (clean restarts, smoke tests, full Multi-DoE runs per backend), see [COMMANDS.md](COMMANDS.md).
 
 ### Optional — LLM & Server
 
 These can be overridden in `.env` or via the frontend Settings panel:
-- Groq client behavior (retry/backoff, key rotation, model-down cache TTL)
-- LLM generation knobs (temperature, max tokens)
+- LLM client behavior (retry/backoff, key rotation, model-down cache TTL)
+- LLM generation knobs (temperature, max tokens, ancillary JSON-call token budget)
 - API runtime settings (host/port/debug)
-
-Model catalog and aliases (`gpt_oss_120b`, `gpt_oss_20b`, `qwen_qwen3_32b`, `groq_llama_3_3_70b_versatile`) are code-defined in `src/config.py`.
 
 ### Optional — Embedding & Search
 

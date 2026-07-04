@@ -127,6 +127,18 @@ class ChatOpenRouter(BaseChatModel):
         slug = settings.resolve_openrouter_slug(self.model)
         client = _openai_client(self.api_key or settings.openrouter_api_key or "")
         extra_body = settings.openrouter_extra_body(slug)
+        # Per-call reasoning effort (agents pass reasoning_effort="low" on short
+        # JSON utility calls: planners, target maps, gates). Without this, a
+        # reasoning model burns the small max_tokens budget on chain-of-thought
+        # and returns empty/truncated JSON. Effort replaces the global token cap
+        # for this call (OpenRouter treats effort and max_tokens as exclusive).
+        effort = str(kwargs.pop("reasoning_effort", "") or "").strip().lower()
+        if (
+            effort in ("low", "medium", "high")
+            and slug in settings.openrouter_reasoning_slugs()
+        ):
+            extra_body = dict(extra_body)
+            extra_body["reasoning"] = {"exclude": False, "effort": effort}
         max_tokens = int(kwargs.get("max_tokens") or self.max_tokens)
 
         call_kwargs: dict[str, Any] = {

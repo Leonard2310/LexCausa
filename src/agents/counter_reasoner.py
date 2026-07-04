@@ -197,10 +197,19 @@ class CounterReasoner(BaseAgent):
         max_tokens: int,
         log_label: str,
     ) -> Dict[str, object]:
-        """Invoke LLM expecting a JSON object, with response_format fallback."""
+        """Invoke LLM expecting a JSON object, with response_format fallback.
+
+        Parse failures (truncated/malformed payloads, e.g. providers that do
+        not enforce json mode server-side, like DeepInfra) are retried once: a
+        single bad generation must not silently disable the extraction for the
+        whole run (decomposition/target-map fallbacks are cached per claim).
+        """
         use_json_mode = True
         last_exc: Optional[Exception] = None
-        for _ in range(2):
+        parse_retries = 0
+        attempts = 0
+        while attempts < 4:
+            attempts += 1
             invoke_kwargs: Dict[str, object] = {
                 "max_tokens": max(1, int(max_tokens)),
                 **self._low_reasoning_effort_kwargs(),
@@ -223,6 +232,16 @@ class CounterReasoner(BaseAgent):
                     use_json_mode = False
                     self._log(
                         f"⚠️ {log_label} JSON mode not accepted; retrying without response_format",
+                        "warning",
+                    )
+                    continue
+                if (
+                    isinstance(exc, (json.JSONDecodeError, ValueError))
+                    and parse_retries < 1
+                ):
+                    parse_retries += 1
+                    self._log(
+                        f"⚠️ {log_label}: invalid JSON payload; retrying once ({exc})",
                         "warning",
                     )
                     continue
@@ -2830,6 +2849,10 @@ class CounterReasoner(BaseAgent):
             )
             invoke_kwargs: Dict[str, object] = {
                 "max_tokens": planner_max_tokens,
+                # Planner emits structured JSON: minimal reasoning effort keeps
+                # the CoT of reasoning models from eating the token budget
+                # (same protection as the reasoner planner and _invoke_json_object).
+                **self._low_reasoning_effort_kwargs(),
             }
             if planner_use_json_mode:
                 invoke_kwargs["response_format"] = {"type": "json_object"}

@@ -89,10 +89,27 @@ def set_default_model(alias: str) -> None:
     _default_alias = alias
 
 
-def _resolve_label(alias: str) -> str:
-    """Map a LexCausa alias to its Cerberus served label (identity by default)."""
+def _resolve_label(alias: str, served: Optional[set[str]] = None) -> str:
+    """Map a LexCausa alias to its Cerberus served label.
+
+    Mirrors the old vLLM registry semantics: an alias maps through ``_alias_map``
+    (identity if absent); if the mapped label is **not served** and a default
+    (``fixed-model``) is pinned, fall back to the default's label. This is what
+    lets support phases (retrieval / classifier / AQA) — which ask for provider
+    ids that are not Cerberus labels — run on the pinned fixed model. ``served``
+    is the set of labels currently in endpoints.json; when unknown, no fallback
+    is applied and the mapped label is returned as-is.
+    """
     with _config_lock:
-        return _alias_map.get(alias, alias)
+        mapped = _alias_map.get(alias, alias)
+        default_label = (
+            _alias_map.get(_default_alias, _default_alias) if _default_alias else None
+        )
+    if served is None or mapped in served:
+        return mapped
+    if default_label and default_label in served:
+        return default_label
+    return mapped  # not served and no usable default → let chat() fail clearly
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -107,18 +124,20 @@ _project_dir: Optional[str] = None
 
 def set_endpoints_path(path: Optional[str]) -> None:
     """Point the client at an explicit endpoints.json (overrides env / cwd)."""
-    global _endpoints_path, _client
+    global _endpoints_path, _client, _served_cache
     with _client_lock:
         _endpoints_path = path
         _client = None  # force rebuild with the new location
+        _served_cache = None
 
 
 def set_project_dir(path: Optional[str]) -> None:
     """Point the client at a project directory containing endpoints.json."""
-    global _project_dir, _client
+    global _project_dir, _client, _served_cache
     with _client_lock:
         _project_dir = path
         _client = None
+        _served_cache = None
 
 
 def get_client() -> Any:
@@ -142,6 +161,27 @@ def get_client() -> Any:
                 project_dir=_project_dir or env_project,
             )
         return _client
+
+
+_served_cache: Optional[set[str]] = None
+
+
+def _served_labels() -> Optional[set[str]]:
+    """Set of labels currently served (cached); None if the map is unavailable.
+
+    The endpoint map is stable for the lifetime of a `cerberus up`, so it is read
+    once and cached. set_endpoints_path()/set_project_dir() reset the client and
+    this cache is refreshed lazily on the next call.
+    """
+    global _served_cache
+    if _served_cache is None:
+        try:
+            client = get_client()
+            if client.is_available():
+                _served_cache = set(client.list_models())
+        except Exception:
+            return None
+    return _served_cache
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -251,11 +291,17 @@ class ChatCerberus(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         client = get_client()
-        label = _resolve_label(self.model)
+        served = _served_labels()
+        label = _resolve_label(self.model, served)
         payload = _messages_to_openai(messages)
 
+        # Reasoning applies to the *served label*: an alias that fell back to the
+        # fixed support model must not force thinking meant for a reasoning model.
         with _config_lock:
-            is_reasoning = self.model in _reasoning_aliases
+            reasoning_labels = {
+                _alias_map.get(a, a) for a in _reasoning_aliases
+            }
+        is_reasoning = label in reasoning_labels
 
         # reasoning=None leaves the server default (models.conf). For aliases we
         # know are reasoning models, request thinking explicitly (best-effort);

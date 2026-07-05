@@ -13,18 +13,21 @@ Full-factorial design: Reasoner model and Counter-Reasoner model vary
 independently (RQ1), crossed with planning ablation (RQ3).  All responses are
 generated in English (response_language='en') for consistency on HPC runs.
 
-Usage (inside a SLURM job or interactive session with GPU):
+Reduced (resource-constrained) default: only two served models vary as
+Reasoner × Counter (gpt_oss_120b → oss120, llama_3_3_70b_instruct → llama33).
+The support model (retrieval/AQA/evaluator) is fixed to llama_4_scout_17b →
+'assistant' (Llama-4-Scout-17B) and is NOT a DoE factor.
 
-    export HF_TOKEN=<your_token>
+Usage (inside a SLURM job or interactive session with GPU):
 
     python scripts/run_multi_doe_ibisco.py \\
         --seed 42 \\
-        --replicates 10 \\
-        --reasoner-models deepseek_r1,gpt_oss_120b,groq_llama_3_3_70b_versatile,qwen_25_72b \\
-        --counter-models  deepseek_r1,gpt_oss_120b,groq_llama_3_3_70b_versatile,qwen_25_72b \\
+        --replicates 1 \\
+        --reasoner-models gpt_oss_120b,llama_3_3_70b_instruct \\
+        --counter-models  gpt_oss_120b,llama_3_3_70b_instruct \\
         --domains CIVILE,PENALE,AMMINISTRATIVO,MISTO \\
-        --planning-ablations on,off \\
-        --causality-ablations on,off \\
+        --planning-ablations on \\
+        --causality-ablations on \\
         --out experiments/multi_doe/runs/ibisco_$(date +%Y%m%d_%H%M%S)
 
 Seed strategy: replicate i uses seed = base_seed + i for reproducibility.
@@ -55,9 +58,13 @@ os.environ.setdefault("LLM_BACKEND", "local")
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-_DEFAULT_REASONING_MODELS = "deepseek_r1,gpt_oss_120b"
-_DEFAULT_NON_REASONING_MODELS = "groq_llama_3_3_70b_versatile,qwen_25_72b"
-_ALL_DEFAULT_MODELS = f"{_DEFAULT_REASONING_MODELS},{_DEFAULT_NON_REASONING_MODELS}"
+# Reduced DoE (resource-constrained): the two served models that VARY as
+# Reasoner × Counter. `gpt_oss_120b` is the reasoning model (→ oss120),
+# `llama_3_3_70b_instruct` the instruct one (→ llama33). The support model
+# (retrieval/AQA/evaluator) is fixed via --fixed-model and is NOT a DoE factor.
+_DEFAULT_DOE_MODELS = "gpt_oss_120b,llama_3_3_70b_instruct"
+# Alias of the fixed support/evaluator model (→ 'assistant' / Llama-4-Scout-17B).
+_DEFAULT_FIXED_MODEL = "llama_4_scout_17b"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -71,12 +78,12 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--reasoner-models",
-        default=_ALL_DEFAULT_MODELS,
+        default=_DEFAULT_DOE_MODELS,
         help="Comma-separated aliases for the Reasoner (RQ1)",
     )
     p.add_argument(
         "--counter-models",
-        default=_ALL_DEFAULT_MODELS,
+        default=_DEFAULT_DOE_MODELS,
         help="Comma-separated aliases for the Counter-Reasoner (RQ1)",
     )
     p.add_argument(
@@ -101,10 +108,10 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--fixed-model",
-        default=None,
+        default=_DEFAULT_FIXED_MODEL,
         help=(
             "Model alias for retrieval/AQA/classifier phases (all non R/C phases). "
-            "Defaults to the first loaded model."
+            "Fixed support model — NOT a DoE factor."
         ),
     )
     p.add_argument(

@@ -758,21 +758,21 @@ class Settings(BaseSettings):
         ),
     )
     # Ibisco alias → Cerberus served *label* (the `label` in models.conf), code-owned.
-    # Default is identity: name your models.conf labels to match these aliases and
-    # no remapping is needed. An alias absent from the map is used as the label as-is.
+    # These aliases are Cerberus-specific and named after the actual served models
+    # (independent of the Groq/OpenRouter alias catalogs). An alias absent from the
+    # map is used as the label as-is. The labels below match the repo-root models.conf:
+    #   oss120 = gpt-oss-120b  |  llama33 = Llama-3.3-70B-Instruct  |  assistant = Llama-4-Scout-17B
     CERBERUS_ALIAS_MAP: ClassVar[dict[str, str]] = {
-        "deepseek_r1": "deepseek_r1",
-        "gpt_oss_120b": "gpt_oss_120b",
-        "qwen_25_72b": "qwen_25_72b",
-        "groq_llama_3_3_70b_versatile": "groq_llama_3_3_70b_versatile",
-        "llama_4_maverick_17b": "llama_4_maverick_17b",
+        "gpt_oss_120b": "oss120",
+        "llama_3_3_70b_instruct": "llama33",
+        "llama_4_scout_17b": "assistant",
     }
 
     # Aliases whose served model emits chain-of-thought reasoning. Cerberus strips
     # the trace server-side (clean `content`); this set only nudges the per-request
     # reasoning flag — the real default is `reasoning` in models.conf.
     CERBERUS_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
-        {"deepseek_r1", "gpt_oss_120b"}
+        {"gpt_oss_120b"}
     )
 
     # =========================================================================

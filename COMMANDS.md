@@ -540,9 +540,11 @@ huggingface-cli scan-cache                              # confirm the 5 models a
 ```
 
 ### Serve the models with Cerberus (once, from the project dir)
-Models run under Cerberus (llama.cpp), not in-process. Write a `models.conf` whose
-model **labels match the LexCausa aliases** (`deepseek_r1`, `gpt_oss_120b`,
-`qwen_25_72b`, `groq_llama_3_3_70b_versatile`, `llama_4_maverick_17b`), then:
+Models run under Cerberus (llama.cpp), not in-process. The repo-root `models.conf`
+serves three labels — `oss120` (gpt-oss-120b), `llama33` (Llama-3.3-70B-Instruct),
+`assistant` (Llama-4-Scout-17B) — which the LexCausa aliases (`gpt_oss_120b`,
+`llama_3_3_70b_instruct`, `llama_4_scout_17b`) resolve to via `CERBERUS_ALIAS_MAP`
+in `src/config.py`. Then:
 ```bash
 cerberus validate            # schema + how many nodes to allocate
 cerberus download            # fetch the exact GGUFs (login node; HF_TOKEN for gated repos)
@@ -565,20 +567,23 @@ export NEO4J_PASSWORD=<password>
 # already up). HF_TOKEN is only needed earlier, by `cerberus download`, for gated repos.
 ```
 
-### Run the DoE (7,040 runs)
+### Run the reduced DoE (2 models vary as Reasoner × Counter)
+The script defaults already encode the reduced, resource-constrained design, so the
+run below is equivalent to calling it with no model flags:
 ```bash
 python scripts/run_multi_doe_ibisco.py \
-  --fixed-model llama_4_maverick_17b \
-  --evaluator-model llama_4_maverick_17b \
-  --reasoner-models deepseek_r1,gpt_oss_120b,groq_llama_3_3_70b_versatile,qwen_25_72b \
-  --counter-models  deepseek_r1,gpt_oss_120b,groq_llama_3_3_70b_versatile,qwen_25_72b \
-  --planning-ablations on,off \
+  --fixed-model llama_4_scout_17b \
+  --evaluator-model llama_4_scout_17b \
+  --reasoner-models gpt_oss_120b,llama_3_3_70b_instruct \
+  --counter-models  gpt_oss_120b,llama_3_3_70b_instruct \
+  --planning-ablations on \
   --causality-ablations on \
-  --replicates 10 --seed 42 \
+  --replicates 1 --seed 42 \
   --out experiments/multi_doe/runs/ibisco_$(date +%Y%m%d_%H%M%S)
 ```
-At startup the script prints `Run matrix: N runs` — it **must be 7040** (14080 means you wrongly
-passed `--causality-ablations on,off`). `metrics.csv` is written incrementally in `--out/`.
+`assistant` (Llama-4-Scout) is the fixed support/evaluator model and does **not** vary
+in the DoE — only `oss120` and `llama33` cross as Reasoner × Counter (2×2 cells).
+`metrics.csv` is written incrementally in `--out/`.
 
 ### Analyze (manual; works on a partial metrics.csv too)
 ```bash
@@ -592,8 +597,8 @@ Dunn/Holm with win/tie/loss matrices, Wilcoxon signed-rank (reasoning-vs-instruc
 bootstrap CI; the 3 AQA dimensions analyzed separately.
 
 ### Critical notes
-- **`--fixed-model llama_4_maverick_17b` is required** (else retrieval/AQA/evaluator use the first
-  loaded reasoner model, not Maverick → wrong design).
+- **`--fixed-model llama_4_scout_17b`** pins retrieval/AQA/evaluator to Llama-4-Scout
+  (`assistant`); it is not a DoE factor. It is the default, so it can be omitted.
 - **`--causality-ablations on` (NOT `on,off`)**: the thesis holds causality enabled (1 level). The
   example in the script docstring showing `on,off` is misleading.
 - `total_tokens` = completion (output) tokens. Reasoning aliases = `{deepseek_r1, gpt_oss_120b}`

@@ -10,11 +10,13 @@
 
 set -euo pipefail
 
-# ── Environment ───────────────────────────────────────────────────────────────
-# This job serves the models with Cerberus (llama.cpp) AND runs the LexCausa
-# pipeline in the SAME env, so that env must have BOTH:
-#   pip install -e /path/to/Cerberus            # cerberus CLI + client + openai SDK
-#   pip install -r requirements_hpc.txt         # LexCausa deps (langchain, neo4j, …)
+# ── Environment (single job, two conda envs) ─────────────────────────────────
+# `cerberus up` runs in the `cerberus` env (Cerberus CLI); the LexCausa pipeline
+# runs in the `lexcausa` env (its requirements). We activate `cerberus` here to
+# bring the models up, then switch to `lexcausa` before the experiment (below).
+# NOTE: `lexcausa` must ALSO have the Cerberus *client*, since the pipeline does
+#   `from cerberus import CerberusClient`  →  once, on the login node:
+#     conda activate lexcausa && pip install -e /lustre/home/rpietrantuono/Cerberus
 source /nfsexports/SOFTWARE/anaconda3.OK/setupconda.sh && conda activate cerberus
 
 export HF_TOKEN=hf_...                 # only used by `cerberus download` (gated repos)
@@ -46,6 +48,12 @@ cerberus status
 
 # ── Sanity: claims file must be present (it is gitignored user data) ──────────
 [ -f "$DIR/claims.md" ] || { echo "claims.md not found in $DIR — provide it first"; exit 1; }
+
+# ── Switch to the LexCausa env for the pipeline ──────────────────────────────
+# The background `cerberus up` keeps its own (`cerberus`) env; this only changes
+# the foreground shell used to run the experiment. Exported vars (LLM_BACKEND,
+# CERBERUS_ENDPOINTS, NEO4J_*) survive the switch.
+conda activate lexcausa
 
 # ── Reduced Multi-DoE run: 2 models vary as Reasoner × Counter (2×2 = 4 cells) ─
 # Aliases resolve via CERBERUS_ALIAS_MAP (src/config.py):

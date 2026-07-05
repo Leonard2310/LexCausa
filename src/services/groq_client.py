@@ -17,9 +17,38 @@ import threading
 import time
 from typing import Callable, Optional
 
-from groq import Groq
 from langchain_core.messages import AIMessage
-from langchain_groq import ChatGroq
+
+# The Groq Cloud SDKs are optional: they are only needed for LLM_BACKEND=groq
+# (and, for the OpenAI SDK, openrouter). On the HPC/Cerberus backend
+# (LLM_BACKEND=local) they are absent from the env, so import them lazily behind
+# sentinels — the module must still import, and isinstance() checks must still
+# work (returning False for Cerberus objects).
+try:
+    from groq import Groq
+except ModuleNotFoundError:  # local/Cerberus backend: SDK not installed
+
+    class Groq:  # type: ignore[no-redef]
+        """Sentinel when the 'groq' package is absent (LLM_BACKEND!=groq)."""
+
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "the 'groq' package is not installed (needed only for LLM_BACKEND=groq)"
+            )
+
+
+try:
+    from langchain_groq import ChatGroq
+except ModuleNotFoundError:  # local/Cerberus backend: wrapper not installed
+
+    class ChatGroq:  # type: ignore[no-redef]
+        """Sentinel when 'langchain_groq' is absent (LLM_BACKEND!=groq)."""
+
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "the 'langchain_groq' package is not installed "
+                "(needed only for LLM_BACKEND=groq)"
+            )
 
 from config import settings
 from services.pipeline_control import PipelineCancelled
@@ -180,7 +209,17 @@ def _build_sdk_client(key: str):
 
     OpenRouter uses the OpenAI SDK (the Groq SDK hardcodes an incompatible
     ``/openai/v1/chat/completions`` path); every call is provider-pinned.
+    Cerberus (local) uses the OpenAI SDK pointed at the fixed support model's
+    served endpoint — the aux/raw-SDK path (classifier, taxonomy, retrieval
+    filter) runs on that model; ``key`` is unused (llama.cpp needs no auth).
     """
+    if settings.llm_backend == "local":
+        from openai import OpenAI
+
+        from services.cerberus_client import get_client, support_label
+
+        endpoint = get_client().endpoint(support_label())["base_url"]
+        return OpenAI(base_url=endpoint, api_key="cerberus-no-auth")
     if settings.llm_backend == "openrouter":
         from services.openrouter_client import get_openrouter_sdk_client
 
@@ -523,6 +562,9 @@ def get_groq_client(api_key: Optional[str] = None) -> Groq:
     Returns:
         groq.Groq instance.
     """
+    # Cerberus/local needs no API key (llama.cpp endpoints are unauthenticated).
+    if settings.llm_backend == "local":
+        return _build_sdk_client("")
     key = api_key or _current_key()
     return _build_sdk_client(key)
 
@@ -543,6 +585,29 @@ def resilient_groq_call(
     Returns:
         The result of call_fn on success.
     """
+
+    # ── Cerberus fast-path: no key rotation / model fallback (single served
+    # support model, unauthenticated). Mirrors the LangChain fast-path below.
+    if settings.llm_backend == "local":
+        from services.cerberus_client import support_label
+
+        model = support_label()
+        client = _build_sdk_client("")
+        result = call_fn(client, model)
+        try:
+            prompt_tokens, completion_tokens, total_tokens = extract_token_usage(result)
+            _record_llm_stats(
+                provider="cerberus",
+                model=model,
+                source="cerberus_sdk_call",
+                usage_payload=result,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+        except Exception:
+            pass
+        return result
 
     def _execute(key: str, model: str):
         if settings.llm_backend == "openrouter":

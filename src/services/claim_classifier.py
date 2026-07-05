@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from groq import Groq
+try:
+    from groq import Groq
+except ModuleNotFoundError:  # local/Cerberus backend: SDK absent; used only as a type hint
+    Groq = object  # type: ignore[assignment,misc]
 
 # Cross-platform path for config import
 sys.path.insert(0, str(Path(__file__).parent.parent))

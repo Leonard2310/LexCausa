@@ -184,6 +184,23 @@ def _served_labels() -> Optional[set[str]]:
     return _served_cache
 
 
+def support_label() -> str:
+    """Served label to use for aux/support calls (classifier, taxonomy, retrieval
+    filter, etc.).
+
+    These phases are not DoE factors: they run on the pinned fixed model
+    (``set_default_model``). Falls back to the first served label if no default
+    was pinned. Empty string if nothing is served (caller will fail clearly).
+    """
+    with _config_lock:
+        default = _default_alias
+        mapped_default = _alias_map.get(default, default) if default else None
+    if mapped_default:
+        return mapped_default
+    served = _served_labels() or set()
+    return next(iter(sorted(served)), "")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Registry-compatible helpers (no in-process GPU load — Cerberus serves models)
 # ──────────────────────────────────────────────────────────────────────────────

@@ -47,7 +47,7 @@
 - **Counter-Reasoner Second-Pass Retrieval**: Targeted additional retrieval triggered when statutes opposing the claim are insufficient, with configurable thresholds and limits
 - **Counter Step Expansion**: Optional multi-attack step expansion that spawns satellite steps when a single counter-step targets multiple attacks
 - **Retrieval Fail-Fast Scope**: Thread-local context manager (`retrieval_llm_fail_fast_scope`) for fast fallback in retrieval filters without full retry
-- **Triple LLM Backend** (`LLM_BACKEND`): the same agents run unchanged on **Groq Cloud** (free tier, key rotation), **OpenRouter** (paid, OpenAI-SDK based, provider-pinned routing e.g. DeepInfra/Alibaba, per-call reasoning-effort control for reasoning models, reasoning-token caps for thinking models), or **in-process vLLM** (`local`, HPC/Ibisco, chain-of-thought stripping for DeepSeek `<think>` and gpt-oss harmony channels); backend-specific model alias maps (`MODEL_ALIAS_MAP` / `OPENROUTER_ALIAS_MAP` / `VLLM_ALIAS_MAP`) are code-owned in `src/config.py`
+- **Triple LLM Backend** (`LLM_BACKEND`): the same agents run unchanged on **Groq Cloud** (free tier, key rotation), **OpenRouter** (paid, OpenAI-SDK based, provider-pinned routing e.g. DeepInfra/Alibaba, per-call reasoning-effort control for reasoning models, reasoning-token caps for thinking models), or **Cerberus/llama.cpp** (`local`, HPC/Ibisco, models served out-of-process by `cerberus up` with server-side reasoning separation); backend-specific model alias maps (`MODEL_ALIAS_MAP` / `OPENROUTER_ALIAS_MAP` / `CERBERUS_ALIAS_MAP`) are code-owned in `src/config.py`
 - **Resilient LLM Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient vs. request-too-large); dispatches to the selected backend transparently
 - **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction, statute applicability decisions, attack preconditions, fact-lock checks, and plan target alignment, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
 - **Cancellation & Interruptibility**: Pipeline stop endpoint and cooperative cancellation propagation across API, agents, and long-running generation/retrieval loops
@@ -233,10 +233,9 @@ OPENROUTER_AUX_MODEL=llama_4_scout          # fixed aux (retrieval/classifier/ev
 # OPENROUTER_PROVIDER_ONLY=["deepinfra"]    # JSON list: provider preference order
 # OPENROUTER_REASONING_MAX_TOKENS=6000      # cap thinking-model reasoning tokens
 
-# vLLM / HPC (LLM_BACKEND=local) — GPU params read at model load
-# VLLM_TENSOR_PARALLEL_SIZE=2
-# VLLM_GPU_MEMORY_UTILIZATION=0.90
-# VLLM_MAX_MODEL_LEN=30000
+# Cerberus / HPC (LLM_BACKEND=local) — models served by `cerberus up` (llama.cpp)
+# CERBERUS_ENDPOINTS=/path/to/project/endpoints.json   # if run outside the models.conf dir
+# (GPU/sizing are set in models.conf; see Cerberus/docs/progetto.md)
 ```
 
 See `.env.example` for the complete, commented template.
@@ -347,7 +346,7 @@ LexCausa/
 │   ├── services/                  # Core services
 │   │   ├── groq_client.py        # Resilient LLM client + backend dispatch (groq/openrouter/local)
 │   │   ├── openrouter_client.py  # OpenRouter backend (OpenAI SDK, provider-pinned, reasoning ctl)
-│   │   ├── vllm_client.py        # In-process vLLM backend (HPC/Ibisco, CoT stripping)
+│   │   ├── cerberus_client.py    # Cerberus/llama.cpp backend (HPC/Ibisco, served models)
 │   │   ├── claim_classifier.py   # LLM claim classification
 │   │   ├── claim_context_memory.py # SQLite pre-retrieval claim context cache
 │   │   ├── pipeline_control.py   # Cooperative cancellation primitives/exceptions
@@ -420,9 +419,9 @@ The same agents run unchanged on three backends, selected via `LLM_BACKEND`:
 
 - **`groq`** (default): Groq Cloud free tier, key rotation, model fallback.
 - **`openrouter`**: OpenAI-SDK based client (`src/services/openrouter_client.py`), provider-pinned routing (`OPENROUTER_PROVIDER_ONLY`, JSON list, e.g. `["deepinfra"]`), fixed aux model for retrieval/classifier/evaluator (`OPENROUTER_AUX_MODEL`), reasoning-token cap for thinking models (`OPENROUTER_REASONING_MAX_TOKENS`) and per-call reasoning-effort forwarding for short JSON utility calls.
-- **`local`**: in-process vLLM (`src/services/vllm_client.py`) for HPC/Ibisco; GPU parameters from `VLLM_*` env vars; strips chain-of-thought (`<think>` for DeepSeek, harmony channels for gpt-oss) before use.
+- **`local`**: Cerberus (`src/services/cerberus_client.py`) for HPC/Ibisco — models served out-of-process by `cerberus up` (llama.cpp) over an OpenAI-compatible API, addressed by label from `endpoints.json`; the reasoning trace is separated server-side so `content` is already chain-of-thought-free.
 
-Model catalogs are **backend-specific and code-owned** in `src/config.py`: `MODEL_ALIAS_MAP` (Groq), `OPENROUTER_ALIAS_MAP` (e.g. `gpt_oss_120b`, `llama_3_3_70b`, `qwen3_30b_instruct`, `qwen3_30b_thinking`, `llama_4_scout`), `VLLM_ALIAS_MAP` (HF ids). The same alias can resolve to different provider ids per backend.
+Model catalogs are **backend-specific and code-owned** in `src/config.py`: `MODEL_ALIAS_MAP` (Groq), `OPENROUTER_ALIAS_MAP` (e.g. `gpt_oss_120b`, `llama_3_3_70b`, `qwen3_30b_instruct`, `qwen3_30b_thinking`, `llama_4_scout`), `CERBERUS_ALIAS_MAP` (alias → served label, identity by default). The same alias can resolve to different provider ids per backend.
 
 > For copy-paste runbooks (clean restarts, smoke tests, full Multi-DoE runs per backend), see [COMMANDS.md](COMMANDS.md).
 

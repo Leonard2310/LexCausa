@@ -747,24 +747,31 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
-    # LLM Backend: Groq Cloud (default) vs local vLLM (Ibisco HPC)
+    # LLM Backend: Groq Cloud (default) vs local Cerberus/llama.cpp (Ibisco HPC)
     # =========================================================================
     llm_backend: str = Field(
         default="groq",
         alias="LLM_BACKEND",
-        description="'groq' for Groq Cloud (default); 'local' for vLLM offline inference.",
+        description=(
+            "'groq' for Groq Cloud (default); 'local' for Cerberus (llama.cpp) "
+            "inference on Ibisco HPC (models served by `cerberus up`)."
+        ),
     )
-    # Ibisco alias → HuggingFace model ID mapping (code-owned, not env-driven)
-    VLLM_ALIAS_MAP: ClassVar[dict[str, str]] = {
-        "deepseek_r1": "deepseek-ai/DeepSeek-R1",
-        "gpt_oss_120b": "openai/gpt-oss-120b",
-        "qwen_25_72b": "Qwen/Qwen2.5-72B-Instruct",
-        "groq_llama_3_3_70b_versatile": "meta-llama/Llama-3.3-70B-Instruct",
-        "llama_4_maverick_17b": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+    # Ibisco alias → Cerberus served *label* (the `label` in models.conf), code-owned.
+    # Default is identity: name your models.conf labels to match these aliases and
+    # no remapping is needed. An alias absent from the map is used as the label as-is.
+    CERBERUS_ALIAS_MAP: ClassVar[dict[str, str]] = {
+        "deepseek_r1": "deepseek_r1",
+        "gpt_oss_120b": "gpt_oss_120b",
+        "qwen_25_72b": "qwen_25_72b",
+        "groq_llama_3_3_70b_versatile": "groq_llama_3_3_70b_versatile",
+        "llama_4_maverick_17b": "llama_4_maverick_17b",
     }
 
-    # Aliases that produce <think>…</think> reasoning tokens (stripped before use)
-    VLLM_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
+    # Aliases whose served model emits chain-of-thought reasoning. Cerberus strips
+    # the trace server-side (clean `content`); this set only nudges the per-request
+    # reasoning flag — the real default is `reasoning` in models.conf.
+    CERBERUS_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
         {"deepseek_r1", "gpt_oss_120b"}
     )
 

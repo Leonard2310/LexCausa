@@ -12,20 +12,18 @@
 source /nfsexports/SOFTWARE/anaconda3.OK/setupconda.sh
 conda activate lexcausa
 
-export HF_TOKEN="<your_huggingface_token>"
+export HF_TOKEN="<your_huggingface_token>"   # only used by `cerberus download` for gated repos
 export NEO4J_URI="bolt://localhost:7687"
 export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="neo4jpassword"
-export LLM_BACKEND="local"
-export LOCAL_LLM_HF_CACHE_DIR="/ibiscostorage/${USER}/hf_cache"
-export LOCAL_LLM_TENSOR_PARALLEL_SIZE=2
-export LOCAL_LLM_GPU_MEMORY_UTILIZATION=0.90
+export LLM_BACKEND="local"                   # 'local' → Cerberus (llama.cpp) served models
 
-# Optional: reduce context length if GPU memory is tight
-# export LOCAL_LLM_MAX_MODEL_LEN=8192
-
-# Optional: AWQ quantization to halve VRAM usage
-# export LOCAL_LLM_QUANTIZATION=awq
+# Cerberus project dir: folder holding models.conf (labels must match the LexCausa
+# aliases). `cerberus up` writes endpoints.json here; the client reads it. The
+# lexcausa env must expose the Cerberus client + CLI: pip install -e /path/to/Cerberus
+# GPU sizing / context / quantization are per-model in models.conf, not env vars.
+export CERBERUS_PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+export CERBERUS_ENDPOINTS="${CERBERUS_PROJECT_DIR}/endpoints.json"
 
 # ── Start Neo4j (Singularity) ─────────────────────────────────────────────────
 # Adjust SIF path to your Singularity image location
@@ -44,23 +42,36 @@ sleep 30
 # Uncomment to (re)initialize the KB:
 # python src/db/db_orchestrator.py
 
+# ── Serve the models with Cerberus (llama.cpp) ────────────────────────────────
+# `cerberus up` serves ALL models in models.conf concurrently and writes
+# endpoints.json. Do NOT wrap it in srun (Cerberus issues its own srun calls).
+cd "${CERBERUS_PROJECT_DIR}"
+rm -f endpoints.json
+cerberus up &
+CERB_UP=$!
+trap 'kill -INT "${CERB_UP}" 2>/dev/null || true; wait "${CERB_UP}" 2>/dev/null || true' EXIT
+
+echo "Waiting for Cerberus endpoints.json…"
+for _ in $(seq 1 400); do [ -f endpoints.json ] && break; sleep 3; done
+[ -f endpoints.json ] || { echo "Cerberus servers did not start (see .cerberus/*/logs)"; exit 1; }
+cerberus status
+
 # ── Run Multi-DoE ─────────────────────────────────────────────────────────────
 RUN_DIR="experiments/multi_doe/runs/ibisco_$(date +%Y%m%d_%H%M%S)"
 
 python scripts/run_multi_doe_ibisco.py \
     --seed 42 \
     --replicates 10 \
-    --models "gpt_oss_120b,groq_llama_3_3_70b_versatile" \
+    --reasoner-models "gpt_oss_120b,groq_llama_3_3_70b_versatile" \
+    --counter-models  "gpt_oss_120b,groq_llama_3_3_70b_versatile" \
     --domains "CIVILE,PENALE,AMMINISTRATIVO,MISTO" \
     --planning-ablations on,off \
-    --causality-ablations on,off \
-    --causality-models gpt_oss_120b \
+    --causality-ablations on \
     --fixed-model "groq_llama_3_3_70b_versatile" \
-    --tensor-parallel-size 2 \
-    --hf-cache-dir "${LOCAL_LLM_HF_CACHE_DIR}" \
+    --evaluator-model "groq_llama_3_3_70b_versatile" \
     --out "${RUN_DIR}"
-# --fixed-model keeps Llama 3.3 70B always loaded for retrieval/filter/AQA.
-# DeepSeek R1 is loaded only when needed for its DoE conditions, then swapped.
+# --fixed-model pins the retrieval/filter/AQA/evaluator model. With Cerberus every
+# model is served at once, so there is no per-pair GPU load/unload.
 
 # ── Analyze results ───────────────────────────────────────────────────────────
 python scripts/analyze_multi_doe.py \

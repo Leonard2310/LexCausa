@@ -525,7 +525,7 @@ tail -f logs/<timestamp>_<claim_slug>.log
 tail -f logs/<timestamp>_<claim_slug>_doe.log
 ```
 
-## 12. Multi-DoE full-factorial Reasoner×Counter (Ibisco / vLLM offline) — THESIS RUN
+## 12. Multi-DoE full-factorial Reasoner×Counter (Ibisco / Cerberus llama.cpp) — THESIS RUN
 
 This is the thesis experiment
 Scripts:
@@ -539,22 +539,30 @@ poetry run python src/db/db_orchestrator.py --check     # KB loaded (statutes + 
 huggingface-cli scan-cache                              # confirm the 5 models are cached
 ```
 
-### Environment (models already downloaded → offline, no HF token)
+### Serve the models with Cerberus (once, from the project dir)
+Models run under Cerberus (llama.cpp), not in-process. Write a `models.conf` whose
+model **labels match the LexCausa aliases** (`deepseek_r1`, `gpt_oss_120b`,
+`qwen_25_72b`, `groq_llama_3_3_70b_versatile`, `llama_4_maverick_17b`), then:
 ```bash
-export VLLM_HF_CACHE_DIR=/path/to/hf_cache     # passed to vLLM download_dir
-# or, if it is the standard HF cache:           export HF_HOME=/path/to/hf_cache
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-# GPU (adapt to the node):
-export VLLM_TENSOR_PARALLEL_SIZE=<num_gpus>     # e.g. 2 or 4
-export VLLM_GPU_MEMORY_UTILIZATION=0.90
-export VLLM_MAX_MODEL_LEN=30000                 # ~30k tokens (thesis budget); do NOT set VLLM_QUANTIZATION
+cerberus validate            # schema + how many nodes to allocate
+cerberus download            # fetch the exact GGUFs (login node; HF_TOKEN for gated repos)
+# allocate GPUs (salloc ...) then, from the project dir:
+cerberus up                  # serves all models; writes endpoints.json
+cerberus status              # UP/DOWN
+```
+See `Cerberus/docs/progetto.md` for the full workflow (models.conf fields, sizing,
+batch `run.sbatch`). If the DoE runs from a different cwd than `models.conf`, point
+the client at the map: `export CERBERUS_ENDPOINTS=/path/project/endpoints.json`.
+
+### Environment
+```bash
 # Neo4j (if not already in a .env):
 export NEO4J_URI=bolt://localhost:7687
 export NEO4J_USER=neo4j
 export NEO4J_PASSWORD=<password>
-# Notes: the script forces LLM_BACKEND=local. HF_TOKEN is only needed to *download* the
-# gated meta-llama/* models (Llama-3.3-70B, Llama-4-Maverick); skip it if they are cached.
+# Notes: the script forces LLM_BACKEND=local (→ Cerberus). All inference goes through
+# the served endpoints; no HF token or GPU env vars are needed at run time (models are
+# already up). HF_TOKEN is only needed earlier, by `cerberus download`, for gated repos.
 ```
 
 ### Run the DoE (7,040 runs)

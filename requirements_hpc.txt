@@ -9,6 +9,13 @@ sentence-transformers>=2.2.0,<3.0.0
 langchain>=0.2.0,<1.0.0
 langchain-core>=0.2.0,<1.0.0
 
+# ── Cerberus (llama.cpp) inference backend (LLM_BACKEND=local) ─────────────────
+# The `cerberus` package is installed separately, editable, from its checkout:
+#     pip install -e /path/to/Cerberus
+# It provides `from cerberus import CerberusClient` and uses the OpenAI SDK to
+# reach the served llama.cpp endpoints (endpoints.json written by `cerberus up`).
+openai>=2.44.0,<3.0.0
+
 # ── Neo4j knowledge base ──────────────────────────────────────────────────────
 neo4j>=5.0.0,<6.0.0
 

@@ -31,7 +31,7 @@ from services.groq_client import (  # noqa: E402
     resilient_chat_stream,
     shrink_max_tokens_progressive,
 )
-from services.vllm_client import ChatVLLMOffline  # noqa: E402
+from services.cerberus_client import ChatCerberus  # noqa: E402
 
 _retrieval_llm_fail_fast_state = threading.local()
 
@@ -117,7 +117,7 @@ class BaseAgent(ABC):
             config: Agent configuration. Uses defaults if not provided.
         """
         self.config = config or AgentConfig()
-        self._llm: Any = None  # ChatGroq (Groq Cloud) or ChatVLLMOffline (local)
+        self._llm: Any = None  # ChatGroq (Groq Cloud) or ChatCerberus (local)
         self._fact_lock_check_cache: dict[tuple[str, str], tuple[bool, str]] = {}
         self._nli_relation_cache: dict[tuple[str, str], str] = {}
         self._legal_context_cache: dict[str, str] = {}
@@ -153,10 +153,10 @@ class BaseAgent(ABC):
 
     @property
     def llm(self):
-        """Lazy initialization of LLM — ChatVLLMOffline (local) or ChatGroq (cloud)."""
+        """Lazy initialization of LLM — ChatCerberus (local) or ChatGroq (cloud)."""
         if self._llm is None:
             if settings.llm_backend == "local":
-                self._llm = ChatVLLMOffline(
+                self._llm = ChatCerberus(
                     model=self.config.model_name,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens or settings.llm_max_tokens,
@@ -186,10 +186,10 @@ class BaseAgent(ABC):
         return {}
 
     def _resilient_llm_invoke(self, messages, **kwargs):
-        """Invoke LLM with retry; vLLM uses direct invoke (no key rotation needed)."""
+        """Invoke LLM with retry; local Cerberus uses direct invoke (no key rotation needed)."""
         stream_callback = kwargs.pop("stream_callback", None)
         if settings.llm_backend == "local":
-            # ChatVLLMOffline._stream yields the full result as one chunk.
+            # ChatCerberus._stream yields the full result as one chunk.
             # For streaming UX, emit the full text via the callback after generation.
             result = self.llm.invoke(messages, **kwargs)
             if stream_callback is not None:
@@ -223,7 +223,7 @@ class BaseAgent(ABC):
         retrieval_max_tokens = max(1, int(max_tokens_override))
 
         if settings.llm_backend == "local":
-            retrieval_llm = ChatVLLMOffline(
+            retrieval_llm = ChatCerberus(
                 model=self.config.model_name,
                 temperature=retrieval_temp,
                 max_tokens=retrieval_max_tokens,

@@ -587,14 +587,15 @@ def get_chat_groq(
 ):
     """Create a chat LLM instance.
 
-    Returns ChatGroq (Groq Cloud) when llm_backend='groq', or ChatVLLMOffline
-    when llm_backend='local'. All existing callers (evaluation, tools, agents)
-    get the correct backend automatically without any code changes.
+    Returns ChatGroq (Groq Cloud) when llm_backend='groq', or ChatCerberus
+    (Cerberus/llama.cpp) when llm_backend='local'. All existing callers
+    (evaluation, tools, agents) get the correct backend automatically without any
+    code changes.
     """
     if settings.llm_backend == "local":
-        from services.vllm_client import ChatVLLMOffline
+        from services.cerberus_client import ChatCerberus
 
-        return ChatVLLMOffline(
+        return ChatCerberus(
             model=model or settings.groq_models[0],
             temperature=(
                 temperature if temperature is not None else settings.llm_temperature

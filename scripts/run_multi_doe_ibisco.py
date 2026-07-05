@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 """
-Multi-DoE orchestrator for Ibisco HPC (vLLM offline inference).
+Multi-DoE orchestrator for Ibisco HPC (Cerberus / llama.cpp inference).
 
-Loads LLM models via vLLM directly (in-process, no HTTP server, no Groq Cloud),
-calls the LexCausa pipeline Python modules, and saves metrics.csv ready for
+Uses models served by Cerberus (`cerberus up`, llama.cpp backend) over its
+OpenAI-compatible API — no Groq Cloud, no in-process weight loading. Bring the
+models up first (see Cerberus/docs/progetto.md), then run this script from the
+project directory (or set CERBERUS_ENDPOINTS to the generated endpoints.json).
+It calls the LexCausa pipeline Python modules and saves metrics.csv ready for
 analyze_multi_doe.py.
 
 Full-factorial design: Reasoner model and Counter-Reasoner model vary
@@ -326,7 +329,7 @@ def main() -> None:
     # ── Import pipeline (after env vars are set) ──────────────────────────────
     from api_server import _run_full_pipeline  # noqa: E402
     from config import settings
-    from services.vllm_client import (
+    from services.cerberus_client import (
         load_models,
         set_alias_map,
         set_default_model,
@@ -334,8 +337,8 @@ def main() -> None:
         unload_model,
     )
 
-    set_alias_map(settings.VLLM_ALIAS_MAP)
-    set_reasoning_aliases(settings.VLLM_REASONING_ALIASES)
+    set_alias_map(settings.CERBERUS_ALIAS_MAP)
+    set_reasoning_aliases(settings.CERBERUS_REASONING_ALIASES)
 
     # ── Load claims ───────────────────────────────────────────────────────────
     claims = _load_claims(Path(args.claims_file))
@@ -353,7 +356,8 @@ def main() -> None:
         args.seed,
     )
     # Sort by (reasoner_model, counter_model) so all conditions for a pair run
-    # contiguously — minimises expensive vLLM load/unload cycles on HPC.
+    # contiguously. With Cerberus all models are served concurrently, so this is
+    # just for readable, grouped logs (load/unload below are availability checks).
     matrix = matrix.sort_values(
         ["reasoner_model", "counter_model"], kind="stable"
     ).reset_index(drop=True)
@@ -395,14 +399,13 @@ def main() -> None:
         seed = int(row["seed"])
         pair = (r_model, c_model)
 
-        # Load both models for this pair if they changed.
+        # Cerberus serves all models concurrently, so this only re-validates
+        # availability when the active pair changes (no GPU load/unload).
         if pair != current_pair:
             models_to_load = list({r_model, c_model})
-            # Unload models not needed in the new pair (never unload persistent models)
             if current_pair:
                 for m in set(current_pair) - set(models_to_load):
                     if m not in persistent_models:
-                        print(f"\n[vLLM] Unloading '{m}'…")
                         unload_model(m)
             load_models(models_to_load)
             current_pair = pair

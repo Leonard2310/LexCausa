@@ -1,3 +1,9 @@
+# CERBERUS artifacts
+endpoints.json
+.cerberus/
+outputs/
+
+
 # Bytecode
 __pycache__/
 *.py[cod]

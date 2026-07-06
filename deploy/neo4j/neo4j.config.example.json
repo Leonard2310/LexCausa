@@ -2,7 +2,7 @@
   "user": "neo4j",
   "password": "neo4jpassword",
 
-  "sandbox": "/lustre/home/<user>/tools/neo4j-sandbox",
+  "sandbox": "/lustre/home/rpietrantuono/tools/neo4j-sandbox",
 
   "data_dir": "",
 

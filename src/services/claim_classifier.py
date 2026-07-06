@@ -66,7 +66,13 @@ class ClaimClassifier:
             model: Model to use for classification. If None, reads from settings.
         """
         self.api_key = api_key  # May be None → resilient_groq_call handles rotation
-        if not api_key and not settings.groq_api_keys:
+        # The local (Cerberus/llama.cpp) backend needs no Groq key: the raw-SDK
+        # path is routed to the served support model without auth.
+        if (
+            settings.llm_backend != "local"
+            and not api_key
+            and not settings.groq_api_keys
+        ):
             raise ValueError(
                 "GROQ_API_KEY not found. Set GROQ_API_KEY_V1/V2/V3 in .env."
             )

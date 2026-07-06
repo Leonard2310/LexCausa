@@ -13,11 +13,16 @@
   "pagecache": "2G",
   "ready_timeout_sec": 300,
 
+  "active_processor_count": 4,
+  "bolt_thread_pool_max": 40,
+
   "_comments": {
     "password": "Real secret goes in neo4j.config.json (gitignored). Env NEO4J_PASSWORD overrides.",
     "sandbox": "Absolute path to the Neo4j Singularity sandbox (built once, cluster-specific).",
     "data_dir": "Empty = <repo_root>/neo4j (data stays inside the project, read-only KB after populate).",
     "*_port_range": "neo4j_up.sh picks the first FREE port in each range on node 0.",
-    "heap_max/pagecache": "Neo4j JVM heap and page cache sizing."
+    "heap_max/pagecache": "Neo4j JVM heap and page cache sizing.",
+    "active_processor_count": "Caps ALL processor-derived thread pools (GC/JIT/ForkJoinPool/Neo4j) via -XX:ActiveProcessorCount. Lower it if you hit 'fork: Resource temporarily unavailable'.",
+    "bolt_thread_pool_max": "Max Bolt worker threads (server.bolt.thread_pool_max_size; Neo4j default 400)."
   }
 }

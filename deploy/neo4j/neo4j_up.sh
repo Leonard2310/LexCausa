@@ -46,6 +46,8 @@ print(f'CFG_HTTP_START={int(hr[0])}'); print(f'CFG_HTTP_END={int(hr[1])}')
 print(f'CFG_HEAP={shlex.quote(str(g("heap_max","2G")))}')
 print(f'CFG_PAGECACHE={shlex.quote(str(g("pagecache","1G")))}')
 print(f'CFG_TIMEOUT={int(g("ready_timeout_sec",300))}')
+print(f'CFG_APC={int(g("active_processor_count",4))}')
+print(f'CFG_BOLT_POOL={int(g("bolt_thread_pool_max",40))}')
 PY
 )"
 
@@ -111,7 +113,7 @@ fi
 
 # Inject our dynamic settings into conf/neo4j.conf (idempotent: strip+re-append).
 CONF="$DATA_DIR/conf/neo4j.conf"; touch "$CONF"
-grep -vE '^(server\.(bolt|http)\.(listen|advertised)_address|server\.default_listen_address|server\.memory\.(heap\.max_size|pagecache\.size))=' \
+grep -vE '^(server\.(bolt|http)\.(listen|advertised)_address|server\.default_listen_address|server\.bolt\.thread_pool_max_size|server\.memory\.(heap\.max_size|pagecache\.size))=' \
     "$CONF" > "$CONF.tmp" 2>/dev/null || true
 mv "$CONF.tmp" "$CONF"
 {
@@ -122,6 +124,7 @@ mv "$CONF.tmp" "$CONF"
   echo "server.http.advertised_address=${HOST}:${HTTP_PORT}"
   echo "server.memory.heap.max_size=${CFG_HEAP}"
   echo "server.memory.pagecache.size=${CFG_PAGECACHE}"
+  echo "server.bolt.thread_pool_max_size=${CFG_BOLT_POOL}"
 } >> "$CONF"
 
 # Credentials live in the system db; recreate it each boot so the password is
@@ -135,7 +138,7 @@ echo "   Bolt:     bolt://${HOST}:${BOLT_PORT}   HTTP: http://${HOST}:${HTTP_POR
 echo "   Console:  $CONSOLE_LOG_DIR/neo4j_console.log"
 
 SINGULARITYENV_NEO4J_AUTH="${NEO4J_USER_}/${NEO4J_PASS_}" \
-SINGULARITYENV_JAVA_OPTS="-XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:CICompilerCount=2" \
+SINGULARITYENV_JAVA_OPTS="-XX:ActiveProcessorCount=${CFG_APC} -XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:CICompilerCount=2" \
 singularity exec --cleanenv --bind /lustre:/lustre \
     --bind "$DATA_DIR/data:/var/lib/neo4j/data" \
     --bind "$DATA_DIR/logs:/var/lib/neo4j/logs" \

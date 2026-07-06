@@ -10,6 +10,12 @@
 
 set -euo pipefail
 
+# Raise the per-user process/thread limit to the hard max: Neo4j (JVM) + Cerberus
+# (llama.cpp) + the pipeline together spawn many threads; the default soft limit
+# causes "fork: Resource temporarily unavailable". Neo4j's own thread pools are
+# also capped in deploy/neo4j/neo4j.config.json (active_processor_count).
+ulimit -u "$(ulimit -Hu)" 2>/dev/null || true
+
 # ── Environment (single job, two conda envs) ─────────────────────────────────
 # `cerberus up` runs in the `cerberus` env (Cerberus CLI); the LexCausa pipeline
 # runs in the `lexcausa` env (its requirements). We activate `cerberus` here to

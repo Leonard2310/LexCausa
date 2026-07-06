@@ -148,6 +148,7 @@ class Reasoner(BaseAgent):
         pre_retrieved_precedents: list[dict],
         enable_causality: bool = True,
         enable_planning: bool = True,
+        single_call: bool = False,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> ReasonerOutput:
         """
@@ -227,7 +228,8 @@ class Reasoner(BaseAgent):
         # Provisional plan-based causality bootstrap (before expensive step generation):
         # plan draft -> provisional causality bundle -> taxonomy anchors -> final planner/executor.
         # When enable_planning=False (ablation), skip the bootstrap — no planner LLM call is made.
-        if enable_causality and enable_planning:
+        # The single-call ablation skips it too: the whole chain is produced in one shot.
+        if enable_causality and enable_planning and not single_call:
             try:
                 bootstrap_allowed_statutes = [
                     f"Art. {s.get('articolo')} ({self._source_short_label(s.get('source', ''))})"
@@ -403,18 +405,37 @@ class Reasoner(BaseAgent):
             self._log(f"🔄 Reasoner generation attempt {attempt}/{MAX_CHAIN_RETRIES}")
             did_posthoc_anchor_refine = False
 
+            single_call_conclusion = ""
             try:
-                raw_output, iterative_chain = self._generate_chain_iteratively(
-                    claim=claim,
-                    routing_decision=routing_decision,
-                    anchor_text=anchor_text,
-                    principle_text=principle_text,
-                    knowledge_base=knowledge_base,
-                    allowed_statutes=allowed_statutes,
-                    allowed_precedents=allowed_precedents,
-                    enable_planning=enable_planning,
-                    stream_callback=stream_callback,
-                )
+                if single_call:
+                    # Single-call ablation: one LLM call produces the entire numbered
+                    # chain and its conclusion; no planner, no per-step executor calls.
+                    (
+                        raw_output,
+                        iterative_chain,
+                        single_call_conclusion,
+                    ) = self._generate_chain_single_call(
+                        claim=claim,
+                        routing_decision=routing_decision,
+                        anchor_text=anchor_text,
+                        principle_text=principle_text,
+                        knowledge_base=knowledge_base,
+                        allowed_statutes=allowed_statutes,
+                        allowed_precedents=allowed_precedents,
+                        stream_callback=stream_callback,
+                    )
+                else:
+                    raw_output, iterative_chain = self._generate_chain_iteratively(
+                        claim=claim,
+                        routing_decision=routing_decision,
+                        anchor_text=anchor_text,
+                        principle_text=principle_text,
+                        knowledge_base=knowledge_base,
+                        allowed_statutes=allowed_statutes,
+                        allowed_precedents=allowed_precedents,
+                        enable_planning=enable_planning,
+                        stream_callback=stream_callback,
+                    )
             except Exception as gen_exc:
                 self._log(
                     f"⚠️ Attempt {attempt}/{MAX_CHAIN_RETRIES}: planner/executor failed ({gen_exc})",
@@ -424,13 +445,17 @@ class Reasoner(BaseAgent):
                     raise
                 continue
 
-            # Generate dynamic LLM conclusion from chain
+            # Conclusion: reuse the single-call output, else generate it from the chain.
             conclusion = (
-                self._generate_conclusion(
-                    claim, iterative_chain, stream_callback=stream_callback
+                single_call_conclusion
+                if single_call
+                else (
+                    self._generate_conclusion(
+                        claim, iterative_chain, stream_callback=stream_callback
+                    )
+                    if iterative_chain
+                    else ""
                 )
-                if iterative_chain
-                else ""
             )
             if conclusion:
                 raw_output = self._assemble_raw_response(
@@ -1427,6 +1452,79 @@ class Reasoner(BaseAgent):
             "deduped_statutes": refined_statutes,
             "statute_origin_map": refined_origin_map,
         }
+
+    def _parse_single_call_chain(self, raw: str) -> tuple[list[str], str]:
+        """Parse a single-call output ('STEP N: ...' lines + 'CONCLUSION: ...').
+
+        Returns (steps, conclusion), tolerant of a leading ```-fence or prose
+        before the first STEP marker.
+        """
+        text = str(raw or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text[:4].lower() == "json":
+                text = text[4:]
+            text = text.strip()
+        conclusion = ""
+        cm = re.search(r"(?ims)^\s*(?:CONCLUSION|CONCLUSIONE)\s*:\s*(.+)\Z", text)
+        body = text
+        if cm:
+            conclusion = re.sub(r"\s+", " ", cm.group(1)).strip()
+            body = text[: cm.start()]
+        steps: list[str] = []
+        for m in re.finditer(
+            r"(?ims)^\s*(?:STEP|PASSO)\s*\d+\s*:\s*(.*?)(?=^\s*(?:STEP|PASSO)\s*\d+\s*:|\Z)",
+            body,
+        ):
+            t = re.sub(r"\s+", " ", m.group(1)).strip()
+            if t and t.upper() != "NO_VALID_OPPOSITION":
+                steps.append(t)
+        return steps, conclusion
+
+    def _generate_chain_single_call(
+        self,
+        claim: str,
+        routing_decision: RoutingDecision,
+        anchor_text: str,
+        principle_text: str,
+        knowledge_base: str,
+        allowed_statutes: list[str],
+        allowed_precedents: list[str],
+        stream_callback: Optional[Callable[[dict], None]] = None,
+    ) -> tuple[str, list[str], str]:
+        """Single-call ablation: produce the whole chain in ONE LLM call.
+
+        No planner and no per-step executor; the model emits a numbered chain and
+        its conclusion in a single response, then parsed into steps.
+        """
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- No precedents available"
+        )
+        prompt = render_prompt(
+            "reasoner.single_call",
+            claim=claim,
+            routing_domain=routing_decision.domain,
+            anchor_text=anchor_text or "- No anchor norms defined",
+            principle_text=principle_text or "- No principle tests defined",
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            min_steps=settings.chain_min_steps,
+            max_steps=settings.chain_max_steps,
+        )
+        resp = self._resilient_llm_invoke(
+            [HumanMessage(content=prompt)],
+            max_tokens=settings.llm_max_tokens,
+            stream_callback=stream_callback,
+        )
+        raw = (resp.content or "").strip()
+        steps, conclusion = self._parse_single_call_chain(raw)
+        self._log(f"🧭 Single-call chain: {len(steps)} step(s) parsed", "info")
+        return raw, steps, conclusion
 
     def _generate_chain_iteratively(
         self,

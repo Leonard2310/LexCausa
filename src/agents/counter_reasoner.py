@@ -1372,6 +1372,7 @@ class CounterReasoner(BaseAgent):
         reasoner_conclusion: str,
         enable_causality: bool = True,
         enable_planning: bool = True,
+        single_call: bool = False,
         stream_callback: Optional[Callable[[dict], None]] = None,
     ) -> CounterReasonerOutput:
         """
@@ -1541,6 +1542,23 @@ class CounterReasoner(BaseAgent):
         allowed_precedents = [
             p.get("title", "Untitled") for p in pre_retrieved_precedents
         ]
+
+        # ----------------------------------------------------------
+        # Single-call ablation: one LLM call produces the whole counter-chain,
+        # bypassing attack selection, decomposition, planning and per-step checks.
+        # ----------------------------------------------------------
+        if single_call:
+            return self._generate_counter_single_call(
+                claim=claim,
+                routing_decision=routing_decision,
+                reasoner_conclusion=reasoner_conclusion,
+                knowledge_base=knowledge_base,
+                allowed_statutes=allowed_statutes,
+                allowed_precedents=allowed_precedents,
+                deduped_statutes=deduped_statutes,
+                pre_retrieved_precedents=pre_retrieved_precedents,
+                stream_callback=stream_callback,
+            )
 
         # ----------------------------------------------------------
         # Execute with iterative step-by-step chain generation
@@ -1723,6 +1741,132 @@ class CounterReasoner(BaseAgent):
         self._log(
             f"✅ Generated {len(output.counter_arguments)} counter-argument(s), "
             f"{chain_len} reasoning steps",
+            "success",
+        )
+        return output
+
+    def _parse_single_call_chain(self, raw: str) -> tuple[list[str], str]:
+        """Parse a single-call output ('STEP N: ...' lines + 'CONCLUSION: ...').
+
+        Returns (steps, conclusion), tolerant of a leading ```-fence or prose
+        before the first STEP marker. 'NO_VALID_OPPOSITION' yields no steps.
+        """
+        text = str(raw or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text[:4].lower() == "json":
+                text = text[4:]
+            text = text.strip()
+        conclusion = ""
+        cm = re.search(r"(?ims)^\s*(?:CONCLUSION|CONCLUSIONE)\s*:\s*(.+)\Z", text)
+        body = text
+        if cm:
+            conclusion = re.sub(r"\s+", " ", cm.group(1)).strip()
+            body = text[: cm.start()]
+        steps: list[str] = []
+        for m in re.finditer(
+            r"(?ims)^\s*(?:STEP|PASSO)\s*\d+\s*:\s*(.*?)(?=^\s*(?:STEP|PASSO)\s*\d+\s*:|\Z)",
+            body,
+        ):
+            t = re.sub(r"\s+", " ", m.group(1)).strip()
+            if t and t.upper() != "NO_VALID_OPPOSITION":
+                steps.append(t)
+        return steps, conclusion
+
+    def _generate_counter_single_call(
+        self,
+        *,
+        claim: str,
+        routing_decision: RoutingDecision,
+        reasoner_conclusion: str,
+        knowledge_base: str,
+        allowed_statutes: List[str],
+        allowed_precedents: List[str],
+        deduped_statutes: List[dict],
+        pre_retrieved_precedents: List[dict],
+        stream_callback: Optional[Callable[[dict], None]] = None,
+    ) -> CounterReasonerOutput:
+        """Single-call ablation: produce the whole counter-chain in ONE LLM call.
+
+        No attack selection, decomposition, planner or per-step guardrails; the
+        model emits a numbered counter-chain and conclusion, parsed into steps.
+        Abstains when the model emits no opposing step.
+        """
+        statutes_list = (
+            "\n".join(f"- {a}" for a in allowed_statutes) or "- No statutes available"
+        )
+        precedents_list = (
+            "\n".join(f"- {p}" for p in allowed_precedents)
+            or "- No precedents available"
+        )
+        prompt = render_prompt(
+            "counter_reasoner.single_call",
+            claim=claim,
+            reasoner_conclusion=reasoner_conclusion or "(no conclusion provided)",
+            routing_domain=routing_decision.domain,
+            knowledge_base=knowledge_base,
+            statutes_list=statutes_list,
+            precedents_list=precedents_list,
+            min_steps=settings.chain_min_steps,
+            max_steps=settings.chain_max_steps,
+        )
+        resp = self._resilient_llm_invoke(
+            [HumanMessage(content=prompt)],
+            max_tokens=settings.llm_max_tokens,
+            stream_callback=stream_callback,
+        )
+        raw = (resp.content or "").strip()
+        steps, _conclusion = self._parse_single_call_chain(raw)
+        self._log(f"⚔️ Single-call counter: {len(steps)} step(s) parsed", "info")
+        if not steps:
+            return self._build_abstention_output(
+                claim=claim,
+                routing_decision=routing_decision,
+                reasoner_conclusion=reasoner_conclusion,
+                reason="single-call generation produced no opposing steps",
+                relevant_statutes=deduped_statutes,
+                relevant_precedents=pre_retrieved_precedents,
+            )
+        output = CounterReasonerOutput(
+            claim=claim,
+            causal_type_id=routing_decision.causal_type_id,
+            theory_id=routing_decision.theory_id,
+            selected_attack_id="",
+            selected_attack_ids=[],
+            reasoner_causality={
+                "causal_type_id": routing_decision.causal_type_id,
+                "theory_id": routing_decision.theory_id,
+            },
+            relevant_statutes=deduped_statutes,
+            relevant_precedents=pre_retrieved_precedents,
+            raw_response=raw,
+            reasoner_conclusion_context=reasoner_conclusion,
+        )
+        output.reasoning_chain = self._sanitize_reasoning_chain(
+            steps, pre_retrieved_precedents
+        )
+        output.counter_arguments = self._extract_arguments(raw)
+        formatter = AspicFormatter(
+            role="counter",
+            statutes=deduped_statutes,
+            precedents=pre_retrieved_precedents,
+        )
+        output.aspic_ir = formatter.format(
+            claim=claim,
+            raw_response=raw,
+            reasoning_chain=output.reasoning_chain,
+            arguments=output.counter_arguments,
+            metadata={
+                "selected_attack_id": "",
+                "selected_attack_ids": [],
+                "attack_source": "single_call",
+                "causal_type_id": routing_decision.causal_type_id,
+                "theory_id": routing_decision.theory_id,
+            },
+        )
+        self._log(
+            f"✅ Single-call counter: {len(output.counter_arguments)} argument(s), "
+            f"{len(output.reasoning_chain)} steps",
             "success",
         )
         return output
@@ -2909,10 +3053,28 @@ class CounterReasoner(BaseAgent):
     ) -> List[Dict[str, str]]:
         """Parse planner JSON and enforce plan quality constraints."""
         payload_text = str(raw or "").strip()
+        # Some models (e.g. Llama-3.3-70B) wrap the JSON in a ```json fence or add
+        # surrounding prose even in json mode (providers like DeepInfra treat
+        # response_format as a hint, not a grammar). Strip the fence and, failing
+        # that, fall back to the outermost {...} object before giving up
+        # (mirrors the reasoner's _parse_reasoning_plan).
+        if payload_text.startswith("```"):
+            payload_text = payload_text.strip("`")
+            if payload_text[:4].lower() == "json":
+                payload_text = payload_text[4:]
+            payload_text = payload_text.strip()
         try:
             data = json.loads(payload_text)
         except Exception as exc:
-            raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+            start = payload_text.find("{")
+            end = payload_text.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    data = json.loads(payload_text[start : end + 1])
+                except Exception:
+                    raise ValueError(f"invalid planner JSON payload: {exc}") from exc
+            else:
+                raise ValueError(f"invalid planner JSON payload: {exc}") from exc
         if not isinstance(data, dict):
             raise ValueError("planner output is not a JSON object")
         steps_raw = data.get("steps")

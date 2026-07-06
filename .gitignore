@@ -82,7 +82,9 @@ claims_gold_labels.json
 # DoE artifacts
 experiments/doe/batch_runs
 experiments/multi_doe/runs/
-experiments/multi_doe/analysis/
+experiments/multi_doe/analysis/*
+# keep the statistical-analysis notebook under version control
+!experiments/multi_doe/analysis/lexcausa_stats.ipynb
 
 # Claude Code project instructions (thesis-private)
 CLAUDE.md

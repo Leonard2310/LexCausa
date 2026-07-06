@@ -59,6 +59,7 @@ class PromptKey(StrEnum):
     REASONER_SUPPORT_STEP = "reasoner.support_step"
     REASONER_SUPPORT_PLAN_REWRITE = "reasoner.support_plan_rewrite"
     REASONER_GENERATE_CONCLUSION = "reasoner.generate_conclusion"
+    REASONER_SINGLE_CALL = "reasoner.single_call"
     COUNTER_REASONER_PICK_ATTACKS = "counter_reasoner.pick_attacks"
     COUNTER_REASONER_OPEN_ATTACKS = "counter_reasoner.open_attacks"
     COUNTER_REASONER_TARGET_MAP = "counter_reasoner.target_map"
@@ -66,6 +67,7 @@ class PromptKey(StrEnum):
     COUNTER_REASONER_GENERATE_PLAN = "counter_reasoner.generate_plan"
     COUNTER_REASONER_PLAN_TARGET_ALIGNMENT = "counter_reasoner.plan_target_alignment"
     COUNTER_REASONER_STEP_PROMPT = "counter_reasoner.step_prompt"
+    COUNTER_REASONER_SINGLE_CALL = "counter_reasoner.single_call"
     COUNTER_REASONER_ATTACK_ALIGNMENT = "counter_reasoner.attack_alignment"
     COUNTER_REASONER_ATTACK_SAFETY = "counter_reasoner.attack_safety"
     COUNTER_REASONER_ATTACK_COMPATIBILITY = "counter_reasoner.attack_compatibility"
@@ -510,6 +512,36 @@ INSTRUCTIONS:
 [[language_instruction]]
 
         CONCLUSION:""",
+    PromptKey.REASONER_SINGLE_CALL: """You are an expert Italian jurist. Construct the COMPLETE supporting legal argument for the claim below in a SINGLE response, as a numbered chain of reasoning steps followed by a conclusion.
+
+CLAIM:
+"[[claim]]"
+
+DOMAIN: [[routing_domain]]
+ANCHOR NORMS:
+[[anchor_text]]
+PRINCIPLE TESTS:
+[[principle_text]]
+
+KNOWLEDGE BASE (use only these sources):
+[[knowledge_base]]
+
+ALLOWED STATUTES (cite ONLY these):
+[[statutes_list]]
+ALLOWED PRECEDENTS:
+[[precedents_list]]
+
+INSTRUCTIONS:
+- Produce between [[min_steps]] and [[max_steps]] reasoning steps that build the thesis progressively.
+- Each step must cite at least one relevant article from the ALLOWED STATUTES using the form "Art. NNN c.c." or "Art. NNN c.p.".
+- Do NOT invent facts or norms outside the allowed sources.
+- Output the steps in EXACTLY this format, one marker per step, and nothing else before the first step:
+STEP 1: <legal reasoning citing the relevant article>
+STEP 2: <legal reasoning citing the relevant article>
+...
+STEP N: <legal reasoning citing the relevant article>
+CONCLUSION: <2-4 sentences synthesizing the legal assessment and why>
+[[language_instruction]]""",
     # ---------------------------------------------------------------------
     # Counter-Reasoner
     # ---------------------------------------------------------------------
@@ -586,6 +618,34 @@ Rules:
 - forbidden_assumptions must include hypothetical factual completions not in claim.
 - Do not output prose or markdown.
 """,
+    PromptKey.COUNTER_REASONER_SINGLE_CALL: """You are an expert Italian jurist acting as OPPOSING counsel. Construct the COMPLETE counter-argument (antithesis) against the reasoner's thesis below in a SINGLE response, as a numbered chain of counter-steps followed by a conclusion.
+
+CLAIM:
+"[[claim]]"
+
+REASONER CONCLUSION TO OPPOSE:
+"[[reasoner_conclusion]]"
+
+DOMAIN: [[routing_domain]]
+KNOWLEDGE BASE (use only these sources):
+[[knowledge_base]]
+ALLOWED STATUTES (cite ONLY these):
+[[statutes_list]]
+ALLOWED PRECEDENTS:
+[[precedents_list]]
+
+INSTRUCTIONS:
+- Produce between [[min_steps]] and [[max_steps]] counter-steps that attack the thesis by legal reinterpretation.
+- Each step must cite at least one relevant article from the ALLOWED STATUTES using the form "Art. NNN c.c." or "Art. NNN c.p.".
+- Attack the thesis WITHOUT inventing new facts and WITHOUT contradicting the explicit facts of the claim: challenge it through legal reinterpretation, exceptions, derogations, or limitations of the remedy.
+- If the thesis genuinely cannot be opposed on legal grounds, write "STEP 1: NO_VALID_OPPOSITION" instead of forcing a weak objection.
+- Output in EXACTLY this format, one marker per step, and nothing else before the first step:
+STEP 1: <counter-reasoning citing the relevant article>
+STEP 2: <counter-reasoning citing the relevant article>
+...
+STEP N: <counter-reasoning citing the relevant article>
+CONCLUSION: <2-4 sentences stating why the thesis should be rejected or materially limited>
+[[language_instruction]]""",
     PromptKey.COUNTER_REASONER_DECOMPOSE_CONCLUSION: """You are a legal decomposition engine for counter-argument planning.
 
 CLAIM:

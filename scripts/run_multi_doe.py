@@ -50,7 +50,7 @@ class MultiDoE:
         reasoner_models: list[str],
         counter_models: list[str],
         domains: list[str],
-        planning_ablations: list[tuple[bool, bool]],
+        planning_ablations: list[tuple[bool, bool, bool]],
         replicates: int,
         output_dir: str,
         use_docker: bool = False,
@@ -209,14 +209,20 @@ class MultiDoE:
                         else [True]
                     )
 
-                    for plan_r, plan_c in self.planning_ablations:
+                    for plan_r, plan_c, single_c in self.planning_ablations:
                         # Fractional design: planning=off only on the diagonal
                         if (
                             self.planning_off_selfplay_only
                             and not plan_r
+                            and not single_c
                             and r_model != c_model
                         ):
                             continue
+                        paradigm = (
+                            "single_call"
+                            if single_c
+                            else ("plan_then_execute" if plan_r else "stepwise")
+                        )
                         for causality_on in causality_conditions:
                             for rep in range(self.replicates):
                                 matrix.append(
@@ -229,6 +235,9 @@ class MultiDoE:
                                         "counter_model": c_model,
                                         "planning_reasoner": plan_r,
                                         "planning_counter": plan_c,
+                                        "single_call_reasoner": single_c,
+                                        "single_call_counter": single_c,
+                                        "paradigm": paradigm,
                                         "causality_enabled": causality_on,
                                         "replicate": rep,
                                         "status": "pending",
@@ -349,6 +358,8 @@ class MultiDoE:
                 "llm_max_tokens": 7168,
                 "enable_planning_reasoner": row["planning_reasoner"],
                 "enable_planning_counter": row["planning_counter"],
+                "single_call_reasoner": bool(row.get("single_call_reasoner", False)),
+                "single_call_counter": bool(row.get("single_call_counter", False)),
                 "reasoner_enable_causality": bool(row.get("causality_enabled", True)),
                 "counter_enable_causality": bool(row.get("causality_enabled", True)),
             },
@@ -377,6 +388,18 @@ class MultiDoE:
             "counter_model": row["counter_model"],
             "planning_reasoner": row["planning_reasoner"],
             "planning_counter": row["planning_counter"],
+            "single_call_reasoner": bool(row.get("single_call_reasoner", False)),
+            "single_call_counter": bool(row.get("single_call_counter", False)),
+            "paradigm": row.get(
+                "paradigm",
+                (
+                    "single_call"
+                    if row.get("single_call_reasoner")
+                    else (
+                        "plan_then_execute" if row["planning_reasoner"] else "stepwise"
+                    )
+                ),
+            ),
             "causality_enabled": bool(row.get("causality_enabled", True)),
             "replicate": row["replicate"],
         }
@@ -602,8 +625,9 @@ Examples:
     parser.add_argument(
         "--planning-ablations",
         default="on,off",
-        choices=["on,off", "on", "off"],
-        help="Planning ablation modes (on=both enabled, off=both disabled)",
+        help="Comma-separated reasoning-paradigm levels: on (Plan-then-Execute), "
+        "off (unplanned step-wise), single (single-call). E.g. 'on,off' (default), "
+        "'single' (single-call only), or 'on,off,single' (all three).",
     )
     parser.add_argument(
         "--causality-ablations",
@@ -706,11 +730,19 @@ Examples:
     if not reasoner_models or not counter_models:
         parser.error("Provide --models or both --reasoner-models and --counter-models")
     domains = [d.strip().upper() for d in args.domains.split(",")]
-    planning_ablations = (
-        [(True, True), (False, False)]
-        if args.planning_ablations == "on,off"
-        else [(True, True)] if args.planning_ablations == "on" else [(False, False)]
-    )
+    # Reasoning-paradigm levels as (planning_reasoner, planning_counter, single_call).
+    _paradigm_map = {
+        "on": (True, True, False),  # Plan-then-Execute
+        "off": (False, False, False),  # unplanned step-wise
+        "single": (False, False, True),  # single-call (one-shot)
+    }
+    planning_ablations = [
+        _paradigm_map[t.strip()]
+        for t in args.planning_ablations.split(",")
+        if t.strip() in _paradigm_map
+    ]
+    if not planning_ablations:
+        parser.error("--planning-ablations must list one or more of: on, off, single")
     causality_ablations = (
         [True, False]
         if args.causality_ablations == "on,off"

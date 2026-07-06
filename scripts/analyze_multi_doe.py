@@ -100,6 +100,29 @@ class AdvancedDoEAnalyzer:
             df["planning"] = df["planning_reasoner"].astype(bool)
         if "reasoner_model" in df.columns:
             df["reasoner_class"] = df["reasoner_model"].apply(_model_class)
+
+        # Reasoning-paradigm factor (3 levels), derived from the planning and
+        # single-call flags (which are authoritative). This also backfills rows
+        # whose `paradigm` column is missing or NaN, e.g. when a merged dataset
+        # mixes older on/off runs (no paradigm column) with single-call runs.
+        def _truthy(v: Any, default: bool) -> bool:
+            return bool(v) if pd.notna(v) else default
+
+        def _derive_paradigm(row: "pd.Series") -> str:
+            if _truthy(row.get("single_call_reasoner"), False):
+                return "single_call"
+            return (
+                "plan_then_execute"
+                if _truthy(row.get("planning_reasoner"), True)
+                else "stepwise"
+            )
+
+        if "paradigm" not in df.columns:
+            df["paradigm"] = df.apply(_derive_paradigm, axis=1)
+        else:
+            mask = df["paradigm"].isna()
+            if mask.any():
+                df.loc[mask, "paradigm"] = df[mask].apply(_derive_paradigm, axis=1)
         self.df = df
 
         print(f"✅ Loaded {len(self.results_df)} runs ({len(self.df)} completed)")
@@ -119,6 +142,11 @@ class AdvancedDoEAnalyzer:
     def analyze(self) -> dict:
         """Run the full analysis."""
         responses = self._responses()
+        # The reasoning paradigm is a 3-level factor only when single-call runs are
+        # present; add it to the Friedman/Dunn comparison in that case.
+        pairwise_factors = ["reasoner_model", "counter_model"]
+        if "paradigm" in self.df.columns and self.df["paradigm"].nunique() > 2:
+            pairwise_factors.append("paradigm")
         return {
             "summary": self._summary_stats(),
             "anova": {name: self._factorial_anova(name) for name, _ in responses},
@@ -127,8 +155,9 @@ class AdvancedDoEAnalyzer:
                     name: self._pairwise_comparison(factor, name, hb)
                     for name, hb in responses
                 }
-                for factor in ("reasoner_model", "counter_model")
+                for factor in pairwise_factors
             },
+            "paradigm_summary": self._paradigm_summary(),
             "model_class_contrast": {
                 name: self._wilcoxon_two_level("reasoner_class", "reasoning", name, hb)
                 for name, hb in responses
@@ -186,9 +215,17 @@ class AdvancedDoEAnalyzer:
             return {"error": f"Missing columns; need {sorted(needed)}"}
 
         cols = ["reasoner_model", "counter_model", response]
-        has_planning = "planning" in df.columns
-        if has_planning:
-            cols.append("planning")
+        # Third factor: the 3-level reasoning paradigm when single-call runs are
+        # present, otherwise the 2-level planning toggle. Using the boolean
+        # `planning` with single-call runs would merge step-wise and single-call
+        # (both planning=False) into a single level and hide the paradigm effect.
+        third = None
+        if "paradigm" in df.columns and df["paradigm"].nunique() > 2:
+            third = "paradigm"
+        elif "planning" in df.columns:
+            third = "planning"
+        if third:
+            cols.append(third)
         d = df[cols].dropna()
         if d.empty:
             return {"error": "No data for ANOVA"}
@@ -219,10 +256,10 @@ class AdvancedDoEAnalyzer:
         }
         model_df = (a - 1) + (b - 1) + (a - 1) * (b - 1)
 
-        if has_planning:
-            p = int(d["planning"].nunique())
+        if third:
+            p = int(d[third].nunique())
             if p > 1:
-                effects["planning"] = (_group_ss("planning"), p - 1)
+                effects[third] = (_group_ss(third), p - 1)
                 model_df += p - 1
 
         ss_e = sst - sum(ss for ss, _ in effects.values())
@@ -486,6 +523,39 @@ class AdvancedDoEAnalyzer:
             out[str(key)] = block
         return out
 
+    def _paradigm_summary(self) -> dict:
+        """Descriptive means by reasoning paradigm (plan / stepwise / single-call).
+        The formal 3-level contrast is the Friedman/Dunn test under
+        `pairwise_friedman["paradigm"]` when single-call runs are present."""
+        df = self.df
+        if "paradigm" not in df.columns or df.empty:
+            return {}
+        cols = [
+            c
+            for c in (
+                "aqa_plausibility",
+                "aqa_cogency",
+                "aqa_norm_support",
+                "aqa_semantics",
+                "citation_accuracy",
+                "fidelity",
+                "total_tokens",
+            )
+            if c in df.columns
+        ]
+        out: dict[str, Any] = {}
+        for paradigm, g in df.groupby("paradigm"):
+            row: dict[str, Any] = {"n": int(len(g))}
+            for c in cols:
+                row[f"{c}_mean"] = float(g[c].mean())
+                row[f"{c}_std"] = float(g[c].std(ddof=1)) if len(g) > 1 else 0.0
+            if "counter_abstained" in g.columns:
+                row["abstention_rate"] = float(
+                    g["counter_abstained"].astype(bool).mean()
+                )
+            out[str(paradigm)] = row
+        return out
+
     def _model_class_summary(self) -> dict:
         """Descriptive means by model class (the formal contrast is the Wilcoxon
         test in `model_class_contrast`)."""
@@ -495,6 +565,9 @@ class AdvancedDoEAnalyzer:
         return {
             cls: {
                 "aqa_plausibility_mean": float(g["aqa_plausibility"].mean()),
+                "aqa_plausibility_std": (
+                    float(g["aqa_plausibility"].std(ddof=1)) if len(g) > 1 else 0.0
+                ),
                 "reasoning_steps_mean": (
                     float(g["reasoning_steps"].mean())
                     if "reasoning_steps" in g.columns

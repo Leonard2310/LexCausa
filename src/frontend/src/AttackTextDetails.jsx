@@ -73,7 +73,7 @@ export default function AttackTextDetails({ aqaReport }) {
   return (
     <div className="attack-text-details">
       <p className="attack-text-summary">
-        {attacks.length} attacco{attacks.length !== 1 ? 'hi' : ''} attivo{attacks.length !== 1 ? 'i' : ''} completato{attacks.length !== 1 ? 'i' : ''}
+        {attacks.length} active attack{attacks.length !== 1 ? 's' : ''} completed
       </p>
 
       {attacks.map((atk, idx) => {
@@ -97,7 +97,7 @@ export default function AttackTextDetails({ aqaReport }) {
                 <strong>{atk.target.link_id}</strong>
               </div>
               <div className="attack-text-meta-inline">
-                <span className="atk-val">danno {atk.attackValue.toFixed(4)}</span>
+                <span className="atk-val">Damage {atk.attackValue.toFixed(4)}</span>
                 <span className="atk-overlap">overlap {(atk.overlap * 100).toFixed(0)}%</span>
                 <span className="atk-type">{atk.attackType.replace('_', ' ')}</span>
                 {atk.nliBypass && <span className="atk-nli-badge">NLI bypass</span>}

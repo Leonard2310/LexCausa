@@ -2539,6 +2539,17 @@ def _run_full_pipeline(
             print("🔄 Reasoner planning DISABLED (DoE ablation)")
         if not fe_enable_planning_counter:
             print("🔄 Counter-Reasoner planning DISABLED (DoE ablation)")
+        # Single-call ablation flags (one-shot generation, no planner/executor)
+        fe_single_call_reasoner = _coerce_bool(
+            fe_settings.get("single_call_reasoner", False), False
+        )
+        fe_single_call_counter = _coerce_bool(
+            fe_settings.get("single_call_counter", False), False
+        )
+        if fe_single_call_reasoner:
+            print("⚡ Reasoner SINGLE-CALL generation (DoE ablation)")
+        if fe_single_call_counter:
+            print("⚡ Counter-Reasoner SINGLE-CALL generation (DoE ablation)")
         if fe_search_query_terms_mode is not None:
             mode = str(fe_search_query_terms_mode).strip().lower()
             if mode == "llm":
@@ -2639,6 +2650,7 @@ def _run_full_pipeline(
             pre_retrieved_precedents=reasoner_precedents,
             enable_causality=fe_reasoner_enable_causality,
             enable_planning=fe_enable_planning_reasoner,
+            single_call=fe_single_call_reasoner,
             stream_callback=_reasoner_stream_callback,
         )
         _snap_after_reasoner = _usage_stats.get_snapshot()
@@ -2753,6 +2765,7 @@ def _run_full_pipeline(
             pre_retrieved_precedents=counter_precedents,
             enable_causality=counter_enable_causality_effective,
             enable_planning=fe_enable_planning_counter,
+            single_call=fe_single_call_counter,
             reasoner_conclusion=reasoner_conclusion,
             stream_callback=token_callback,
         )

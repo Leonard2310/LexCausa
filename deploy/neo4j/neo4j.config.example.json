@@ -1,0 +1,23 @@
+{
+  "user": "neo4j",
+  "password": "neo4jpassword",
+
+  "sandbox": "/lustre/home/<user>/tools/neo4j-sandbox",
+
+  "data_dir": "",
+
+  "bolt_port_range": [47600, 47699],
+  "http_port_range": [47700, 47799],
+
+  "heap_max": "4G",
+  "pagecache": "2G",
+  "ready_timeout_sec": 300,
+
+  "_comments": {
+    "password": "Real secret goes in neo4j.config.json (gitignored). Env NEO4J_PASSWORD overrides.",
+    "sandbox": "Absolute path to the Neo4j Singularity sandbox (built once, cluster-specific).",
+    "data_dir": "Empty = <repo_root>/neo4j (data stays inside the project, read-only KB after populate).",
+    "*_port_range": "neo4j_up.sh picks the first FREE port in each range on node 0.",
+    "heap_max/pagecache": "Neo4j JVM heap and page cache sizing."
+  }
+}

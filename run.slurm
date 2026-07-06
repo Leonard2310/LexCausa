@@ -29,17 +29,20 @@ mkdir -p logs
 export LLM_BACKEND=local               # 'local' → ChatCerberus
 export CERBERUS_ENDPOINTS="$DIR/endpoints.json"
 
-# ── Neo4j (assumed already running/reachable; adjust to your setup) ───────────
-export NEO4J_URI="${NEO4J_URI:-bolt://localhost:7687}"
-export NEO4J_USER="${NEO4J_USER:-neo4j}"
-export NEO4J_PASSWORD="${NEO4J_PASSWORD:-neo4jpassword}"
+# ── Neo4j: connection comes from deploy/neo4j/neo4j_endpoint.json (written by
+#    neo4j_up.sh below); credentials from deploy/neo4j/neo4j.config.json.
+export NEO4J_ENDPOINTS="$DIR/neo4j_endpoint.json"
 
-# ── Serve the models (llama.cpp) ─────────────────────────────────────────────
+# ── 1) Start Neo4j on node 0 (this batch node) ───────────────────────────────
+# Read-only KB at pipeline runtime; data stays in <repo>/neo4j (populated once).
+deploy/neo4j/neo4j_up.sh
+
+# ── 2) Serve the models (llama.cpp) ──────────────────────────────────────────
 # Do NOT wrap `cerberus up` in srun — Cerberus issues its own srun to the nodes.
 rm -f endpoints.json
 cerberus up &                          # serves all models in models.conf, in background
 UP=$!
-trap 'kill -INT "$UP" 2>/dev/null || true; wait "$UP" 2>/dev/null || true' EXIT
+trap 'kill -INT "$UP" 2>/dev/null || true; wait "$UP" 2>/dev/null || true; "$DIR/deploy/neo4j/neo4j_up.sh" stop 2>/dev/null || true' EXIT
 
 echo "waiting for endpoints.json..."
 for _ in $(seq 1 400); do [ -f endpoints.json ] && break; sleep 3; done
@@ -55,7 +58,10 @@ cerberus status
 # CERBERUS_ENDPOINTS, NEO4J_*) survive the switch.
 conda activate lexcausa
 
-# ── Reduced Multi-DoE run: 2 models vary as Reasoner × Counter (2×2 = 4 cells) ─
+# ── 3) Populate the KB once (idempotent: skipped if already populated) ────────
+deploy/neo4j/populate_kb.sh
+
+# ── 4) Reduced Multi-DoE run: 2 models vary as Reasoner × Counter (2×2 = 4 cells) ─
 # Aliases resolve via CERBERUS_ALIAS_MAP (src/config.py):
 #   gpt_oss_120b→oss120 | llama_3_3_70b_instruct→llama33   (both vary: R × C)
 #   llama_4_scout_17b→assistant  (fixed support/evaluator — NOT a DoE factor)

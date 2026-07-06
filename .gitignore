@@ -3,6 +3,11 @@ endpoints.json
 .cerberus/
 outputs/
 
+# Neo4j (IBiSCo deploy): internal data store, runtime endpoint, real secrets
+/neo4j/
+neo4j_endpoint.json
+deploy/neo4j/neo4j.config.json
+
 
 # Bytecode
 __pycache__/

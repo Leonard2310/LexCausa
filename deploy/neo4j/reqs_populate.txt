@@ -1,0 +1,14 @@
+# Minimal, reproducible env for the one-time KB population (db_orchestrator.py).
+# Target: Python 3.11. These deps are a SUBSET already present in the main
+# `lexcausa` env, so on IBiSCo you can populate with that env directly
+# (PY311=python). Keep this file to build a dedicated light env if preferred:
+#     python3.11 -m venv ~/.venvs/lexcausa-kb
+#     ~/.venvs/lexcausa-kb/bin/pip install -r deploy/neo4j/reqs_populate.txt
+#     PY311=~/.venvs/lexcausa-kb/bin/python deploy/neo4j/populate_kb.sh
+neo4j>=5.0.0,<6.0.0
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0,<2.0.0
+pyarrow>=15.0.0
+python-dotenv>=1.0.0,<2.0.0
+pydantic>=2.9.0,<3.0.0
+pydantic-settings>=2.5.0,<3.0.0

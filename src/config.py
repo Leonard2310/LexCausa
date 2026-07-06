@@ -1148,6 +1148,53 @@ class Settings(BaseSettings):
     # Paths
     # =========================================================================
     @model_validator(mode="after")
+    def _load_neo4j_endpoint(self) -> "Settings":
+        """Derive the Neo4j connection from the deploy config + endpoint file.
+
+        Mirrors the Cerberus endpoints.json pattern: `deploy/neo4j/neo4j_up.sh`
+        writes `neo4j_endpoint.json` (coordinates), and `neo4j.config.json`
+        holds the credentials. The app reads those instead of a hardcoded URI.
+
+        Precedence (highest first): explicit env (NEO4J_URI / NEO4J_USER /
+        NEO4J_PASSWORD) → endpoint file (URI/user) / dedicated config (creds) →
+        static defaults. So on IBiSCo nothing is hardcoded; off-cluster the
+        static defaults still apply.
+        """
+        import json
+
+        # ── credentials from the dedicated config (env still wins) ───────────
+        cfg_path = _project_root / "deploy" / "neo4j" / "neo4j.config.json"
+        if cfg_path.is_file():
+            try:
+                cfg = json.loads(cfg_path.read_text())
+                if cfg.get("password") and "NEO4J_PASSWORD" not in os.environ:
+                    object.__setattr__(self, "neo4j_password", str(cfg["password"]))
+                if cfg.get("user") and "NEO4J_USER" not in os.environ:
+                    object.__setattr__(self, "neo4j_user", str(cfg["user"]))
+            except Exception:
+                pass
+
+        # ── coordinates from the endpoint file (explicit env URI wins) ───────
+        if "NEO4J_URI" not in os.environ:
+            ep_path = Path(
+                os.environ.get("NEO4J_ENDPOINTS")
+                or (_project_root / "neo4j_endpoint.json")
+            )
+            if ep_path.is_file():
+                try:
+                    ep = json.loads(ep_path.read_text())
+                    uri = ep.get("bolt_uri")
+                    if not uri and ep.get("host") and ep.get("bolt_port"):
+                        uri = f"bolt://{ep['host']}:{ep['bolt_port']}"
+                    if uri:
+                        object.__setattr__(self, "neo4j_uri", uri)
+                    if ep.get("user") and "NEO4J_USER" not in os.environ:
+                        object.__setattr__(self, "neo4j_user", str(ep["user"]))
+                except Exception:
+                    pass
+        return self
+
+    @model_validator(mode="after")
     def _discover_groq_api_keys(self) -> "Settings":
         """Scan environment for all GROQ_API_KEY_V* variables.
 

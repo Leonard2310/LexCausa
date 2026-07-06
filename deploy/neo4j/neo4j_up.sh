@@ -15,7 +15,8 @@
 #  ALLOCATIONS, override `data_dir` (config) and NEO4J_ENDPOINTS per run.
 #
 #  Config: deploy/neo4j/neo4j.config.json (falls back to *.example.json).
-#  Env overrides: NEO4J_PASSWORD, NEO4J_ENDPOINTS, CONSOLE_LOG_DIR.
+#  Env overrides: NEO4J_PASSWORD, NEO4J_ENDPOINTS, NEO4J_DATA_DIR, CONSOLE_LOG_DIR.
+#  Per-job isolation: set NEO4J_DATA_DIR + NEO4J_ENDPOINTS under experiments_X/.
 #
 #  Usage:
 #    deploy/neo4j/neo4j_up.sh            # start (idempotent-ish: reuses a live server)
@@ -54,7 +55,7 @@ PY
 NEO4J_USER_="${NEO4J_USER:-$CFG_USER}"
 NEO4J_PASS_="${NEO4J_PASSWORD:-$CFG_PASSWORD}"
 SANDBOX="$CFG_SANDBOX"
-DATA_DIR="${CFG_DATA_DIR:-}"
+DATA_DIR="${NEO4J_DATA_DIR:-${CFG_DATA_DIR:-}}"   # env override → config → default
 [ -n "$DATA_DIR" ] || DATA_DIR="$REPO/neo4j"
 ENDPOINT_FILE="${NEO4J_ENDPOINTS:-$REPO/neo4j_endpoint.json}"
 PID_FILE="$DATA_DIR/neo4j.pid"

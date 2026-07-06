@@ -39,8 +39,14 @@ export CERBERUS_ENDPOINTS="$DIR/endpoints.json"
 #    neo4j_up.sh below); credentials from deploy/neo4j/neo4j.config.json.
 export NEO4J_ENDPOINTS="$DIR/neo4j_endpoint.json"
 
-# ── 1) Start Neo4j on node 0 (this batch node) ───────────────────────────────
-# Read-only KB at pipeline runtime; data stays in <repo>/neo4j (populated once).
+# ── 1) FRESH Neo4j on node 0 (this batch node) ───────────────────────────────
+# Wipe & repopulate on EVERY run: remove the Neo4j store, the stale endpoint, and
+# the Neo4j-derived claim-context cache, so each job starts from a clean, freshly
+# populated KB — no stale .populated marker, no poisoned cache. (If you set a
+# custom data_dir in neo4j.config.json, adjust the path removed below.)
+"$DIR/deploy/neo4j/neo4j_up.sh" stop 2>/dev/null || true   # kill any leftover Neo4j
+rm -rf "$DIR/neo4j" "$DIR/neo4j_endpoint.json"
+rm -f "$DIR"/cache/claim_context_cache.sqlite*
 deploy/neo4j/neo4j_up.sh
 
 # ── 2) Serve the models (llama.cpp) ──────────────────────────────────────────
@@ -64,8 +70,8 @@ cerberus status
 # CERBERUS_ENDPOINTS, NEO4J_*) survive the switch.
 conda activate lexcausa
 
-# ── 3) Populate the KB once (idempotent: skipped if already populated) ────────
-deploy/neo4j/populate_kb.sh
+# ── 3) Populate the KB (store was wiped above → always loads schema+statutes+precedents) ─
+deploy/neo4j/populate_kb.sh --clean
 
 # ── 4) Reduced Multi-DoE run: 2 models vary as Reasoner × Counter (2×2 = 4 cells) ─
 # Aliases resolve via CERBERUS_ALIAS_MAP (src/config.py):

@@ -40,7 +40,7 @@ print(f'CFG_DATA_DIR={shlex.quote(str(g("data_dir","")))}')
 PY
 )"
 
-DATA_DIR="${CFG_DATA_DIR:-}"; [ -n "$DATA_DIR" ] || DATA_DIR="$REPO/neo4j"
+DATA_DIR="${NEO4J_DATA_DIR:-${CFG_DATA_DIR:-}}"; [ -n "$DATA_DIR" ] || DATA_DIR="$REPO/neo4j"
 ENDPOINT_FILE="${NEO4J_ENDPOINTS:-$REPO/neo4j_endpoint.json}"
 MARKER="$DATA_DIR/.populated"
 PY311="${PY311:-python3}"

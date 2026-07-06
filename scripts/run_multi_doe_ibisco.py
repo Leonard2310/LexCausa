@@ -104,6 +104,16 @@ def _parse_args() -> argparse.Namespace:
         help="Causality taxonomy ablation on counter (on/off or both)",
     )
     p.add_argument(
+        "--same-model-cells",
+        default="on",
+        choices=["on", "off"],
+        help=(
+            "Include cells where Reasoner == Counter (the R×C diagonal). "
+            "'off' keeps only cross pairs (R≠C) — used to split the full 4×4 "
+            "design over 6 two-model jobs without recomputing diagonals."
+        ),
+    )
+    p.add_argument(
         "--claims-file", default="claims.md", help="Path to claims markdown file"
     )
     p.add_argument(
@@ -192,13 +202,21 @@ def _generate_matrix(
     causality_ablations: list[bool],
     replicates: int,
     base_seed: int,
+    include_same_model: bool = True,
 ) -> pd.DataFrame:
-    """Full-factorial: reasoner_model × counter_model × planning × causality × claims × replicates."""
+    """Full-factorial: reasoner_model × counter_model × planning × causality × claims × replicates.
+
+    When ``include_same_model`` is False, cells with reasoner_model == counter_model
+    (the R×C diagonal) are skipped, so a two-model job produces only the cross
+    pairs (R≠C).
+    """
     rows = []
     for replicate in range(replicates):
         seed = base_seed + replicate
         for r_model in reasoner_models:
             for c_model in counter_models:
+                if not include_same_model and r_model == c_model:
+                    continue
                 for plan_r, plan_c in planning_ablations:
                     for caus in causality_ablations:
                         for claim in claims:
@@ -361,6 +379,7 @@ def main() -> None:
         causality_ablations,
         args.replicates,
         args.seed,
+        include_same_model=(args.same_model_cells == "on"),
     )
     # Sort by (reasoner_model, counter_model) so all conditions for a pair run
     # contiguously. With Cerberus all models are served concurrently, so this is

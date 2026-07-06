@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -20,11 +21,28 @@ _DEFAULT_DB_PATH = _PROJECT_ROOT / "cache" / "claim_context_cache.sqlite"
 _SCHEMA_VERSION = "claim_context_cache_v1"
 
 
+def _resolve_db_path() -> Path:
+    """Resolve the cache DB path, allowing per-job isolation via env.
+
+    Precedence: CLAIM_CONTEXT_CACHE_DB (full file path) → CLAIM_CONTEXT_CACHE_DIR
+    (directory, standard filename appended) → shared repo default. Lets parallel
+    runs keep separate caches (e.g. CLAIM_CONTEXT_CACHE_DIR=$EXP/cache) instead of
+    the shared <repo>/cache one.
+    """
+    db = os.environ.get("CLAIM_CONTEXT_CACHE_DB")
+    if db:
+        return Path(db)
+    cache_dir = os.environ.get("CLAIM_CONTEXT_CACHE_DIR")
+    if cache_dir:
+        return Path(cache_dir) / "claim_context_cache.sqlite"
+    return _DEFAULT_DB_PATH
+
+
 class ClaimContextMemory:
     """Small SQLite cache keyed by claim + retrieval signature."""
 
     def __init__(self, db_path: Path | None = None):
-        self._db_path = Path(db_path or _DEFAULT_DB_PATH)
+        self._db_path = Path(db_path) if db_path else _resolve_db_path()
         self._init_lock = threading.Lock()
         self._initialized = False
 

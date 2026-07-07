@@ -209,7 +209,7 @@ function AttackArrow({ x1, y1, x2, y2, value, overlap, leftToRight, isCapped }) 
 function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
   const title = prec.title || prec.precedent_id || 'Precedente';
   const shortTitle = title.length > 28 ? title.slice(0, 25) + '…' : title;
-  const stanceLabel = prec._stance === 1 ? '✅ favorevole' : prec._stance === -1 ? '❌ contrario' : '⚖️ neutro';
+  const stanceLabel = prec._stance === 1 ? 'favorevole' : prec._stance === -1 ? 'contrario' : 'neutro';
   const titleClipId = `prec-title-clip-${String(prec.precedent_id || title)
     .replace(/[^a-zA-Z0-9_-]/g, '')
     .slice(0, 24)}-${Math.round(x)}-${Math.round(y)}`;
@@ -218,7 +218,7 @@ function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
     <g style={{ cursor: 'pointer' }} onClick={() => onClick?.(prec)}>
       <defs>
         <clipPath id={titleClipId}>
-          <rect x={x + 28} y={y + 6} width={PREC_NODE_W - 36} height={16} />
+          <rect x={x + 12} y={y + 6} width={PREC_NODE_W - 20} height={16} />
         </clipPath>
       </defs>
       <rect
@@ -233,11 +233,9 @@ function PrecedentNode({ prec, x, y, delta, onClick, isSelected }) {
         strokeWidth={isSelected ? 2.5 : 1.5}
         strokeDasharray="4 2"
       />
-      {/* icon */}
-      <text x={x + 10} y={y + 18} fontSize="13">📜</text>
       {/* title */}
       <text
-        x={x + 28}
+        x={x + 12}
         y={y + 18}
         clipPath={`url(#${titleClipId})`}
         fill={COLORS.precText}
@@ -1046,10 +1044,10 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr, forPd
               Final Plausibility = {f2(proNet)} − {f2(contraNet)} = {finalNet >= 0 ? '+' : ''}{f2(finalNet)}
               {'  →  '}
               {verdict === 'plausible'
-                ? '✅ Plausible'
+                ? 'Plausible'
                 : verdict === 'implausible'
-                    ? '❌ Implausible'
-                  : '⚠️ Uncertain'}
+                    ? 'Implausible'
+                  : 'Uncertain'}
             </text>
             </g>
           </g>
@@ -1070,7 +1068,7 @@ export default function AspicMetagraph({ aqaReport, reasonerIr, counterIr, forPd
           <div className="metagraph-detail-header">
             <strong>
               <span className="role-tag" style={{ background: COLORS.precBg, color: COLORS.precText }}>
-                📜 PREC
+                PREC
               </span>
               {selectedPrec.precedent_id || selectedPrec.id}
             </strong>

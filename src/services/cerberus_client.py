@@ -52,6 +52,7 @@ except ImportError:  # off-cluster / cerberus package not installed
 
 _alias_map: dict[str, str] = {}
 _reasoning_aliases: frozenset[str] = frozenset()
+_reasoning_effort: dict[str, str] = {}
 _default_alias: Optional[str] = None
 _config_lock = threading.Lock()
 
@@ -81,6 +82,18 @@ def set_reasoning_aliases(aliases: set[str] | frozenset[str]) -> None:
     global _reasoning_aliases
     with _config_lock:
         _reasoning_aliases = frozenset(aliases)
+
+
+def set_reasoning_effort(mapping: dict[str, str]) -> None:
+    """Register per-alias reasoning effort (e.g. {"gpt_oss_120b": "low"}).
+
+    Applied as ``chat_template_kwargs.reasoning_effort`` on the request — used by
+    harmony models (gpt-oss) to bound the thinking budget. Aliases not in the map
+    use the model/server default.
+    """
+    global _reasoning_effort
+    with _config_lock:
+        _reasoning_effort = dict(mapping)
 
 
 def set_default_model(alias: str) -> None:
@@ -318,7 +331,11 @@ class ChatCerberus(BaseChatModel):
             reasoning_labels = {
                 _alias_map.get(a, a) for a in _reasoning_aliases
             }
+            effort_by_label = {
+                _alias_map.get(a, a): e for a, e in _reasoning_effort.items()
+            }
         is_reasoning = label in reasoning_labels
+        effort = effort_by_label.get(label)
 
         # reasoning=None leaves the server default (models.conf). For aliases we
         # know are reasoning models, request thinking explicitly (best-effort);
@@ -330,6 +347,19 @@ class ChatCerberus(BaseChatModel):
             extra["stop"] = stop
         if self.seed is not None:
             extra["seed"] = self.seed
+        # Forward JSON mode so JSON-producing calls (planners, gates, target maps)
+        # are grammar-constrained by llama.cpp — same as the cloud backends. Without
+        # it the model emits prose/fences and json.loads fails ("char 0"). If the
+        # server rejects response_format, callers already retry without it.
+        response_format = kwargs.get("response_format")
+        if response_format is not None:
+            extra["response_format"] = response_format
+        # Per-model reasoning effort (e.g. gpt-oss "low") → harmony chat template.
+        # CerberusClient merges enable_thinking into the same chat_template_kwargs.
+        if effort:
+            extra.setdefault("extra_body", {}).setdefault(
+                "chat_template_kwargs", {}
+            )["reasoning_effort"] = effort
 
         resp = client.chat(
             label,

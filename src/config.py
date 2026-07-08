@@ -761,10 +761,13 @@ class Settings(BaseSettings):
     # These aliases are Cerberus-specific and named after the actual served models
     # (independent of the Groq/OpenRouter alias catalogs). An alias absent from the
     # map is used as the label as-is. The labels below match the repo-root models.conf:
-    #   oss120 = gpt-oss-120b  |  llama33 = Llama-3.3-70B-Instruct  |  assistant = Llama-4-Scout-17B
+    #   oss120 = gpt-oss-120b | llama33 = Llama-3.3-70B | deepseek70 = DeepSeek-R1-Distill-Llama-70B
+    #   qwen72 = Qwen2.5-72B-Instruct | assistant = Llama-4-Scout-17B (fixed support)
     CERBERUS_ALIAS_MAP: ClassVar[dict[str, str]] = {
         "gpt_oss_120b": "oss120",
         "llama_3_3_70b_instruct": "llama33",
+        "deepseek_r1_distill_70b": "deepseek70",
+        "qwen_25_72b": "qwen72",
         "llama_4_scout_17b": "assistant",
     }
 
@@ -772,8 +775,15 @@ class Settings(BaseSettings):
     # the trace server-side (clean `content`); this set only nudges the per-request
     # reasoning flag — the real default is `reasoning` in models.conf.
     CERBERUS_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
-        {"gpt_oss_120b"}
+        {"gpt_oss_120b", "deepseek_r1_distill_70b"}
     )
+
+    # Per-alias reasoning effort → chat_template_kwargs.reasoning_effort on the
+    # request. gpt-oss (harmony) gets "low" to bound its thinking budget (avoids
+    # burning the token budget on reasoning and returning empty content).
+    CERBERUS_REASONING_EFFORT: ClassVar[dict[str, str]] = {
+        "gpt_oss_120b": "low",
+    }
 
     # =========================================================================
     # OpenRouter backend (OpenAI-compatible, paid API, provider-pinned).

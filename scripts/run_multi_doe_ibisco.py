@@ -359,11 +359,13 @@ def main() -> None:
         set_alias_map,
         set_default_model,
         set_reasoning_aliases,
+        set_reasoning_effort,
         unload_model,
     )
 
     set_alias_map(settings.CERBERUS_ALIAS_MAP)
     set_reasoning_aliases(settings.CERBERUS_REASONING_ALIASES)
+    set_reasoning_effort(settings.CERBERUS_REASONING_EFFORT)
 
     # ── Load claims ───────────────────────────────────────────────────────────
     claims = _load_claims(Path(args.claims_file))

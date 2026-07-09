@@ -140,7 +140,7 @@ class Settings(BaseSettings):
         alias="COUNTER_DEFAULT_TEMPERATURE",
         description="Default UI temperature for the Counter-Reasoner agent.",
     )
-    llm_max_tokens: int = Field(default=7168, alias="LLM_MAX_TOKENS")
+    llm_max_tokens: int = Field(default=20000, alias="LLM_MAX_TOKENS")
 
     # =========================================================================
     # Embedding Model Configuration
@@ -859,7 +859,7 @@ class Settings(BaseSettings):
         "the worst case. Ceiling, not target: models stop at the closing brace.",
     )
     reasoner_planner_max_tokens_cap: int = Field(
-        default=1600,
+        default=20000,
         alias="REASONER_PLANNER_MAX_TOKENS_CAP",
         description="Per-call max_tokens cap for Reasoner planner generation. Sized from "
         "stress tests on the real plan prompt (gpt-oss effort=low): worst observed total "
@@ -871,7 +871,7 @@ class Settings(BaseSettings):
         description="Minimum floor for Reasoner planner max_tokens shrink policy.",
     )
     reasoner_support_step_max_tokens_cap: int = Field(
-        default=1400,
+        default=20000,
         alias="REASONER_SUPPORT_STEP_MAX_TOKENS_CAP",
         description="Per-call max_tokens cap for Reasoner support-step generation.",
     )
@@ -881,21 +881,21 @@ class Settings(BaseSettings):
         description="Minimum floor for Reasoner support-step max_tokens shrink policy.",
     )
     reasoner_causality_classifier_max_tokens_cap: int = Field(
-        default=256,
+        default=20000,
         alias="REASONER_CAUSALITY_CLASSIFIER_MAX_TOKENS_CAP",
         description="Per-call max_tokens cap for post-hoc causality classification.",
     )
     reasoner_conclusion_max_tokens_cap: int = Field(
-        default=512,
+        default=20000,
         alias="REASONER_CONCLUSION_MAX_TOKENS_CAP",
         description="Per-call max_tokens cap for Reasoner conclusion generation.",
     )
     counter_planner_max_tokens_cap: int = Field(
-        default=1600,
+        default=20000,
         alias="COUNTER_PLANNER_MAX_TOKENS_CAP",
         description="Per-call max_tokens cap for Counter planner generation. Sized from "
         "stress tests on the real plan prompt (gpt-oss effort=low): worst observed total "
-        "956 tokens (CoT spike 501 + plan JSON); 1600 keeps comfortable headroom.",
+        "956 tokens (CoT spike 501 + plan JSON); 20000 keeps comfortable headroom.",
     )
     counter_planner_min_tokens: int = Field(
         default=192,
@@ -903,12 +903,12 @@ class Settings(BaseSettings):
         description="Minimum floor for Counter planner max_tokens shrink policy.",
     )
     counter_support_step_max_tokens_cap: int = Field(
-        default=1400,
+        default=20000,
         alias="COUNTER_SUPPORT_STEP_MAX_TOKENS_CAP",
         description="Per-call max_tokens cap for Counter step generation.",
     )
     counter_support_step_min_tokens: int = Field(
-        default=256,
+        default=20000,
         alias="COUNTER_SUPPORT_STEP_MIN_TOKENS",
         description="Minimum floor for Counter support-step max_tokens shrink policy.",
     )

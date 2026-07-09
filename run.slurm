@@ -5,7 +5,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=3
 #SBATCH --cpus-per-task=8
-#SBATCH --time=04:00:00
 #SBATCH --output=logs/slurm-%j.out
 
 set -euo pipefail
@@ -39,6 +38,17 @@ export CERBERUS_ENDPOINTS="$WORK/endpoints.json"  # client reads this
 export NEO4J_DATA_DIR="$WORK/neo4j"               # per-job Neo4j store
 export NEO4J_ENDPOINTS="$WORK/neo4j_endpoint.json"
 export CLAIM_CONTEXT_CACHE_DIR="$WORK/cache"       # per-job retrieval cache (no shared-file WAL hazard)
+
+# Generous token budgets (paired with the removed SLURM time limit). The DoE
+# payload sets llm_max_tokens=20000; these per-phase caps must also be raised or
+# each call stays bounded by min(llm_max_tokens, cap) — the small default caps
+# (planner=1600) are why gpt-oss/deepseek exhausted the budget on thinking and
+# returned empty JSON. Set via env so the global (cloud) defaults are untouched.
+export ANCILLARY_MAX_TOKENS_CAP=20000
+export REASONER_PLANNER_MAX_TOKENS_CAP=20000
+export REASONER_SUPPORT_STEP_MAX_TOKENS_CAP=20000
+export REASONER_CONCLUSION_MAX_TOKENS_CAP=20000
+export COUNTER_PLANNER_MAX_TOKENS_CAP=20000
 
 # ── Model slice (override per job: sbatch --export=ALL,REASONER=...,COUNTER=...) ─
 REASONER="${REASONER:-gpt_oss_120b,llama_3_3_70b_instruct}"

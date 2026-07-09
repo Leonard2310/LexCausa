@@ -465,7 +465,7 @@ def main() -> None:
                 "response_language": "en",
                 "reasoner_temperature": 0.0,
                 "counter_temperature": 0.3,
-                "llm_max_tokens": 7168,
+                "llm_max_tokens": 20000,
                 "enable_planning_reasoner": bool(row["planning_reasoner"]),
                 "enable_planning_counter": bool(row["planning_counter"]),
                 "reasoner_enable_causality": bool(row.get("causality_enabled", True)),

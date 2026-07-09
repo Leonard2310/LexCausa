@@ -102,6 +102,32 @@ def set_default_model(alias: str) -> None:
     _default_alias = alias
 
 
+_configured = False
+
+
+def ensure_configured(
+    alias_map: dict[str, str],
+    reasoning_aliases: "set[str] | frozenset[str]",
+    reasoning_effort: dict[str, str],
+) -> None:
+    """Apply alias_map/reasoning_aliases/reasoning_effort once per process.
+
+    Only ``scripts/run_multi_doe_ibisco.py`` calls set_alias_map() explicitly at
+    startup. Other entry points (``get_chat_groq()`` on the API/pipeline paths,
+    e.g. PolisherEvaluator's attack-type classification) build a ChatCerberus
+    without ever configuring the maps, so every alias would silently fall back to
+    the fixed model. Idempotent: no-op after the first call.
+    """
+    global _configured
+    with _config_lock:
+        if _configured:
+            return
+        _configured = True
+    set_alias_map(alias_map)
+    set_reasoning_aliases(reasoning_aliases)
+    set_reasoning_effort(reasoning_effort)
+
+
 def _resolve_label(alias: str, served: Optional[set[str]] = None) -> str:
     """Map a LexCausa alias to its Cerberus served label.
 

@@ -1529,7 +1529,17 @@ class Settings(BaseSettings):
         return self.COUNTER_DEFAULT_MODEL_ALIAS
 
     def resolve_model_name(self, alias_or_model: str | None) -> str:
-        """Resolve alias to provider model id; pass-through raw ids unchanged."""
+        """Resolve alias to provider model id; pass-through raw ids unchanged.
+
+        Local (Cerberus) backend keeps LexCausa aliases as-is: ChatCerberus
+        resolves them to served labels via CERBERUS_ALIAS_MAP. MODEL_ALIAS_MAP
+        below is Groq/OpenRouter provider ids — translating through it here
+        (e.g. "gpt_oss_120b" -> "openai/gpt-oss-120b") would hand ChatCerberus
+        an id absent from CERBERUS_ALIAS_MAP, which silently falls back to the
+        fixed model.
+        """
+        if self.llm_backend == "local":
+            return alias_or_model or self.pipeline_model_order_aliases[0]
         alias_map = self.model_alias_map
         if not alias_or_model:
             first_alias = self.pipeline_model_order_aliases[0]

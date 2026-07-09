@@ -35,9 +35,11 @@ echo "📁 WORK: $WORK"
 
 export LLM_BACKEND=local                          # 'local' → ChatCerberus
 export CERBERUS_ENDPOINTS="$WORK/endpoints.json"  # client reads this
+export CERBERUS_DEBUG=1                           # log every alias→label resolution + FALLBACKs
 export NEO4J_DATA_DIR="$WORK/neo4j"               # per-job Neo4j store
 export NEO4J_ENDPOINTS="$WORK/neo4j_endpoint.json"
 export CLAIM_CONTEXT_CACHE_DIR="$WORK/cache"       # per-job retrieval cache (no shared-file WAL hazard)
+export LEXCAUSA_LOG_DIR="$WORK/results/logs"       # per-claim pipeline logs land next to run_errors.log, not repo-root logs/
 
 # Generous token budgets (paired with the removed SLURM time limit). The DoE
 # payload sets llm_max_tokens=20000; these per-phase caps must also be raised or

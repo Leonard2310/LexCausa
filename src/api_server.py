@@ -180,7 +180,11 @@ def _tail_text_file(path: Path, max_lines: int = 200) -> str:
 
 
 # ─── Pipeline file logging ──────────────────────────────────────────
-LOG_DIR = Path(project_root) / "logs"
+# LEXCAUSA_LOG_DIR overrides the default (repo-root logs/) so parallel SLURM jobs
+# (run.slurm's per-job WORK dir) each get their own isolated logs/, matching the
+# isolation already applied to endpoints/Neo4j/cache. Unset for the interactive
+# API server, which keeps writing to <repo_root>/logs as before.
+LOG_DIR = Path(os.environ.get("LEXCAUSA_LOG_DIR") or (Path(project_root) / "logs"))
 
 
 class _TeeWriter:

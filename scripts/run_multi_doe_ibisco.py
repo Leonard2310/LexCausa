@@ -304,6 +304,12 @@ def _extract_metrics(run_id: str, row: dict, response: dict, duration: float) ->
     metrics["max_prompt_tokens_per_call"] = int(
         token_stats.get("max_prompt_tokens_per_call", 0)
     )
+    metrics["llm_calls"] = int(token_stats.get("total_llm_calls", 0))
+    _calls_ph = token_stats.get("calls_by_phase", {}) or {}
+    metrics["reasoner_calls"] = int(_calls_ph.get("reasoner", 0))
+    metrics["counter_calls"] = int(_calls_ph.get("counter_reasoner", 0))
+    metrics["evaluator_calls"] = int(_calls_ph.get("evaluator", 0))
+    metrics["retrieval_calls"] = int(_calls_ph.get("retrieval", 0))
 
     reasoner = response.get("reasoner", {})
     metrics["reasoning_steps"] = len(reasoner.get("reasoning_chain", []))

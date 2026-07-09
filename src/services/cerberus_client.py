@@ -224,7 +224,9 @@ def _served_labels() -> Optional[set[str]]:
             if client.is_available():
                 _served_cache = set(client.list_models())
                 if _DEBUG:
-                    print(f"[cerberus] served labels: {sorted(_served_cache)}", flush=True)
+                    print(
+                        f"[cerberus] served labels: {sorted(_served_cache)}", flush=True
+                    )
         except Exception:
             return None
     return _served_cache
@@ -353,6 +355,7 @@ class ChatCerberus(BaseChatModel):
         run_manager: Any = None,
         **kwargs: Any,
     ) -> ChatResult:
+        del run_manager  # required by the LangChain _generate override, unused here
         client = get_client()
         served = _served_labels()
         label = _resolve_label(self.model, served)
@@ -361,7 +364,10 @@ class ChatCerberus(BaseChatModel):
         # model. With CERBERUS_DEBUG=1, log every resolution.
         with _config_lock:
             _mapped = _alias_map.get(self.model, self.model)
-        if (_DEBUG or label != _mapped) and (self.model, label) not in _warned_resolutions:
+        if (_DEBUG or label != _mapped) and (
+            self.model,
+            label,
+        ) not in _warned_resolutions:
             _warned_resolutions.add((self.model, label))
             _tag = "⚠️ FALLBACK" if label != _mapped else "resolve"
             print(
@@ -374,9 +380,7 @@ class ChatCerberus(BaseChatModel):
         # Reasoning applies to the *served label*: an alias that fell back to the
         # fixed support model must not force thinking meant for a reasoning model.
         with _config_lock:
-            reasoning_labels = {
-                _alias_map.get(a, a) for a in _reasoning_aliases
-            }
+            reasoning_labels = {_alias_map.get(a, a) for a in _reasoning_aliases}
             effort_by_label = {
                 _alias_map.get(a, a): e for a, e in _reasoning_effort.items()
             }
@@ -403,9 +407,9 @@ class ChatCerberus(BaseChatModel):
         # Per-model reasoning effort (e.g. gpt-oss "low") → harmony chat template.
         # CerberusClient merges enable_thinking into the same chat_template_kwargs.
         if effort:
-            extra.setdefault("extra_body", {}).setdefault(
-                "chat_template_kwargs", {}
-            )["reasoning_effort"] = effort
+            extra.setdefault("extra_body", {}).setdefault("chat_template_kwargs", {})[
+                "reasoning_effort"
+            ] = effort
 
         resp = client.chat(
             label,
@@ -415,13 +419,44 @@ class ChatCerberus(BaseChatModel):
             temperature=self.temperature,
             **extra,
         )
-        print("++++++++++++++++++++++++++++++")
-        print(resp)
-        print("++++++++++++++++++++++++++++++")
+        # Espone la usage del server (resp.raw.usage) e la registra in
+        # _usage_stats: senza questo le chiamate Cerberus bypassano il conteggio
+        # (resilient_chat_call salta _record_llm_stats sul fast-path non-Groq) e
+        # le colonne token/chiamate di metrics.csv restano a ~0.
+        usage = getattr(getattr(resp, "raw", None), "usage", None)
+        usage_metadata = None
+        if usage is not None:
+            pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+            ct = int(getattr(usage, "completion_tokens", 0) or 0)
+            tt = int(getattr(usage, "total_tokens", 0) or (pt + ct))
+            usage_metadata = {
+                "input_tokens": pt,
+                "output_tokens": ct,
+                "total_tokens": tt,
+            }
+            try:
+                from services.usage_stats import get_usage_stats
 
+                get_usage_stats().record_llm_call(
+                    provider="cerberus",
+                    model=label,
+                    source="chat_cerberus_generate",
+                    prompt_tokens=pt,
+                    completion_tokens=ct,
+                    total_tokens=tt,
+                )
+            except Exception:
+                pass
 
         return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=resp.content or ""))]
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=resp.content or "",
+                        usage_metadata=usage_metadata,
+                    )
+                )
+            ]
         )
 
     def _stream(

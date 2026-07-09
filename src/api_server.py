@@ -2515,6 +2515,12 @@ def _run_full_pipeline(
                 "completion": int(at.get("completion", 0) - bt.get("completion", 0)),
             }
 
+        def _phase_calls(before: dict, after: dict) -> int:
+            return int(
+                after.get("llm", {}).get("calls_total", 0)
+                - before.get("llm", {}).get("calls_total", 0)
+            )
+
         _check_cancel()
         # Apply chain step overrides to global settings
         if fe_chain_min_steps is not None:
@@ -2954,6 +2960,16 @@ def _run_full_pipeline(
     token_stats_payload["total_tokens"] = (
         _run_totals["prompt"] + _run_totals["completion"]
     )
+    # Numero di chiamate LLM (totale e per-fase), stessa logica snapshot-delta.
+    token_stats_payload["total_llm_calls"] = _phase_calls(
+        _snap_pipeline_start, _final_snap
+    )
+    token_stats_payload["calls_by_phase"] = {
+        "retrieval": _phase_calls(_snap_pipeline_start, _snap_before_reasoner),
+        "reasoner": _phase_calls(_snap_before_reasoner, _snap_after_reasoner),
+        "counter_reasoner": _phase_calls(_snap_before_counter, _snap_after_counter),
+        "evaluator": _phase_calls(_snap_before_eval, _snap_after_eval),
+    }
 
     return {
         "claim": claim,

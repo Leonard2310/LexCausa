@@ -57,6 +57,15 @@ const EMPTY_LINKS = Object.freeze([]);
 const pct = (v) => `${((v ?? 0) * 100).toFixed(0)}%`;
 const f2 = (v) => (v ?? 0).toFixed(2);
 
+// Render Italian domain/book tags in English (falls back to the raw value).
+const EN_TERMS = {
+  amministrativo: 'administrative',
+  civile: 'civil',
+  penale: 'criminal',
+  misto: 'mixed',
+};
+const enTerm = (v) => (v ? (EN_TERMS[String(v).toLowerCase()] ?? v) : '');
+
 function nodeX(col) {
   return PAD_X + col * (NODE_W + COL_GAP);
 }
@@ -128,12 +137,12 @@ function ChainNode({ link, x, y, isPro, onClick, isSelected }) {
         fontSize="13"
         fontWeight="700"
       >
-        nesso {f2(nesso)}
+        nexus {f2(nesso)}
       </text>
       {/* severity / libro tag */}
       {(link.severity_category || link.libro) && (
         <text x={x + 10} y={y + 100} fill="#6b7280" fontSize="9" fontStyle="italic">
-          {link.severity_category || ''}{link.severity_category && link.libro ? ' · ' : ''}{link.libro || ''}
+          {enTerm(link.severity_category)}{link.severity_category && link.libro ? ' · ' : ''}{enTerm(link.libro)}
         </text>
       )}
     </g>
@@ -346,14 +355,14 @@ function AttackDetailPanel({ link, onClose }) {
           </strong>
         </div>
         <div className="metagraph-detail-row">
-          <span>Δ Precedenti</span>
+          <span>Δ Precedents</span>
           <strong>
             {link.precedent_delta >= 0 ? '+' : ''}
             {f2(link.precedent_delta)}
           </strong>
         </div>
         <div className="metagraph-detail-row metagraph-detail-total">
-          <span>Nesso plausibility</span>
+          <span>Nexus plausibility</span>
           <strong>{f2(link.nesso_plausibility)}</strong>
         </div>
         {attacks.length > 0 && (

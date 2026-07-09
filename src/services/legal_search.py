@@ -130,13 +130,18 @@ class LegalSearchPipeline:
         self.tokenizer = AutoTokenizer.from_pretrained(
             settings.embedding_model, local_files_only=True
         )
-        # Use local cached model (pre-downloaded) with weights_only=False
-        # to avoid network calls and torch.load security check
+        # Load from local cache. Force safetensors so we never hit torch.load:
+        # transformers >= 4.5x refuses to load legacy pytorch_model.bin unless
+        # torch >= 2.6, which breaks the embedder on older-torch environments
+        # (e.g. the HPC nodes). The safetensors weights avoid that path entirely.
         import os
 
         os.environ["TRUST_REMOTE_CODE"] = "1"
         self.model = AutoModel.from_pretrained(
-            settings.embedding_model, local_files_only=True, trust_remote_code=True
+            settings.embedding_model,
+            local_files_only=True,
+            trust_remote_code=True,
+            use_safetensors=True,
         ).to(self.device)
         self.model.eval()
         print(f"✅ Embedding model loaded: {settings.embedding_model}")

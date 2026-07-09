@@ -177,6 +177,11 @@ def get_client() -> Any:
 
 
 _served_cache: Optional[set[str]] = None
+# Runtime visibility into label resolution. CERBERUS_DEBUG=1 logs the served-set
+# read and every resolution; a FALLBACK (a model's label not served → fixed model)
+# is ALWAYS warned once — that silently runs a cell on the WRONG model.
+_DEBUG = bool(os.environ.get("CERBERUS_DEBUG"))
+_warned_resolutions: set = set()
 
 
 def _served_labels() -> Optional[set[str]]:
@@ -192,6 +197,8 @@ def _served_labels() -> Optional[set[str]]:
             client = get_client()
             if client.is_available():
                 _served_cache = set(client.list_models())
+                if _DEBUG:
+                    print(f"[cerberus] served labels: {sorted(_served_cache)}", flush=True)
         except Exception:
             return None
     return _served_cache
@@ -323,6 +330,19 @@ class ChatCerberus(BaseChatModel):
         client = get_client()
         served = _served_labels()
         label = _resolve_label(self.model, served)
+        # Runtime visibility: warn ONCE if this alias fell back to the fixed model
+        # (its own label isn't served) — that silently runs the cell on the wrong
+        # model. With CERBERUS_DEBUG=1, log every resolution.
+        with _config_lock:
+            _mapped = _alias_map.get(self.model, self.model)
+        if (_DEBUG or label != _mapped) and (self.model, label) not in _warned_resolutions:
+            _warned_resolutions.add((self.model, label))
+            _tag = "⚠️ FALLBACK" if label != _mapped else "resolve"
+            print(
+                f"[cerberus] {_tag}: model={self.model!r} mapped={_mapped!r} -> "
+                f"label={label!r} | served={sorted(served) if served else served}",
+                flush=True,
+            )
         payload = _messages_to_openai(messages)
 
         # Reasoning applies to the *served label*: an alias that fell back to the

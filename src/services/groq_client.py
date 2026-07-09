@@ -658,8 +658,17 @@ def get_chat_groq(
     code changes.
     """
     if settings.llm_backend == "local":
-        from services.cerberus_client import ChatCerberus
+        from services.cerberus_client import ChatCerberus, ensure_configured
 
+        # API / full-pipeline paths never call set_alias_map (only the DoE runner
+        # did), so without this the alias map is empty and every model silently
+        # falls back to the pinned default (Scout). Idempotent: no-op once set.
+        ensure_configured(
+            settings.CERBERUS_ALIAS_MAP,
+            settings.CERBERUS_REASONING_ALIASES,
+            settings.CERBERUS_REASONING_EFFORT,
+        )
+        
         return ChatCerberus(
             model=model or settings.groq_models[0],
             temperature=(

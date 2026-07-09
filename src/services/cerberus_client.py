@@ -369,6 +369,11 @@ class ChatCerberus(BaseChatModel):
             temperature=self.temperature,
             **extra,
         )
+        print("++++++++++++++++++++++++++++++")
+        print(resp)
+        print("++++++++++++++++++++++++++++++")
+
+
         return ChatResult(
             generations=[ChatGeneration(message=AIMessage(content=resp.content or ""))]
         )

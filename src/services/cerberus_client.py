@@ -419,6 +419,9 @@ class ChatCerberus(BaseChatModel):
             temperature=self.temperature,
             **extra,
         )
+        if _DEBUG:
+            print(f"[cerberus] raw response ({label}):", flush=True)
+            print(resp.raw, flush=True)
         # Espone la usage del server (resp.raw.usage) e la registra in
         # _usage_stats: senza questo le chiamate Cerberus bypassano il conteggio
         # (resilient_chat_call salta _record_llm_stats sul fast-path non-Groq) e

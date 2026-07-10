@@ -3889,9 +3889,7 @@ class CounterReasoner(BaseAgent):
                 max_tokens=self._ancillary_max_tokens(),
             )
             answer = (resp.content or "").strip().upper()
-            if "DIRECT_CONTRADICTION" in answer or (
-                "CONTRADICT" in answer and "INTERPRET" not in answer
-            ):
+            if self._is_direct_contradiction_verdict(answer):
                 result = (False, "contradicts explicit claim fact")
             else:
                 result = (True, "")

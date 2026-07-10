@@ -147,6 +147,56 @@ class BaseAgent(ABC):
             return False
         return "request too large" in message
 
+    @staticmethod
+    def _is_contradicts_verdict(answer: str) -> bool:
+        """Classify a CONSISTENT/CONTRADICTS verdict, robust to extra prose.
+
+        The prompt asks for exactly one word, but local models often add
+        commentary — e.g. "CONSISTENT, the step is not contradicting the
+        claim" — where a naive ``"CONTRADICT" in answer`` substring check
+        flips on the word buried in that commentary. Trust the FIRST word
+        (what the prompt actually asked for); only fall back to a whole-word
+        scan of the rest when it doesn't start with either token, and default
+        to "consistent" when truly ambiguous (mirrors the prompt's own "if
+        doubtful, choose CONSISTENT").
+        """
+        first_word = answer.split(None, 1)[0].strip(".,:;!\"'()") if answer else ""
+        if first_word.startswith("CONTRADICT") or first_word == "INCONSISTENT":
+            return True
+        if first_word.startswith("CONSISTENT"):
+            return False
+        if re.search(r"\bINCONSISTENT\b", answer):
+            return True
+        if re.search(r"\bCONTRADICT\w*\b", answer) and not re.search(
+            r"(?<!IN)\bCONSISTENT\b", answer
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _is_direct_contradiction_verdict(answer: str) -> bool:
+        """Classify a DIRECT_CONTRADICTION/CONSISTENT_OR_INTERPRETIVE verdict.
+
+        Same fragility as ``_is_contradicts_verdict`` (see there), different
+        vocabulary. "CONTRADICT..." is not a reliable substring check here:
+        "DIRECT_CONTRADICTION" has no word-boundary before "CONTRADICTION"
+        (underscore is a word char), so it needs its own literal check; and
+        "CONSISTENT" bleeds into "CONSISTENT_OR_INTERPRETIVE" via plain
+        substring, which is what we want (both count as "not a contradiction").
+        Fail-open toward consistency when both signals are present, mirroring
+        the prompt's own "if doubtful, choose CONSISTENT_OR_INTERPRETIVE".
+        """
+        first_word = answer.split(None, 1)[0].strip(".,:;!\"'()") if answer else ""
+        if first_word.startswith("DIRECT_CONTRADICTION"):
+            return True
+        if first_word.startswith("CONSISTENT"):
+            return False
+        has_consistent = "CONSISTENT" in answer  # also matches CONSISTENT_OR_INTERPRETIVE
+        has_contradiction = "DIRECT_CONTRADICTION" in answer or (
+            bool(re.search(r"\bCONTRADICT\w*\b", answer)) and not has_consistent
+        )
+        return has_contradiction and not has_consistent
+
     def set_cancel_checker(self, cancel_checker) -> None:
         """Inject optional cooperative cancellation checker."""
         self._cancel_checker = cancel_checker
@@ -401,7 +451,7 @@ class BaseAgent(ABC):
                 max_tokens=self._ancillary_max_tokens(),
             )
             answer = (resp.content or "").strip().upper()
-            if "CONTRADICT" in answer:
+            if self._is_contradicts_verdict(answer):
                 result = (False, "contradicts explicit claim fact")
             else:
                 result = (True, "")

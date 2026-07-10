@@ -156,8 +156,19 @@ class UsageStats:
     """Thread-safe process-local usage statistics collector."""
 
     def __init__(self) -> None:
-        project_root = Path(__file__).resolve().parents[2]
-        self._stats_dir = project_root / "logs" / "usage_stats"
+        # LEXCAUSA_LOG_DIR isolates this per SLURM job (same var run.slurm sets for
+        # pipeline logs): the previous hardcoded project_root/logs/usage_stats was
+        # shared by every concurrent job, and latest.json's tmp-then-rename write is
+        # only atomic for a single writer — concurrent jobs racing on the same tmp
+        # path made one job's replace() consume the file before another's ran,
+        # raising FileNotFoundError.
+        log_dir = os.environ.get("LEXCAUSA_LOG_DIR")
+        if log_dir:
+            base_dir = Path(log_dir)
+        else:
+            project_root = Path(__file__).resolve().parents[2]
+            base_dir = project_root / "logs"
+        self._stats_dir = base_dir / "usage_stats"
         self._stats_dir.mkdir(parents=True, exist_ok=True)
 
         self._session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"

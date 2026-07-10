@@ -36,7 +36,7 @@ declare -A LABEL=(
 )
 
 DOMAINS="${DOMAINS:-CIVILE,PENALE,AMMINISTRATIVO,MISTO}"
-REPLICATES="${REPLICATES:-10}"
+REPLICATES="${REPLICATES:-5}"
 SEED="${SEED:-42}"
 SEED_CACHE="${SEED_CACHE:-$PWD/cache/claim_context_cache.sqlite}"   # already-seeded cache
 BASE_CONF="$PWD/models.conf"

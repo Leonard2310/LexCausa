@@ -60,6 +60,10 @@ DOMAINS="${DOMAINS:-CIVILE}"
 REPLICATES="${REPLICATES:-1}"
 SEED="${SEED:-42}"
 SAME_MODEL="${SAME_MODEL:-on}"          # 'off' = skip R==C diagonal cells (slice runner)
+# 'on,off' = full ablation (2 planning levels x 2 causality levels -> 4x rows/job);
+# 'on' = single level (ablation not explored), kept as the standalone-run default.
+PLANNING_ABLATIONS="${PLANNING_ABLATIONS:-on,off}"
+CAUSALITY_ABLATIONS="${CAUSALITY_ABLATIONS:-on,off}"
 
 # ── Optional: seed the cache from a pre-warmed sqlite (efficiency + no WAL races) ─
 # Warm once over all claims in a single job, then pass its file:
@@ -103,8 +107,8 @@ python scripts/run_multi_doe_ibisco.py \
     --reasoner-models "$REASONER" \
     --counter-models  "$COUNTER" \
     --domains "$DOMAINS" \
-    --planning-ablations on \
-    --causality-ablations on \
+    --planning-ablations "$PLANNING_ABLATIONS" \
+    --causality-ablations "$CAUSALITY_ABLATIONS" \
     --same-model-cells "$SAME_MODEL" \
     --fixed-model "$FIXED" \
     --evaluator-model "$FIXED" \

@@ -1,45 +1,52 @@
 flowchart TB
-  CLAIM["`**Legal claim**`"]
-  KG["`**Knowledge Graph — Neo4j**
-Statutes · Precedents ·
-Causal Taxonomy`"]
-  subgraph AG["Multi-Agent Reasoning — Plan-then-Execute"]
+  CLAIM["`**Legal claim**
+• real case
+• natural language`"]
+  KB["`**Knowledge Base**
+Neo4j
+• statutes
+• precedents`"]
+  TAX["`**Causal Taxonomy**
+• causal types
+• doctrinal theories
+• typed attacks`"]
+  subgraph AG["Multi-Agent Reasoning"]
     REAS["`**Reasoner**
-anchor norms +
-principle tests
-→ PRO chain (ASPIC+)`"]
+• Plan-then-Execute
+• anchor norms + precedents
+• principle tests
+• typed reasoning steps`"]
     CNT["`**Counter-Reasoner**
-taxonomy-driven attacks
-independent of the
-Reasoner
-→ CONTRA chain (ASPIC+)`"]
+• Plan-then-Execute
+• anchor norms + precedents
+• principle tests
+• typed reasoning steps
+• taxonomy-driven attacks
+• fact-lock + safety gates
+• abstains if unfounded`"]
     POL["`**Polisher-Evaluator**
-consistency +
-citation repair
-AQA: Cogency ·
-NormSupport · Semantics
-cross-attack scoring`"]
-    REAS --> POL
-    CNT --> POL
+• consistency check
+• citation repair
+• AQA scoring
+• cross-attack scoring`"]
+    REAS -->|thesis chain| POL
+    CNT -->|antithesis chain| POL
   end
-  LLM["`**LLM backends**
-OpenRouter`"]
-  OUT["`**ASPIC+ dialectical
-meta-graph**
-(PRO vs CONTRA +
-cross-attacks)
-+ plausibility verdict`"]
-  CLAIM --> KG
-  KG -->|retrieved context| AG
+  OUT["`**Dialectical meta-graph**
+• ASPIC+ graph
+• thesis vs antithesis chains
+• plausibility verdict`"]
+  CLAIM --> KB
+  KB -->|retrieved context| AG
+  TAX --> AG
   POL --> OUT
-  LLM -.->|inference| AG
   classDef io fill:#FFE6CC,stroke:#D79B00,color:#111827;
-  classDef kg fill:#B0E3E6,stroke:#0E8088,color:#111827;
-  classDef ag fill:#FFFFFF,stroke:#6C8EBF,color:#111827;
-  classDef pol fill:#E1D5E7,stroke:#9673A6,color:#111827;
-  classDef llm fill:#F5F5F5,stroke:#666666,color:#111827;
+  classDef kb fill:#DAE8FC,stroke:#6C8EBF,color:#111827;
+  classDef tax fill:#D0E8E4,stroke:#4F9E93,color:#111827;
+  classDef ag fill:#E1D5E7,stroke:#9673A6,color:#111827;
+  classDef pol fill:#D5E8D4,stroke:#82B366,color:#111827;
   class CLAIM,OUT io;
-  class KG kg;
+  class KB kb;
+  class TAX tax;
   class REAS,CNT ag;
   class POL pol;
-  class LLM llm;

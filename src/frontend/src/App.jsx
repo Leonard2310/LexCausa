@@ -3904,7 +3904,7 @@ export default function App() {
             <ul className="aqa-compact-list">
               {weakestLinks.slice(0, 8).map((item, idx) => (
                 <li key={`aqa-weak-${idx}`}>
-                  {item.link_id || `Link ${idx + 1}`} - causal link {(item.nesso_plausibility ?? 0).toFixed(3)}
+                  {item.link_id || `Link ${idx + 1}`} - link plausibility {(item.nesso_plausibility ?? 0).toFixed(3)}
                 </li>
               ))}
             </ul>
@@ -6536,7 +6536,7 @@ export default function App() {
                               <ul className="aqa-list">
                                 {aqaReport.notes.weakest_links.map((link, idx) => (
                                   <li key={idx}>
-                                    {link.link_id || `Link ${idx + 1}`} - causal link {(link.nesso_plausibility ?? 0).toFixed(2)}
+                                    {link.link_id || `Link ${idx + 1}`} - link plausibility {(link.nesso_plausibility ?? 0).toFixed(2)}
                                   </li>
                                 ))}
                               </ul>

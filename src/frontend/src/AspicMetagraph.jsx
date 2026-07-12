@@ -137,7 +137,7 @@ function ChainNode({ link, x, y, isPro, onClick, isSelected }) {
         fontSize="13"
         fontWeight="700"
       >
-        nexus {f2(nesso)}
+        link plausibility {f2(nesso)}
       </text>
       {/* severity / libro tag */}
       {(link.severity_category || link.libro) && (
@@ -362,7 +362,7 @@ function AttackDetailPanel({ link, onClose }) {
           </strong>
         </div>
         <div className="metagraph-detail-row metagraph-detail-total">
-          <span>Nexus plausibility</span>
+          <span>Link plausibility</span>
           <strong>{f2(link.nesso_plausibility)}</strong>
         </div>
         {attacks.length > 0 && (

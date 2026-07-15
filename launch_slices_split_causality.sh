@@ -23,14 +23,14 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"            # repo root ($DIR)
 
 # ── The 4 DoE models (aliases) ────────────────────────────────────────────────
-MODELS=(gpt_oss_120b llama_3_3_70b_instruct deepseek_r1_distill_70b qwen_25_72b)
+MODELS=(gpt_oss_120b llama_3_3_70b_instruct glm_z1_32b qwen_25_72b)
 FIXED="${FIXED:-llama_4_scout_17b}"            # fixed support/evaluator (NOT a DoE factor)
 
 # ── alias → served label (KEEP IN SYNC with CERBERUS_ALIAS_MAP in src/config.py) ─
 declare -A LABEL=(
     [gpt_oss_120b]=oss120
     [llama_3_3_70b_instruct]=llama33
-    [deepseek_r1_distill_70b]=deepseek70
+    [glm_z1_32b]=glmz1
     [qwen_25_72b]=qwen72
     [llama_4_scout_17b]=assistant
 )

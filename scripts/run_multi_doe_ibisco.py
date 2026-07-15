@@ -133,6 +133,16 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument("--out", required=True, help="Output directory for results")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "If --out already has a metrics.csv, skip rows already marked "
+            "'completed' there (matched by claim/model/ablation/replicate, not "
+            "run_id) and only execute the remaining ones. Safe to pass even if "
+            "--out is fresh (no-op). run_matrix.csv still lists the FULL plan."
+        ),
+    )
     return p.parse_args()
 
 
@@ -238,6 +248,36 @@ def _generate_matrix(
                                 }
                             )
     return pd.DataFrame(rows)
+
+
+# ── Resume support ──────────────────────────────────────────────────────────
+# A DoE cell's identity is the claim/model/ablation/replicate combination, NOT
+# the random run_id (regenerated fresh every invocation). str() normalizes the
+# bool columns so a live matrix row (True/False) and a row re-read from CSV
+# ("True"/"False" strings) compare equal.
+_IDENTITY_COLUMNS = (
+    "claim_id",
+    "reasoner_model",
+    "counter_model",
+    "planning_reasoner",
+    "planning_counter",
+    "causality_enabled",
+    "replicate",
+)
+
+
+def _row_identity_key(row) -> tuple:
+    return tuple(str(row[c]) for c in _IDENTITY_COLUMNS)
+
+
+def _load_completed_keys(out_dir: Path) -> set[tuple]:
+    """Identity keys already marked 'completed' in a prior metrics.csv at out_dir."""
+    metrics_path = out_dir / "metrics.csv"
+    if not metrics_path.exists():
+        return set()
+    existing = pd.read_csv(metrics_path)
+    done = existing[existing.get("status") == "completed"]
+    return {_row_identity_key(r) for _, r in done.iterrows()}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -397,6 +437,23 @@ def main() -> None:
     ).reset_index(drop=True)
     matrix.to_csv(out_dir / "run_matrix.csv", index=False)
 
+    # ── Resume: drop already-completed cells from the work queue. run_matrix.csv
+    # above still lists the FULL plan (for progress-tracking tools); only the
+    # in-memory `matrix` driving the execution loop below is filtered. ─────────
+    prior_metrics: list[dict] = []
+    if args.resume:
+        completed_keys = _load_completed_keys(out_dir)
+        if completed_keys:
+            before = len(matrix)
+            matrix = matrix[
+                ~matrix.apply(_row_identity_key, axis=1).isin(completed_keys)
+            ].reset_index(drop=True)
+            print(
+                f"🔁 --resume: {before - len(matrix)} row(s) already completed, "
+                f"skipping; {len(matrix)} remaining"
+            )
+            prior_metrics = pd.read_csv(out_dir / "metrics.csv").to_dict("records")
+
     fixed_model = args.fixed_model
     evaluator_model = args.evaluator_model
     print(f"📋 Run matrix: {len(matrix)} runs")
@@ -422,7 +479,9 @@ def main() -> None:
         print(f"✅ Evaluator model '{evaluator_model}' loaded (persistent)")
 
     # ── Execute runs ──────────────────────────────────────────────────────────
-    all_metrics: list[dict] = []
+    # Seed with prior completed rows (if resuming) so each metrics.csv rewrite
+    # below still contains them, not just the rows from this invocation.
+    all_metrics: list[dict] = list(prior_metrics)
     started_at = datetime.now()
     current_pair: tuple[str, str] | None = None  # (reasoner_model, counter_model)
 

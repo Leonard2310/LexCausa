@@ -33,13 +33,26 @@ WORK="$DIR/runs/job_${JOB}"
 mkdir -p "$WORK"/{neo4j,cache,results}
 echo "📁 WORK: $WORK"
 
+# ── Optional: resume a prior (killed/incomplete) run ──────────────────────────
+# Point RESUME_DIR at an existing results/ dir (e.g. an old job's, or one you
+# copied over) to skip cells already 'completed' there and run only what's
+# missing — same claim/model/ablation/replicate identity, not run_id:
+#   sbatch --export=ALL,RESUME_DIR=/abs/path/to/old/results,... run.slurm
+# Unset (default): normal fresh per-job WORK/results dir, --resume not passed.
+# Computed BEFORE the exports below so LEXCAUSA_LOG_DIR (per-claim logs) lands
+# next to the resumed run's metrics.csv too, not the fresh job's WORK dir.
+RESULTS_DIR="${RESUME_DIR:-$WORK/results}"
+mkdir -p "$RESULTS_DIR"
+RESUME_FLAG=()
+[ -n "${RESUME_DIR:-}" ] && RESUME_FLAG=(--resume) && echo ">> Resuming from $RESUME_DIR"
+
 export LLM_BACKEND=local                          # 'local' → ChatCerberus
 export CERBERUS_ENDPOINTS="$WORK/endpoints.json"  # client reads this
 export CERBERUS_DEBUG=1                           # log every alias→label resolution + FALLBACKs
 export NEO4J_DATA_DIR="$WORK/neo4j"               # per-job Neo4j store
 export NEO4J_ENDPOINTS="$WORK/neo4j_endpoint.json"
 export CLAIM_CONTEXT_CACHE_DIR="$WORK/cache"       # per-job retrieval cache (no shared-file WAL hazard)
-export LEXCAUSA_LOG_DIR="$WORK/results/logs"       # per-claim pipeline logs land next to run_errors.log, not repo-root logs/
+export LEXCAUSA_LOG_DIR="$RESULTS_DIR/logs"        # per-claim pipeline logs land next to run_errors.log, not repo-root logs/
 
 # Generous token budgets (paired with the removed SLURM time limit). The DoE
 # payload sets llm_max_tokens=20000; these per-phase caps must also be raised or
@@ -112,7 +125,8 @@ python scripts/run_multi_doe_ibisco.py \
     --same-model-cells "$SAME_MODEL" \
     --fixed-model "$FIXED" \
     --evaluator-model "$FIXED" \
-    --out "$WORK/results"
+    --out "$RESULTS_DIR" \
+    "${RESUME_FLAG[@]+"${RESUME_FLAG[@]}"}"
 
-echo "✅ job ${JOB} finished — results in $WORK/results/metrics.csv"
+echo "✅ job ${JOB} finished — results in $RESULTS_DIR/metrics.csv"
 # On exit, the trap stops Cerberus and Neo4j.

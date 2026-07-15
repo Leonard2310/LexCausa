@@ -761,12 +761,12 @@ class Settings(BaseSettings):
     # These aliases are Cerberus-specific and named after the actual served models
     # (independent of the Groq/OpenRouter alias catalogs). An alias absent from the
     # map is used as the label as-is. The labels below match the repo-root models.conf:
-    #   oss120 = gpt-oss-120b | llama33 = Llama-3.3-70B | glmz1 = GLM-Z1-32B-0414
+    #   oss120 = gpt-oss-120b | llama33 = Llama-3.3-70B | glm47flash = GLM-4.7-Flash
     #   qwen72 = Qwen2.5-72B-Instruct | assistant = Llama-4-Scout-17B (fixed support)
     CERBERUS_ALIAS_MAP: ClassVar[dict[str, str]] = {
         "gpt_oss_120b": "oss120",
         "llama_3_3_70b_instruct": "llama33",
-        "glm_z1_32b": "glmz1",
+        "glm_4_7_flash": "glm47flash",
         "qwen_25_72b": "qwen72",
         "llama_4_scout_17b": "assistant",
     }
@@ -775,7 +775,7 @@ class Settings(BaseSettings):
     # the trace server-side (clean `content`); this set only nudges the per-request
     # reasoning flag — the real default is `reasoning` in models.conf.
     CERBERUS_REASONING_ALIASES: ClassVar[frozenset[str]] = frozenset(
-        {"gpt_oss_120b", "glm_z1_32b"}
+        {"gpt_oss_120b", "glm_4_7_flash"}
     )
 
     # Per-alias reasoning effort → chat_template_kwargs.reasoning_effort on the

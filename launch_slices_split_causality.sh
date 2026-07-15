@@ -20,17 +20,21 @@
 #    DOMAINS=CIVILE REPLICATES=1 ./launch_slices_split_causality.sh
 # =============================================================================
 set -euo pipefail
+# Guard against a stale RESUME_DIR left exported in this shell from an earlier
+# manual recovery command — with --export=ALL it would silently leak into
+# these unrelated fresh launches and point them at someone else's old results.
+unset RESUME_DIR
 cd "$(dirname "${BASH_SOURCE[0]}")"            # repo root ($DIR)
 
 # ── The 4 DoE models (aliases) ────────────────────────────────────────────────
-MODELS=(gpt_oss_120b llama_3_3_70b_instruct glm_z1_32b qwen_25_72b)
+MODELS=(gpt_oss_120b llama_3_3_70b_instruct glm_4_7_flash qwen_25_72b)
 FIXED="${FIXED:-llama_4_scout_17b}"            # fixed support/evaluator (NOT a DoE factor)
 
 # ── alias → served label (KEEP IN SYNC with CERBERUS_ALIAS_MAP in src/config.py) ─
 declare -A LABEL=(
     [gpt_oss_120b]=oss120
     [llama_3_3_70b_instruct]=llama33
-    [glm_z1_32b]=glmz1
+    [glm_4_7_flash]=glm47flash
     [qwen_25_72b]=qwen72
     [llama_4_scout_17b]=assistant
 )

@@ -267,6 +267,21 @@ def _slugify_filename(text: str, max_len: int = 60) -> str:
     return (safe[:max_len] or "claim").strip("_")
 
 
+def _safe_relative_path(path: Path) -> str:
+    """Path relative to project_root, tolerant of files written outside it.
+
+    A cross-repo ``--resume`` (job launched from one checkout, RESUME_DIR
+    pointing at another checkout's results dir) writes artifacts under a path
+    that is NOT below ``project_root``. ``Path.relative_to`` would raise
+    ValueError there, aborting an already-completed row at the final save
+    step. Fall back to the absolute path instead of raising.
+    """
+    try:
+        return str(path.relative_to(project_root))
+    except ValueError:
+        return str(path)
+
+
 def _persist_repaired_aspic_files(claim: str, evaluation_payload: dict) -> dict:
     """Persist repaired ASPIC+ IR JSON files (reasoner/counter) under logs/aspic_repairs."""
     if not isinstance(evaluation_payload, dict):
@@ -299,7 +314,7 @@ def _persist_repaired_aspic_files(claim: str, evaluation_payload: dict) -> dict:
         )
         files[role] = {
             "absolute_path": str(path),
-            "relative_path": str(path.relative_to(project_root)),
+            "relative_path": _safe_relative_path(path),
         }
 
     try:
@@ -344,7 +359,7 @@ def _persist_aqa_report_file(claim: str, evaluation_payload: dict) -> dict:
 
     payload = {
         "absolute_path": str(path),
-        "relative_path": str(path.relative_to(project_root)),
+        "relative_path": _safe_relative_path(path),
     }
     print(f"📊 AQA report saved: {payload}")
     return payload
@@ -354,7 +369,7 @@ def _artifact_file_payload(path: Path) -> dict[str, str]:
     """Build standard absolute/relative file payload."""
     return {
         "absolute_path": str(path),
-        "relative_path": str(path.relative_to(project_root)),
+        "relative_path": _safe_relative_path(path),
     }
 
 

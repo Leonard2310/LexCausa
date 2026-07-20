@@ -8,70 +8,77 @@
    <img src="https://img.shields.io/badge/Framework-LangChain-1C3C3C?logo=langchain&logoColor=white" alt="LangChain">
    <img src="https://img.shields.io/badge/ASPIC+-Argumentation-8B5CF6" alt="ASPIC+">
    <img src="https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey" alt="License">
-   <img src="https://img.shields.io/badge/Version-1.2.0-brightgreen" alt="Version">
+   <img src="https://img.shields.io/badge/Version-2.0.0-brightgreen" alt="Version">
+   <img src="https://img.shields.io/badge/MSc%20Thesis-Federico%20II%20·%202026-8B5CF6" alt="MSc Thesis">
 </p>
 
-> ⚠️ **Work in Progress** - This project is under active development as part of a Master's thesis in Computer Engineering at the University of Naples Federico II.
+> 🎓 **Master's thesis project** in Computer Engineering at the University of Naples Federico II, defended in July 2026. The framework and its 720-run experimental campaign are complete; the walkthrough below mirrors the thesis defense, and the "Future Work" section lists planned extensions.
 
-**LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (via three interchangeable backends: Groq Cloud, OpenRouter, and in-process vLLM for HPC), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build logical argumentation chains.
+**LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (via three interchangeable backends: Groq Cloud, OpenRouter, and in-process vLLM for HPC), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build a **dialectical meta-graph** — a thesis chain, an antithesis chain that attacks it, and a scored plausibility verdict — instead of free-form prose.
+
+<p align="center">
+   <img src="assets/architecture_overview.png" alt="LexCausa architecture overview" width="92%">
+</p>
 
 
 
 ## 🎯 Features
 
-- **Legal Claim Classification**: Automatic claim classification and routing for Civil, Penal, and Administrative law via LLM
-- **Domain Router**: Lightweight pre-routing agent that classifies claims as CIVILE, PENALE, AMMINISTRATIVO, or ENTRAMBI
-- **Hybrid Statute Retrieval**: Hybrid search on 4200+ Normattiva statutes using Legal-BERT embeddings + Neo4j fulltext (rank fusion), with strict source/book pre-filtering
-- **Citation Graph Expansion (Neo4j CITES)**: Retrieval expands seed statutes with cited statutes via `(:Statute)-[:CITES]->(:Statute)` before LLM relevance/applicability filters
-- **Progressive Search**: Adaptive retrieval that progressively expands results when post-filtering yields too few statutes, with configurable expansion steps and max rounds
-- **Pre-Retrieval LLM Filtering**: Soft LLM-based relevance filtering for statutes and precedents before they enter the reasoning pipeline (default-YES policy: discards only clearly irrelevant items)
-- **Unified Pipeline**: Search, Reasoning, Full Pipeline, and DoE all share the same singleton `LegalSearchPipeline`, ensuring consistency and thread safety
-- **Shared Retrieved Context**: Both Reasoner and CounterReasoner receive the same retrieved statutes/precedents and build opposing arguments from the same evidence base
-- **Planned Iterative Chain Generation**: Reasoner and Counter-Reasoner first create an execution plan (3-10 steps), then generate one LLM step per planned objective with anti-repetition and consistency checks
-- **Reasoner Agent**: Builds structured argumentative chains (Premise → Statute → Precedent → Causal Link → Conclusion) only on the provided knowledge base, with causality classification, precise statute and precedent citations, and a provisional causality bootstrap (plan → taxonomy anchors → enriched KB) before expensive step generation
-- **Counter-Reasoner Agent**: Generates counter-arguments using the causality taxonomy, selects multiple attacks from the attack pool, assigns attacks per planned step, applies attack blacklisting/feasibility filtering to stabilize generation, enforces claim-fact lock (no inversion of explicit facts), supports abstention flow when opposition is insufficient, and includes second-pass targeted retrieval and step expansion for multi-attack coverage
-- **Repetition Detection**: Jaccard similarity-based detection (threshold 0.70) prevents duplicate reasoning steps across the chain
-- **Polisher-Evaluator Agent**: Modular mixin architecture (ConsistencyMixin + ScoringMixin + NLPUtilsMixin + AQAEngineMixin) evaluating the dialectical exchange with consistency checking against Neo4j KB, citation repair, AQA scoring, counter-gate abstention classification, reasoner plausibility locking, and verdict generation
-- **Consistency Checker**: Verifies statute and precedent citations against Neo4j KB, classifies articles as core/peripheral, repairs mismatches via LLM-constrained rewriting (with verbatim quote validation), and drops unreliable citations
-- **AQA (Argument Quality Assessment)**: Three-dimensional scoring — Cogency (α), NormSupport (β), Semantics (γ) — with configurable weights, active cross-attacks with domain-aware rules, attack-type classification (6 types with per-type damage multipliers), and precedent influence scoring
-- **Cross-Attack Computation**: Active domain-aware cross-attack engine with severity categorization, NLI contradiction detection via LLM, attack-type classification (contradiction, exception, derogation, extinction, factual_impediment, general_opposition), and configurable damage multipliers
-- **Precedent Influence Scoring**: ASPIC+ links receive precedent delta based on recency, bindingness (cassazione/appello/tribunale), stance confidence, and semantic similarity
-- **ASPIC+ Metagraph Visualization**: Interactive SVG frontend component displaying the dialectical meta-graph with PRO/CONTRA columns, curved attack arrows with damage values, chain flow arrows, and detail panel for selected links
-- **Attack Text Details**: Expandable frontend panel showing full attacker/target text for each active cross-attack with type, multiplier, NLI label, overlap, and damage
-- **Centralized Prompt Registry**: All 100+ LLM prompts managed in a single `prompt_registry.py` with typed `PromptKey` enum — covering classification, routing, filtering, reasoning, counter-reasoning, AQA, NLI, consistency repair, and abstention gate
-- **Attack Coverage Scoring**: AQA bonus for counter-argumentation breadth — clusters weak reasoner links into axes, measures how many distinct axes are attacked, and applies diminishing-return weights (1st hit 100%, 2nd 30%, 3rd 10%)
-- **Counter-Reasoner Abstention Gate**: Polisher-Evaluator gate (`POLISHER_COUNTER_GATE`) that classifies counter-arguments as `OPPOSING_STRONG`, `OPPOSING_LIMITATIVE`, `AGREEING`, or `UNCLEAR`; weak/agreeing counters trigger abstention, skipping AQA evaluation
-- **Reasoner Plausibility Locking**: Optional lock (`aqa_lock_reasoner_plausibility`) that freezes reasoner-side plausibility in A/B DoE tests to isolate counter-reasoner effects
-- **Per-Role Model Fallback**: Separate fallback chains for Reasoner and Counter-Reasoner (`reasoner_model_fallback_aliases` / `counter_model_fallback_aliases`) with independent default temperatures
-- **Attack Precondition Evaluation**: LLM-based verification of taxonomy preconditions for each attack, with SATISFIED/UNSATISFIED/UNCLEAR status and intra-run caching
-- **Counter-Reasoner Second-Pass Retrieval**: Targeted additional retrieval triggered when statutes opposing the claim are insufficient, with configurable thresholds and limits
-- **Counter Step Expansion**: Optional multi-attack step expansion that spawns satellite steps when a single counter-step targets multiple attacks
-- **Retrieval Fail-Fast Scope**: Thread-local context manager (`retrieval_llm_fail_fast_scope`) for fast fallback in retrieval filters without full retry
-- **Triple LLM Backend** (`LLM_BACKEND`): the same agents run unchanged on **Groq Cloud** (free tier, key rotation), **OpenRouter** (paid, OpenAI-SDK based, provider-pinned routing e.g. DeepInfra/Alibaba, per-call reasoning-effort control for reasoning models, reasoning-token caps for thinking models), or **in-process vLLM** (`local`, HPC/Ibisco, chain-of-thought stripping for DeepSeek `<think>` and gpt-oss harmony channels); backend-specific model alias maps (`MODEL_ALIAS_MAP` / `OPENROUTER_ALIAS_MAP` / `VLLM_ALIAS_MAP`) are code-owned in `src/config.py`
-- **Resilient LLM Client**: Automatic retry with exponential backoff, dynamic API key discovery (V1..V99), model fallback, model-down cache with configurable TTL; smart error classification (model-down vs. rate-limit vs. transient vs. request-too-large); dispatches to the selected backend transparently
-- **Caching & Filtering Efficiency**: Intra-run caching for legal-context extraction, statute applicability decisions, attack preconditions, fact-lock checks, and plan target alignment, plus claim-context SQLite cache for reusing pre-retrieval outputs across repeated runs
-- **Cancellation & Interruptibility**: Pipeline stop endpoint and cooperative cancellation propagation across API, agents, and long-running generation/retrieval loops
-- **DoE A/B Workflow**: Dedicated DoE tab with one shared Reasoner run and two Counter/Evaluator setups (baseline vs. treatment), live A/B switching in the UI, consolidated DoE log/report persistence, and automatic delta analysis
-- **DoE Batch Runner**: Automated multi-claim batch execution (`run_doe_batch.py`) with resume capability (`--resume`), checkpoint recovery (`--start-from`), selective runs (`--only`), dry-run mode, abstention classification, and stability metrics
-- **DoE Statistical Analysis**: Post-hoc analysis script (`scripts/analyze_doe_results.py`) computing paired t-tests, sign tests, Cohen's d, domain breakdowns, verdict flips, error analysis, and intra-claim consistency from batch CSV results
-- **Multi-DoE Framework**: Full-factorial Reasoner×Counter framework (`scripts/run_multi_doe.py` for cloud backends / `scripts/run_multi_doe_ibisco.py` for vLLM HPC + `scripts/analyze_multi_doe.py`). The thesis campaign is a 2×2 Reasoner×Counter grid (GPT-OSS-120B, Llama-3.3-70B) crossed with a 3-level reasoning-paradigm factor (`Plan-then-Execute` / unplanned `step-wise` / `single-call`) over 12 claims × 5 replicas = **720 runs** on OpenRouter/DeepInfra, with Llama-4-Scout-17B as the fixed evaluator. Statistics (advisor-aligned): factorial ANOVA with eta-squared (main effects + Reasoner×Counter interaction for **RQ2** + Reasoner×paradigm), **Wilcoxon signed-rank** paired by claim for the 2-level model contrast (**RQ1** efficacy+efficiency), **Friedman + Dunn/Holm-Bonferroni** win/tie/loss for the 3-level paradigm (**RQ3** efficacy+efficiency), and bootstrap CI for citation fidelity; the 3 AQA dimensions (Cogency/NormSupport/Semantics) are analyzed separately. Deterministic run-matrix **sharding** (`--shard-index/--shard-count`) for parallel or staged execution with trivial merging; per-run metrics include AQA scores, **fidelity** (overall citation grounding), **counter abstention** (flag + reason), and per-phase token accounting; both runners reuse the claim-context SQLite cache so every cell sees an identical evidential context; runs via the frontend Multi-DoE tab or as a standalone CLI; containerized via Dockerfile + compose.yml
-- **Causality Taxonomy**: Structured causality taxonomy (Material, Legal, Concurrent) used by Reasoner and Counter-Reasoner for arguments and attacks
-- **Knowledge Graph**: Neo4j database with statutes, precedents, and causal relationships
-- **Centralized Configuration**: All parameters (150+ settings: models, retries, AQA weights, search, truncation, attack params, coverage, abstention, per-role fallback, domain-specific weights, etc.) managed by `src/config.py` (Pydantic Settings) and environment variables
-- **Frontend Settings Panel**: Collapsible panel to configure per-step LLM model, temperature, max tokens, search parameters, AQA weights, chain min/max steps, and attack parameters — without touching code
-- **Per-Claim Pipeline Logging**: Every pipeline run is logged to `logs/<timestamp>_<slug>.log` for full auditability
-- **DoE and PDF Artifacts**: DoE runs can persist a consolidated A/B log + JSON report, and exported PDFs are saved automatically under `logs/pdf_exports/<pipeline|doe>/` in addition to browser download
-- **Pre-Retrieval Claim Context Memory (SQLite)**: Optional cache of final applicable statutes and precedents per claim (reusable across Search/Reasoner/Counter/Pipeline runs and warmable via script)
-- **React Frontend**: Modern five-tab interface (Search, Reasoning, Full Pipeline, DoE A/B, Multi-DoE) with ASPIC+ Metagraph visualization, attack details, PDF export, and A/B comparison controls on Vite + React 19
-- **Live Pipeline Streaming**: Real-time phase progress, token streaming for chain generation (including retry attempts), refinement phase control events (`reasoner_refinement_started/completed`) with live chain reset/replace behavior in the frontend, plus SSE endpoints for full pipeline, standalone Counter-Reasoner, and standalone Evaluator
+**Retrieval & Knowledge Base**
+- **Neo4j Knowledge Graph**: statutes, precedents, and causal relationships in a single graph
+- **Claim Classification & Domain Router**: LLM classifies/routes claims as CIVILE, PENALE, AMMINISTRATIVO, or ENTRAMBI
+- **Hybrid Statute Retrieval**: Legal-BERT embeddings + Neo4j fulltext (rank fusion) over 4200+ Normattiva statutes, with source/book pre-filtering
+- **Citation Graph Expansion (CITES)**: seed statutes expanded via `(:Statute)-[:CITES]->(:Statute)` before LLM filters
+- **Progressive Search**: adaptively expands results when post-filtering yields too few statutes
+- **Pre-Retrieval LLM Filtering**: soft relevance filtering (default-YES: discards only clearly irrelevant items)
+- **Shared Retrieved Context**: Reasoner and Counter-Reasoner build opposing arguments from the same evidence base
+- **Claim Context Memory (SQLite)**: optional cache of final applicable statutes/precedents, reusable across runs and warmable via script
+
+**Reasoning Agents**
+- **Unified Pipeline**: Search, Reasoning, Full Pipeline, and DoE share one thread-safe `LegalSearchPipeline` singleton
+- **Plan-then-Execute Generation**: agents draft a 3–10 step plan, then generate one validated step per objective
+- **Reasoner**: structured ASPIC+ chains (Premise → Statute → Precedent → Causal Link → Conclusion) with causality classification and a taxonomy-anchored causality bootstrap
+- **Counter-Reasoner**: taxonomy-driven attacks with fact-lock (no inverted facts), feasibility filtering, abstention when unfounded, plus second-pass retrieval and multi-attack step expansion
+- **Repetition Detection**: Jaccard similarity (threshold 0.70) prevents duplicate reasoning steps
+- **Causality Taxonomy**: structured Material/Legal/Concurrent taxonomy driving arguments and attacks
+
+**Evaluation & AQA**
+- **Polisher-Evaluator**: modular mixin architecture (Consistency + Scoring + NLPUtils + AQAEngine) closing the dialectical loop with a final verdict
+- **Consistency Checker**: verifies citations against Neo4j, classifies core/peripheral articles, repairs mismatches via constrained rewriting, drops unreliable citations
+- **AQA (Argument Quality Assessment)**: three-dimensional scoring — Cogency (α), NormSupport (β), Semantics (γ) — with configurable weights
+- **Cross-Attack Computation**: domain-aware engine with NLI contradiction detection and 6 attack types (contradiction, exception, derogation, extinction, factual_impediment, general_opposition) with per-type damage multipliers
+- **Precedent Influence Scoring**: precedent delta from recency, bindingness (cassazione/appello/tribunale), stance confidence, and semantic similarity
+- **Attack Coverage Scoring**: bonus for counter-argumentation breadth with diminishing-return weights (1st hit 100%, 2nd 30%, 3rd 10%)
+- **Counter-Reasoner Abstention Gate**: classifies counters as OPPOSING_STRONG / OPPOSING_LIMITATIVE / AGREEING / UNCLEAR; weak/agreeing counters skip AQA
+- **Attack Precondition Evaluation**: LLM verification of taxonomy preconditions (SATISFIED/UNSATISFIED/UNCLEAR) with intra-run caching
+- **Reasoner Plausibility Locking**: optional freeze of reasoner-side plausibility to isolate counter-reasoner effects in A/B tests
+
+**Experiments (DoE / Multi-DoE)**
+- **DoE A/B Workflow**: one shared Reasoner vs. baseline/treatment Counter+Evaluator, live A/B switching, consolidated logs and automatic delta analysis
+- **DoE Batch Runner**: automated multi-claim runs (`run_doe_batch.py`) with resume, checkpoint recovery, selective/dry-run modes, and stability metrics
+- **DoE Statistical Analysis**: paired t-tests, sign tests, Cohen's d, domain breakdowns, verdict flips, and intra-claim consistency
+- **Multi-DoE Framework**: full-factorial Reasoner×Counter with deterministic sharding and shared claim-context cache — produced the thesis campaign of **720 runs** (2 model classes × 2 roles × 3 reasoning paradigms × 12 claims × 5 replicas) on OpenRouter/DeepInfra
+
+**LLM Backends & Infrastructure**
+- **Triple LLM Backend** (`LLM_BACKEND`): the same agents run unchanged on **Groq Cloud**, **OpenRouter** (provider-pinned routing, reasoning-effort/token control), or **in-process vLLM** (HPC/Ibisco, chain-of-thought stripping); backend-specific alias maps are code-owned in `src/config.py`
+- **Resilient LLM Client**: retry with exponential backoff, dynamic key discovery (V1..V99), model fallback, model-down cache, and smart error classification
+- **Per-Role Model Fallback**: independent fallback chains and default temperatures for Reasoner and Counter-Reasoner
+- **Centralized Prompt Registry**: 100+ prompts in one `prompt_registry.py` with a typed `PromptKey` enum
+- **Centralized Configuration**: 150+ parameters via `src/config.py` (Pydantic Settings), overridable per-request
+- **Caching & Filtering Efficiency**: intra-run caching for legal-context, applicability, preconditions, fact-lock, and plan alignment, plus the SQLite claim-context cache
+- **Cancellation & Interruptibility**: pipeline stop endpoint with cooperative cancellation across API, agents, and long loops
+- **Logging & Artifacts**: per-claim run logs (`logs/<timestamp>_<slug>.log`), consolidated DoE reports, and auto-saved PDF exports
+
+**Frontend (React 19 + Vite)**
+- **Five-Tab Interface**: Search, Reasoning, Full Pipeline, DoE A/B, and Multi-DoE
+- **ASPIC+ Metagraph Visualization**: interactive SVG meta-graph with PRO/CONTRA columns, curved attack arrows with damage values, and a detail panel
+- **Attack Text Details**: expandable panel with full attacker/target text, type, multiplier, NLI label, overlap, and damage per cross-attack
+- **Settings Panel**: configure per-step model, temperature, max tokens, search params, AQA weights, chain bounds, and attack params without touching code
+- **Live Pipeline Streaming**: real-time phase progress and token streaming (incl. retries) over SSE for full pipeline, Counter-Reasoner, and Evaluator
 
 
 
 ## 🏗️ Agent and Pipeline Architecture
-
-<p align="center">
-   <img src="assets/LexCausa_architecture.svg" alt="LexCausa Architecture" width="100%">
-</p>
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -145,6 +152,54 @@
 │  🔗 Causality taxonomy (Material, Legal, Concurrent)                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Knowledge Base & retrieval
+
+A single Neo4j graph holds the statutes, the precedents, and the citation edges between articles. Every claim is grounded once through three complementary retrievals — **semantic** (Legal-BERT), **lexical** (fulltext), and **structural** (`CITES` expansion) — and the resulting context is shared verbatim by the Reasoner and the Counter-Reasoner.
+
+<p align="center">
+   <img src="assets/knowledge_base.png" alt="Knowledge Base and hybrid retrieval" width="80%">
+</p>
+
+### Plan-then-Execute generation
+
+Instead of asking the model for a whole argument in one shot, each agent first drafts a **plan** (3–10 typed objectives), then generates and validates **one step per objective**, with local re-planning when a step fails. This keeps the chain from drifting or contradicting itself.
+
+<p align="center">
+   <img src="assets/plan_then_execute.png" alt="Plan-then-Execute generation" width="82%">
+</p>
+
+### Causal taxonomy
+
+Legal responsibility turns on the causal link between conduct and event, so the taxonomy is the backbone of the framework — a single **versioned artifact** (`config_taxonomy.json`), not something hidden inside prompts. It catalogs **14 causal types** across the four legal domains (penal, civil, administrative, mixed); each type maps to its governing **doctrinal theory** and carries anchor norms (core/accessory) and a pool of typed counter-attacks (**16 theories · 66 typed attacks** overall). This is what injects domain-specific causality into the agents — for the running penal case, for instance, it surfaces factual causation (Art. 40), intervening cause (Art. 41), and gradation of fault.
+
+<p align="center">
+   <img src="assets/causal_taxonomy.png" alt="Causal taxonomy tree: 14 causal types by legal domain, each mapped to a doctrinal theory" width="62%">
+</p>
+
+### Counter-Reasoner
+
+The antithesis is disciplined, not arbitrary: the Counter-Reasoner **selects attacks from the taxonomy** (never invents them), respects a **fact-lock** (no new or inverted facts), applies feasibility filtering, and **abstains with a reason** when no well-founded objection exists.
+
+<p align="center">
+   <img src="assets/counter_reasoner.png" alt="Counter-Reasoner" width="82%">
+</p>
+
+### Polisher-Evaluator
+
+The Polisher-Evaluator closes the loop: it checks every citation against the Neo4j graph, repairs incomplete references, classifies the counter as opposing/agreeing (abstention gate), and scores the exchange.
+
+<p align="center">
+   <img src="assets/polisher_evaluator.png" alt="Polisher-Evaluator" width="82%">
+</p>
+
+### AQA scoring
+
+Every link of both chains gets a deterministic base score — the weighted mean of **Cogency** (how well the step stands on its own), **NormSupport** (how anchored it is in the law), and **Semantics** (how on-topic it stays). From that base the engine **subtracts** the antithesis attacks weighted by type, **adds** the precedent contribution, aggregates the two chains, and emits the verdict: *plausible*, *implausible*, or *uncertain*.
+
+<p align="center">
+   <img src="assets/aqa_scoring.png" alt="AQA scoring pipeline" width="82%">
+</p>
 
 ## 📋 Prerequisites
 
@@ -579,20 +634,17 @@ cloudflared tunnel --url http://127.0.0.1:3000 --http-host-header 127.0.0.1:3000
 ```
 
 
-## 🧪 Agent & Pipeline Development Status
+## 🔭 Future Work
 
+The framework and its experimental evaluation are complete. Directions left open for future work:
 
-### 🚧 In Progress
 - [ ] Export reasoning chains to structured formats (JSON-LD, RDF)
-- [ ] Extended claim-level caching: persist additional pipeline artifacts (e.g., classification/stance/evaluation outputs) beyond pre-retrieval statutes/precedents
-- [ ] Explainability layer: generate a final, user-facing explanation of the reasoning and verdict (with traceable links to retrieved statutes/precedents and attack outcomes)
-
-### 📋 Planned
-- [ ] Extend statutory/procedural coverage with additional corpora: c.p.a., c.p.p., c.p.c., labour law corpus, health liability corpus, consumer law corpus, military disciplinary corpus, and industrial property corpus
-- [ ] LLM memory layer: maintain conversational context across pipeline steps to improve coherence and reduce redundant reasoning
-- [ ] Full argumentation framework (Dung-style grounded semantics visualization)
-- [ ] Multi-turn dialogue with context retention
-- [ ] Multi-jurisdiction support: extend statutory coverage to additional countries and decouple the framework from Italy-specific statutes (pluggable statute loaders + jurisdiction configs)
+- [ ] Explainability layer: a final, user-facing explanation of the reasoning and verdict, with traceable links to retrieved statutes/precedents and attack outcomes
+- [ ] Extended claim-level caching: persist additional pipeline artifacts (classification/stance/evaluation) beyond pre-retrieval statutes/precedents
+- [ ] Extend statutory/procedural coverage with additional corpora (c.p.a., c.p.p., c.p.c., labour, health-liability, consumer, and industrial-property law)
+- [ ] LLM memory layer: conversational context across pipeline steps to improve coherence and reduce redundant reasoning
+- [ ] Full argumentation framework (Dung-style grounded-semantics visualization) and multi-turn dialogue with context retention
+- [ ] Multi-jurisdiction support: decouple the framework from Italy-specific statutes (pluggable statute loaders + jurisdiction configs), e.g. common-law systems
 
 
 ## 📄 License

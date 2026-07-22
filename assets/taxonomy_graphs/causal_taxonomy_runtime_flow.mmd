@@ -1,5 +1,5 @@
 %%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
-flowchart TB
+flowchart LR
   subgraph IN["1) Entry and initial routing"]
     API["/api/chat\nUser request + claim"] --> RR["resolve_routing_decision()\nInitial causal_type decision"]
     RR --> VID["validate_ids(...)\nChecks causal_type_id exists"]

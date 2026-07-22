@@ -14,7 +14,7 @@
 
 > 🎓 **Master's thesis project** in Computer Engineering at the University of Naples Federico II, defended in July 2026. The framework and its 720-run experimental campaign are complete; the walkthrough below mirrors the thesis defense, and the "Future Work" section lists planned extensions.
 
-**LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (via three interchangeable backends: Groq Cloud, OpenRouter, and in-process vLLM for HPC), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build a **dialectical meta-graph** — a thesis chain, an antithesis chain that attacks it, and a scored plausibility verdict — instead of free-form prose.
+**LexCausa** is an AI-powered legal reasoning system for Italian law. It combines Knowledge Graphs (Neo4j), Large Language Models (via three interchangeable backends: Groq Cloud, OpenRouter, and in-process vLLM for HPC), and structured causal reasoning to analyze legal claims, find relevant statutes/precedents, and build a **dialectical meta-graph** (a thesis chain, an antithesis chain that attacks it, and a scored plausibility verdict) instead of free-form prose.
 
 <p align="center">
    <img src="assets/architecture_overview.png" alt="LexCausa architecture overview" width="92%">
@@ -45,7 +45,7 @@
 **Evaluation & AQA**
 - **Polisher-Evaluator**: modular mixin architecture (Consistency + Scoring + NLPUtils + AQAEngine) closing the dialectical loop with a final verdict
 - **Consistency Checker**: verifies citations against Neo4j, classifies core/peripheral articles, repairs mismatches via constrained rewriting, drops unreliable citations
-- **AQA (Argument Quality Assessment)**: three-dimensional scoring — Cogency (α), NormSupport (β), Semantics (γ) — with configurable weights
+- **AQA (Argument Quality Assessment)**: three-dimensional scoring across Cogency (α), NormSupport (β), and Semantics (γ), with configurable weights
 - **Cross-Attack Computation**: domain-aware engine with NLI contradiction detection and 6 attack types (contradiction, exception, derogation, extinction, factual_impediment, general_opposition) with per-type damage multipliers
 - **Precedent Influence Scoring**: precedent delta from recency, bindingness (cassazione/appello/tribunale), stance confidence, and semantic similarity
 - **Attack Coverage Scoring**: bonus for counter-argumentation breadth with diminishing-return weights (1st hit 100%, 2nd 30%, 3rd 10%)
@@ -57,7 +57,7 @@
 - **DoE A/B Workflow**: one shared Reasoner vs. baseline/treatment Counter+Evaluator, live A/B switching, consolidated logs and automatic delta analysis
 - **DoE Batch Runner**: automated multi-claim runs (`run_doe_batch.py`) with resume, checkpoint recovery, selective/dry-run modes, and stability metrics
 - **DoE Statistical Analysis**: paired t-tests, sign tests, Cohen's d, domain breakdowns, verdict flips, and intra-claim consistency
-- **Multi-DoE Framework**: full-factorial Reasoner×Counter with deterministic sharding and shared claim-context cache — produced the thesis campaign of **720 runs** (2 model classes × 2 roles × 3 reasoning paradigms × 12 claims × 5 replicas) on OpenRouter/DeepInfra
+- **Multi-DoE Framework**: full-factorial Reasoner×Counter with deterministic sharding and shared claim-context cache. It produced the thesis campaign of **720 runs** (2 model classes × 2 roles × 3 reasoning paradigms × 12 claims × 5 replicas) on OpenRouter/DeepInfra
 
 **LLM Backends & Infrastructure**
 - **Triple LLM Backend** (`LLM_BACKEND`): the same agents run unchanged on **Groq Cloud**, **OpenRouter** (provider-pinned routing, reasoning-effort/token control), or **in-process vLLM** (HPC/Ibisco, chain-of-thought stripping); backend-specific alias maps are code-owned in `src/config.py`
@@ -155,7 +155,7 @@
 
 ### Knowledge Base & retrieval
 
-A single Neo4j graph holds the statutes, the precedents, and the citation edges between articles. Every claim is grounded once through three complementary retrievals — **semantic** (Legal-BERT), **lexical** (fulltext), and **structural** (`CITES` expansion) — and the resulting context is shared verbatim by the Reasoner and the Counter-Reasoner.
+A single Neo4j graph holds the statutes, the precedents, and the citation edges between articles. Every claim is grounded once through three complementary retrievals (**semantic** via Legal-BERT, **lexical** via fulltext, and **structural** via `CITES` expansion), and the resulting context is shared verbatim by the Reasoner and the Counter-Reasoner.
 
 <p align="center">
    <img src="assets/knowledge_base.png" alt="Knowledge Base and hybrid retrieval" width="80%">
@@ -171,7 +171,7 @@ Instead of asking the model for a whole argument in one shot, each agent first d
 
 ### Causal taxonomy
 
-Legal responsibility turns on the causal link between conduct and event, so the taxonomy is the backbone of the framework — a single **versioned artifact** (`config_taxonomy.json`), not something hidden inside prompts. It catalogs **14 causal types** across the four legal domains (penal, civil, administrative, mixed); each type maps to its governing **doctrinal theory** and carries anchor norms (core/accessory) and a pool of typed counter-attacks (**16 theories · 66 typed attacks** overall). This is what injects domain-specific causality into the agents — for the running penal case, for instance, it surfaces factual causation (Art. 40), intervening cause (Art. 41), and gradation of fault.
+Legal responsibility turns on the causal link between conduct and event, so the taxonomy is the backbone of the framework: a single **versioned artifact** (`config_taxonomy.json`), not something hidden inside prompts. It catalogs **14 causal types** across the four legal domains (penal, civil, administrative, mixed); each type maps to its governing **doctrinal theory** and carries anchor norms (core/accessory) and a pool of typed counter-attacks (**16 theories · 66 typed attacks** overall). This is what injects domain-specific causality into the agents: for the running penal case, for instance, it surfaces factual causation (Art. 40), intervening cause (Art. 41), and gradation of fault.
 
 <p align="center">
    <img src="assets/causal_taxonomy.png" alt="Causal taxonomy tree: 14 causal types by legal domain, each mapped to a doctrinal theory" width="62%">
@@ -195,7 +195,7 @@ The Polisher-Evaluator closes the loop: it checks every citation against the Neo
 
 ### AQA scoring
 
-Every link of both chains gets a deterministic base score — the weighted mean of **Cogency** (how well the step stands on its own), **NormSupport** (how anchored it is in the law), and **Semantics** (how on-topic it stays). From that base the engine **subtracts** the antithesis attacks weighted by type, **adds** the precedent contribution, aggregates the two chains, and emits the verdict: *plausible*, *implausible*, or *uncertain*.
+Every link of both chains gets a deterministic base score, the weighted mean of **Cogency** (how well the step stands on its own), **NormSupport** (how anchored it is in the law), and **Semantics** (how on-topic it stays). From that base the engine **subtracts** the antithesis attacks weighted by type, **adds** the precedent contribution, aggregates the two chains, and emits the verdict: *plausible*, *implausible*, or *uncertain*.
 
 <p align="center">
    <img src="assets/aqa_scoring.png" alt="AQA scoring pipeline" width="82%">
@@ -208,9 +208,9 @@ Every link of both chains gets a deterministic base score — the weighted mean 
 - **Node.js**: 18+ (for frontend)
 - **Poetry**: Python dependency management
 - **LLM provider key** (one of):
-  - **Groq API Key** — free tier at [console.groq.com](https://console.groq.com) (default backend)
-  - **OpenRouter API Key** — paid, at [openrouter.ai](https://openrouter.ai) (`LLM_BACKEND=openrouter`)
-  - none — for in-process vLLM on HPC (`LLM_BACKEND=local`, models loaded from the HF cache)
+  - **Groq API Key**: free tier at [console.groq.com](https://console.groq.com) (default backend)
+  - **OpenRouter API Key**: paid, at [openrouter.ai](https://openrouter.ai) (`LLM_BACKEND=openrouter`)
+  - none: for in-process vLLM on HPC (`LLM_BACKEND=local`, models loaded from the HF cache)
 
 ### Supported Platforms
 - ✅ macOS (Apple Silicon M1/M2/M3)
@@ -278,17 +278,17 @@ DEBUG=false
 # Prefer selecting it per-command instead of pinning it here:
 #   LLM_BACKEND=openrouter poetry run python src/api_server.py
 
-# Groq Cloud (LLM_BACKEND=groq) — key rotation via V1..V99
+# Groq Cloud (LLM_BACKEND=groq): key rotation via V1..V99
 GROQ_API_KEY_V1=your_groq_api_key_here
 GROQ_API_KEY_V2=your_second_key_here
 
-# OpenRouter (LLM_BACKEND=openrouter) — paid, provider-pinned
+# OpenRouter (LLM_BACKEND=openrouter): paid, provider-pinned
 OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_AUX_MODEL=llama_4_scout          # fixed aux (retrieval/classifier/evaluator)
 # OPENROUTER_PROVIDER_ONLY=["deepinfra"]    # JSON list: provider preference order
 # OPENROUTER_REASONING_MAX_TOKENS=6000      # cap thinking-model reasoning tokens
 
-# vLLM / HPC (LLM_BACKEND=local) — GPU params read at model load
+# vLLM / HPC (LLM_BACKEND=local): GPU params read at model load
 # VLLM_TENSOR_PARALLEL_SIZE=2
 # VLLM_GPU_MEMORY_UTILIZATION=0.90
 # VLLM_MAX_MODEL_LEN=30000
@@ -466,7 +466,7 @@ These variables **must** be set in the `.env` file:
 | `NEO4J_PASSWORD` | Yes | Neo4j password |
 | `GROQ_API_KEY_V1…VN` | backend `groq` | Groq API keys (dynamic discovery V1…V99) |
 | `OPENROUTER_API_KEY` | backend `openrouter` | OpenRouter API key |
-| `LLM_BACKEND` | No | `groq` (default) \| `openrouter` \| `local` (vLLM) — prefer setting it per-command |
+| `LLM_BACKEND` | No | `groq` (default) \| `openrouter` \| `local` (vLLM); prefer setting it per-command |
 
 ### LLM Backends
 
@@ -480,14 +480,14 @@ Model catalogs are **backend-specific and code-owned** in `src/config.py`: `MODE
 
 > For copy-paste runbooks (clean restarts, smoke tests, full Multi-DoE runs per backend), see [COMMANDS.md](COMMANDS.md).
 
-### Optional — LLM & Server
+### Optional: LLM & Server
 
 These can be overridden in `.env` or via the frontend Settings panel:
 - LLM client behavior (retry/backoff, key rotation, model-down cache TTL)
 - LLM generation knobs (temperature, max tokens, ancillary JSON-call token budget)
 - API runtime settings (host/port/debug)
 
-### Optional — Embedding & Search
+### Optional: Embedding & Search
 
 Configurable areas:
 
@@ -542,7 +542,7 @@ Output report:
 - `logs/tuning/retrieval_tuning_<timestamp>.json`
 - `logs/tuning/retrieval_tuning_latest.json`
 
-### Optional — AQA (Argument Quality Assessment)
+### Optional: AQA (Argument Quality Assessment)
 
 Configurable areas:
 
@@ -554,7 +554,7 @@ Configurable areas:
 - Reasoner plausibility locking for DoE A/B isolation (`aqa_lock_reasoner_plausibility`)
 - Precedent recency window and dominant-attack reporting limits
 
-### Optional — Chain Generation
+### Optional: Chain Generation
 
 Configurable areas:
 
@@ -663,16 +663,16 @@ See the [LICENSE](LICENSE) file for details.
 
 ## 👤 Authors
 
-**Leonardo Catello** — [@Leonard2310](https://github.com/Leonard2310)  
+**Leonardo Catello** ([@Leonard2310](https://github.com/Leonard2310))  
 Email: leonardo.catello@hotmail.com
 
-**Salvatore Maione** — [@salvatore22maione](https://github.com/salvatore22maione)  
+**Salvatore Maione** ([@salvatore22maione](https://github.com/salvatore22maione))  
 Email: salvatore22maione@gmail.com
 
 ### Supervisors
 
-**Prof. Roberto Pietrantuono** — [@rpietrantuono](https://github.com/rpietrantuono)  
-**PhD Cristian Mascia** — [@CristianMascia](https://github.com/CristianMascia)
+**Prof. Roberto Pietrantuono** ([@rpietrantuono](https://github.com/rpietrantuono))  
+**PhD Cristian Mascia** ([@CristianMascia](https://github.com/CristianMascia))
 
 
 ## 🧾 Citation

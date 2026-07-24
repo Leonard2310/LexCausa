@@ -655,3 +655,80 @@ OPENROUTER_REASONING_EFFORT=low        # alt.: low|medium|high (ignored if MAX_T
 ```
 Cutting reasoning too hard makes the thinking Counter regress toward instruct-style abstention;
 6000 is a safe middle ground. Both are mutually exclusive (the token cap wins).
+
+---
+
+## 14. Multi-DoE extension — the 10 claims the thesis did not cover (600 runs, 2 machines)
+
+The thesis campaign (`or_doe480_4w_s*` + `or_sc240_s*` = **720 runs**) covered only 12 of the 22
+claims: `C1-C3, P1-P3, M1-M3, A1-A3`. This section runs the **same design on the remaining 10**
+(`C4-C6, P4-P6, M4, A4-A6`) so the two can be merged into a single **1320-run** dataset spanning
+all 22 claims.
+
+Design (identical to the thesis, do not change — the merge depends on it):
+
+| parameter | value |
+|---|---|
+| claims | `claims_doe10_remaining.md` (10, extracted from `claims.md`) |
+| models R x C | `gpt_oss_120b`, `llama_3_3_70b` (cross 2x2) |
+| aux / evaluator | `llama_4_scout` (fixed) |
+| paradigms | `on,off,single` |
+| replicates | 5 |
+| seed | 42 |
+| retrieval | `--min-kept 8 --max-statutes 100 --max-precedents 5` |
+| total | 10 x 2 x 2 x 3 x 5 = **600 runs** |
+
+`claims_doe10_remaining.md` was extracted from `claims.md` preserving the `## CLAIM ...` domain
+headers; the claim texts are byte-identical to the originals (verified).
+
+### Running it — split over two machines
+Global shard-count 8; each machine runs 4 of those shards locally (one backend per shard, ports
+8001-8004). The partition is `df.iloc[i::8]`, disjoint by construction.
+
+```bash
+# PC A (macOS) — global shards 0-3, 300 runs
+caffeinate -i bash scripts/run_doe600_pcA.sh
+
+# PC B (Linux) — global shards 4-7, 300 runs (no caffeinate on Linux)
+systemd-inhibit --what=idle:sleep --why="LexCausa DoE" bash scripts/run_doe600_pcB.sh
+```
+
+Both scripts run a **preflight** that aborts unless the matrix is exactly 600 runs, and print a
+`CONFIG FINGERPRINT` plus the claims-file sha256 — **these must be identical on both machines**,
+otherwise the shard indices no longer line up and you silently get gaps and duplicates. Copy
+`claims_doe10_remaining.md` to PC B first (it is a new file).
+
+Expected: **~$11**, **~13 h** wall-clock with both machines (83.8 h of serial work; measured
+parallelism is 3.24x per 4-worker machine). Extrapolated from the real per-run token counts and
+durations of `or_doe720_merged`.
+
+### Merging everything into the 1320-run dataset
+```bash
+# after copying PC B's *_g4..g7 directories next to PC A's
+poetry run python scripts/merge_doe_shards.py \
+    --shards "experiments/multi_doe/runs/or_doe600_pc*_g*" \
+             "experiments/multi_doe/runs/or_doe480_4w_s*" \
+             "experiments/multi_doe/runs/or_sc240_s*" \
+    --out experiments/multi_doe/runs/or_doe1320_all22 --expect 1320
+```
+The merge aborts on duplicate `run_id` — the tripwire for "the machines built different matrices".
+
+### KNOWN BUG: the `domain` column is wrong for the last claim of every section
+`_parse_claims_file` updates `current_domain` as soon as it sees a `## CLAIM ...` header, but the
+previous claim is still buffered and is only flushed at the *next* `### ` line — by which time the
+domain has already advanced. **The last claim of each section inherits the next section's domain.**
+
+Confirmed in the thesis data: `C3 -> PENALE`, `P3 -> MISTO`, `M3 -> AMMINISTRATIVO` (180 of 720
+rows, 25%). The same applies to the new campaign (`C6`, `P6`, `M4`).
+
+`domain` never reaches the pipeline (it is not in the API payload), so **the runs themselves are
+valid** — only the per-domain aggregation is affected. Fix it post-hoc before any per-domain
+analysis:
+
+```python
+df["domain"] = df.claim_id.str[0].map(
+    {"C": "CIVILE", "P": "PENALE", "M": "MISTO", "A": "AMMINISTRATIVO"}
+)
+```
+Corrected, every domain has exactly 180 runs in the thesis campaign (against 240/120 as recorded),
+which is the balance the design intends — an independent confirmation that the remap is right.

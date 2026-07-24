@@ -1,6 +1,9 @@
-%%{init: {"flowchart": {"defaultRenderer": "elk"}}}%%
+%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 30, "rankSpacing": 55, "subGraphTitleMargin": {"top": 6, "bottom": 14}}, "themeVariables": {"fontSize": "24px"}}}%%
 flowchart LR
+  CFG["config_taxonomy.json\n(shared config: single source of taxonomy, mapping and attacks)"]
+
   subgraph IN["1) Entry and initial routing"]
+    direction TB
     API["/api/chat\nUser request + claim"] --> RR["resolve_routing_decision()\nInitial causal_type decision"]
     RR --> VID["validate_ids(...)\nChecks causal_type_id exists"]
     RR --> AR["anchor_norms_for() + principle_tests_for()\nLoads anchor norms and principle tests"]
@@ -11,37 +14,33 @@ flowchart LR
   end
 
   subgraph RE["2) Reasoning (main thesis)"]
-    RC --> REAS["Reasoner\nBuilds answer and argumentative structure"]
-    REAS --> GCT["taxonomy retrieval tool\nFetches taxonomic mappings"]
+    direction TB
+    REAS["Reasoner\nBuilds answer and argumentative structure"] --> GCT["taxonomy retrieval tool\nFetches taxonomic mappings"]
     GCT --> FILT["norme_core_rilevanti / norme_accessorie_rilevanti\nFilters core vs accessory norms"]
     REAS --> PV["post-hoc validate_ids(...)\nValidates causal_type_id/theory_id from Reasoner"]
   end
 
   subgraph CR["3) Counter-Reasoning (objections)"]
-    PV --> COUNTER["CounterReasoner\nGenerates objections and antithesis"]
-    COUNTER --> POOL["counter_attack_pool_for(causal_type_id)\nBase attack pool per causal type"]
-    PV --> TPOOL["theory_counter_attacks(theory_id)\nOptional theory layer"]
-    POOL --> MERGE["merge_attack_sources\nBase causal type + theory"]
-    TPOOL --> MERGE
+    direction TB
+    COUNTER["CounterReasoner\nGenerates objections and antithesis"] --> POOL["counter_attack_pool_for(causal_type_id)\nBase attack pool per causal type"]
+    TPOOL["theory_counter_attacks(theory_id)\nOptional theory layer"] --> MERGE["merge_attack_sources\nBase causal type + theory"]
+    POOL --> MERGE
     MERGE --> SEL["_select_attacks()\nCompatibility + dedup + LLM selection"]
   end
 
-  subgraph CFGS["4) Shared config"]
-    CFG["config_taxonomy.json\nSingle source of taxonomy, mapping and attacks"]
-  end
-
-  CFG --> RR
-  CFG --> GCT
-  CFG --> POOL
-  CFG --> TPOOL
+  CFG --> IN
+  CFG --> RE
+  CFG --> CR
+  RC --> REAS
+  PV --> COUNTER
+  PV --> TPOOL
 
   classDef phase fill:#eef2ff,stroke:#3730a3,color:#111827;
   classDef entry fill:#ecfeff,stroke:#0e7490,color:#111827;
   classDef reason fill:#ecfdf5,stroke:#166534,color:#111827;
   classDef counter fill:#fff7ed,stroke:#9a3412,color:#111827;
   classDef config fill:#f5f3ff,stroke:#6d28d9,color:#111827;
-
-  class IN,RE,CR,CFGS phase;
+  class IN,RE,CR phase;
   class API,RR,VID,AR,ROUTER,RC entry;
   class REAS,GCT,FILT,PV reason;
   class COUNTER,POOL,SEL counter;
